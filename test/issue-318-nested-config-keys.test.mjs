@@ -181,6 +181,10 @@ test('the loader reads exactly the keys CONFIG_KEYS lists for each section', () 
       '  link_paths: [node_modules]',
       '  memory_mb: 1024',
       '  cpu_seconds: 60',
+      'runners:',
+      '  codex: { command: [codex, "{schema}"] }',
+      '  gemini: { command: [gemini] }',
+      '  use: {}',
       'queue:',
       '  skip: { approved_at_head_by: {} }',
       '',
@@ -190,7 +194,7 @@ test('the loader reads exactly the keys CONFIG_KEYS lists for each section', () 
   const dir = mkdtempSync(join(tmpdir(), 'rv-issue-318-reads-'));
   try {
     const result = loadConfig(dir, NO_BASELINE);
-    readConfigDocument(recording(doc, '', reads), dir, result);
+    readConfigDocument(recording(doc, '', reads), dir, result, true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

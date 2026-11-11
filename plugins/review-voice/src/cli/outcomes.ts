@@ -1,10 +1,17 @@
 import { openDatabase } from '../store/db.ts';
 import { loadConfig } from '../policy/load.ts';
 import { repositoryRoot } from '../diff/acquire.ts';
-import { GitHubClient } from '../github/client.ts';
-import { checkOutcomes } from '../store/outcomes.ts';
+import { checkOutcomes, type PendingQuestion } from '../store/outcomes.ts';
 import { checkApprovals, DEFAULT_OUTCOMES } from '../store/approvals.ts';
-import { flag } from './shared.ts';
+import { flag, githubClient } from './shared.ts';
+
+/** The one text-mode line per thread awaiting this tool's reply (docs/adr/0035); `--json` stays an array of outcomes. */
+export function pendingQuestionLine(question: PendingQuestion): string {
+  return (
+    `${question.repository}#${question.pullNumber} ${question.findingId} ${question.path}:${question.line} ` +
+    `question from ${question.askedBy} awaiting a reply; run reply --pr ${question.pullNumber}`
+  );
+}
 
 export async function outcomesCommand(argv: string[]): Promise<number> {
   const repository = flag(argv, '--repository');
@@ -40,7 +47,7 @@ export async function outcomesCommand(argv: string[]): Promise<number> {
   try {
     if (argv.includes('--approvals')) {
       // The approvals Review Voice sent, followed to what the pull request shows (docs/adr/0036).
-      const result = await checkApprovals({ db, client: new GitHubClient({ allowlist }), repository: repository ?? undefined, since, windowDays });
+      const result = await checkApprovals({ db, client: githubClient(allowlist), repository: repository ?? undefined, since, windowDays });
       for (const warning of result.warnings) console.error(warning);
       for (const skipped of result.skipped) console.error(`${skipped.repository}#${skipped.pullNumber}: skipped, ${skipped.reason}`);
       if (argv.includes('--json')) {
@@ -58,7 +65,7 @@ export async function outcomesCommand(argv: string[]): Promise<number> {
     }
     const result = await checkOutcomes({
       db,
-      client: new GitHubClient({ allowlist }),
+      client: githubClient(allowlist),
       allowlist,
       repository: repository ?? undefined,
       since,
@@ -94,6 +101,7 @@ export async function outcomesCommand(argv: string[]): Promise<number> {
     for (const o of result.outcomes) {
       console.log(`${o.repository}#${o.pullNumber} ${o.findingId} ${o.path}:${o.line} ${o.outcome} (${o.strength}): ${o.evidence}`);
     }
+    for (const question of result.questions) console.log(pendingQuestionLine(question));
     const count = (name: string): number => result.outcomes.filter((o) => o.outcome === name).length;
     console.log(
       `${result.outcomes.length} finding(s) tracked: ${count('fixed')} fixed, ${count('dismissed')} dismissed, ` +

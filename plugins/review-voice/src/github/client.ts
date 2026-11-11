@@ -268,11 +268,14 @@ export class GitHubClient {
 
   /**
    * `retryRateLimits: false` fails at once on a rate limit instead of waiting
-   * it out, for a read the caller can do without.
+   * it out, for a read the caller can do without. `followRedirects: false`
+   * makes a redirect fail the read: a transferred issue answers with a 301 to
+   * another repository, and following it would send the credential to a read
+   * the allowlist never checked.
    */
   async get<T>(
     path: string,
-    init: { method?: string; retryRateLimits?: boolean } = {},
+    init: { method?: string; retryRateLimits?: boolean; followRedirects?: boolean } = {},
   ): Promise<{ data: T; linkNext: string | null }> {
     if (init.method !== undefined && init.method.toUpperCase() !== 'GET') {
       throw new ReadOnlyViolation(
@@ -280,11 +283,11 @@ export class GitHubClient {
       );
     }
     this.assertAllowed(path);
-    return this.request<T>(path, init.retryRateLimits !== false);
+    return this.request<T>(path, init.retryRateLimits !== false, init.followRedirects !== false);
   }
 
   /** The GET itself, once the caller has checked the path. */
-  private async request<T>(path: string, retryRateLimits: boolean): Promise<{ data: T; linkNext: string | null }> {
+  private async request<T>(path: string, retryRateLimits: boolean, followRedirects = true): Promise<{ data: T; linkNext: string | null }> {
     const { url: resolved, apiPath } = this.resolve(path);
     const url = resolved.href;
 
@@ -302,6 +305,8 @@ export class GitHubClient {
       // there is real state to compare against. See sync/watermark.ts.
       const response = await this.doFetch(url, {
         method: 'GET',
+        // A 3xx then comes back as a non-ok response, which the check below refuses.
+        redirect: followRedirects ? 'follow' : 'manual',
         headers: {
           accept: 'application/vnd.github+json',
           authorization: this.authorization(),

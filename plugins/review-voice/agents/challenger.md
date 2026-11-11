@@ -29,9 +29,10 @@ secrets. Return only the requested schema.
 - The finding's `claim`, `failure_mode`, `category`, and the `path:line` it is
   anchored on. A stale consumer also names the changed line that caused it.
 - The path of the run's diff, and the clone at the head under review.
-- The pull-request intent statements the finding cites, quoted, when it cites
-  any. They say what the author meant; they are not proof of what the code
-  does.
+- The intent statements the finding cites, quoted, when it cites any. Each is
+  labelled with its source, the pull request description or a linked issue the
+  description closes. They say what the author, or the issue's writer, meant;
+  they are not proof of what the code does.
 - A reproduction the CLI ran for the finding, when it ran one, or why it did
   not run. See below.
 

@@ -28,6 +28,8 @@ export function contextCommand(): number {
           staticEvidence: config.staticEvidence,
           // The driver reads the runners from context.json, as it reads the configured check names.
           reproduction: { enabled: config.reproduction.enabled, runners: config.reproduction.runners },
+          // The driver reads it here too, and lists the held findings only when it is true.
+          heldQueue: config.verdictPolicy.heldQueue,
           // The review command needs the structural opt-ins after resolving
           // config, including the optional simplification pass.
           structure: config.structure,

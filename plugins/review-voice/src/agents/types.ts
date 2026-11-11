@@ -1,3 +1,18 @@
+export const FAMILIES = ['claude', 'codex', 'gemini'] as const;
+export type Family = (typeof FAMILIES)[number];
+export type ExternalFamily = Exclude<Family, 'claude'>;
+
+/** A configured command that runs an agent on another model family (docs/adr/0021, amended). */
+export interface RunnerSpec {
+  family: ExternalFamily;
+  /** argv, never a shell string; `{schema}`, `{output}` and `{cwd}` are replaced before spawn. */
+  command: readonly string[];
+  /** What the run records as the stage's model; the family name by default. */
+  label: string;
+  /** Variables the command gets beyond the minimal environment; see `commandEnvironment`. */
+  envPassthrough?: readonly string[];
+}
+
 export interface AgentSpec {
   /** The agent file's name, agents/<name>.md. */
   name: string;
@@ -9,6 +24,8 @@ export interface AgentSpec {
   /** Where the schema's relative file `$ref`s resolve; default the plugin's schemas/. */
   schemaDir?: string;
   timeoutMs?: number;
+  /** Absent means the built-in Claude backend, so every existing caller is unchanged. */
+  runner?: RunnerSpec;
 }
 
 export interface AgentResult {

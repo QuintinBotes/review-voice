@@ -26,6 +26,9 @@ review:
   # Which stages run and on which model (docs/adr/0025): fast, standard,
   # thorough, or auto, which picks from the diff. `--mode` beats this.
   mode: auto
+  # Also read the issues the description closes (`Closes #12`; same repository,
+  # at most five). A quote from an issue is checked like one from the description.
+  linked_issues: false
   # Set the model for a stage in every mode; an override never turns a stage
   # on or off. Keys: intent, analyst (the diff lane), lanes, verify, tie-break,
   # challenge, edit. Defaults are sonnet, or opus where the mode calls for it.
@@ -178,6 +181,16 @@ verdict:
   # true turns every APPROVE into COMMENT, so approval is left to a person.
   # REQUEST_CHANGES is unchanged, and a needs-rerun hold still applies.
   never_approve: false
+  # Globs of paths whose change leaves approval to a person. An APPROVE becomes
+  # COMMENT and the posted summary names this setting, never a path. A rename
+  # counts by both names and a deleted file counts. Unlike
+  # review.human_review.sensitive_paths this costs no thorough review and adds
+  # no note, and cap_approval does not lift it. A list that does not load holds
+  # every approval until it is fixed.
+  never_approve_paths: []
+  # Globs every changed path must match for Review Voice to approve; empty means
+  # no restriction. "The bot may approve only documentation" is ["docs/**"].
+  only_approve_paths: []
   # The recorded scope and check counts help readers judge what the review covered.
   scope_block: false
   # Model ids stay private unless this is true and the scope block is enabled.
@@ -186,6 +199,22 @@ verdict:
   evidence_block: false
   # The owner precedent count reveals that a precedent store exists, so it needs its own switch.
   evidence_block_precedents: false
+  # true lists every held finding, with its verdict and reason, in review --json,
+  # the job summary inside GitHub Actions and the watcher report, never on the
+  # pull request. A below-gate or policy-suppressed one carries the score
+  # --promote command that re-scores the run (inside GitHub Actions, only its
+  # candidate id).
+  held_queue: false
+  # blocking | important | minor | nit. A verified finding below this tier is
+  # not posted; it stays in the record and the scope block counts it, so turn
+  # scope_block on beside a tier. The five categories no suppression may reach
+  # (security, authorization, authentication, data_integrity, trust_boundary)
+  # post at any tier, and a withheld finding above a nit still caps an approval.
+  min_posted_tier: nit
+  # true puts a collapsed "Reading guide" before the scope block, listing the
+  # changed files that carry a structural signal, most first, from the recorded
+  # counts.
+  reading_guide: false
   # true posts nothing when a clean approval's scope is unchanged since the
   # commit the owner approved and that approval still stands (it needs
   # identity.owner_reviewer).
@@ -206,6 +235,14 @@ static_evidence:
   #     timeout_seconds: 120
   #     # An optional version command records which tool ran without guessing how to ask it.
   #     version: tsc --version
+  # Any tool that prints SARIF 2.1.0 to stdout is parsed, whatever its name.
+  # Use local rules with metrics off, so the scanner does not reach the
+  # network, and scope the scan to your own files, since a scan of a vendored
+  # tree floods the analyst with leads.
+  #   - name: semgrep
+  #     run: semgrep scan --config .semgrep --metrics=off --sarif --quiet .
+  #   - name: ruff
+  #     run: ruff check --output-format sarif .
   # Commands get only PATH, HOME, LANG, LC_ALL, TMPDIR, CI and TERM, never the
   # reviewer's GITHUB_TOKEN, ANTHROPIC_API_KEY or REVIEW_VOICE_* settings. List
   # any other variable a command needs by name (issue 279). Example:
@@ -231,6 +268,33 @@ reproduction:
   link_paths: []
   memory_mb: 1024
   cpu_seconds: 60
+
+# Other model families a review may run on (docs/adr/0021, amended). Nothing
+# runs until a family is written down here, and this block is read only from
+# your own configuration (--config, an absolute REVIEW_VOICE_CONFIG, or the
+# Action's config input), never from a pull request's base commit, because a
+# runner is a command your machine executes. Each command is a list of
+# arguments, never a shell string; {schema}, {output} and {cwd} are replaced
+# with the schema file, the answer file and the head worktree. The sandbox is
+# the external CLI's own, chosen by the flags you name: check the codex example
+# against the codex version you have installed, since it was not verified for
+# this release. A challenger that cannot run holds the findings it was to
+# check; a second-pass runner that cannot run leaves them unverified and
+# unchanged, as a shell verification command does.
+# runners:
+#   codex:
+#     command: [codex, exec, --sandbox, read-only, --output-schema, "{schema}", --output-last-message, "{output}", "-"]
+#     timeout_seconds: 600
+#     label: codex
+#     # The command gets the same minimal environment as static_evidence
+#     # commands, plus the names listed here. Example:
+#     # env_passthrough: [OPENAI_API_KEY]
+#   use:
+#     # Which family challenges every finding (docs/adr/0024); claude by default.
+#     challenge: claude
+#     # A pull request an agent of the challenge family wrote is challenged by
+#     # this family instead. Off unless set.
+#     agent_authored_challenge: codex
 
 verification:
   # An optional second pass over each surviving finding, run by a command you
@@ -258,6 +322,12 @@ verification:
   enabled: false
   name: codex
   command: ""
+  # Instead of a command, run the second pass on a family configured under
+  # runners: (its argv, timeout and env_passthrough apply; a command beside it
+  # is ignored). family labels a hand-written command so its verdicts can be
+  # grouped by family; runner implies it.
+  # runner: codex
+  # family: codex
   timeout_seconds: 90
   # A rejection at or above this confidence drops the finding. Below it, the
   # finding is downgraded instead - an unsure verifier should not delete
@@ -297,8 +367,10 @@ watch:
   max_attempts_per_head: 2           # a head that failed this often is left for you
   review_timeout: 45m                # a review running longer is killed and recorded as failed; at most 6h
   # false runs each review with REVIEW_VOICE_NO_COMMANDS=1, so the static
-  # evidence and second-pass verification commands in this config, and
-  # reproductions, do not run unattended. true lets them run.
+  # evidence and second-pass verification commands in this config,
+  # reproductions, and the runners under runners: do not run unattended (the
+  # second pass is then skipped, and a configured challenger holds the
+  # findings it was to check). true lets them run.
   run_repository_commands: false
   # The 127.0.0.1 port that keeps a second watcher on this data directory
   # from starting. Derived from the data directory by default (49152 to

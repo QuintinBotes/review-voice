@@ -13,6 +13,7 @@ import { approvalEscapeWarning, approvalStats, DEFAULT_OUTCOMES } from '../store
 import { lastSync } from '../sync/state.ts';
 import { namedRepositories } from './sync.ts';
 import { describeReviewScope } from './explain.ts';
+import { terminalSafeDeep } from '../terminal.ts';
 
 function distinctReviewers(db: Database): number {
   return (db.prepare('SELECT COUNT(DISTINCT reviewer_login) AS n FROM review_events').get() as { n: number }).n;
@@ -40,8 +41,8 @@ export function statusCommand(): number {
     const runs = (db.prepare('SELECT COUNT(*) AS n FROM review_runs').get() as { n: number }).n;
     const audits = (db.prepare('SELECT COUNT(*) AS n FROM audit_events').get() as { n: number }).n;
     const totals = feedbackTotals(db);
-    const last = latestRun(db);
-    const lastDetail = runDetail(db);
+    const last = terminalSafeDeep(latestRun(db));
+    const lastDetail = terminalSafeDeep(runDetail(db));
 
     console.log(`data directory   ${dataDirectory()}`);
     console.log(`database         ${databasePath()}`);

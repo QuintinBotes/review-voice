@@ -62,3 +62,19 @@ commit, not from the head it checks out, so a pull request cannot loosen its
 own review. The checkout needs `fetch-depth: 0` so the base commit is present;
 without it the review runs with the built-in defaults and says so. The
 `config` input is ignored until the action passes it as `--config`.
+
+## Amendment - 2026-11-10
+
+With `verdict.held_queue: true` in the configuration the run reads (the base
+commit's), `review` appends the run's held findings to the job summary as a
+heading, a note that a promoted finding still goes through the challenge, and
+one line per held finding with its location, severity, verdict and reason in
+inline code. The step runs `review` before it writes its own `## Review Voice`
+section, so the list sits above it; `action.yml` is unchanged. Inside GitHub
+Actions the list names a promotable finding by its candidate id only, never by
+a command, because the runner's paths do not outlive the job. A failed append
+prints a warning and never changes the exit code. Every field is already in
+the report JSON the Action prints, and the job summary is not a GitHub write
+by Review Voice, so the single write of
+[0010](0010-review-verdict-posting.md) is unchanged. The switch is off by
+default and changes nothing about the verdict or the posted review.

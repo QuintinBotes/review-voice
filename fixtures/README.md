@@ -10,6 +10,7 @@ carries other people's words and other companies' code.
 | `negative/` | A known false positive stays suppressed |
 | `no-findings/` | A clean diff produces exactly `No actionable findings.` |
 | `prompt-injection/` | Instructions hidden in content are treated as data |
+| `sarif/` | A SARIF 2.1.0 document from each supported tool parses onto the signals `test/evidence-sarif.test.mjs` states; its files are documents, not cases |
 
 ## Fixture shape
 
@@ -50,6 +51,12 @@ patch shows nothing, files under `context/` as given), and a head made by
 applying a normalised copy of `diff.patch`, with hunk headers recounted and
 unmarked body lines read as context. A patch that plain `git apply` rejects
 therefore still works, and the fixture file itself is never changed.
+
+An external benchmark set (`review-voice import-benchmark`) is imported outside
+the repository, into a directory no git working tree contains, and is never
+placed under `fixtures/`. Its items are real pull requests under their own
+licences, and only the run's own figures are published (`docs/EVALUATION.md`,
+"External benchmark").
 
 ## Reproductions
 

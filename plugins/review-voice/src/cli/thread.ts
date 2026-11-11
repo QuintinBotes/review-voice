@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import { readThread } from '../diff/thread.ts';
-import { githubClient, inferRepository, flag, resolveOutPath } from './shared.ts';
+import { githubClient, inferRepository, flag, repositoryConfig, resolveOutPath } from './shared.ts';
 
 export async function threadCommand(argv: string[]): Promise<number> {
   const pullNumber = Number(flag(argv, '--pr'));
@@ -15,7 +15,9 @@ export async function threadCommand(argv: string[]): Promise<number> {
     return 2;
   }
 
-  const result = await readThread({ repository, pullNumber, client: githubClient([repository]) });
+  // The config decides, so a driver run reads the setting from the base commit (REVIEW_VOICE_CONFIG).
+  const linkedIssues = repositoryConfig()?.linkedIssues === true;
+  const result = await readThread({ repository, pullNumber, client: githubClient([repository]), linkedIssues });
   // Local only, never posted: the review goes on without thread resolution.
   for (const warning of result.warnings ?? []) console.error(`Warning: ${warning}`);
   const out = flag(argv, '--out');
@@ -31,6 +33,7 @@ export async function threadCommand(argv: string[]): Promise<number> {
         {
           path,
           comments: result.comments.length,
+          ...(result.linkedIssues === undefined ? {} : { linkedIssues: result.linkedIssues.length }),
           truncated: result.truncated,
           ...(result.warnings === undefined ? {} : { warnings: result.warnings }),
         },

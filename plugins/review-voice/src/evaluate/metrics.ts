@@ -3,9 +3,12 @@ import { validateOutput } from '../contract/validate.ts';
 import { DEFAULT_LIMITS } from '../contract/limits.ts';
 import { countWords } from '../contract/words.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
-import { hashDiff } from '../store/runs.ts';
-import { postedStats } from '../store/outcomes.ts';
-import { approvalBasis, approvalStats } from '../store/approvals.ts';
+import { hashDiff, storedFamilies } from '../store/runs.ts';
+import { FAMILIES } from '../agents/types.ts';
+import { postedBreakdown, postedStats, precisionBreakdown, replyStats, type PostedStats, type PrecisionStats } from '../store/outcomes.ts';
+import { approvalBasis, approvalBreakdown, approvalStats, type ApprovalStats } from '../store/approvals.ts';
+import { activeSuppressions } from '../policy/versions.ts';
+import { POLICY_SUPPRESSED_PREFIX } from '../scoring/score.ts';
 
 export interface Metric {
   name: string;
@@ -25,6 +28,27 @@ export interface Metric {
    * rules is not a target, it is a mislabelled aspiration.
    */
   kind: 'gate' | 'goal';
+}
+
+/**
+ * How the text output and the rendered report print one figure: the same three
+ * rules in one place, so the two can never disagree.
+ */
+export function formatMetricValue(metric: Metric): string {
+  if (metric.value === null) return 'no data';
+  return Number.isInteger(metric.value) && metric.name.endsWith('_tracked') ? String(metric.value) : metric.value.toFixed(2);
+}
+
+/** A goal that is not met is not a failure, and printing it as one trains the reader to ignore the word. */
+export function metricMark(metric: Metric): 'ok' | 'FAIL' | 'over' | '-' {
+  if (metric.meets === null || metric.target === 'no target') return '-';
+  if (metric.meets) return 'ok';
+  return metric.kind === 'goal' ? 'over' : 'FAIL';
+}
+
+export function metricTarget(metric: Metric): string {
+  if (metric.target === 'no target') return 'reported, not scored';
+  return `${metric.kind === 'goal' ? 'goal' : 'target'} ${metric.target}`;
 }
 
 function percentile(values: number[], p: number): number | null {
@@ -189,26 +213,285 @@ function challengeCounts(db: Database): { held: number; judged: number; runs: nu
   let judged = 0;
   let runs = 0;
   for (const row of rows) {
-    let scores: unknown;
-    try {
-      scores = (JSON.parse(row.output_json) as { scores?: unknown } | null)?.scores;
-    } catch {
-      continue;
-    }
-    if (!Array.isArray(scores)) continue;
-    let judgedHere = 0;
-    for (const entry of scores) {
-      if (typeof entry !== 'object' || entry === null || !Object.hasOwn(entry, 'challenge')) continue;
-      judgedHere += 1;
-      const because = (entry as { rejectedBecause?: unknown }).rejectedBecause;
-      if (typeof because === 'string' && because.startsWith('challenge-')) held += 1;
-    }
-    if (judgedHere > 0) {
-      judged += judgedHere;
-      runs += 1;
-    }
+    const counts = challengeOf(row.output_json);
+    if (counts.judged === 0) continue;
+    held += counts.held;
+    judged += counts.judged;
+    runs += 1;
   }
   return { held, judged, runs };
+}
+
+/** One run's judged and held counts, as challengeCounts reads them; zero for a row that will not parse. */
+function challengeOf(outputJson: string): { held: number; judged: number } {
+  let scores: unknown;
+  try {
+    scores = (JSON.parse(outputJson) as { scores?: unknown } | null)?.scores;
+  } catch {
+    return { held: 0, judged: 0 };
+  }
+  let held = 0;
+  let judged = 0;
+  for (const entry of Array.isArray(scores) ? scores : []) {
+    if (typeof entry !== 'object' || entry === null || !Object.hasOwn(entry, 'challenge')) continue;
+    judged += 1;
+    const because = (entry as { rejectedBecause?: unknown }).rejectedBecause;
+    if (typeof because === 'string' && because.startsWith('challenge-')) held += 1;
+  }
+  return { held, judged };
+}
+
+export interface FamilyFigures {
+  second_pass: {
+    verdicts: number;
+    dropped: number;
+    downgraded: number;
+    tie_breaks: number;
+    runs: number;
+    drop_rate: number | null;
+    downgrade_rate: number | null;
+    tie_break_rate: number | null;
+  } | null;
+  challenge: { judged: number; held: number; runs: number; hold_rate: number | null } | null;
+}
+
+export interface ByFamily {
+  /** Only families with data; a second pass recorded without a family is listed as `unknown`. */
+  families: Record<string, FamilyFigures>;
+  /** Runs recorded before families were stored, or without provenance. */
+  runs_without_families: number;
+}
+
+/**
+ * The second pass's and the challenger's figures per model family
+ * (docs/adr/0034), grouped by the family each run recorded. Not a `Metric`,
+ * since its value is a map, and every figure is reported, never a gate. A family
+ * with no data for a half has null there, and one with neither is left out,
+ * so nothing reads zero for an absence.
+ */
+export function byFamily(db: Database): ByFamily {
+  const rows = db.prepare('SELECT review_run_id, output_json, provenance_json FROM review_runs').all() as unknown as {
+    review_run_id: string;
+    output_json: string;
+    provenance_json: string | null;
+  }[];
+  const second = new Map<string, { verdicts: number; dropped: number; downgraded: number; tie_breaks: number; runs: number }>();
+  const challenge = new Map<string, { judged: number; held: number; runs: number }>();
+  let without = 0;
+  const entries = (value: unknown): Record<string, unknown>[] =>
+    Array.isArray(value) ? value.filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null) : [];
+  for (const row of rows) {
+    const families = storedFamilies(row.provenance_json, row.review_run_id);
+    if (families === null) {
+      without += 1;
+      continue;
+    }
+    if (families.secondPass !== null) {
+      let output: { verdicts?: unknown; tieBreaks?: unknown } = {};
+      try {
+        output = (JSON.parse(row.output_json) as typeof output | null) ?? {};
+      } catch {
+        // A row that will not parse adds a run with no verdicts.
+      }
+      const verdicts = entries(output.verdicts);
+      const sum = second.get(families.secondPass) ?? { verdicts: 0, dropped: 0, downgraded: 0, tie_breaks: 0, runs: 0 };
+      sum.verdicts += verdicts.length;
+      sum.dropped += verdicts.filter((verdict) => verdict['outcome'] === 'dropped').length;
+      sum.downgraded += verdicts.filter((verdict) => verdict['outcome'] === 'downgraded').length;
+      sum.tie_breaks += entries(output.tieBreaks).filter((ruling) => ruling['applied'] === true).length;
+      sum.runs += 1;
+      second.set(families.secondPass, sum);
+    }
+    if (families.challenge !== null) {
+      const counts = challengeOf(row.output_json);
+      if (counts.judged > 0) {
+        const sum = challenge.get(families.challenge) ?? { judged: 0, held: 0, runs: 0 };
+        sum.judged += counts.judged;
+        sum.held += counts.held;
+        sum.runs += 1;
+        challenge.set(families.challenge, sum);
+      }
+    }
+  }
+  const rate = (count: number, over: number): number | null => (over === 0 ? null : count / over);
+  const listed = [...FAMILIES, 'unknown'].filter((name) => second.has(name) || challenge.has(name));
+  return {
+    families: Object.fromEntries(
+      listed.map((name) => {
+        const pass = second.get(name);
+        const judged = challenge.get(name);
+        const figures: FamilyFigures = {
+          second_pass:
+            pass === undefined
+              ? null
+              : {
+                  ...pass,
+                  drop_rate: rate(pass.dropped, pass.verdicts),
+                  downgrade_rate: rate(pass.downgraded, pass.verdicts),
+                  tie_break_rate: rate(pass.tie_breaks, pass.verdicts),
+                },
+          challenge: judged === undefined ? null : { ...judged, hold_rate: rate(judged.held, judged.judged) },
+        };
+        return [name, figures];
+      }),
+    ),
+    runs_without_families: without,
+  };
+}
+
+/** The `by family` block `evaluate` prints after the metrics. */
+export function describeByFamily(figures: ByFamily): string[] {
+  const names = Object.keys(figures.families);
+  const before = figures.runs_without_families > 0 ? ` (${figures.runs_without_families} run(s) recorded before families were stored)` : '';
+  if (names.length === 0) return [`by family  no data${before}`];
+  const fixed = (value: number | null): string => (value === null ? 'no data' : value.toFixed(2));
+  return [
+    `by family${before}`,
+    ...names.map((name) => {
+      const { second_pass: pass, challenge } = figures.families[name]!;
+      const second =
+        pass === null
+          ? 'second pass no data'
+          : `second pass ${pass.verdicts} verdicts, drop ${fixed(pass.drop_rate)}, downgrade ${fixed(pass.downgrade_rate)}, tie-break ${fixed(pass.tie_break_rate)}, ${pass.runs} run(s)`;
+      const challenged = challenge === null ? 'challenge no data' : `challenge ${challenge.judged} judged, hold ${fixed(challenge.hold_rate)}, ${challenge.runs} run(s)`;
+      return `  ${name.padEnd(8)}${second}; ${challenged}`;
+    }),
+  ];
+}
+
+
+export interface RuleEffectiveness {
+  rule_id: string;
+  /** Every active suppression naming the rule; a null glob is everywhere. */
+  suppressions: { glob: string | null; policy_version: number | null }[];
+  /** The earliest approval among them, ISO; null when no row records one. */
+  approved_at: string | null;
+  /** Verified findings of the rule held since approval; null when approved_at is null or runs is 0. */
+  held: number | null;
+  /** Runs created at or after approval, the basis of held; null when approved_at is null. */
+  runs: number | null;
+  /** Strong outcomes of the rule's findings posted since approval; null with none. */
+  posted: PostedStats | null;
+  /** The owner's labels on the rule's findings posted since approval (promoted ones included); null with none. */
+  feedback: PrecisionStats | null;
+  basis: string;
+}
+
+/**
+ * Whether each approved suppression is still right: how many verified findings
+ * it held since approval, and what became of findings of the same rule posted
+ * anyway (promoted, or on a path outside its glob). A version reactivated by
+ * `policy rollback` keeps its first `approved_at`, so its window starts there
+ * and includes the time it was inactive.
+ */
+export function ruleEffectiveness(db: Database): RuleEffectiveness[] {
+  const byRule = new Map<string, ReturnType<typeof activeSuppressions>>();
+  for (const suppression of activeSuppressions(db)) {
+    byRule.set(suppression.ruleId, [...(byRule.get(suppression.ruleId) ?? []), suppression]);
+  }
+  return [...byRule.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([ruleId, list]) => {
+      const suppressions = list.map((s) => ({ glob: s.glob, policy_version: s.policyVersion }));
+      const approvedAt = list.map((s) => s.approvedAt).filter((at): at is string => at !== null).sort()[0] ?? null;
+      if (approvedAt === null) {
+        return {
+          rule_id: ruleId,
+          suppressions,
+          approved_at: null,
+          held: null,
+          runs: null,
+          posted: null,
+          feedback: null,
+          basis: `no approval time recorded for policy version ${list[0]?.policyVersion ?? 'unknown'}; nothing counted`,
+        };
+      }
+      // Read the way challengeCounts reads scores[]: a row that will not parse or has no array is skipped.
+      const rows = db.prepare('SELECT output_json FROM review_runs WHERE created_at >= ?').all(approvedAt) as unknown as RunRow[];
+      let held = 0;
+      let runs = 0;
+      for (const row of rows) {
+        let scores: unknown;
+        try {
+          scores = (JSON.parse(row.output_json) as { scores?: unknown } | null)?.scores;
+        } catch {
+          continue;
+        }
+        if (!Array.isArray(scores)) continue;
+        runs += 1;
+        held += scores.filter((entry) => (entry as { rejectedBecause?: unknown } | null)?.rejectedBecause === `${POLICY_SUPPRESSED_PREFIX}${ruleId}`).length;
+      }
+      const posted = postedBreakdown(db, { since: approvedAt }).byRule;
+      const feedback = precisionBreakdown(db, { since: approvedAt }).byRule;
+      // Own keys only, since a rule id such as constructor would otherwise read Object.prototype.
+      const postedStats = Object.hasOwn(posted, ruleId) ? (posted[ruleId] ?? null) : null;
+      return {
+        rule_id: ruleId,
+        suppressions,
+        approved_at: approvedAt,
+        // A count over no run is no data, not zero.
+        held: runs === 0 ? null : held,
+        runs,
+        // Weak outcomes alone measure nothing, and their fixed and dismissed would read as measured zeros.
+        posted: postedStats !== null && postedStats.fixed + postedStats.dismissed > 0 ? postedStats : null,
+        feedback: Object.hasOwn(feedback, ruleId) ? (feedback[ruleId] ?? null) : null,
+        basis:
+          runs === 0
+            ? `no run recorded since ${approvedAt}`
+            : `${held} held in ${runs} run(s) since ${approvedAt}; posted outcomes count strong ones only`,
+      };
+    });
+}
+
+/** The object `evaluate --json` prints and `evaluate --html` renders. Keys stay snake case on the wire. */
+export interface EvaluationReport {
+  /** ISO time the report was computed, from ComputeOptions.now so a test can pin it. */
+  generated_at: string;
+  /** The window the `_recent` rates use, so the page can say which days it covers. */
+  window_days: number;
+  metrics: Metric[];
+  posted_breakdown: {
+    by_severity: Record<string, PostedStats>;
+    by_lane: Record<string, PostedStats>;
+    by_rule: Record<string, PostedStats>;
+    /** S15's split by whether the posted comments carried an evidence block. */
+    by_evidence_block: { with: PostedStats; without: PostedStats; unknown: PostedStats };
+  };
+  precision_breakdown: { by_lane: Record<string, PrecisionStats>; by_rule: Record<string, PrecisionStats> };
+  stage_seconds: Record<string, { median: number; p95: number; runs: number }>;
+  rule_effectiveness: RuleEffectiveness[];
+  /** Per model family (docs/adr/0034), as `byFamily` returns it. */
+  by_family: ByFamily;
+  /** Sent approvals by what the run recorded (docs/adr/0036), as `approvalBreakdown` returns it. */
+  approval_breakdown: {
+    by_mode: Record<string, ApprovalStats>;
+    by_complexity: Record<string, ApprovalStats>;
+    by_independence: Record<string, ApprovalStats>;
+    by_origin: Record<string, ApprovalStats>;
+  };
+}
+
+/** The caller passes `metrics` so the recall figures ride along when `--recall` is given. */
+export function evaluationReport(db: Database, metrics: Metric[], options: ComputeOptions = {}): EvaluationReport {
+  const { bySeverity, byLane, byRule, byEvidenceBlock } = postedBreakdown(db);
+  const precision = precisionBreakdown(db);
+  const approvals = approvalBreakdown(db);
+  return {
+    generated_at: (options.now ?? (() => new Date()))().toISOString(),
+    window_days: options.windowDays ?? DEFAULT_WINDOW_DAYS,
+    metrics,
+    posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule, by_evidence_block: byEvidenceBlock },
+    precision_breakdown: { by_lane: precision.byLane, by_rule: precision.byRule },
+    stage_seconds: stageSeconds(db),
+    rule_effectiveness: ruleEffectiveness(db),
+    by_family: byFamily(db),
+    approval_breakdown: {
+      by_mode: approvals.byMode,
+      by_complexity: approvals.byComplexity,
+      by_independence: approvals.byIndependence,
+      by_origin: approvals.byOrigin,
+    },
+  };
 }
 
 /**
@@ -314,6 +597,7 @@ export function computeMetrics(db: Database, options: ComputeOptions = {}): Metr
   const posted = postedStats(db);
   const recent = postedStats(db, { since: windowStart(windowDays, options.now) });
   const recentDecided = recent.fixed + recent.dismissed;
+  const replies = replyStats(db);
   const approvals = approvalStats(db);
 
   const metric = (
@@ -502,6 +786,23 @@ export function computeMetrics(db: Database, options: ComputeOptions = {}): Metr
       'no target',
       () => true,
       `${recent.dismissed} dismissed / ${recentDecided} fixed or dismissed from runs created in the last ${windowDays} days; weak outcomes excluded`,
+      'goal',
+    ),
+    // The one reply per thread (docs/adr/0035), and what the author did after it.
+    metric(
+      'posted_replies',
+      replies.replied === 0 ? null : replies.replied,
+      'no target',
+      () => true,
+      'findings this tool replied under once; run `review-voice reply --pr N` to answer a pending question',
+      'goal',
+    ),
+    metric(
+      'replied_fixed_rate',
+      replies.fixedRate,
+      'no target',
+      () => true,
+      `${replies.fixed} fixed / (${replies.fixed + replies.dismissed} fixed or dismissed) of ${replies.replied} replied finding(s); weak outcomes excluded`,
       'goal',
     ),
     // What became of the approvals this tool sent (docs/adr/0036). Settled

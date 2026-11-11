@@ -1,6 +1,7 @@
 import { buildDraft } from '../publish/draft.ts';
 import { hashDiff } from '../store/runs.ts';
 import { readStdin, flag } from './shared.ts';
+import { terminalSafeDeep } from '../terminal.ts';
 
 export function draftCommand(argv: string[]): number {
   const repository = flag(argv, '--repository');
@@ -11,7 +12,8 @@ export function draftCommand(argv: string[]): number {
   }
 
   const output = readStdin();
-  const draft = buildDraft({ repository, pullNumber, output, diffHash: hashDiff(output) });
+  // Shown, never posted, so the model's prose loses what a terminal would act on.
+  const draft = terminalSafeDeep(buildDraft({ repository, pullNumber, output, diffHash: hashDiff(output) }));
 
   if (argv.includes('--json')) {
     console.log(JSON.stringify(draft, null, 2));

@@ -1,0 +1,112 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "CodeQL",
+          "organization": "Example",
+          "semanticVersion": "2.19.3",
+          "rules": []
+        },
+        "extensions": [
+          {
+            "name": "codeql/javascript-queries",
+            "semanticVersion": "1.2.0",
+            "rules": [
+              {
+                "id": "js/sql-injection",
+                "name": "js/sql-injection",
+                "shortDescription": { "text": "Database query built from user-controlled sources" },
+                "fullDescription": { "text": "Building a database query from user-controlled sources is vulnerable to insertion of malicious code by the user." },
+                "defaultConfiguration": { "enabled": true, "level": "error" },
+                "properties": { "precision": "high", "security-severity": "8.8", "tags": ["security", "external/cwe/cwe-089"] }
+              },
+              {
+                "id": "js/incomplete-sanitization",
+                "name": "js/incomplete-sanitization",
+                "shortDescription": { "text": "Incomplete string escaping or encoding" },
+                "fullDescription": { "text": "A string transformer that does not replace all occurrences of a meta-character may be ineffective." },
+                "defaultConfiguration": { "enabled": true, "level": "warning" },
+                "properties": { "precision": "high", "tags": ["correctness", "security"] }
+              },
+              {
+                "id": "js/unused-local-variable",
+                "name": "js/unused-local-variable",
+                "shortDescription": { "text": "Unused variable, import, function or class" },
+                "fullDescription": { "text": "Unused variables, imports, functions or classes may be a symptom of a bug and should be examined carefully." },
+                "defaultConfiguration": { "enabled": true, "level": "note" },
+                "properties": { "precision": "very-high", "tags": ["maintainability"] }
+              }
+            ]
+          }
+        ]
+      },
+      "results": [
+        {
+          "ruleId": "js/sql-injection",
+          "ruleIndex": 0,
+          "rule": { "id": "js/sql-injection", "index": 0, "toolComponent": { "index": 0 } },
+          "message": { "text": "This query depends on a user-provided value." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "src/db.js", "uriBaseId": "%SRCROOT%", "index": 0 },
+                "region": { "startLine": 27, "startColumn": 19, "endColumn": 45 }
+              }
+            }
+          ],
+          "partialFingerprints": { "primaryLocationLineHash": "0000000000000000:1", "primaryLocationStartColumnFingerprint": "10" }
+        },
+        {
+          "ruleId": "js/incomplete-sanitization",
+          "ruleIndex": 1,
+          "rule": { "id": "js/incomplete-sanitization", "index": 1, "toolComponent": { "index": 0 } },
+          "message": { "text": "This does not escape backslash characters in the input." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "src/sanitise.js", "uriBaseId": "%SRCROOT%", "index": 1 },
+                "region": { "startLine": 11, "startColumn": 10, "endColumn": 36 }
+              }
+            }
+          ],
+          "partialFingerprints": { "primaryLocationLineHash": "1111111111111111:1", "primaryLocationStartColumnFingerprint": "5" }
+        },
+        {
+          "ruleId": "js/unused-local-variable",
+          "ruleIndex": 2,
+          "rule": { "id": "js/unused-local-variable", "index": 2, "toolComponent": { "index": 0 } },
+          "message": { "text": "Unused variable tmp." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "src/util.js", "uriBaseId": "%SRCROOT%", "index": 2 },
+                "region": { "startLine": 3, "startColumn": 7, "endColumn": 10 }
+              }
+            }
+          ],
+          "partialFingerprints": { "primaryLocationLineHash": "2222222222222222:1", "primaryLocationStartColumnFingerprint": "2" }
+        },
+        {
+          "ruleId": "js/sql-injection",
+          "ruleIndex": 0,
+          "rule": { "id": "js/sql-injection", "index": 0, "toolComponent": { "index": 0 } },
+          "message": { "text": "This query depends on a user-provided value." },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "src/legacy.js", "uriBaseId": "%SRCROOT%", "index": 3 },
+                "region": { "startLine": 5, "startColumn": 19, "endColumn": 40 }
+              }
+            }
+          ],
+          "partialFingerprints": { "primaryLocationLineHash": "3333333333333333:1", "primaryLocationStartColumnFingerprint": "10" },
+          "suppressions": [{ "kind": "inSource", "justification": "input is validated upstream" }]
+        }
+      ],
+      "columnKind": "utf16CodeUnits",
+      "properties": { "semmle.formatSpecifier": "sarif-latest" }
+    }
+  ]
+}

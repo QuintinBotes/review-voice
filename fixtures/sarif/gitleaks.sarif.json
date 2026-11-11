@@ -1,0 +1,65 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "gitleaks",
+          "semanticVersion": "v8.0.0",
+          "rules": [
+            {
+              "id": "generic-api-key",
+              "shortDescription": { "text": "Generic API Key" }
+            },
+            {
+              "id": "jwt",
+              "shortDescription": { "text": "JSON Web Token" }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "message": { "text": "generic-api-key has detected secret for file src/config.py at commit 0000000000000000000000000000000000000000." },
+          "ruleId": "generic-api-key",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "src/config.py" },
+                "region": { "startLine": 14, "startColumn": 11, "endLine": 14, "endColumn": 52, "snippet": { "text": "redacted" } }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "commitSha": "0000000000000000000000000000000000000000",
+            "email": "author@example.com",
+            "author": "Example Author",
+            "date": "2026-01-01T00:00:00Z",
+            "commitMessage": "add config"
+          },
+          "properties": { "tags": ["generic-api-key"] }
+        },
+        {
+          "message": { "text": "jwt has detected secret for file test/fixtures/token.txt at commit 0000000000000000000000000000000000000000." },
+          "ruleId": "jwt",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "test/fixtures/token.txt" },
+                "region": { "startLine": 1, "startColumn": 1, "endLine": 1, "endColumn": 80, "snippet": { "text": "redacted" } }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "commitSha": "0000000000000000000000000000000000000000",
+            "email": "author@example.com",
+            "author": "Example Author",
+            "date": "2026-01-01T00:00:00Z",
+            "commitMessage": "add token fixture"
+          },
+          "properties": { "tags": ["jwt"] }
+        }
+      ]
+    }
+  ]
+}

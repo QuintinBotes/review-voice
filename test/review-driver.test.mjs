@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,9 +16,10 @@ import { heldForRecord, historyName, reportText, runReview, NO_FINDINGS } from '
 import { STAGES } from '../plugins/review-voice/src/review/stages.ts';
 import { SCHEMAS } from '../plugins/review-voice/src/review/prompts.ts';
 import { RUNNER_PREAMBLE, schemaForRunner, schemasDir } from '../plugins/review-voice/src/agents/runner.ts';
+import { COMMAND_RUNNER_PREAMBLE } from '../plugins/review-voice/src/agents/runner.ts';
 import { GitHubClient } from '../plugins/review-voice/src/github/client.ts';
 import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
-import { runDetail } from '../plugins/review-voice/src/store/runs.ts';
+import { declineHeld, runDetail } from '../plugins/review-voice/src/store/runs.ts';
 import { pluginVersion } from '../plugins/review-voice/src/version.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -74,8 +75,8 @@ function repository(t, change, baseFiles = {}) {
   return { dir, base, head, files };
 }
 
-/** GitHub as the commands read it. `moved()` turns the head into another commit. */
-function fakeGitHub(repo, { description = '', moved = () => false, comments = () => [] } = {}) {
+/** GitHub as the commands read it. `moved()` turns the head into another commit; `issues` answers `/issues/<n>` by number. */
+function fakeGitHub(repo, { description = '', moved = () => false, comments = () => [], issues = {} } = {}) {
   const calls = [];
   const impl = async (url, init = {}) => {
     const parsed = new URL(String(url));
@@ -106,6 +107,8 @@ function fakeGitHub(repo, { description = '', moved = () => false, comments = ()
     }
     if (parsed.pathname.endsWith('/status')) return json({ state: 'success', total_count: 0, statuses: [] });
     if (parsed.pathname === `/repos/${REPO}/pulls/${PR}/comments`) return json(comments());
+    const issue = /\/issues\/(\d+)$/.exec(parsed.pathname);
+    if (issue !== null && issue[1] in issues) return json(issues[issue[1]]);
     if (/\/(comments|reviews|events)$/.test(parsed.pathname)) return json([]);
     return new Response('not found', { status: 404 });
   };
@@ -217,6 +220,19 @@ test('(a) a clean run renders exactly the no-findings sentence and plans an appr
   assert.equal(analyst.model, 'sonnet');
 });
 
+test('the report names the run directory as it is on disk, whatever characters its path holds', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const fakeDir = fakes(t, { 'diff-analyst': [{ candidates: [] }] });
+  // A zero-width non-joiner, as a directory named in Persian can hold. Recall reads the run back from this path.
+  const out = join(mkdtempSync(join(tmpdir(), 'rv-driver-out-')), 'run‌dir');
+  t.after(() => rmSync(dirname(out), { recursive: true, force: true }));
+  const { report } = await review(t, repo, fakeDir, fakeGitHub(repo), { out });
+  assert.equal(report.exitCode, 0, report.error);
+  // Compared here, so a failure prints no path.
+  assert.ok(report.runDir === out, 'the run directory is the path the run wrote to');
+  assert.equal(readFileSync(join(report.runDir, 'review.txt'), 'utf8'), `${NO_FINDINGS}\n`);
+});
+
 test('(b) a finding the challenger confirms is rendered and recorded', async (t) => {
   const repo = repository(t, { 'src/app.ts': APP_HEAD });
   const fakeDir = fakes(t, {
@@ -318,8 +334,8 @@ test('(f) an unchanged scope carries the earlier run without calling an agent', 
   assert.equal(runCount(data), 2);
 });
 
-/** Like review(), but on a given data directory, so runs can follow one another. */
-async function reviewIn(repo, fakeDir, github, data, options = {}) {
+/** Like review(), but on a given data directory, so runs can follow one another. `deps` replaces or adds driver dependencies. */
+async function reviewIn(repo, fakeDir, github, data, options = {}, deps = {}) {
   const saved = { cwd: process.cwd(), env: { ...process.env } };
   process.chdir(repo.dir);
   Object.assign(process.env, { REVIEW_VOICE_DATA_DIR: data, REVIEW_VOICE_FAKE_AGENTS: fakeDir, GITHUB_TOKEN: 't' });
@@ -329,6 +345,7 @@ async function reviewIn(repo, fakeDir, github, data, options = {}) {
       {
         command: (argv, stdin) => runInProcess(argv, { stdin, fetchImpl: github }),
         client: new GitHubClient({ allowlist: [REPO], token: 't', fetchImpl: github, sleep: async () => {} }),
+        ...deps,
       },
     );
   } finally {
@@ -422,6 +439,47 @@ test('(i, j) agents run in the head worktree, which is removed; base and history
     assert.doesNotMatch(own, /\bgit |\bshell\b|run the command/i, 'and nothing after it asks for a shell');
   }
 });
+
+// S19 AC-5: the config the run reads decides whether the thread reads the issues the description closes.
+for (const enabled of [true, false]) {
+  test(`S19 AC-5: with review.linked_issues ${enabled} the thread ${enabled ? 'reads' : 'does not read'} the closed issue`, async (t) => {
+    const config = enabled ? { '.review-voice/config.yaml': 'review:\n  linked_issues: true\n' } : {};
+    const repo = repository(t, { 'src/app.ts': APP_HEAD }, config);
+    const requirement = 'The total must multiply each price by its quantity.';
+    const description = 'Multiply each price by its quantity so the total is right.\n\nCloses #5';
+    const fakeDir = fakes(t, {
+      'intent-extractor': [{ statements: [{ id: 'int_001', kind: 'goal', statement: 'The total multiplies price by quantity.', quote: enabled ? requirement : description.split('\n')[0] }] }],
+      'diff-analyst': [{ candidates: [] }],
+    });
+    const github = fakeGitHub(repo, {
+      description,
+      issues: {
+        5: { number: 5, repository_url: `https://api.github.com/repos/${REPO}`, title: 'Totals ignore quantity', body: requirement, state: 'open', html_url: `https://github.com/${REPO}/issues/5` },
+      },
+    });
+    const { report, data } = await review(t, repo, fakeDir, github);
+    assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+    const issueReads = github.calls.filter((call) => call.path.includes('/issues/5'));
+    const thread = JSON.parse(readFileSync(join(report.runDir, 'thread.json'), 'utf8'));
+    const prompt = callsOf(fakeDir, 'intent-extractor')[0].prompt;
+    const db = openDatabase(join(data, 'review-voice.db'));
+    const checks = runDetail(db, report.runId).checks;
+    db.close();
+    if (enabled) {
+      assert.deepEqual(issueReads.map((call) => call.method), ['GET']);
+      assert.deepEqual(thread.linkedIssues.map(({ number, body }) => ({ number, body })), [{ number: 5, body: requirement }]);
+      assert.match(prompt, /closes #5/);
+      assert.deepEqual(JSON.parse(readFileSync(join(report.runDir, 'intent.json'), 'utf8')).statements[0].issue, 5);
+      assert.deepEqual(checks.issuesRead, [5]);
+    } else {
+      // The conversation comments live under /issues/<pr>/comments; no issue itself is read.
+      assert.equal(github.calls.some((call) => /\/issues\/\d+$/.test(call.path)), false);
+      assert.equal('linkedIssues' in thread, false);
+      assert.doesNotMatch(prompt, /linkedIssues/);
+      assert.deepEqual(checks.issuesRead, []);
+    }
+  });
+}
 
 test('--post sends the verdict once posting is enabled, and the JSON report keeps its shape', async (t) => {
   const repo = repository(t, { 'src/app.ts': APP_HEAD }, { '.review-voice/config.yaml': 'writes:\n  github_posting_enabled: true\n' });
@@ -1574,4 +1632,717 @@ test('issue 275: with no readable base, a pull request review reads no conventio
   assert.match(conventions.warnings[0], /Conventions were not read: the base commit is not in this clone/);
   assert.doesNotMatch(readFileSync(join(report.runDir, 'commands.log'), 'utf8'), /^\$ review-voice conventions/m);
   assert.ok(report.notes.some((note) => /Conventions were not read/.test(note)));
+});
+
+// ---------------------------------------------------------------- S17: a configured runner comes from the operator's configuration only
+
+/** A runner stub for the second pass: writes a confirmed verdict to {output} and leaves its argv beside it. */
+function runnerStub(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-driver-runner-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stub = join(dir, 'runner.mjs');
+  const marker = join(dir, 'ran');
+  writeFileSync(
+    stub,
+    `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, process.argv.slice(2).join(' '));\nwriteFileSync(process.argv[2], JSON.stringify({ verdict: 'confirmed', confidence: 0.9, reason: 'holds' }));\n`,
+  );
+  return { stub, marker };
+}
+
+const RUNNER_CONFIG = (stub) =>
+  ['runners:', '  codex:', `    command: ["${process.execPath}", "${stub}", "{output}", "{schema}"]`, 'verification:', '  enabled: true', '  runner: codex', 'watch:', '  run_repository_commands: true', ''].join('\n');
+
+test('S17: a runners block at the base commit is ignored, the second pass stays off and the rule is named', async (t) => {
+  const { stub, marker } = runnerStub(t);
+  const repo = repository(t, { 'src/app.ts': APP_HEAD }, { [CONFIG_FILE]: RUNNER_CONFIG(stub) });
+  const { report } = await review(t, repo, fakes(t, fullRun()), fakeGitHub(repo));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(report.configSource.kind, 'base');
+  assert.equal(report.plan.stages['second-pass'].run, false, 'the plan saw no second pass');
+  assert.equal(existsSync(marker), false, 'the configured runner never ran');
+  assert.match(readFileSync(join(report.runDir, 'commands.log'), 'utf8'), /runners is read only from the operator's own configuration/);
+  assert.deepEqual(report.families, { secondPass: null, challenge: 'claude' });
+  assert.equal(process.env.REVIEW_VOICE_CONFIG_SOURCE, undefined, 'restored after the run');
+});
+
+test('S17: the same block through an absolute REVIEW_VOICE_CONFIG, as watch hands it over, runs the second pass', async (t) => {
+  const { stub, marker } = runnerStub(t);
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const config = scratch(t, 'runners.yaml', RUNNER_CONFIG(stub));
+  const { report } = await withEnv({ REVIEW_VOICE_CONFIG: config }, () => review(t, repo, fakes(t, fullRun()), fakeGitHub(repo)));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(report.configSource, { kind: 'env', path: config });
+  assert.equal(JSON.parse(readFileSync(join(report.runDir, 'second-pass.json'), 'utf8')).enabled, true, 'the second pass ran');
+  assert.ok(existsSync(marker), 'the configured runner ran');
+  assert.deepEqual(report.families, { secondPass: 'codex', challenge: 'claude' });
+  assert.equal(process.env.REVIEW_VOICE_CONFIG_SOURCE, undefined, 'restored after the run');
+});
+
+test('S17: the same block through --config runs the second pass on the configured argv and records the family', async (t) => {
+  const { stub, marker } = runnerStub(t);
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const config = scratch(t, 'runners.yaml', RUNNER_CONFIG(stub));
+  const { report, data } = await review(t, repo, fakes(t, fullRun()), fakeGitHub(repo), { config });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(report.configSource.kind, 'flag');
+  assert.equal(JSON.parse(readFileSync(join(report.runDir, 'second-pass.json'), 'utf8')).enabled, true, 'the second pass ran');
+  assert.ok(existsSync(marker), 'the configured runner ran');
+  assert.doesNotMatch(readFileSync(marker, 'utf8'), /[{}]/, 'both tokens were replaced');
+  assert.deepEqual(report.families, { secondPass: 'codex', challenge: 'claude' });
+  assert.deepEqual(storedRun(data, report.runId).families, { secondPass: 'codex', challenge: 'claude' });
+  const stages = JSON.parse(readFileSync(join(report.runDir, 'stages.json'), 'utf8'));
+  assert.ok(stages.length > 0 && stages.every((stage) => stage.family === 'claude'), JSON.stringify(stages));
+  const lines = reportText(report).split('\n');
+  assert.equal(lines[lines.findIndex((line) => line.startsWith('Provenance ')) + 1], 'Families second-pass codex, challenge claude');
+  assert.equal(process.env.REVIEW_VOICE_CONFIG_SOURCE, undefined, 'restored after the run');
+});
+
+// ---------------------------------------------------------------- S17 part B: who wrote the change, and the challenger's family
+
+/** Gives the head commit a message carrying `trailer`; the tree, and so every patch, is unchanged. */
+function withTrailer(repo, trailer) {
+  const git = (...args) => execFileSync('git', args, { cwd: repo.dir, encoding: 'utf8' });
+  git('checkout', '-q', 'feature');
+  git('commit', '-q', '--amend', '-m', `head\n\n${trailer}`);
+  const head = git('rev-parse', 'HEAD').trim();
+  git('checkout', '-q', 'main');
+  return { ...repo, head };
+}
+
+/** GitHub as fakeGitHub serves it, with the pull request opened by `user`. */
+function openedBy(github, user) {
+  const impl = async (url, init = {}) => {
+    const response = await github(url, init);
+    if ((init.method ?? 'GET') !== 'GET' || new URL(String(url)).pathname !== `/repos/${REPO}/pulls/${PR}`) return response;
+    return json({ ...(await response.json()), user });
+  };
+  impl.calls = github.calls;
+  return impl;
+}
+
+const authorshipOf = (report) => JSON.parse(readFileSync(join(report.runDir, 'authorship.json'), 'utf8'));
+const CLAUDE_TRAILER = 'Co-authored-by: Claude Example <noreply@example.com>';
+
+test('S17 AC-8: a Co-authored-by trailer on the head commit is written to authorship.json and handed to plan', async (t) => {
+  const repo = withTrailer(repository(t, { 'src/app.ts': APP_HEAD }), CLAUDE_TRAILER);
+  const { report } = await review(t, repo, fakes(t, NO_FINDING_RUN), fakeGitHub(repo));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(authorshipOf(report), {
+    agent: true,
+    family: 'claude',
+    evidence: ['Co-authored-by: Claude Example <noreply@example.com> (claude)'],
+  });
+  assert.match(readFileSync(join(report.runDir, 'commands.log'), 'utf8'), /^\$ review-voice plan .*--authorship \S*authorship\.json/m);
+  assert.deepEqual(report.plan.families, { challenge: 'claude', reason: 'default' }, 'with no rule configured nothing changes');
+});
+
+test('S17 AC-8: with no readable base no trailers are read and the evidence says so', async (t) => {
+  const repo = withTrailer(repository(t, { 'src/app.ts': APP_HEAD }), CLAUDE_TRAILER);
+  const github = fakeGitHub({ ...repo, base: 'e'.repeat(40) });
+  const { report } = await review(t, repo, fakes(t, NO_FINDING_RUN), github);
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(authorshipOf(report), { agent: false, family: null, evidence: ['base not readable, trailers not read'] });
+});
+
+test('S17 AC-8: headOf keeps the pull request author, so a Bot author is agent-authored', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const github = openedBy(fakeGitHub(repo), { login: 'helper-agent[bot]', type: 'Bot' });
+  const { report } = await review(t, repo, fakes(t, NO_FINDING_RUN), github);
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(authorshipOf(report), { agent: true, family: 'other', evidence: ['pull request author helper-agent[bot] is a Bot (other)'] });
+  // The stub's own author is a person, which is no signal.
+  const human = await review(t, repo, fakes(t, NO_FINDING_RUN), fakeGitHub(repo));
+  assert.deepEqual(authorshipOf(human.report), { agent: false, family: null, evidence: [] });
+});
+
+const CHALLENGE_CONFIG = (use) =>
+  ['runners:', '  codex:', '    command: [codex, exec, "{schema}"]', '    label: codex-cli', '  use:', `    ${use}`, 'watch:', '  run_repository_commands: true', ''].join('\n');
+const challengeHeld = (report) => report.held.filter((entry) => entry.source === 'challenge').map((entry) => [entry.verdict, entry.reason]);
+
+test('S17 AC-10: runners.use.challenge runs the challenger on the configured family and records it', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const fakeDir = fakes(t, fullRun());
+  const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('challenge: codex'));
+  const { report, data } = await review(t, repo, fakeDir, fakeGitHub(repo), { config });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  const calls = callsOf(fakeDir, 'challenger');
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].spec.runner, { family: 'codex', label: 'codex-cli' });
+  assert.equal(calls[0].spec.model, 'codex-cli');
+  assert.ok(calls[0].prompt.startsWith(COMMAND_RUNNER_PREAMBLE), 'the text the command backend would have sent');
+  for (const agent of ['diff-analyst', 'evidence-verifier', 'concise-editor']) {
+    assert.ok(callsOf(fakeDir, agent).every((call) => call.spec.runner === undefined), `${agent} stays on Claude`);
+  }
+  const stage = storedRun(data, report.runId).stages.find((entry) => entry.name === 'challenge');
+  assert.equal(stage.family, 'codex');
+  assert.equal(stage.model, 'codex-cli');
+  assert.deepEqual(report.families, { secondPass: null, challenge: 'codex' });
+  assert.deepEqual(report.plan.families, { challenge: 'codex', reason: 'runners.use.challenge' });
+  assert.equal(report.findings.length, 1, 'a confirmed finding still posts');
+});
+
+test('S17 AC-10: under REVIEW_VOICE_NO_COMMANDS=1 a configured challenger holds every finding and the review cannot approve', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  // The same fixture with a Claude challenger that refutes every finding approves (green CI, normal complexity).
+  const claude = await review(t, repo, fakes(t, fullRun({ challenger: [{ verdicts: [refuted] }] })), fakeGitHub(repo));
+  assert.equal(claude.report.exitCode, 0, claude.report.error);
+  assert.deepEqual(claude.report.findings, []);
+  assert.equal(claude.report.verdict.event, 'APPROVE');
+
+  const fakeDir = fakes(t, fullRun());
+  const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('challenge: codex'));
+  const { report } = await withEnv({ REVIEW_VOICE_NO_COMMANDS: '1' }, () => review(t, repo, fakeDir, fakeGitHub(repo), { config }));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(callsOf(fakeDir, 'challenger'), [], 'the configured runner never started');
+  assert.deepEqual(challengeHeld(report), [['challenge-partly', 'challenger not run: REVIEW_VOICE_NO_COMMANDS=1 keeps the configured codex runner from running']]);
+  assert.deepEqual(report.findings, [], 'nothing above a nit posts');
+  assert.equal(readFileSync(join(report.runDir, 'review.txt'), 'utf8'), `${NO_FINDINGS}\n`);
+  assert.equal(report.notes.filter((note) => note.includes('keeps the configured codex runner from running')).length, 1, JSON.stringify(report.notes));
+  assert.equal(report.notes.some((note) => note.includes('challenger failed')), false, 'one note, not a second one for a failure');
+  assert.equal(report.verdict.event, 'COMMENT');
+  assert.deepEqual(report.families, { secondPass: null, challenge: null }, 'no challenger ran');
+});
+
+test('S17 AC-10: an unchanged-scope carry of a run capped for a challenger that did not run keeps the cap', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const github = fakeGitHub(repo);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-shared-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('challenge: codex'));
+  const one = await withEnv({ REVIEW_VOICE_NO_COMMANDS: '1' }, () => reviewIn(repo, fakes(t, fullRun()), github, data, { config }));
+  assert.equal(one.verdict.event, 'COMMENT', `${one.error} ${JSON.stringify(one.notes)}`);
+
+  // The base branch moves on and is merged in: a new head with the same own diff.
+  const git = (...args) => execFileSync('git', args, { cwd: repo.dir, encoding: 'utf8' });
+  writeFileSync(join(repo.dir, 'README.md'), '# Api\n\nSums prices, now documented.\n');
+  git('commit', '-q', '-am', 'docs on main');
+  repo.base = git('rev-parse', 'HEAD').trim();
+  git('checkout', '-q', 'feature');
+  git('merge', '-q', '--no-edit', 'main');
+  repo.head = git('rev-parse', 'HEAD').trim();
+  git('checkout', '-q', 'main');
+
+  const two = await reviewIn(repo, fakes(t, {}), github, data, { config });
+  assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
+  assert.equal(two.carried, true);
+  assert.equal(readFileSync(join(two.runDir, 'review.txt'), 'utf8'), `${NO_FINDINGS}\n`);
+  assert.deepEqual(
+    storedRun(data, two.runId).held.map((entry) => [entry.verdict, entry.reason]),
+    [['challenge-partly', 'challenger not run: REVIEW_VOICE_NO_COMMANDS=1 keeps the configured codex runner from running']],
+    'the hold travels with the carry',
+  );
+  assert.equal(two.verdict.event, 'COMMENT', 'no challenge has run on these findings, so the carry cannot approve');
+});
+
+test('S17 AC-10: a finding held because its challenger did not run is checked again by a later review, held while the runner cannot run and challenged once it can', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const github = fakeGitHub(repo);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-shared-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('challenge: codex'));
+  const notRun = ['challenge-partly', 'challenger not run: REVIEW_VOICE_NO_COMMANDS=1 keeps the configured codex runner from running', 'src/app.ts', 3];
+  const one = await withEnv({ REVIEW_VOICE_NO_COMMANDS: '1' }, () => reviewIn(repo, fakes(t, fullRun()), github, data, { config }));
+  assert.equal(one.verdict.event, 'COMMENT', `${one.error} ${JSON.stringify(one.notes)}`);
+
+  // The same head reviewed in full while the runner still cannot run: nothing judged the finding, so it is not dropped as a repeat.
+  const stillOff = fakes(t, fullRun());
+  const two = await withEnv({ REVIEW_VOICE_NO_COMMANDS: '1' }, () => reviewIn(repo, stillOff, github, data, { config, full: true }));
+  assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
+  assert.equal(two.carried, false);
+  assert.equal(two.notes.some((note) => note.includes('restated a finding an earlier run held back')), false, JSON.stringify(two.notes));
+  assert.equal(callsOf(stillOff, 'evidence-verifier').length, 1, 'the re-raised finding is verified again');
+  assert.equal(two.verdict.event, 'COMMENT', 'no challenge has run on this finding, so the review cannot approve');
+  assert.deepEqual(storedRun(data, two.runId).held.map((entry) => [entry.verdict, entry.reason, entry.path, entry.line]), [notRun]);
+
+  // Once the runner can run, the next full review challenges the finding on codex instead of keeping the hold.
+  const working = fakes(t, fullRun());
+  const three = await reviewIn(repo, working, github, data, { config, full: true });
+  assert.equal(three.exitCode, 0, `${three.error} ${JSON.stringify(three.notes)}`);
+  assert.deepEqual(callsOf(working, 'challenger').map((call) => call.spec.runner.family), ['codex']);
+  assert.equal(storedRun(data, three.runId).held.some((entry) => entry.reason?.startsWith('challenger not run:')), false);
+  assert.deepEqual(three.families, { secondPass: null, challenge: 'codex' });
+});
+
+test('S17 AC-10: a configured runner that fails twice holds the same way, with its error, and caps the event', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const fakeDir = fakes(t, fullRun({ challenger: [] }));
+  writeFileSync(join(fakeDir, 'challenger.json'), JSON.stringify({ error: 'codex exited with code 1' }));
+  const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('challenge: codex'));
+  const { report } = await review(t, repo, fakeDir, fakeGitHub(repo), { config });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(callsOf(fakeDir, 'challenger').length, 2, 'relaunched once, never on another family');
+  assert.ok(callsOf(fakeDir, 'challenger').every((call) => call.spec.runner.family === 'codex'));
+  assert.deepEqual(challengeHeld(report), [['challenge-partly', 'challenger not run: the configured codex runner failed: the call failed: codex exited with code 1']]);
+  assert.deepEqual(report.findings, []);
+  assert.ok(report.notes.some((note) => note.includes('The configured codex challenger failed')), JSON.stringify(report.notes));
+  assert.equal(report.verdict.event, 'COMMENT');
+  assert.deepEqual(report.families, { secondPass: null, challenge: 'codex' });
+});
+
+test('S17 AC-10: a Claude challenger that fails twice keeps its reason and its event', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const fakeDir = fakes(t, fullRun({ challenger: [] }));
+  writeFileSync(join(fakeDir, 'challenger.json'), JSON.stringify({ error: 'claude exited with code 1' }));
+  const { report } = await review(t, repo, fakeDir, fakeGitHub(repo));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(challengeHeld(report), [['challenge-partly', 'challenger failed: the call failed: claude exited with code 1']]);
+  assert.equal(report.verdict.event, 'APPROVE', 'a challenger that failed is not a hold that changes the event (docs/adr/0024)');
+});
+
+test('S17 AC-10: a change Claude co-authored is challenged on the configured alternative family', async (t) => {
+  const repo = withTrailer(repository(t, { 'src/app.ts': APP_HEAD }), CLAUDE_TRAILER);
+  const fakeDir = fakes(t, fullRun());
+  const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('agent_authored_challenge: codex'));
+  const { report } = await review(t, repo, fakeDir, fakeGitHub(repo), { config });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(report.plan.families, { challenge: 'codex', reason: 'agent-authored by claude; challenged on codex (runners.use.agent_authored_challenge)' });
+  assert.deepEqual(callsOf(fakeDir, 'challenger').map((call) => call.spec.runner), [{ family: 'codex', label: 'codex-cli' }]);
+  assert.deepEqual(report.families, { secondPass: null, challenge: 'codex' });
+});
+
+// ---------------------------------------------------------------- S17: the configuration source travels with the path (owner decision 1)
+
+test('S17: a configuration watch hands over from a checkout keeps that source, so the driver never runs its runners', async (t) => {
+  const { stub, marker } = runnerStub(t);
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const config = scratch(t, 'watch-config.yaml', RUNNER_CONFIG(stub));
+  const { report } = await withEnv({ REVIEW_VOICE_CONFIG: config, REVIEW_VOICE_CONFIG_SOURCE: 'checkout' }, async () => {
+    const result = await review(t, repo, fakes(t, fullRun()), fakeGitHub(repo));
+    assert.equal(process.env.REVIEW_VOICE_CONFIG_SOURCE, 'checkout', 'the stated source comes back after the run');
+    return result;
+  });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(report.configSource, { kind: 'env', path: config });
+  assert.equal(report.plan.stages['second-pass'].run, false, 'the plan saw no second pass');
+  assert.equal(existsSync(marker), false, 'the runner a checkout named never ran');
+  assert.match(readFileSync(join(report.runDir, 'commands.log'), 'utf8'), /runners is read only from the operator's own configuration/);
+  assert.deepEqual(report.families, { secondPass: null, challenge: 'claude' });
+});
+
+test('S17: a flag source watch hands over is the operator configuration, so the driver runs its runners', async (t) => {
+  const { stub, marker } = runnerStub(t);
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const config = scratch(t, 'watch-config.yaml', RUNNER_CONFIG(stub));
+  const { report } = await withEnv({ REVIEW_VOICE_CONFIG: config, REVIEW_VOICE_CONFIG_SOURCE: 'flag' }, () => review(t, repo, fakes(t, fullRun()), fakeGitHub(repo)));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.ok(existsSync(marker), 'the configured runner ran');
+  assert.deepEqual(report.families, { secondPass: 'codex', challenge: 'claude' });
+});
+
+test('S17: the driver --config is the operator choice whatever source the environment states', async (t) => {
+  const { stub, marker } = runnerStub(t);
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const config = scratch(t, 'runners.yaml', RUNNER_CONFIG(stub));
+  const other = scratch(t, 'watch-config.yaml', 'watch: {}\n');
+  const { report } = await withEnv({ REVIEW_VOICE_CONFIG: other, REVIEW_VOICE_CONFIG_SOURCE: 'checkout' }, () =>
+    review(t, repo, fakes(t, fullRun()), fakeGitHub(repo), { config }),
+  );
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(report.configSource.kind, 'flag');
+  assert.ok(existsSync(marker), 'the configured runner ran');
+});
+
+test('S17 AC-10: an incremental review of another file keeps a hold for a challenger that did not run, so it cannot approve', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const github = fakeGitHub(repo);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-shared-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('challenge: codex'));
+  const notRun = ['challenge-partly', 'challenger not run: REVIEW_VOICE_NO_COMMANDS=1 keeps the configured codex runner from running', 'src/app.ts', 3];
+  const one = await withEnv({ REVIEW_VOICE_NO_COMMANDS: '1' }, () => reviewIn(repo, fakes(t, fullRun()), github, data, { config }));
+  assert.equal(one.verdict.event, 'COMMENT', `${one.error} ${JSON.stringify(one.notes)}`);
+
+  // A later commit touches only the README, so the next review is narrowed to it and never reads src/app.ts.
+  const git = (...args) => execFileSync('git', args, { cwd: repo.dir, encoding: 'utf8' });
+  git('checkout', '-q', 'feature');
+  writeFileSync(join(repo.dir, 'README.md'), '# Api\n\nSums prices and quantities.\n');
+  git('commit', '-q', '-am', 'docs');
+  repo.head = git('rev-parse', 'HEAD').trim();
+  git('checkout', '-q', 'main');
+  repo.files = [...repo.files, { filename: 'README.md', status: 'modified', additions: 1, deletions: 1, changes: 2, patch: '@@ -3 +3 @@\n-Sums prices.\n+Sums prices and quantities.' }];
+
+  const two = await reviewIn(repo, fakes(t, NO_FINDING_RUN), github, data, { config });
+  assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
+  const stored = storedRun(data, two.runId);
+  assert.notEqual(stored.scope.kind, 'full', JSON.stringify(stored.scope));
+  assert.equal(stored.scope.priorRunId, one.runId, 'the prior-run link is recorded');
+  assert.deepEqual(stored.held.map((entry) => [entry.verdict, entry.reason, entry.path, entry.line]), [notRun], 'the hold outlives a review that did not cover its file');
+  assert.equal(two.verdict.event, 'COMMENT', 'nothing has challenged the finding on src/app.ts, so the review cannot approve');
+});
+
+test('S17 AC-10: a challenge family whose runner block was rejected is never replaced by claude, so its findings hold and the review cannot approve', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  // A Claude challenger here would refute the finding, and the same fixture would approve.
+  const fakeDir = fakes(t, fullRun({ challenger: [{ verdicts: [refuted] }] }));
+  const config = scratch(t, 'runners.yaml', ['runners:', '  codex:', '    command: codex exec -', '  use:', '    challenge: codex', 'watch:', '  run_repository_commands: true', ''].join('\n'));
+  const { report } = await review(t, repo, fakeDir, fakeGitHub(repo), { config });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(report.plan.families, { challenge: 'codex', reason: 'runners.use.challenge' });
+  assert.deepEqual(callsOf(fakeDir, 'challenger'), [], 'no challenger ran on another family');
+  assert.deepEqual(challengeHeld(report), [['challenge-partly', 'challenger not run: runners.codex is not configured']]);
+  assert.deepEqual(report.findings, []);
+  assert.equal(report.verdict.event, 'COMMENT');
+});
+
+for (const [label, use, reason] of [
+  ['a misspelt runners.use.challenge', '  use:\n    challenge: Codex', 'runners.use.challenge is not one of claude, codex, gemini'],
+  ['a runners.use that is not a mapping', '  use: codex', 'runners.use is not a mapping'],
+]) {
+  test(`S17 AC-10: ${label} is never read as claude, so its findings hold and the review cannot approve`, async (t) => {
+    const repo = repository(t, { 'src/app.ts': APP_HEAD });
+    // A Claude challenger here would refute the finding, and the same fixture would approve.
+    const fakeDir = fakes(t, fullRun({ challenger: [{ verdicts: [refuted] }] }));
+    const config = scratch(t, 'runners.yaml', ['runners:', '  codex:', '    command: [codex, exec, "{schema}"]', use, 'watch:', '  run_repository_commands: true', ''].join('\n'));
+    const { report } = await review(t, repo, fakeDir, fakeGitHub(repo), { config });
+    assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+    assert.deepEqual(report.plan.families, { challenge: 'claude', reason: 'runners.use.challenge', notRun: reason });
+    assert.deepEqual(callsOf(fakeDir, 'challenger'), [], 'no challenger ran on any family');
+    assert.deepEqual(challengeHeld(report), [['challenge-partly', `challenger not run: ${reason}`]]);
+    assert.ok(report.notes.some((note) => note.includes(`names no family for the challenge (${reason})`)), JSON.stringify(report.notes));
+    assert.deepEqual(report.findings, []);
+    assert.equal(report.verdict.event, 'COMMENT');
+    assert.deepEqual(report.families, { secondPass: null, challenge: null }, 'no family is recorded for a challenge that did not run');
+  });
+}
+
+test('S17 AC-10: a misspelt runners.use.agent_authored_challenge holds the findings of a change the base family co-authored', async (t) => {
+  const repo = withTrailer(repository(t, { 'src/app.ts': APP_HEAD }), CLAUDE_TRAILER);
+  const fakeDir = fakes(t, fullRun({ challenger: [{ verdicts: [refuted] }] }));
+  const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('agent_authored_challenge: Codex'));
+  const { report } = await review(t, repo, fakeDir, fakeGitHub(repo), { config });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  const reason = 'runners.use.agent_authored_challenge is not one of claude, codex, gemini';
+  assert.deepEqual(report.plan.families, { challenge: 'claude', reason: 'runners.use.agent_authored_challenge', notRun: reason });
+  assert.deepEqual(callsOf(fakeDir, 'challenger'), [], 'the same family that wrote the change did not challenge it');
+  assert.deepEqual(challengeHeld(report), [['challenge-partly', `challenger not run: ${reason}`]]);
+  assert.equal(report.verdict.event, 'COMMENT');
+});
+
+// ---------------------------------------------------------------- S17: a not-run hold follows its file, and outlives every narrowed review, one that read the file included
+
+const NOT_RUN_UNDER_NO_COMMANDS = 'challenger not run: REVIEW_VOICE_NO_COMMANDS=1 keeps the configured codex runner from running';
+const heldAt = (data, report) => storedRun(data, report.runId).held.map((entry) => [entry.path, entry.line, entry.reason]);
+
+/** Runs `change` on the feature branch, then lists the pull request as GitHub would, a rename paired with its old name. */
+function advance(repo, change) {
+  const git = (...args) => execFileSync('git', args, { cwd: repo.dir, encoding: 'utf8' });
+  git('checkout', '-q', 'feature');
+  change(git, repo.dir);
+  git('checkout', '-q', 'main');
+  repo.head = git('rev-parse', 'feature').trim();
+  const rows = git('diff', '-M', '--name-status', repo.base, repo.head).split('\n').filter(Boolean).map((row) => row.split('\t'));
+  repo.files = rows.map(([status, first, second]) => {
+    const renamed = status.startsWith('R');
+    const patch = git('diff', '-M', repo.base, repo.head, '--', ...(renamed ? [first, second] : [first]));
+    const body = patch.includes('@@') ? patch.slice(patch.indexOf('@@')) : undefined;
+    const count = (sign) => (body ?? '').split('\n').filter((line) => line.startsWith(sign)).length;
+    return {
+      filename: renamed ? second : first,
+      ...(renamed ? { previous_filename: first } : {}),
+      status: renamed ? 'renamed' : 'modified',
+      additions: count('+'),
+      deletions: count('-'),
+      changes: count('+') + count('-'),
+      ...(body === undefined ? {} : { patch: body }),
+    };
+  });
+}
+
+/** A pull request whose first review, with the configured codex challenger kept from running, holds its one finding. */
+async function heldReview(t, { before = () => {}, candidate = CANDIDATE, long = false } = {}) {
+  const repo = long ? repository(t, { 'src/app.ts': APP_LONG }, { 'src/app.ts': APP_LONG.replace(' * item.qty', '') }) : repository(t, { 'src/app.ts': APP_HEAD });
+  advance(repo, before);
+  const github = fakeGitHub(repo);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-shared-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const config = scratch(t, 'runners.yaml', CHALLENGE_CONFIG('challenge: codex'));
+  const first = fakes(t, fullRun({ 'diff-analyst': [{ candidates: [candidate] }] }));
+  const one = await withEnv({ REVIEW_VOICE_NO_COMMANDS: '1' }, () => reviewIn(repo, first, github, data, { config }));
+  assert.equal(one.verdict.event, 'COMMENT', `${one.error} ${JSON.stringify(one.notes)}`);
+  assert.deepEqual(heldAt(data, one), [[candidate.path, 3, NOT_RUN_UNDER_NO_COMMANDS]]);
+  assert.deepEqual(callsOf(first, 'challenger'), [], 'no challenger judged the finding');
+  const next = (fakeDir = fakes(t, NO_FINDING_RUN)) => reviewIn(repo, fakeDir, github, data, { config });
+  return { repo, data, one, next };
+}
+
+/** The head file with forty more lines, at the base too, so a later change can sit far from the held line 3. */
+const APP_LONG = `${APP_HEAD}${Array.from({ length: 40 }, (_, index) => `export const k${index} = ${index};`).join('\n')}\n`;
+/** Commits a change to one constant of `path`, about thirty lines below the held line. */
+const changeFarLine = (repo, path, index) =>
+  advance(repo, (git, dir) => {
+    writeFileSync(join(dir, path), readFileSync(join(dir, path), 'utf8').replace(`k${index} = ${index};`, `k${index} = -${index};`));
+    git('commit', '-q', '-am', `change k${index}`);
+  });
+
+/** One narrowed review that raises nothing: it read `path`, never the held line, called no challenger and kept the hold at `path`:3. */
+async function keepsHold(t, { repo, data, next }, path) {
+  const fakeDir = fakes(t, NO_FINDING_RUN);
+  const report = await next(fakeDir);
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  const stored = storedRun(data, report.runId);
+  assert.notEqual(stored.scope.kind, 'full', JSON.stringify(stored.scope));
+  assert.deepEqual(stored.scope.files, [path]);
+  const patch = readFileSync(join(report.runDir, 'diff.patch'), 'utf8');
+  assert.match(patch, /^@@ /m, 'the review read a hunk of the held file');
+  assert.doesNotMatch(patch, /item\.qty/, 'the hunk is nowhere near the held line');
+  assert.deepEqual(callsOf(fakeDir, 'challenger'), [], 'nothing was raised, so nothing was challenged');
+  assert.deepEqual(heldAt(data, report), [[path, 3, NOT_RUN_UNDER_NO_COMMANDS]], 'a hunk elsewhere in the file judges nothing at the held line');
+  assert.equal(report.verdict.event, 'COMMENT');
+  return report;
+}
+
+test('S17 AC-10: narrowed reviews with a hunk elsewhere in the held file keep the hold, so the chain never approves with no challenger called', async (t) => {
+  const chain = await heldReview(t, { long: true });
+  changeFarLine(chain.repo, 'src/app.ts', 30);
+  const two = await keepsHold(t, chain, 'src/app.ts');
+  assert.equal(storedRun(chain.data, two.runId).scope.priorRunId, chain.one.runId, 'the prior-run link is recorded');
+  changeFarLine(chain.repo, 'src/app.ts', 31);
+  const three = await keepsHold(t, chain, 'src/app.ts');
+  assert.equal(storedRun(chain.data, three.runId).scope.priorRunId, two.runId);
+});
+
+test('S17 AC-10: a hold for a challenger that did not run follows a file the pull request renames a second time, so the review cannot approve', async (t) => {
+  // The pull request renames the file in its first commit, so the hold lands on a name GitHub stops listing after the next rename.
+  const { repo, data, one, next } = await heldReview(t, {
+    before: (git) => {
+      git('mv', 'src/app.ts', 'src/calc.ts');
+      git('commit', '-q', '--amend', '-m', 'head');
+    },
+    candidate: { ...CANDIDATE, path: 'src/calc.ts', evidence: ['src/calc.ts:3 multiplies by item.qty without a default.'] },
+  });
+  advance(repo, (git) => {
+    git('mv', 'src/calc.ts', 'src/sum.ts');
+    git('commit', '-q', '-m', 'rename again');
+  });
+  assert.deepEqual(repo.files.map((file) => [file.filename, file.previous_filename]), [['src/sum.ts', 'src/app.ts']]);
+
+  const two = await next();
+  assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
+  const stored = storedRun(data, two.runId);
+  assert.equal(stored.scope.priorRunId, one.runId, 'the prior-run link is recorded');
+  assert.notEqual(stored.scope.kind, 'full', JSON.stringify(stored.scope));
+  assert.deepEqual(heldAt(data, two), [['src/sum.ts', 3, NOT_RUN_UNDER_NO_COMMANDS]], 'the hold moved with the file');
+  assert.equal(two.verdict.event, 'COMMENT', 'the flagged line is still in the pull request and nothing challenged it');
+});
+
+test('S17 AC-10: a commit that only changes the mode of the held file keeps the hold, so the review cannot approve', async (t) => {
+  const { repo, data, next } = await heldReview(t);
+  advance(repo, (git) => {
+    chmodSync(join(repo.dir, 'src/app.ts'), 0o755);
+    git('add', '-A');
+    git('commit', '-q', '-m', 'make it executable');
+  });
+
+  const two = await next();
+  assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
+  const stored = storedRun(data, two.runId);
+  assert.notEqual(stored.scope.kind, 'full', JSON.stringify(stored.scope));
+  assert.doesNotMatch(readFileSync(join(two.runDir, 'diff.patch'), 'utf8'), /^@@ /m, 'the review read no hunk');
+  assert.deepEqual(heldAt(data, two), [['src/app.ts', 3, NOT_RUN_UNDER_NO_COMMANDS]]);
+  assert.equal(two.verdict.event, 'COMMENT');
+});
+
+test('S17 AC-10: a hold follows a file renamed in a narrowed review that read it, and stays through the next review of the new name', async (t) => {
+  const chain = await heldReview(t, { long: true });
+  advance(chain.repo, (git, dir) => {
+    git('mv', 'src/app.ts', 'src/main.ts');
+    writeFileSync(join(dir, 'src/main.ts'), APP_LONG.replace('k30 = 30;', 'k30 = -30;'));
+    git('commit', '-q', '-am', 'rename and change k30');
+  });
+  assert.deepEqual(chain.repo.files.map((file) => [file.filename, file.previous_filename]), [['src/main.ts', 'src/app.ts']]);
+  const two = await keepsHold(t, chain, 'src/main.ts');
+  assert.match(readFileSync(join(two.runDir, 'diff.patch'), 'utf8'), /^rename to src\/main\.ts$/m, 'the review patch carries the rename');
+  changeFarLine(chain.repo, 'src/main.ts', 31);
+  await keepsHold(t, chain, 'src/main.ts');
+});
+
+// --- S22 part B: the held queue ---
+
+/** Sets or removes GITHUB_ACTIONS for one test: CI sets it, and inside GitHub Actions the queue names no command. */
+function githubActions(t, value) {
+  const saved = process.env.GITHUB_ACTIONS;
+  if (value === undefined) delete process.env.GITHUB_ACTIONS;
+  else process.env.GITHUB_ACTIONS = value;
+  t.after(() => {
+    if (saved === undefined) delete process.env.GITHUB_ACTIONS;
+    else process.env.GITHUB_ACTIONS = saved;
+  });
+}
+
+const HELD_QUEUE_CONFIG = { '.review-voice/config.yaml': 'verdict:\n  held_queue: true\n' };
+const BELOW_GATE_RUN = { 'diff-analyst': [{ candidates: [CANDIDATE] }], 'evidence-verifier': [{ verifications: [{ ...VERIFIED, technical_confidence: 0.7 }] }] };
+
+test('S22: every scored run leaves score-input.json, equal to what score read, and the default report has no heldQueue', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const github = fakeGitHub(repo);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-data-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const read = [];
+  const command = (argv, stdin) => {
+    if (argv[0] === 'score') read.push(stdin);
+    return runInProcess(argv, { stdin, fetchImpl: github });
+  };
+  const fakeDir = fakes(t, {
+    'diff-analyst': [{ candidates: [CANDIDATE] }],
+    'evidence-verifier': [{ verifications: [VERIFIED] }],
+    challenger: [{ verdicts: [confirmed] }],
+    'concise-editor': [{ text: '[minor] `src/app.ts:3` - The total multiplies by qty, which is undefined for items created before qty existed.' }],
+  });
+  const report = await reviewIn(repo, fakeDir, github, data, {}, { command, cli: bundle });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(read.length, 1);
+  assert.deepEqual(JSON.parse(readFileSync(join(report.runDir, 'score-input.json'), 'utf8')), JSON.parse(read[0]));
+  assert.equal('heldQueue' in report, false);
+});
+
+test('S22: under held_queue a below-gate finding carries a promote command that re-scores the run with it promoted', async (t) => {
+  githubActions(t, undefined);
+  const repo = repository(t, { 'src/app.ts': APP_HEAD }, HELD_QUEUE_CONFIG);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-data-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const report = await reviewIn(repo, fakes(t, BELOW_GATE_RUN), fakeGitHub(repo), data, {}, { cli: bundle });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(report.heldQueue.map((entry) => entry.verdict), report.held.map((entry) => entry.verdict));
+  const below = report.heldQueue.filter((entry) => entry.verdict === 'below-gate');
+  assert.equal(below.length, 1, JSON.stringify(report.heldQueue));
+  const [entry] = below;
+  assert.equal(entry.candidateId, 'cand_001');
+  // process.cwd() resolves links, as the temporary directory on macOS is one.
+  assert.ok(entry.promote.startsWith(`cd ${realpathSync(repo.dir)} && `), entry.promote);
+  assert.ok(entry.promote.endsWith(`--promote cand_001 < ${join(report.runDir, 'score-input.json')} > ${join(report.runDir, 'scores.promoted.json')}`), entry.promote);
+  assert.ok(entry.promote.includes(`REVIEW_VOICE_DATA_DIR=${data} `), entry.promote);
+
+  const run = spawnSync('sh', ['-c', entry.promote], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  const promoted = JSON.parse(readFileSync(join(report.runDir, 'scores.promoted.json'), 'utf8'));
+  assert.ok(promoted.eligible.some((candidate) => candidate.candidateId === 'cand_001'), JSON.stringify(promoted.eligible));
+  // The breakdown in `scores` records which gate the owner lifted.
+  const score = promoted.scores.find((entry) => entry.candidate_id === 'cand_001' || entry.candidateId === 'cand_001');
+  assert.equal(score.ownerPromotion.gate, 'confidence');
+  assert.ok(existsSync(join(report.runDir, 'scores.json')), 'the run\'s own scores are kept');
+});
+
+test('S22: inside GitHub Actions the held queue names the candidate, never a command with a runner path', async (t) => {
+  githubActions(t, 'true');
+  const repo = repository(t, { 'src/app.ts': APP_HEAD }, HELD_QUEUE_CONFIG);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-data-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  // With `cli` set the driver builds a promote command, so only the GITHUB_ACTIONS gate keeps it out.
+  const report = await reviewIn(repo, fakes(t, BELOW_GATE_RUN), fakeGitHub(repo), data, {}, { cli: bundle });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  const [entry] = report.heldQueue.filter((held) => held.verdict === 'below-gate');
+  assert.equal(entry.candidateId, 'cand_001');
+  assert.equal(entry.promote, null);
+  assert.ok(!JSON.stringify(report.heldQueue).includes(report.runDir));
+});
+
+// ---------------------------------------------------------------- issue 337: a verified finding under the confidence gate caps an approval, and its hold outlives a narrowed review
+
+const UNDER_GATE_RUN = { 'diff-analyst': [{ candidates: [CANDIDATE] }], 'evidence-verifier': [{ verifications: [{ ...VERIFIED, technical_confidence: 0.78 }] }] };
+const UNDER_GATE = ['src/app.ts', 3, 'below-gate', 'below the confidence gate'];
+const gateHeld = (data, report) => storedRun(data, report.runId).held.map((entry) => [entry.path, entry.line, entry.verdict, entry.reason]);
+const namesGate = (report) => report.verdict.reasons.some((reason) => reason.includes('below the confidence gate'));
+/** A commit that touches only the README, so the next review is narrowed to it and never reads src/app.ts. */
+const changeReadme = (repo, text) =>
+  advance(repo, (git, dir) => {
+    writeFileSync(join(dir, 'README.md'), `# Api\n\n${text}\n`);
+    git('commit', '-q', '-am', 'docs');
+  });
+
+/** A pull request whose first, full review verifies its one minor finding at 0.78, under the 0.8 gate, and so holds it. */
+async function underGateReview(t) {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const github = fakeGitHub(repo);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-shared-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const first = fakes(t, UNDER_GATE_RUN);
+  const one = await reviewIn(repo, first, github, data);
+  assert.equal(one.exitCode, 0, `${one.error} ${JSON.stringify(one.notes)}`);
+  assert.deepEqual(one.findings, [], 'the finding never reaches the review text');
+  assert.equal(readFileSync(join(one.runDir, 'review.txt'), 'utf8'), `${NO_FINDINGS}\n`);
+  assert.deepEqual(callsOf(first, 'challenger'), [], 'a finding under the gate is not challenged');
+  assert.deepEqual(gateHeld(data, one), [UNDER_GATE]);
+  const next = (options = {}, fakeDir = fakes(t, NO_FINDING_RUN)) => reviewIn(repo, fakeDir, github, data, options);
+  return { repo, data, one, next };
+}
+
+test('issue 337: a verified minor finding held under the confidence gate comments, and the posted body names nothing of it', async (t) => {
+  const { one } = await underGateReview(t);
+  assert.equal(one.verdict.event, 'COMMENT', 'the verifier confirmed a concern above a nit, so the review cannot approve');
+  assert.ok(namesGate(one), JSON.stringify(one.verdict.reasons));
+  assert.equal(one.verdict.payload.body, 'Not approving yet.');
+  assert.deepEqual(one.verdict.payload.comments, []);
+  const posted = JSON.stringify(one.verdict.payload);
+  for (const part of ['src/app.ts', 'app.ts', CANDIDATE.claim, 'qty', 'confidence gate']) assert.ok(!posted.includes(part), `the posted review must not carry ${part}`);
+});
+
+test('issue 337: an incremental review of another file keeps the hold and comments, and a later full review that raises nothing approves', async (t) => {
+  const { repo, data, one, next } = await underGateReview(t);
+  changeReadme(repo, 'Sums prices and quantities.');
+  const two = await next();
+  assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
+  const stored = storedRun(data, two.runId);
+  assert.notEqual(stored.scope.kind, 'full', JSON.stringify(stored.scope));
+  assert.deepEqual(stored.scope.files, ['README.md']);
+  assert.equal(stored.scope.priorRunId, one.runId, 'the prior-run link is recorded');
+  assert.deepEqual(gateHeld(data, two), [UNDER_GATE], 'the hold outlives a review that did not cover its file');
+  assert.equal(two.verdict.event, 'COMMENT');
+  assert.ok(namesGate(two), JSON.stringify(two.verdict.reasons));
+
+  const three = await next({ full: true });
+  assert.equal(three.exitCode, 0, `${three.error} ${JSON.stringify(three.notes)}`);
+  assert.equal(storedRun(data, three.runId).scope.kind, 'full');
+  assert.deepEqual(gateHeld(data, three), [], 'a full review inherits nothing and judged again');
+  assert.equal(three.verdict.event, 'APPROVE');
+});
+
+test('issue 337: once the owner declines the held finding, the next narrowed review approves', async (t) => {
+  const { repo, data, one, next } = await underGateReview(t);
+  const db = openDatabase(join(data, 'review-voice.db'));
+  try {
+    assert.deepEqual(declineHeld(db, one.runId, { path: 'src/app.ts', line: 3 }, 'not worth raising'), { ok: true, declined: 1 });
+  } finally {
+    db.close();
+  }
+  changeReadme(repo, 'Sums prices and quantities.');
+  const two = await next();
+  assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
+  assert.notEqual(storedRun(data, two.runId).scope.kind, 'full');
+  assert.deepEqual(gateHeld(data, two), []);
+  assert.equal(two.verdict.event, 'APPROVE');
+});
+
+test('issue 337: the hold ends once the pull request no longer changes the held file', async (t) => {
+  const { repo, data, next } = await underGateReview(t);
+  // The pull request takes its change to src/app.ts back and edits the README instead.
+  advance(repo, (git, dir) => {
+    writeFileSync(join(dir, 'src/app.ts'), APP_BASE);
+    writeFileSync(join(dir, 'README.md'), '# Api\n\nSums prices, for now.\n');
+    git('commit', '-q', '-am', 'take the quantity back');
+  });
+  assert.deepEqual(repo.files.map((file) => file.filename), ['README.md']);
+  const two = await next();
+  assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
+  assert.notEqual(storedRun(data, two.runId).scope.kind, 'full', 'the review is narrowed, so only the file leaving ends the hold');
+  assert.deepEqual(gateHeld(data, two), []);
+  assert.equal(two.verdict.event, 'APPROVE');
+});
+
+test('issue 337: an unchanged-scope carry keeps the hold, so the carried review cannot approve', async (t) => {
+  const { repo, data, next } = await underGateReview(t);
+  // The base branch moves on and is merged in: a new head with the same own diff.
+  const git = (...args) => execFileSync('git', args, { cwd: repo.dir, encoding: 'utf8' });
+  writeFileSync(join(repo.dir, 'README.md'), '# Api\n\nSums prices, now documented.\n');
+  git('commit', '-q', '-am', 'docs on main');
+  repo.base = git('rev-parse', 'HEAD').trim();
+  git('checkout', '-q', 'feature');
+  git('merge', '-q', '--no-edit', 'main');
+  repo.head = git('rev-parse', 'HEAD').trim();
+  git('checkout', '-q', 'main');
+
+  const two = await next({}, fakes(t, {}));
+  assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
+  assert.equal(two.carried, true);
+  assert.deepEqual(gateHeld(data, two), [UNDER_GATE], 'the hold travels with the carry');
+  assert.equal(two.verdict.event, 'COMMENT');
 });

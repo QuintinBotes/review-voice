@@ -4,6 +4,7 @@
  * command line; the backend is chosen from the environment.
  */
 import { runClaudeCli } from './claude-cli.ts';
+import { runCommandCli } from './command-cli.ts';
 import { runFake } from './fake.ts';
 import { schemaForRunner } from './schema.ts';
 import { RUNNER_TOOLS, runnerTools, schemasDir } from './tools.ts';
@@ -26,7 +27,19 @@ export const RUNNER_PREAMBLE =
   `Tools available: ${RUNNER_TOOLS.join(', ')}. Shell and git are not available in this run. ` +
   'The working directory is the pull request head; base versions of changed files, when provided, ' +
   'are under the directories named in the prompt.';
-export type { AgentSpec, AgentResult, AgentCall } from './types.ts';
+
+/**
+ * Put before every prompt a configured runner gets. It states the confinement
+ * the sandbox flags in the configured command enforce; the runner cannot
+ * narrow an external CLI's tools the way runnerTools narrows Claude's.
+ */
+export const COMMAND_RUNNER_PREAMBLE =
+  'This run is read-only. Read files under the working directory, which is the pull request head, and under ' +
+  'the directories named below; change nothing, run nothing from the repository, and use no network. ' +
+  'Answer with one JSON object matching the schema you were given, and nothing after it.';
+
+export type { AgentSpec, AgentResult, AgentCall, Family, ExternalFamily, RunnerSpec } from './types.ts';
+export { FAMILIES } from './types.ts';
 
 function elapsed(started: number): number {
   return Math.round((performance.now() - started) / 10) / 100;
@@ -42,7 +55,9 @@ export async function runAgent(
   const started = performance.now();
   try {
     const granted: AgentSpec = { ...spec, tools: runnerTools(spec.tools) };
-    const sent = `${RUNNER_PREAMBLE}\n\n${prompt}`;
+    // Chosen before the fake dispatch, so the fake records the text the real backend would have sent.
+    const preamble = spec.runner === undefined ? RUNNER_PREAMBLE : `${COMMAND_RUNNER_PREAMBLE}${addDirs.length === 0 ? '' : ` Also readable: ${addDirs.join(', ')}`}`;
+    const sent = `${preamble}\n\n${prompt}`;
     const fakeDir = env['REVIEW_VOICE_FAKE_AGENTS'];
     if (fakeDir) return { ...runFake(granted, sent, fakeDir, cwd, addDirs), seconds: elapsed(started) };
     // Asking for the fake runner without its directory must not fall through
@@ -57,6 +72,19 @@ export async function runAgent(
       };
     }
     const prepared = { ...granted, schema: schemaForRunner(spec.schema, spec.schemaDir ?? schemasDir()) };
+    if (spec.runner !== undefined) {
+      // The driver checks the variable first; this refusal is the backstop for every other caller.
+      if (env['REVIEW_VOICE_NO_COMMANDS'] === '1') {
+        return {
+          ok: false,
+          output: null,
+          costUsd: null,
+          seconds: elapsed(started),
+          error: `REVIEW_VOICE_NO_COMMANDS=1 keeps the configured ${spec.runner.family} runner from running`,
+        };
+      }
+      return { ...(await runCommandCli({ ...prepared, runner: spec.runner }, sent, cwd, env)), seconds: elapsed(started) };
+    }
     return { ...(await runClaudeCli(prepared, sent, cwd, addDirs, env)), seconds: elapsed(started) };
   } catch (error) {
     return {

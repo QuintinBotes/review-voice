@@ -64,6 +64,9 @@ Each figure below is reported and never a gate. A figure with no data prints
 | Challenge hold rate | Of the findings the challenger judged, the share it held; see below |
 | Reproduction hold rate | Of the reproductions that completed, the share whose finding was held; see below |
 | Posted fixed rate and dismissed rate, recent | The same strong-outcome rates over a rolling window; see below |
+| Second-pass drop, downgrade and tie-break rates, per family | Whether a second model family earns its cost; see below |
+| Challenge hold rate, per family | The challenge hold rate over the runs whose challenge ran on that family; see below |
+| Posted replies, replied fixed rate | How many findings got this tool's one reply, and what became of them; see below |
 | Approvals tracked | How many sent approvals have a recorded outcome |
 | Approval escape rate | Of the approvals that settled, the share a revert or a request for changes overturned, with a Wilson 95% upper bound; see below |
 
@@ -71,6 +74,70 @@ Each figure below is reported and never a gate. A figure with no data prints
 to `{ median, p95, runs }`, beside `metrics`, `posted_breakdown` and
 `approval_breakdown`. It is not a metric, because its value is a map, and the
 text output does not print it.
+
+The whole JSON document is one object, `EvaluationReport`, built by one
+function so the JSON and the rendered report (see "The rendered report") cannot
+disagree. Its keys are `generated_at`, `window_days` (the window the `_recent`
+rates use), `metrics`, `posted_breakdown` (by severity, lane, rule and
+evidence block), `precision_breakdown` (below), `stage_seconds`,
+`rule_effectiveness` (below), `by_family` (below) and `approval_breakdown`
+(below). The text output is unchanged.
+
+#### Precision by lane and rule
+
+`precision_breakdown` carries `by_lane` and `by_rule`, each a map of key to
+`{ kept, dismissed, precision }`. The rows are the owner's labels from the
+`feedback` table. `keep` and `rewrite` count as kept and `dismiss` as
+dismissed, exactly as `owner_accepted_precision` counts them; `never_flag` and
+any later action are not labels for this figure, and an unlabelled finding
+appears nowhere, because silence is never a label. Each label is placed by its
+finding's lane (`diff` when none) and rule id (the stored `ruleId`, else the
+one derived from its category and lane, else `unknown`), through the same
+lookup `posted_breakdown` uses, so the two breakdowns can never place one
+finding differently. `precision` is `kept / (kept + dismissed)` and null with
+no labelled finding.
+
+#### Suppressions since approval
+
+`rule_effectiveness` answers the question an approved suppression raises
+afterwards, whether it is still right. It lists one entry per rule id named by
+an active suppression, with the suppressions themselves (`glob`, null for
+everywhere, and `policy_version`), the earliest `approved_at` among them, and
+three figures from the runs created at or after that approval. `held` counts
+the verified findings the suppression held, from the `scores[]` entries whose
+`rejectedBecause` names the rule; `runs` counts those runs; `posted` carries
+the strong outcomes of the rule's findings that were posted anyway (promoted
+with `score --promote`, or on a path outside the glob); and `feedback` carries
+the owner's `keep`, `rewrite` and `dismiss` labels on them. A run created
+before the approval contributes to none of them. With no run since approval
+`held` is null, because a count over no run is no data, not zero, and the
+basis says `no run recorded since`; an active row with no approval time
+recorded gives null for every figure and a basis naming the version. A version
+reactivated by `RV policy rollback` keeps its first `approved_at`, so its window
+starts at that approval and includes the time it was inactive. Nothing here
+deactivates, demotes or proposes anything; a suppression that looks wrong is
+the owner's `RV policy rollback`.
+
+#### Per model family
+
+`RV evaluate --json` carries a top-level `by_family` key
+([ADR 0034](adr/0034-a-cross-family-runner-is-configured-never-detected-into-use.md)),
+grouped by the family each run recorded for its second pass and its challenge.
+`by_family.families` maps a family to `second_pass` and `challenge`.
+`second_pass` counts, over the runs whose second pass ran on that family, the
+`verdicts`, those `dropped` and `downgraded`, the applied `tie_breaks` and the
+`runs`, with `drop_rate`, `downgrade_rate` and `tie_break_rate` each over
+`verdicts`. A second pass recorded without a family is listed as `unknown`.
+`challenge` carries the challenge hold rate's own counts (`judged`, `held`,
+`runs`, `hold_rate`) restricted to the runs whose challenge ran on that family.
+A half with no data is null and a family with neither is not listed.
+`by_family.runs_without_families` counts the runs recorded before families were
+stored, or without provenance. The text output prints a `by family` block after
+the metrics, one line per listed family, and `by family  no data` when none is.
+
+A single family's rate on a small sample is a sample. These figures say which
+family a run used and what came of it; they are not a ranking of vendors, and
+none of them is a gate.
 
 #### Cost per review
 
@@ -163,6 +230,24 @@ posted comments carried the evidence block (`verdict.evidence_block`, ADR
 of it recorded the count, which is every post made before the block existed.
 An attempt that was never sent is not counted. The split is reported, not
 scored, and a group with no strong outcome reports `null` rates, never zero.
+
+#### Replies
+
+`RV reply --pr N --confirm` posts one reply under one of this tool's own inline
+comments when someone asked a question there (ADR 0035). Each sent reply is a
+`review_reply_sent` audit row naming its run and finding, joined to the
+finding's stored outcome:
+
+```
+posted_replies     = findings with a sent reply
+replied_fixed_rate = fixed / (fixed + dismissed), over those findings
+```
+
+The rate counts strong outcomes only, as the posted rates do. A replied finding
+with no outcome yet, or a weak one, counts in `posted_replies` and nowhere else.
+Both are `no data` with none. Reply counts never appear on the pull request.
+The scope block takes no reply input, so a reply changes neither the posted body
+nor the review's idempotency key.
 
 #### Approval outcomes
 
@@ -645,6 +730,36 @@ zero samples is how a dashboard starts lying.
 Contract compliance is measured by running recorded output back through the
 validator, not asserted from the fact that validation happened. If output ever
 reaches the store by a path that skipped the gate, this is what notices.
+
+### The rendered report
+
+`review-voice evaluate --html` renders the same object `--json` prints as an
+HTML fragment on stdout, and `--html --out <path>` writes a complete static
+page instead (a directory gets `evaluation.html`; a missing parent is
+created). `--json` with `--html` and `--out` without `--html` are bad
+invocations, exit 2, checked before the store opens. `--since` and `--recall`
+apply as they do to text and JSON.
+
+The fragment has eight fixed sections, always present and in this order. First
+the heading with the time it was generated and the window the recent rates
+cover, then Gates, Goals, Reported, not scored (the three tables partition the
+metrics, so no figure prints twice), Seconds by stage, Posted findings, Owner
+labels, and Suppressions since approval. Every metric row prints its value,
+mark, target and basis exactly as the text output does. A figure with no data
+prints `no data`, never zero, and a section with nothing to show prints one
+paragraph saying so and no table.
+
+The fragment uses only `h2`, `h3`, `p`, `table`, `thead`, `tbody`, `tr`, `th`,
+`td`, `code`, `details` and `summary`, with no attribute, no script, no style
+and no link, the subset GitHub renders in a job summary, so the same bytes
+work appended to `$GITHUB_STEP_SUMMARY` and saved in a file. The page `--out`
+writes adds only a `<title>` and a stylesheet for table borders, loads nothing
+and opens offline. Every string from the store or the configuration (a lane,
+rule id, stage name, glob, severity or basis) is cut at 120 code points with
+`...`, has its line endings replaced by spaces (a blank line would end the HTML
+block GitHub renders and the rest of the cell would be read as Markdown), and
+is then HTML-escaped, so a cut can never split an entity. Two renders of one
+report are identical.
 
 ## Measuring opt-in simplification-pass cost
 

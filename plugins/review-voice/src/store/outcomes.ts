@@ -5,6 +5,8 @@ import { fileAtRef, suggestionApplied } from '../publish/suggestion.ts';
 import { ruleIdFor } from '../policy/rules.ts';
 import { runDetail, type StoredFinding } from './runs.ts';
 import { stripEvidenceBlock } from '../publish/evidence-block.ts';
+import { parseFinding } from '../contract/parse.ts';
+import { terminalSafeDeep } from '../terminal.ts';
 
 /**
  * What became of each inline comment Review Voice posted (docs/adr/0029).
@@ -80,7 +82,7 @@ export function patchTouches(patch: string, first: number, last: number): boolea
   return false;
 }
 
-interface RawComment {
+export interface RawComment {
   id?: number;
   path?: string;
   line?: number | null;
@@ -105,7 +107,7 @@ interface RawReview {
   user?: { login?: string };
 }
 
-interface ThreadState {
+export interface ThreadState {
   resolved: boolean;
   outdated: boolean;
 }
@@ -263,6 +265,59 @@ export function approvedRuns(db: Database, options: { since: string; repository?
 export const isBot = (user: { login?: string; type?: string } | undefined): boolean =>
   user?.type === 'Bot' || (user?.login ?? '').endsWith('[bot]');
 
+/** A reply under one of this tool's inline comments that is waiting for an answer (docs/adr/0035). */
+export interface PendingQuestion {
+  reviewRunId: string;
+  findingId: string;
+  repository: string;
+  pullNumber: number;
+  rootCommentId: number;
+  path: string;
+  line: number;
+  askedBy: string;
+  askedAt: string;
+  stance: 'question' | 'reject';
+}
+
+/** Whether a line outside a blockquote asks something; a quoted question is the tool's own text or someone else's. */
+const asksQuestion = (body: string): boolean => body.split('\n').some((line) => !/^\s*>/.test(line) && line.includes('?'));
+
+/**
+ * Whether the thread under `root` wants this tool's one reply, and from whom.
+ * Each rule returns null when it fails. The thread state must be known and
+ * open; no reply under the root may be by the poster, since one reply per
+ * thread is the bound whoever wrote it; the newest reply that is not a bot's,
+ * the poster's or the owner's decides; and it must ask something (a `?` outside
+ * a blockquote), whether as a question or as a disagreement. Silence,
+ * agreement and a disagreement that asks nothing are not questions (docs/adr/0004).
+ */
+export function replyWanted(
+  root: RawComment,
+  replies: RawComment[],
+  state: ThreadState | null,
+  ownerReviewer: string | null,
+): Pick<PendingQuestion, 'askedBy' | 'askedAt' | 'stance'> | null {
+  if (state === null || state.resolved) return null;
+  const login = (user: RawComment['user']): string | null => user?.login?.toLowerCase() ?? null;
+  const poster = login(root.user);
+  // With no poster login the one-per-thread rule cannot be checked, so nothing is asked.
+  if (poster === null) return null;
+  const under = replies
+    .filter((reply) => reply.in_reply_to_id === root.id)
+    .sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''));
+  if (under.some((reply) => login(reply.user) === poster)) return null;
+  const owner = ownerReviewer?.toLowerCase() ?? null;
+  const latest = [...under].reverse().find((reply) => {
+    const author = login(reply.user);
+    return author !== null && !isBot(reply.user) && author !== owner;
+  });
+  if (latest === undefined) return null;
+  const body = latest.body ?? '';
+  const stance = classifyReply(body);
+  if (stance === 'acknowledge' || !asksQuestion(body)) return null;
+  return { askedBy: latest.user!.login!, askedAt: latest.created_at ?? '', stance: stance === 'reject' ? 'reject' : 'question' };
+}
+
 export function sameHead(a: string, b: string): boolean {
   const left = a.toLowerCase();
   const right = b.toLowerCase();
@@ -275,6 +330,8 @@ export interface CheckOptions {
   /** Repositories that may be read; a run for any other is skipped without a request. */
   allowlist: string[];
   repository?: string | undefined;
+  /** One pull request only; every other is skipped before any request. */
+  pullNumber?: number | undefined;
   /** ISO time; only sends at or after it are followed. */
   since: string;
   now?: () => Date;
@@ -291,6 +348,8 @@ export interface CheckResult {
   outcomes: FindingOutcome[];
   skipped: { repository: string; pullNumber: number; reason: string }[];
   warnings: string[];
+  /** Threads awaiting this tool's one reply, found from the same reads as the outcomes. */
+  questions: PendingQuestion[];
 }
 
 interface PullContext {
@@ -310,9 +369,10 @@ interface PullContext {
  */
 export async function checkOutcomes(options: CheckOptions): Promise<CheckResult> {
   const allowed = new Set(options.allowlist.map((name) => name.toLowerCase()));
-  const result: CheckResult = { outcomes: [], skipped: [], warnings: [] };
+  const result: CheckResult = { outcomes: [], skipped: [], warnings: [], questions: [] };
   const byPull = new Map<string, SentRun[]>();
   for (const run of sentRuns(options.db, { since: options.since, repository: options.repository })) {
+    if (options.pullNumber !== undefined && run.pullNumber !== options.pullNumber) continue;
     const key = `${run.repository.toLowerCase()}#${run.pullNumber}`;
     byPull.set(key, [...(byPull.get(key) ?? []), run]);
   }
@@ -335,14 +395,24 @@ export async function checkOutcomes(options: CheckOptions): Promise<CheckResult>
     }
     try {
       const context = await readPull(options.client, repository, pullNumber, result.warnings);
+      // The list is read oldest first and cut at the limit, so the newest
+      // replies, a poster's answer among them, may be missing: no thread on it
+      // is known to be unanswered, as with an unknown thread state. Only the
+      // reply command narrows to one pull request and offers a reply, so only
+      // it is told; the watcher and `outcomes` never offer one here.
+      const cut = context.replies.length >= READ_LIMIT;
+      if (cut && options.pullNumber !== undefined) result.warnings.push(`${repository}#${pullNumber}: only the first ${READ_LIMIT} inline comments were read, so no reply is offered on it`);
       for (const run of runs) {
-        result.outcomes.push(...(await followRun(options, context, run, viewerLogin)));
+        const followed = await followRun(options, context, run, viewerLogin);
+        result.outcomes.push(...followed.outcomes);
+        if (!cut) result.questions.push(...followed.questions);
       }
     } catch (error) {
       result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
     }
   }
-  return result;
+  // A stored path is the pull request's file name, which can hold any byte but NUL.
+  return terminalSafeDeep(result);
 }
 
 async function readPull(client: GitHubClient, repository: string, pullNumber: number, warnings: string[]): Promise<PullContext> {
@@ -383,20 +453,45 @@ function severityPrefix(finding: StoredFinding): string {
   return `**${finding.severity}** - `;
 }
 
-/** Pairs each finding with the root comment it was posted as: same file and line, the closest wording when two share a line. */
+/** A root comment's prose as posted: the evidence and suggestion blocks removed, as `commentSignature` removes them. */
+function postedProse(body: string): string {
+  const prose = stripEvidenceBlock(body);
+  const block = prose.lastIndexOf('\n\n```suggestion\n');
+  return block >= 0 && prose.endsWith('```') ? prose.slice(0, block) : prose;
+}
+
+/** Whether a root comment is exactly this finding's text as `post` renders it. */
+function postedAs(comment: RawComment, finding: StoredFinding): boolean {
+  return postedProse(comment.body ?? '') === `${severityPrefix(finding)}${parseFinding(finding.text, 0).prose}`;
+}
+
+/**
+ * Pairs each finding with the root comment it was posted as: same file and
+ * line, a comment holding exactly the finding's text first, then the closest
+ * wording. Exact pairs go first so a finding that was not posted again (an
+ * earlier review already carried it) cannot take another finding's comment
+ * at the same line.
+ */
 function matchComments(findings: StoredFinding[], comments: RawComment[]): Map<string, RawComment> {
   const taken = new Set<number>();
   const matched = new Map<string, RawComment>();
+  const at = (comment: RawComment, finding: StoredFinding): boolean =>
+    typeof comment.id === 'number' &&
+    !taken.has(comment.id) &&
+    comment.in_reply_to_id == null &&
+    comment.path === finding.path &&
+    (comment.original_line === finding.line || comment.line === finding.line);
   for (const finding of findings) {
+    const exact = comments.find((comment) => at(comment, finding) && postedAs(comment, finding));
+    if (exact !== undefined) {
+      taken.add(exact.id!);
+      matched.set(finding.findingId, exact);
+    }
+  }
+  for (const finding of findings) {
+    if (matched.has(finding.findingId)) continue;
     const words = significantWords(finding.text);
-    const candidates = comments.filter(
-      (comment) =>
-        typeof comment.id === 'number' &&
-        !taken.has(comment.id) &&
-        comment.in_reply_to_id == null &&
-        comment.path === finding.path &&
-        (comment.original_line === finding.line || comment.line === finding.line),
-    );
+    const candidates = comments.filter((comment) => at(comment, finding));
     let best: RawComment | undefined;
     let bestScore = -1;
     for (const comment of candidates) {
@@ -421,9 +516,9 @@ async function followRun(
   context: PullContext,
   run: SentRun,
   viewerLogin: () => Promise<string | null>,
-): Promise<FindingOutcome[]> {
+): Promise<{ outcomes: FindingOutcome[]; questions: PendingQuestion[] }> {
   const detail = runDetail(options.db, run.runId);
-  if (detail === null) return [];
+  if (detail === null) return { outcomes: [], questions: [] };
   const { ids, source } = await reviewIdsOf(options, run, viewerLogin);
   const comments: RawComment[] = [];
   for (const id of ids) {
@@ -437,9 +532,31 @@ async function followRun(
   const matched = matchComments(detail.findings, comments);
   const checkedAt = (options.now?.() ?? new Date()).toISOString();
   const outcomes: FindingOutcome[] = [];
+  const questions: PendingQuestion[] = [];
   for (const finding of detail.findings) {
     const comment = matched.get(finding.findingId);
     if (comment === undefined) continue;
+    // From the same root, replies and states as the outcome, so detection costs no request.
+    // Only a review id this tool recorded proves the comment is its own; one
+    // found by commit and author may be a person's comment at the same line.
+    // And only a comment holding exactly this finding's text is its thread, so
+    // the reply quotes the evidence of the finding the person asked about.
+    const wanted =
+      source === 'audit' && postedAs(comment, finding)
+        ? replyWanted(comment, context.replies, context.states?.get(comment.id!) ?? null, options.ownerReviewer ?? null)
+        : null;
+    if (wanted !== null) {
+      questions.push({
+        reviewRunId: run.runId,
+        findingId: finding.findingId,
+        repository: run.repository,
+        pullNumber: run.pullNumber,
+        rootCommentId: comment.id!,
+        path: finding.path,
+        line: finding.line,
+        ...wanted,
+      });
+    }
     const decided = await decide(options, context, run, finding, comment);
     const outcome: FindingOutcome = {
       reviewRunId: run.runId,
@@ -454,10 +571,15 @@ async function followRun(
       line: finding.line,
       reviewIdSource: source,
     };
+    // The matcher gives a comment to one finding of the run. A row an earlier
+    // matcher stored, pairing it with another finding, would count its thread twice.
+    options.db
+      .prepare('DELETE FROM finding_outcomes WHERE review_run_id = ? AND comment_id = ? AND finding_id <> ?')
+      .run(run.runId, outcome.commentId, outcome.findingId);
     saveOutcome(options.db, outcome);
     outcomes.push(outcome);
   }
-  return outcomes;
+  return { outcomes, questions };
 }
 
 /** Whether the anchored lines changed between the run's head and the current one; null when that cannot be told. */
@@ -678,6 +800,33 @@ export function postedStats(db: Database, { since }: { since?: string } = {}): P
   );
 }
 
+export interface ReplyStats {
+  /** Findings with a `review_reply_sent` row (docs/adr/0035). */
+  replied: number;
+  fixed: number;
+  dismissed: number;
+  /** fixed / (fixed + dismissed) over the replied findings' strong outcomes; null with none. */
+  fixedRate: number | null;
+}
+
+/**
+ * What became of the findings this tool replied under, joining each sent reply
+ * row to the finding's stored outcome by run and finding. A replied finding
+ * with no outcome yet, or a weak one, counts as replied and nothing more.
+ */
+export function replyStats(db: Database): ReplyStats {
+  const rows = db
+    .prepare(
+      `SELECT o.outcome AS outcome, o.strength AS strength FROM (
+         SELECT DISTINCT json_extract(metadata_json, '$.run') AS run, json_extract(metadata_json, '$.finding') AS finding
+         FROM audit_events WHERE action = 'review_reply_sent' AND json_valid(metadata_json)
+       ) r LEFT JOIN finding_outcomes o ON o.review_run_id = r.run AND o.finding_id = r.finding`,
+    )
+    .all() as unknown as OutcomeRow[];
+  const { tracked, fixed, dismissed, fixedRate } = statsOf(rows);
+  return { replied: tracked, fixed, dismissed, fixedRate };
+}
+
 export interface PostedBreakdown {
   bySeverity: Record<string, PostedStats>;
   byLane: Record<string, PostedStats>;
@@ -719,26 +868,27 @@ function evidenceBlockGroups(db: Database): Map<string, 'with' | 'without'> {
   return groups;
 }
 
+interface Placement {
+  severity: string;
+  lane: string;
+  rule: string;
+}
+
 /**
- * The same figures by the finding's severity, lane (a finding with no lane is a
+ * Where a stored finding sits: its severity, lane (a finding with no lane is a
  * `diff` finding) and rule. A finding recorded before rule ids existed has none
  * stored, so its rule is derived the way `compileProposals` derives it; one
- * with no category has no rule and is counted as `unknown`.
+ * with no category has no rule and is counted as `unknown`. Both breakdowns
+ * place through this one lookup, so they can never place a finding differently.
  */
-export function postedBreakdown(db: Database): PostedBreakdown {
-  const rows = db.prepare('SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes').all() as unknown as OutcomeRow[];
-  const findings = new Map<string, Map<string, { severity: string; lane: string; rule: string }>>();
-  const groups = { severity: new Map<string, OutcomeRow[]>(), lane: new Map<string, OutcomeRow[]>(), rule: new Map<string, OutcomeRow[]>() };
-  const blockGroups = evidenceBlockGroups(db);
-  const byBlock = { with: [] as OutcomeRow[], without: [] as OutcomeRow[], unknown: [] as OutcomeRow[] };
-  for (const row of rows) {
-    let known = findings.get(row.review_run_id);
+function findingPlacer(db: Database): (runId: string, findingId: string) => Placement {
+  const findings = new Map<string, Map<string, Placement>>();
+  return (runId, findingId) => {
+    let known = findings.get(runId);
     if (known === undefined) {
       known = new Map();
-      findings.set(row.review_run_id, known);
-      const stored = db.prepare('SELECT output_json FROM review_runs WHERE review_run_id = ?').get(row.review_run_id) as
-        | { output_json: string }
-        | undefined;
+      findings.set(runId, known);
+      const stored = db.prepare('SELECT output_json FROM review_runs WHERE review_run_id = ?').get(runId) as { output_json: string } | undefined;
       try {
         const parsed = JSON.parse(stored?.output_json ?? '{}') as { findings?: Record<string, unknown>[] };
         for (const finding of parsed.findings ?? []) {
@@ -756,18 +906,88 @@ export function postedBreakdown(db: Database): PostedBreakdown {
         // A run that will not parse leaves its findings unplaced, not uncounted.
       }
     }
-    const info = known.get(row.finding_id) ?? { severity: 'unknown', lane: 'diff', rule: 'unknown' };
+    return known.get(findingId) ?? { severity: 'unknown', lane: 'diff', rule: 'unknown' };
+  };
+}
+
+const collect = <R, S>(map: Map<string, R[]>, statsOf: (rows: R[]) => S): Record<string, S> =>
+  Object.fromEntries([...map.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, list]) => [key, statsOf(list)]));
+
+/**
+ * The same figures by the finding's severity, lane and rule, placed by
+ * `findingPlacer`, over every stored outcome or with `since` (an ISO time) only
+ * those whose run was created at or after it, the window `postedStats` uses.
+ */
+export function postedBreakdown(db: Database, { since }: { since?: string } = {}): PostedBreakdown {
+  const rows = (
+    since === undefined
+      ? db.prepare('SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes').all()
+      : db
+          .prepare(
+            `SELECT o.review_run_id AS review_run_id, o.finding_id AS finding_id, o.outcome AS outcome, o.strength AS strength
+             FROM finding_outcomes o JOIN review_runs r ON r.review_run_id = o.review_run_id WHERE r.created_at >= ?`,
+          )
+          .all(since)
+  ) as unknown as OutcomeRow[];
+  const place = findingPlacer(db);
+  const groups = { severity: new Map<string, OutcomeRow[]>(), lane: new Map<string, OutcomeRow[]>(), rule: new Map<string, OutcomeRow[]>() };
+  const blockGroups = evidenceBlockGroups(db);
+  const byBlock = { with: [] as OutcomeRow[], without: [] as OutcomeRow[], unknown: [] as OutcomeRow[] };
+  for (const row of rows) {
+    const info = place(row.review_run_id, row.finding_id);
     groups.severity.set(info.severity, [...(groups.severity.get(info.severity) ?? []), row]);
     groups.lane.set(info.lane, [...(groups.lane.get(info.lane) ?? []), row]);
     groups.rule.set(info.rule, [...(groups.rule.get(info.rule) ?? []), row]);
     byBlock[blockGroups.get(row.review_run_id) ?? 'unknown'].push(row);
   }
-  const collect = (map: Map<string, OutcomeRow[]>): Record<string, PostedStats> =>
-    Object.fromEntries([...map.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, list]) => [key, statsOf(list)]));
   return {
-    bySeverity: collect(groups.severity),
-    byLane: collect(groups.lane),
-    byRule: collect(groups.rule),
+    bySeverity: collect(groups.severity, statsOf),
+    byLane: collect(groups.lane, statsOf),
+    byRule: collect(groups.rule, statsOf),
     byEvidenceBlock: { with: statsOf(byBlock.with), without: statsOf(byBlock.without), unknown: statsOf(byBlock.unknown) },
   };
+}
+
+export interface PrecisionStats {
+  /** keep and rewrite rows, as owner_accepted_precision counts them. */
+  kept: number;
+  dismissed: number;
+  /** kept / (kept + dismissed); null with no labelled finding. */
+  precision: number | null;
+}
+
+function precisionOf(rows: { action: string }[]): PrecisionStats {
+  const kept = rows.filter((row) => row.action !== 'dismiss').length;
+  const dismissed = rows.length - kept;
+  return { kept, dismissed, precision: rows.length === 0 ? null : kept / rows.length };
+}
+
+/**
+ * The owner's labels by the finding's lane and rule, placed as `postedBreakdown`
+ * places outcomes. `keep` and `rewrite` are kept and `dismiss` is dismissed;
+ * `never_flag` and any later action are not labels for this figure, as they are
+ * not for the global metric, and an unlabelled finding appears nowhere because
+ * silence is never a label. `since` windows by the run's creation time.
+ */
+export function precisionBreakdown(db: Database, { since }: { since?: string } = {}): { byLane: Record<string, PrecisionStats>; byRule: Record<string, PrecisionStats> } {
+  const labels = `f.action IN ('keep', 'rewrite', 'dismiss')`;
+  const rows = (
+    since === undefined
+      ? db.prepare(`SELECT review_run_id, finding_id, action FROM feedback f WHERE ${labels}`).all()
+      : db
+          .prepare(
+            `SELECT f.review_run_id AS review_run_id, f.finding_id AS finding_id, f.action AS action
+             FROM feedback f JOIN review_runs r ON r.review_run_id = f.review_run_id WHERE ${labels} AND r.created_at >= ?`,
+          )
+          .all(since)
+  ) as unknown as { review_run_id: string; finding_id: string; action: string }[];
+  const place = findingPlacer(db);
+  const byLane = new Map<string, typeof rows>();
+  const byRule = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const info = place(row.review_run_id, row.finding_id);
+    byLane.set(info.lane, [...(byLane.get(info.lane) ?? []), row]);
+    byRule.set(info.rule, [...(byRule.get(info.rule) ?? []), row]);
+  }
+  return { byLane: collect(byLane, precisionOf), byRule: collect(byRule, precisionOf) };
 }

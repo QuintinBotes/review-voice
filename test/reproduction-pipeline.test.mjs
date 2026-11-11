@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInProcess } from '../plugins/review-voice/src/cli.ts';
 import { verificationProblem } from '../plugins/review-voice/src/cli/shared.ts';
-import { applyReproductions, runReview } from '../plugins/review-voice/src/review/driver.ts';
+import { applyReproductions, reportText, runReview } from '../plugins/review-voice/src/review/driver.ts';
 import { verifierPrompt } from '../plugins/review-voice/src/review/prompts.ts';
 import { STAGES } from '../plugins/review-voice/src/review/stages.ts';
 import { GitHubClient } from '../plugins/review-voice/src/github/client.ts';
@@ -614,6 +614,52 @@ test('a reproduce that exits non-zero leaves a note, and every finding goes on a
   for (const name of ['challenge', 'record']) assert.ok(!run.calls.filter((argv) => argv[0] === name).some((argv) => argv.includes('--reproductions')), name);
   assert.equal(run.detail.reproductions, null);
   assert.doesNotMatch(run.prompt('challenger'), /Reproduction/);
+});
+
+// Terminal controls in what a reproduction prints and in what the driver reports.
+
+const ESC = '\u001b';
+const OSC52 = `${ESC}]52;c;${Buffer.from('synthetic clipboard text').toString('base64')}\u0007`;
+/** A control a terminal acts on, a format character, or a carriage return that is not part of a line ending. */
+const UNSAFE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\p{Cf}]|\r(?!\n)/u;
+const JUNK = /52;c;|\[2J/;
+/** A failure message escaped, so a test that fails never sends what it caught to the terminal running it. */
+const shown = (text) => JSON.stringify(text).replace(/[\u007f-\u009f\p{Cf}]/gu, (c) => `\\u{${c.codePointAt(0).toString(16)}}`);
+
+test('reproduction output loses an OSC 52 write, a clear screen, a C1 CSI, a bidi override and a lone carriage return before it is redacted, held or explained', async (t) => {
+  // Split by a sequence, so it is one token only once the sequence is gone.
+  const token = `${['gh', 'p_', 'Ab3d'].join('')}${ESC}[0m${'Ef5h'.repeat(5)}`;
+  const stdout = [`TAP ${OSC52}version${ESC}[2J 13\u009b31m\u202e\r, cleared`, `# ${MARKER}`, `ok 1 - ${token}`, ''].join('\n');
+  const run = await review(t, PASSES, { reproduceWith: injected([{ status: 0, stdout }]) });
+  const output = record(run).runs[0].output;
+  assert.equal(output, `TAP version 13, cleared\n# ${MARKER}\nok 1 - [REDACTED:GITHUB_TOKEN]\n`);
+  const reason = 'node-test: run 1 exited 0; TAP version 13, cleared';
+  assert.equal(held(run)[0].reason, reason);
+  assert.equal(run.detail.held[0].reason, reason);
+  assert.ok(run.explained.includes(`  [reproduction-did-not-fail] src/window.mjs:3  reproduce - ${reason}\n`), shown(run.explained));
+  for (const text of [output, JSON.stringify(held(run)), run.explained, reportText(run.report)]) {
+    assert.doesNotMatch(text, UNSAFE);
+    assert.doesNotMatch(text, JUNK);
+  }
+});
+
+test('a token split by a sequence that holds a control, or parted from the word before it only by a sequence, is redacted in the reproduction record', async (t) => {
+  const token = ['gh', 'p_', 'Ab3d', 'Ef5h'.repeat(5)].join('');
+  // A terminal executes the control and carries on with the sequence, so each line shows one token.
+  const split = (sequence) => `${token.slice(0, 9)}${sequence}${token.slice(9)}`;
+  const stdout = ['TAP version 13', `# ${MARKER}`, `ok 1 - ${split(`${ESC}\u0000[0m`)}`, `ok 2 - ${split(`${ESC}[0\u0007\u0080m`)}`, `ok 3 - ${split(`\u009b\u200b0m`)}`, `ok 4 - prefix${ESC}]0;title\u0007${token}`, ''].join('\n');
+  const run = await review(t, PASSES, { reproduceWith: injected([{ status: 0, stdout }]) });
+  assert.equal(record(run).runs[0].output, `TAP version 13\n# ${MARKER}\nok 1 - [REDACTED:GITHUB_TOKEN]\nok 2 - [REDACTED:GITHUB_TOKEN]\nok 3 - [REDACTED:GITHUB_TOKEN]\nok 4 - prefix[REDACTED:GITHUB_TOKEN]\n`);
+});
+
+test('the review report shows a stage error without its terminal controls', async (t) => {
+  const stderr = `Could not read ${OSC52}the verification${ESC}[2J\u009b31m\u202e\r now\n`;
+  const run = await review(t, OFF_BY_ONE, { reproduceWith: async () => ({ code: 2, stdout: '', stderr }) });
+  assert.ok(run.report.notes.includes('reproduce exited 2: Could not read the verification now'), shown(run.report.notes));
+  for (const text of [JSON.stringify(run.report), reportText(run.report)]) {
+    assert.doesNotMatch(text, UNSAFE);
+    assert.doesNotMatch(text, JUNK);
+  }
 });
 
 // The shipped bundle, confined wherever the probe passes.

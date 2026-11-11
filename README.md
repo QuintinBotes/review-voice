@@ -136,7 +136,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: QuintinBotes/review-voice@review-voice--v1.23.0
+      - uses: QuintinBotes/review-voice@review-voice--v1.24.0
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           post: false
@@ -158,8 +158,11 @@ indexed, logged, or put in a prompt - as defence in depth, not as a guarantee.
 Its one write is `RV post`: a review of verified findings, inline on their
 lines, sent only with `--confirm` for that post, and an approval only while the
 head is unchanged and CI is green (see
-[ADR 0010](docs/adr/0010-review-verdict-posting.md)). It never merges, dismisses
-reviews, resolves threads or sets a status.
+[ADR 0010](docs/adr/0010-review-verdict-posting.md)). The only other write is
+`RV reply`, off unless posting is on: one templated reply under one of its own
+inline comments that a person asked a question on, also sent only with
+`--confirm` ([ADR 0035](docs/adr/0035-one-bounded-reply-per-own-finding.md)).
+It never merges, dismisses reviews, resolves threads or sets a status.
 `RV verdict` computes the full decision as JSON - event, action, reasons, CI,
 complexity cap, held findings and payload preview - and never posts, so a loop
 that drives reviews should call it instead of re-implementing the rules. Its
