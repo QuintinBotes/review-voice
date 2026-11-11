@@ -800,26 +800,27 @@ function evidenceBlockGroups(db: Database): Map<string, 'with' | 'without'> {
   return groups;
 }
 
+interface Placement {
+  severity: string;
+  lane: string;
+  rule: string;
+}
+
 /**
- * The same figures by the finding's severity, lane (a finding with no lane is a
+ * Where a stored finding sits: its severity, lane (a finding with no lane is a
  * `diff` finding) and rule. A finding recorded before rule ids existed has none
  * stored, so its rule is derived the way `compileProposals` derives it; one
- * with no category has no rule and is counted as `unknown`.
+ * with no category has no rule and is counted as `unknown`. Both breakdowns
+ * place through this one lookup, so they can never place a finding differently.
  */
-export function postedBreakdown(db: Database): PostedBreakdown {
-  const rows = db.prepare('SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes').all() as unknown as OutcomeRow[];
-  const findings = new Map<string, Map<string, { severity: string; lane: string; rule: string }>>();
-  const groups = { severity: new Map<string, OutcomeRow[]>(), lane: new Map<string, OutcomeRow[]>(), rule: new Map<string, OutcomeRow[]>() };
-  const blockGroups = evidenceBlockGroups(db);
-  const byBlock = { with: [] as OutcomeRow[], without: [] as OutcomeRow[], unknown: [] as OutcomeRow[] };
-  for (const row of rows) {
-    let known = findings.get(row.review_run_id);
+function findingPlacer(db: Database): (runId: string, findingId: string) => Placement {
+  const findings = new Map<string, Map<string, Placement>>();
+  return (runId, findingId) => {
+    let known = findings.get(runId);
     if (known === undefined) {
       known = new Map();
-      findings.set(row.review_run_id, known);
-      const stored = db.prepare('SELECT output_json FROM review_runs WHERE review_run_id = ?').get(row.review_run_id) as
-        | { output_json: string }
-        | undefined;
+      findings.set(runId, known);
+      const stored = db.prepare('SELECT output_json FROM review_runs WHERE review_run_id = ?').get(runId) as { output_json: string } | undefined;
       try {
         const parsed = JSON.parse(stored?.output_json ?? '{}') as { findings?: Record<string, unknown>[] };
         for (const finding of parsed.findings ?? []) {
@@ -837,18 +838,88 @@ export function postedBreakdown(db: Database): PostedBreakdown {
         // A run that will not parse leaves its findings unplaced, not uncounted.
       }
     }
-    const info = known.get(row.finding_id) ?? { severity: 'unknown', lane: 'diff', rule: 'unknown' };
+    return known.get(findingId) ?? { severity: 'unknown', lane: 'diff', rule: 'unknown' };
+  };
+}
+
+const collect = <R, S>(map: Map<string, R[]>, statsOf: (rows: R[]) => S): Record<string, S> =>
+  Object.fromEntries([...map.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, list]) => [key, statsOf(list)]));
+
+/**
+ * The same figures by the finding's severity, lane and rule, placed by
+ * `findingPlacer`, over every stored outcome or with `since` (an ISO time) only
+ * those whose run was created at or after it, the window `postedStats` uses.
+ */
+export function postedBreakdown(db: Database, { since }: { since?: string } = {}): PostedBreakdown {
+  const rows = (
+    since === undefined
+      ? db.prepare('SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes').all()
+      : db
+          .prepare(
+            `SELECT o.review_run_id AS review_run_id, o.finding_id AS finding_id, o.outcome AS outcome, o.strength AS strength
+             FROM finding_outcomes o JOIN review_runs r ON r.review_run_id = o.review_run_id WHERE r.created_at >= ?`,
+          )
+          .all(since)
+  ) as unknown as OutcomeRow[];
+  const place = findingPlacer(db);
+  const groups = { severity: new Map<string, OutcomeRow[]>(), lane: new Map<string, OutcomeRow[]>(), rule: new Map<string, OutcomeRow[]>() };
+  const blockGroups = evidenceBlockGroups(db);
+  const byBlock = { with: [] as OutcomeRow[], without: [] as OutcomeRow[], unknown: [] as OutcomeRow[] };
+  for (const row of rows) {
+    const info = place(row.review_run_id, row.finding_id);
     groups.severity.set(info.severity, [...(groups.severity.get(info.severity) ?? []), row]);
     groups.lane.set(info.lane, [...(groups.lane.get(info.lane) ?? []), row]);
     groups.rule.set(info.rule, [...(groups.rule.get(info.rule) ?? []), row]);
     byBlock[blockGroups.get(row.review_run_id) ?? 'unknown'].push(row);
   }
-  const collect = (map: Map<string, OutcomeRow[]>): Record<string, PostedStats> =>
-    Object.fromEntries([...map.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, list]) => [key, statsOf(list)]));
   return {
-    bySeverity: collect(groups.severity),
-    byLane: collect(groups.lane),
-    byRule: collect(groups.rule),
+    bySeverity: collect(groups.severity, statsOf),
+    byLane: collect(groups.lane, statsOf),
+    byRule: collect(groups.rule, statsOf),
     byEvidenceBlock: { with: statsOf(byBlock.with), without: statsOf(byBlock.without), unknown: statsOf(byBlock.unknown) },
   };
+}
+
+export interface PrecisionStats {
+  /** keep and rewrite rows, as owner_accepted_precision counts them. */
+  kept: number;
+  dismissed: number;
+  /** kept / (kept + dismissed); null with no labelled finding. */
+  precision: number | null;
+}
+
+function precisionOf(rows: { action: string }[]): PrecisionStats {
+  const kept = rows.filter((row) => row.action !== 'dismiss').length;
+  const dismissed = rows.length - kept;
+  return { kept, dismissed, precision: rows.length === 0 ? null : kept / rows.length };
+}
+
+/**
+ * The owner's labels by the finding's lane and rule, placed as `postedBreakdown`
+ * places outcomes. `keep` and `rewrite` are kept and `dismiss` is dismissed;
+ * `never_flag` and any later action are not labels for this figure, as they are
+ * not for the global metric, and an unlabelled finding appears nowhere because
+ * silence is never a label. `since` windows by the run's creation time.
+ */
+export function precisionBreakdown(db: Database, { since }: { since?: string } = {}): { byLane: Record<string, PrecisionStats>; byRule: Record<string, PrecisionStats> } {
+  const labels = `f.action IN ('keep', 'rewrite', 'dismiss')`;
+  const rows = (
+    since === undefined
+      ? db.prepare(`SELECT review_run_id, finding_id, action FROM feedback f WHERE ${labels}`).all()
+      : db
+          .prepare(
+            `SELECT f.review_run_id AS review_run_id, f.finding_id AS finding_id, f.action AS action
+             FROM feedback f JOIN review_runs r ON r.review_run_id = f.review_run_id WHERE ${labels} AND r.created_at >= ?`,
+          )
+          .all(since)
+  ) as unknown as { review_run_id: string; finding_id: string; action: string }[];
+  const place = findingPlacer(db);
+  const byLane = new Map<string, typeof rows>();
+  const byRule = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const info = place(row.review_run_id, row.finding_id);
+    byLane.set(info.lane, [...(byLane.get(info.lane) ?? []), row]);
+    byRule.set(info.rule, [...(byRule.get(info.rule) ?? []), row]);
+  }
+  return { byLane: collect(byLane, precisionOf), byRule: collect(byRule, precisionOf) };
 }

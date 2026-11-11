@@ -5,7 +5,9 @@ import { countWords } from '../contract/words.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { hashDiff, storedFamilies } from '../store/runs.ts';
 import { FAMILIES } from '../agents/types.ts';
-import { postedStats, replyStats } from '../store/outcomes.ts';
+import { postedBreakdown, postedStats, precisionBreakdown, replyStats, type PostedStats, type PrecisionStats } from '../store/outcomes.ts';
+import { activeSuppressions } from '../policy/versions.ts';
+import { POLICY_SUPPRESSED_PREFIX } from '../scoring/score.ts';
 
 export interface Metric {
   name: string;
@@ -25,6 +27,27 @@ export interface Metric {
    * rules is not a target, it is a mislabelled aspiration.
    */
   kind: 'gate' | 'goal';
+}
+
+/**
+ * How the text output and the rendered report print one figure: the same three
+ * rules in one place, so the two can never disagree.
+ */
+export function formatMetricValue(metric: Metric): string {
+  if (metric.value === null) return 'no data';
+  return Number.isInteger(metric.value) && metric.name.endsWith('_tracked') ? String(metric.value) : metric.value.toFixed(2);
+}
+
+/** A goal that is not met is not a failure, and printing it as one trains the reader to ignore the word. */
+export function metricMark(metric: Metric): 'ok' | 'FAIL' | 'over' | '-' {
+  if (metric.meets === null || metric.target === 'no target') return '-';
+  if (metric.meets) return 'ok';
+  return metric.kind === 'goal' ? 'over' : 'FAIL';
+}
+
+export function metricTarget(metric: Metric): string {
+  if (metric.target === 'no target') return 'reported, not scored';
+  return `${metric.kind === 'goal' ? 'goal' : 'target'} ${metric.target}`;
 }
 
 function percentile(values: number[], p: number): number | null {
@@ -333,6 +356,127 @@ export function describeByFamily(figures: ByFamily): string[] {
       return `  ${name.padEnd(8)}${second}; ${challenged}`;
     }),
   ];
+}
+
+
+export interface RuleEffectiveness {
+  rule_id: string;
+  /** Every active suppression naming the rule; a null glob is everywhere. */
+  suppressions: { glob: string | null; policy_version: number | null }[];
+  /** The earliest approval among them, ISO; null when no row records one. */
+  approved_at: string | null;
+  /** Verified findings of the rule held since approval; null when approved_at is null or runs is 0. */
+  held: number | null;
+  /** Runs created at or after approval, the basis of held; null when approved_at is null. */
+  runs: number | null;
+  /** Strong outcomes of the rule's findings posted since approval; null with none. */
+  posted: PostedStats | null;
+  /** The owner's labels on the rule's findings posted since approval (promoted ones included); null with none. */
+  feedback: PrecisionStats | null;
+  basis: string;
+}
+
+/**
+ * Whether each approved suppression is still right: how many verified findings
+ * it held since approval, and what became of findings of the same rule posted
+ * anyway (promoted, or on a path outside its glob). A version reactivated by
+ * `policy rollback` keeps its first `approved_at`, so its window starts there
+ * and includes the time it was inactive.
+ */
+export function ruleEffectiveness(db: Database): RuleEffectiveness[] {
+  const byRule = new Map<string, ReturnType<typeof activeSuppressions>>();
+  for (const suppression of activeSuppressions(db)) {
+    byRule.set(suppression.ruleId, [...(byRule.get(suppression.ruleId) ?? []), suppression]);
+  }
+  return [...byRule.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([ruleId, list]) => {
+      const suppressions = list.map((s) => ({ glob: s.glob, policy_version: s.policyVersion }));
+      const approvedAt = list.map((s) => s.approvedAt).filter((at): at is string => at !== null).sort()[0] ?? null;
+      if (approvedAt === null) {
+        return {
+          rule_id: ruleId,
+          suppressions,
+          approved_at: null,
+          held: null,
+          runs: null,
+          posted: null,
+          feedback: null,
+          basis: `no approval time recorded for policy version ${list[0]?.policyVersion ?? 'unknown'}; nothing counted`,
+        };
+      }
+      // Read the way challengeCounts reads scores[]: a row that will not parse or has no array is skipped.
+      const rows = db.prepare('SELECT output_json FROM review_runs WHERE created_at >= ?').all(approvedAt) as unknown as RunRow[];
+      let held = 0;
+      let runs = 0;
+      for (const row of rows) {
+        let scores: unknown;
+        try {
+          scores = (JSON.parse(row.output_json) as { scores?: unknown } | null)?.scores;
+        } catch {
+          continue;
+        }
+        if (!Array.isArray(scores)) continue;
+        runs += 1;
+        held += scores.filter((entry) => (entry as { rejectedBecause?: unknown } | null)?.rejectedBecause === `${POLICY_SUPPRESSED_PREFIX}${ruleId}`).length;
+      }
+      const posted = postedBreakdown(db, { since: approvedAt }).byRule;
+      const feedback = precisionBreakdown(db, { since: approvedAt }).byRule;
+      // Own keys only, since a rule id such as constructor would otherwise read Object.prototype.
+      const postedStats = Object.hasOwn(posted, ruleId) ? (posted[ruleId] ?? null) : null;
+      return {
+        rule_id: ruleId,
+        suppressions,
+        approved_at: approvedAt,
+        // A count over no run is no data, not zero.
+        held: runs === 0 ? null : held,
+        runs,
+        // Weak outcomes alone measure nothing, and their fixed and dismissed would read as measured zeros.
+        posted: postedStats !== null && postedStats.fixed + postedStats.dismissed > 0 ? postedStats : null,
+        feedback: Object.hasOwn(feedback, ruleId) ? (feedback[ruleId] ?? null) : null,
+        basis:
+          runs === 0
+            ? `no run recorded since ${approvedAt}`
+            : `${held} held in ${runs} run(s) since ${approvedAt}; posted outcomes count strong ones only`,
+      };
+    });
+}
+
+/** The object `evaluate --json` prints and `evaluate --html` renders. Keys stay snake case on the wire. */
+export interface EvaluationReport {
+  /** ISO time the report was computed, from ComputeOptions.now so a test can pin it. */
+  generated_at: string;
+  /** The window the `_recent` rates use, so the page can say which days it covers. */
+  window_days: number;
+  metrics: Metric[];
+  posted_breakdown: {
+    by_severity: Record<string, PostedStats>;
+    by_lane: Record<string, PostedStats>;
+    by_rule: Record<string, PostedStats>;
+    /** S15's split by whether the posted comments carried an evidence block. */
+    by_evidence_block: { with: PostedStats; without: PostedStats; unknown: PostedStats };
+  };
+  precision_breakdown: { by_lane: Record<string, PrecisionStats>; by_rule: Record<string, PrecisionStats> };
+  stage_seconds: Record<string, { median: number; p95: number; runs: number }>;
+  rule_effectiveness: RuleEffectiveness[];
+  /** Per model family (docs/adr/0034), as `byFamily` returns it. */
+  by_family: ByFamily;
+}
+
+/** The caller passes `metrics` so the recall figures ride along when `--recall` is given. */
+export function evaluationReport(db: Database, metrics: Metric[], options: ComputeOptions = {}): EvaluationReport {
+  const { bySeverity, byLane, byRule, byEvidenceBlock } = postedBreakdown(db);
+  const precision = precisionBreakdown(db);
+  return {
+    generated_at: (options.now ?? (() => new Date()))().toISOString(),
+    window_days: options.windowDays ?? DEFAULT_WINDOW_DAYS,
+    metrics,
+    posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule, by_evidence_block: byEvidenceBlock },
+    precision_breakdown: { by_lane: precision.byLane, by_rule: precision.byRule },
+    stage_seconds: stageSeconds(db),
+    rule_effectiveness: ruleEffectiveness(db),
+    by_family: byFamily(db),
+  };
 }
 
 /**

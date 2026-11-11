@@ -122,6 +122,40 @@ input says. Prefer it to `continue-on-error: true` on the step, which lets a
 `failed_closed` change through as well. Nothing about a failure is ever
 posted to the pull request.
 
+## The analytics report
+
+`review-voice evaluate --html` renders the evaluation figures (the gates,
+goals and reported figures with their bases, seconds by stage, posted-finding
+outcomes, owner labels by lane and rule, and each active suppression since its
+approval) as a static HTML fragment in the subset GitHub renders in a job
+summary. The action does not write it, and it puts no `review-voice` command
+on the runner. A workflow that wants it adds these steps after the review step.
+They check out the plugin at the tag the review step pins (a release with
+`evaluate --html`), run its bundle on Node 22, and set `REVIEW_VOICE_DATA_DIR`
+to the action's own data directory, `${{ runner.temp }}/review-voice`, so the
+figures cover the store the cache restored. Without that variable the bundle
+opens an empty store on the runner and the summary reads `no data` throughout.
+
+```yaml
+      - uses: actions/checkout@v4
+        with:
+          repository: QuintinBotes/review-voice
+          ref: review-voice--v<version>
+          path: .review-voice-plugin
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - env:
+          REVIEW_VOICE_DATA_DIR: ${{ runner.temp }}/review-voice
+        run: node .review-voice-plugin/plugins/review-voice/dist/review-voice.mjs evaluate --html >> "$GITHUB_STEP_SUMMARY"
+```
+
+Leave it out unless everyone who can see the Actions run may see the lanes,
+rule ids and globs of the repository's configuration. Locally,
+`review-voice evaluate --html --out <path>` writes the same report as a
+complete static page that loads nothing. See
+[docs/EVALUATION.md](EVALUATION.md), "The rendered report".
+
 ## Provenance
 
 Every review the action runs is recorded with the origin `action`, which
