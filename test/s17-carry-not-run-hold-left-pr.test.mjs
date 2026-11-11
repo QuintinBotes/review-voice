@@ -23,7 +23,7 @@ const NOT_RUN = 'challenger not run: runners.codex is not configured';
 const hold = (path, line, candidateId) => ({ path, line, verdict: 'challenge-partly', source: 'challenge', reason: NOT_RUN, severity: 'minor', candidateId, text: `the value at ${path}:${line} is never checked` });
 
 /** Records a run holding `held`, moves a.ts out of the pull request, carries the run, and returns the carried run and its event. */
-function carried(held) {
+function carried(held, left = { noLongerChanged: ['a.ts'] }, manifestFiles = [{ path: 'b.ts' }]) {
   const base = mkdtempSync(join(tmpdir(), 'rv-s17-carry-hold-'));
   const repo = join(base, 'repo');
   const dataDir = join(base, 'data');
@@ -54,8 +54,8 @@ function carried(held) {
     git('commit', '-q', '-m', 'merge base');
     const head = git('rev-parse', 'HEAD');
     const files = join(base, 'files.json');
-    const scope = { kind: 'unchanged', since: prior, priorRunId: runId, priorReviewedAt: null, mergeBase: prior, reason: 'base-merged', noLongerChanged: ['a.ts'] };
-    writeFileSync(files, JSON.stringify({ files: [{ path: 'b.ts' }], scope }));
+    const scope = { kind: 'unchanged', since: prior, priorRunId: runId, priorReviewedAt: null, mergeBase: prior, reason: 'base-merged', ...left };
+    writeFileSync(files, JSON.stringify({ ...(manifestFiles === null ? {} : { files: manifestFiles }), scope }));
     const carry = run(['carry', '--from', runId, '--head', head, '--text', '--files', files]);
     assert.equal(carry.code, 0, carry.stderr);
     const second = run(['record', '--repository', 'o/r', '--head', head, '--carried-from', runId, '--files', files], carry.stdout);
@@ -83,4 +83,18 @@ test('S17: a challenger-not-run hold on a file the pull request still changes ca
   const result = carried([hold('a.ts', 20, 'cand_001'), hold('b.ts', 5, 'cand_002')]);
   assert.deepEqual(result.held, ['b.ts:5']);
   assert.equal(result.mapped, 'COMMENT');
+});
+
+for (const [label, manifestFiles] of [['with the pull request file list', [{ path: 'b.ts' }]], ['with no file list', null]]) {
+  test(`S17: a carry settles a challenger-not-run hold on a file the base absorbed, from a manifest ${label}`, () => {
+    const result = carried([hold('a.ts', 20, 'cand_001'), hold('b.ts', 5, 'cand_002')], { absorbedByBase: ['a.ts'] }, manifestFiles);
+    assert.deepEqual(result.held, ['b.ts:5']);
+    assert.equal(result.mapped, 'COMMENT');
+  });
+}
+
+test('S17: a carry settles a hold whose path the analyst wrote with a leading ./ once its file left the pull request', () => {
+  const result = carried([hold('./a.ts', 20, 'cand_001')], { noLongerChanged: ['a.ts'] }, null);
+  assert.deepEqual(result.held, []);
+  assert.equal(result.mapped, 'APPROVE');
 });

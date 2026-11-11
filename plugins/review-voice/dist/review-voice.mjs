@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { join as join29 } from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { format } from "node:util";
@@ -770,6 +769,21 @@ function parseHunks(diff) {
   }
   finishHunk();
   return files2;
+}
+function patchRenames(diff) {
+  const renames = /* @__PURE__ */ new Map();
+  let header = false;
+  let from = null;
+  for (const raw of diff.split("\n")) {
+    const line3 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    if (line3.startsWith("diff --git ")) {
+      header = true;
+      from = null;
+    } else if (line3.startsWith("@@ ")) header = false;
+    else if (header && line3.startsWith("rename from ")) from = unquoteGitPath(line3.slice("rename from ".length));
+    else if (header && from !== null && line3.startsWith("rename to ")) renames.set(from, unquoteGitPath(line3.slice("rename to ".length)));
+  }
+  return renames;
 }
 function changedLines(file2, line3) {
   const byDistance = [.../* @__PURE__ */ new Set([...file2.added, ...file2.deletionSites])].sort(
@@ -1787,10 +1801,17 @@ function autoMode(input) {
   return { mode: "standard", reason: "auto: production source changed within the standard limits" };
 }
 function challengeFamily(input) {
-  const base = input.runners?.use.challenge ?? "claude";
-  const other = input.runners?.use.agentAuthoredChallenge ?? null;
-  if (other !== null && other !== base && input.authorship?.agent === true && input.authorship.family === base) {
-    return { challenge: other, reason: `agent-authored by ${base}; challenged on ${other} (runners.use.agent_authored_challenge)` };
+  const use = input.runners?.use;
+  const base = use?.challenge ?? "claude";
+  if (use?.challengeUnreadable !== void 0) return { challenge: base, reason: "runners.use.challenge", notRun: use.challengeUnreadable };
+  const other = use?.agentAuthoredChallenge ?? null;
+  if (input.authorship?.agent === true && input.authorship.family === base) {
+    if (use?.agentAuthoredChallengeUnreadable !== void 0) {
+      return { challenge: base, reason: "runners.use.agent_authored_challenge", notRun: use.agentAuthoredChallengeUnreadable };
+    }
+    if (other !== null && other !== base) {
+      return { challenge: other, reason: `agent-authored by ${base}; challenged on ${other} (runners.use.agent_authored_challenge)` };
+    }
   }
   return { challenge: base, reason: base === "claude" ? "default" : "runners.use.challenge" };
 }
@@ -9666,7 +9687,7 @@ var GitHubClient = class {
     }
     this.baseUrl = options.baseUrl ?? "https://api.github.com";
     this.doFetch = options.fetchImpl ?? fetch;
-    this.sleep = options.sleep ?? ((ms) => new Promise((resolve12) => setTimeout(resolve12, ms)));
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve13) => setTimeout(resolve13, ms)));
     this.token = options.token ?? null;
   }
   authorization() {
@@ -13719,7 +13740,7 @@ function stopCommandsOnSignal() {
   };
 }
 function spawnCommand(command, options) {
-  return new Promise((resolve12) => {
+  return new Promise((resolve13) => {
     const child = spawnChild(command, options.args ?? [], { cwd: options.cwd, env: options.env, shell: options.shell, detached: options.detached, stdio: "pipe" });
     const pid = child.pid;
     if (pid !== void 0) runningGroups.add(pid);
@@ -13750,7 +13771,7 @@ function spawnCommand(command, options) {
         killGroup(pid, "SIGKILL");
         runningGroups.delete(pid);
       }
-      resolve12({
+      resolve13({
         status,
         stdout: Buffer.concat(chunks.stdout).toString(options.encoding),
         stderr: Buffer.concat(chunks.stderr).toString(options.encoding),
@@ -14687,7 +14708,12 @@ function readRunners(value, result) {
   if (block["use"] === void 0) return;
   const use = section(block["use"], "runners.use", result.warnings);
   if (use === null) {
-    result.warnings.push("runners.use must be a mapping; using the defaults.");
+    if (block["use"] === null) {
+      result.warnings.push("runners.use must be a mapping; using the defaults.");
+      return;
+    }
+    result.runners.use.challengeUnreadable = "runners.use is not a mapping";
+    result.warnings.push("runners.use must be a mapping; the challenge does not run and every challenged finding is held until it is one.");
     return;
   }
   const chosen = (key2, fallback) => {
@@ -14695,22 +14721,28 @@ function readRunners(value, result) {
     if (value2 === void 0) return fallback;
     const family = FAMILIES.find((known) => known === value2);
     if (family === void 0) {
-      result.warnings.push(`runners.use.${key2} must be one of ${FAMILIES.join(", ")}; using ${fallback ?? "none"}.`);
+      const reason2 = `runners.use.${key2} is not one of ${FAMILIES.join(", ")}`;
+      if (key2 === "challenge") result.runners.use.challengeUnreadable = reason2;
+      else result.runners.use.agentAuthoredChallengeUnreadable = reason2;
+      result.warnings.push(
+        `runners.use.${key2} must be one of ${FAMILIES.join(", ")}; ` + (key2 === "challenge" ? "the challenge does not run and every challenged finding is held until it names one." : "the challenge of a change an agent of the challenge family wrote does not run and its findings are held until it names one.")
+      );
       return fallback;
     }
     if (family !== "claude" && result.runners.external[family] === void 0) {
-      result.warnings.push(`runners.use.${key2} names ${family}, but there is no runners.${family} block; using ${fallback ?? "none"}.`);
-      return fallback;
+      result.warnings.push(`runners.use.${key2} names ${family}, but there is no runners.${family} block; every finding challenged on ${family} is held.`);
     }
     return family;
   };
   result.runners.use.challenge = chosen("challenge", "claude") ?? "claude";
   result.runners.use.agentAuthoredChallenge = chosen("agent_authored_challenge", null);
 }
-function runnersHonoured(path, configPath) {
-  const source = process.env["REVIEW_VOICE_CONFIG_SOURCE"];
-  if (source !== void 0) return source === "flag" || source === "env";
-  return path !== void 0 || configPath === process.env["REVIEW_VOICE_CONFIG"];
+var CONFIG_SOURCES = ["flag", "env", "checkout", "base", "default"];
+var OPERATOR_SOURCES = ["flag", "env"];
+function environmentSource() {
+  const stated = process.env["REVIEW_VOICE_CONFIG_SOURCE"];
+  if (stated === void 0) return "env";
+  return CONFIG_SOURCES.find((kind) => kind === stated) ?? "checkout";
 }
 var GENERIC_SIGNATURE_WORDS = /* @__PURE__ */ new Set([
   "error",
@@ -15104,13 +15136,13 @@ function readReviewers(identity2, result) {
   }
   result.reviewers = listed;
 }
-function configFile(repositoryRoot2, warnings = []) {
+function configFileSource(repositoryRoot2, warnings = []) {
   const override = process.env["REVIEW_VOICE_CONFIG"];
   if (override !== void 0 && override.length > 0) {
-    if (isAbsolute(override)) return override;
+    if (isAbsolute(override)) return { path: override, source: environmentSource() };
     warnings.push(`REVIEW_VOICE_CONFIG must be an absolute path; reading .review-voice/config.yaml instead.`);
   }
-  return join8(repositoryRoot2, ".review-voice", "config.yaml");
+  return { path: join8(repositoryRoot2, ".review-voice", "config.yaml"), source: "checkout" };
 }
 function readConfigDocument(value, repositoryRoot2, result, honourRunners) {
   const doc = section(value, "", result.warnings);
@@ -15261,7 +15293,7 @@ function readConfigDocument(value, repositoryRoot2, result, honourRunners) {
     });
   }
 }
-function loadConfig(repositoryRoot2, baselinePath, path, db) {
+function loadConfig(repositoryRoot2, baselinePath, path, db, source) {
   const result = {
     ownerReviewer: null,
     reviewers: [],
@@ -15295,10 +15327,11 @@ function loadConfig(repositoryRoot2, baselinePath, path, db) {
     unapproved: [],
     warnings: []
   };
-  const configPath = path ?? configFile(repositoryRoot2, result.warnings);
+  const chosen = path === void 0 ? configFileSource(repositoryRoot2, result.warnings) : { path, source: source ?? "checkout" };
+  const configPath = chosen.path;
   if (existsSync4(configPath)) {
     try {
-      readConfigDocument(parse(readFileSync5(configPath, "utf8")), repositoryRoot2, result, runnersHonoured(path, configPath));
+      readConfigDocument(parse(readFileSync5(configPath, "utf8")), repositoryRoot2, result, OPERATOR_SOURCES.includes(chosen.source));
     } catch (error) {
       result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
     }
@@ -15669,8 +15702,8 @@ async function queueCommand(argv, deps) {
 }
 
 // plugins/review-voice/src/watch/command.ts
-import { closeSync, constants as constants2, fsyncSync, mkdirSync as mkdirSync4, openSync, readFileSync as readFileSync7, renameSync as renameSync2, unlinkSync as unlinkSync4, writeSync } from "node:fs";
-import { join as join11 } from "node:path";
+import { closeSync, constants as constants2, existsSync as existsSync6, fsyncSync, mkdirSync as mkdirSync4, openSync, readFileSync as readFileSync7, renameSync as renameSync2, unlinkSync as unlinkSync4, writeSync } from "node:fs";
+import { join as join11, resolve as resolve2 } from "node:path";
 
 // plugins/review-voice/src/github/writer.ts
 var WriteViolation = class extends Error {
@@ -17491,13 +17524,13 @@ function lockPort(dataDir) {
 var answer = (dataDir) => `review-voice-watch ${process.pid} ${dataDir}
 `;
 function probe(port) {
-  return new Promise((resolve12) => {
+  return new Promise((resolve13) => {
     const socket = connect({ host: "127.0.0.1", port });
     let text4 = "";
     const done = (pid) => {
       clearTimeout(timer);
       socket.destroy();
-      resolve12(pid);
+      resolve13(pid);
     };
     const timer = setTimeout(() => done(null), PROBE_MS);
     socket.setEncoding("utf8");
@@ -17522,16 +17555,16 @@ async function acquireLock(dataDir, port = lockPort(dataDir), patience = DEFAULT
       socket.once("data", () => socket.end(answer(dataDir)));
     });
     const listening = server;
-    const failure = await new Promise((resolve12) => {
-      listening.once("error", (error) => resolve12(error));
-      listening.listen({ host: "127.0.0.1", port, exclusive: true }, () => resolve12(null));
+    const failure = await new Promise((resolve13) => {
+      listening.once("error", (error) => resolve13(error));
+      listening.listen({ host: "127.0.0.1", port, exclusive: true }, () => resolve13(null));
     });
     if (failure === null) break;
     if (failure.code !== "EADDRINUSE") throw failure;
     const holder = await probe(port);
     if (holder !== null) return { holder };
     if (attempt >= patience.tries) return { foreign: port };
-    await new Promise((resolve12) => setTimeout(resolve12, patience.waitMs));
+    await new Promise((resolve13) => setTimeout(resolve13, patience.waitMs));
   }
   server.unref();
   const display = join9(dataDir, "watch.lock");
@@ -17615,6 +17648,18 @@ function gitPrepareClone(run = runQuietly) {
 
 // plugins/review-voice/src/watch/command.ts
 var CONFIG_COPY = "watch-config.yaml";
+function watchConfigSource(argv, root) {
+  if (argv.includes("--config")) {
+    const named = argv[argv.indexOf("--config") + 1];
+    if (named === void 0 || named.startsWith("--")) return "--config needs a value.";
+    const path = resolve2(named);
+    return existsSync6(path) ? { path, source: "flag" } : `--config ${named} does not exist.`;
+  }
+  return root === null ? null : configFileSource(root);
+}
+function reviewSpawnOptions(dataDir, config2) {
+  return { configPath: join11(dataDir, CONFIG_COPY), configSource: config2?.source };
+}
 function writeCopy(source, copy) {
   const text4 = readFileSync7(source);
   const temp = `${copy}.tmp-${process.pid}`;
@@ -17967,12 +18012,15 @@ function killGroup2(pid, signal2) {
 function spawnReview(bundle, options) {
   const graceMs = options.graceMs ?? 1e4;
   const live2 = /* @__PURE__ */ new Map();
-  const review2 = ({ repository, pull, clone, post, mode, expectHead, timeoutMs, runRepositoryCommands }) => new Promise((resolve12) => {
+  const review2 = ({ repository, pull, clone, post, mode, expectHead, timeoutMs, runRepositoryCommands }) => new Promise((resolve13) => {
     const args = [bundle, "review", "--pr", String(pull), "--repository", repository, "--json", "--expect-head", expectHead, "--origin", "watch"];
     if (post) args.push("--post", "--recheck-thread");
     if (mode !== void 0) args.push("--mode", mode);
     const env = { ...process.env };
-    if (options.configPath !== null) env["REVIEW_VOICE_CONFIG"] = options.configPath;
+    if (options.configPath !== null) {
+      env["REVIEW_VOICE_CONFIG"] = options.configPath;
+      env["REVIEW_VOICE_CONFIG_SOURCE"] = options.configSource ?? "checkout";
+    }
     if (runRepositoryCommands) delete env["REVIEW_VOICE_NO_COMMANDS"];
     else env["REVIEW_VOICE_NO_COMMANDS"] = "1";
     const child = spawn(process.execPath, args, { cwd: clone, env, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -18001,10 +18049,10 @@ function spawnReview(bundle, options) {
       if (pid !== void 0) live2.delete(pid);
       markDone();
       if (timedOut) {
-        resolve12({ exitCode: 124, runId: null, event: null, reviewUrl: null, detail: `review timed out after ${formatDuration(timeoutMs)}` });
+        resolve13({ exitCode: 124, runId: null, event: null, reviewUrl: null, detail: `review timed out after ${formatDuration(timeoutMs)}` });
       } else {
         const why = stderr.length > 0 ? stderr : exitSignal !== null ? `killed by ${exitSignal}` : spawnError;
-        resolve12(reviewResult(exitCode ?? 1, stdout, why));
+        resolve13(reviewResult(exitCode ?? 1, stdout, why));
       }
     };
     const terminate = () => {
@@ -18431,8 +18479,11 @@ var COMMAND_HELP = {
       "  environment as evidence, plus the names verification.env_passthrough lists. With",
       "  verification.runner: <codex|gemini>, the command is that runners.<family> block's argv, run",
       "  without a shell with {schema} (the verdict schema file), {output} (read in place of stdout) and",
-      "  {cwd} replaced, and every verdict carries that family; verification.family labels a hand-written",
-      "  command the same way. REVIEW_VOICE_NO_COMMANDS=1 runs neither.",
+      "  {cwd} replaced, and every verdict carries that family. Its stderr is never read for a verdict.",
+      "  Its answer counts only with exit status 0;",
+      "  any other status, a signal or a timeout keeps the finding with its severity, as unverified with the",
+      "  reason verifier did not run, and puts the verifier's name (not the finding) in didNotRun.",
+      "  verification.family labels a hand-written command the same way. REVIEW_VOICE_NO_COMMANDS=1 runs neither.",
       "Exit codes: 0 ok (a rejected finding is a result), 2 bad input or invocation, or --cwd is not a directory."
     )
   },
@@ -18833,10 +18884,13 @@ var COMMAND_HELP = {
       "  The config is copied to <data directory>/watch-config.yaml and read again at the start of",
       "  every pass, so a change to posting, the allowlist or a policy applies from the next pass.",
       "  Each review runs with REVIEW_VOICE_CONFIG set to that copy, so the clone's own config is",
-      "  never read, with --expect-head set to the head the queue read, and with",
-      "  REVIEW_VOICE_NO_COMMANDS=1 unless watch.run_repository_commands is true. A review still",
-      "  running after watch.review_timeout (default 45m, at most 6h), or when the watcher is",
-      "  interrupted, gets SIGTERM with its process group, then SIGKILL 10 seconds later, and is",
+      "  never read, and REVIEW_VOICE_CONFIG_SOURCE set to where the copied file came from: flag for",
+      "  --config, env for an absolute REVIEW_VOICE_CONFIG (or the source REVIEW_VOICE_CONFIG_SOURCE",
+      "  states beside it), else checkout. The runners: block is honoured only for flag and env, in",
+      "  watch and in every review it starts. Each review also runs with --expect-head set to the head",
+      "  the queue read, and with REVIEW_VOICE_NO_COMMANDS=1 unless watch.run_repository_commands is",
+      "  true. A review still running after watch.review_timeout (default 45m, at most 6h), or when",
+      "  the watcher is interrupted, gets SIGTERM with its process group, then SIGKILL 10 seconds later, and is",
       "  recorded as failed. Git lock files older than 10 minutes in a clone are removed first.",
       "  A review that reports its failure mode is recorded failed-open (low risk) or failed-closed",
       "  (high or unassessed risk); both count toward watch.max_attempts_per_head like failed.",
@@ -18852,6 +18906,8 @@ var COMMAND_HELP = {
       "                         The thread is re-read before every post (review --recheck-thread)",
       "  --mode <m>             Cost mode for review: fast, standard, thorough or auto",
       "  --max <n>              REVIEW entries per pass (default queue.max_per_pass, 20)",
+      "  --config <path>        Read this config file, the operator's own, instead of an absolute",
+      "                         REVIEW_VOICE_CONFIG or this checkout's .review-voice/config.yaml",
       "  --json                 Emit the rows each pass wrote as JSON",
       "Reads: nothing on stdin; GitHub search, pull requests and CI (read-only), the local store and config.",
       "Writes: one line per entry, `owner/repo#n: <action> [event] (<status> <url or detail>)`, then",
@@ -18874,8 +18930,17 @@ var COMMAND_HELP = {
       "                         else the git remote)",
       "  --base <ref>           Base ref reviewed against (on --pr: refs.mergeBase)",
       "  --head <sha>           Head commit reviewed (stored in full when this clone has it)",
-      "  --diff-file <path>     Diff the review was produced from (for the run hash)",
-      "  --files <path>         files.json from diff --out, carrying pull-request scope",
+      "  --diff-file <path>     Diff the review was produced from (for the run hash, and for the renames",
+      "                         an inherited hold follows)",
+      "  --files <path>         files.json from diff --out, carrying pull-request scope. On an incremental or",
+      `                         interdiff scope that links a prior run, that run's "challenger not run:" holds`,
+      "                         are all kept, on a file the review read or not, unless the pull request no longer changes it",
+      "                         (the file is not in the manifest's files list, a rename counting under both names,",
+      "                         or is in scope.noLongerChanged or scope.absorbedByBase); paths are compared as the",
+      "                         diff spells them, so ./src/app.ts is src/app.ts. A hold on a file that --diff-file",
+      "                         renames moves to the new name, and one this run holds again at the same path and",
+      "                         line is recorded once. A full scope inherits nothing, so a full review",
+      "                         (review --full) is what re-checks such a finding once the runner works",
       "  --candidates <path>    Scored candidates, so findings carry their category",
       "  --scores <path>        Score breakdowns, so explain can show its working",
       "  --verdicts <path>      Verification verdicts, including findings that were dropped",
@@ -18964,13 +19029,18 @@ var COMMAND_HELP = {
       "                         Bot author and Co-authored-by trailers. A lead for the challenge family only",
       "Reads: --files, --diff-file, --authorship, and review.mode, review.models, verification.enabled and",
       "  the reproduction block from .review-voice/config.yaml when the working directory has one, or an",
-      "  absolute REVIEW_VOICE_CONFIG; runners only from an absolute REVIEW_VOICE_CONFIG (the review driver",
-      "  passes its --config file that way), never from the working directory's .review-voice/config.yaml",
-      "  or a base commit's, which warns. The reproduce stage runs only in thorough, with reproduction",
+      "  absolute REVIEW_VOICE_CONFIG; runners only from an absolute REVIEW_VOICE_CONFIG whose source is the",
+      "  operator's (no REVIEW_VOICE_CONFIG_SOURCE beside it, or flag or env there; the review driver passes",
+      "  its --config file as flag), never from the working directory's .review-voice/config.yaml or a",
+      "  base commit's, which warns. The reproduce stage runs only in thorough, with reproduction",
       "  enabled and a runner.",
       "Writes: the StagePlan JSON on stdout, with `families.challenge` (the challenger's family and the rule",
       "  that chose it, runners.use.challenge or, for a change an agent of that same family wrote,",
-      "  runners.use.agent_authored_challenge) and `runners` (the configured runner blocks); config warnings on stderr.",
+      "  runners.use.agent_authored_challenge), `families.notRun` when a runners.use value names no family",
+      "  (the challenge then runs on none and its findings are held, never challenged on claude instead;",
+      "  no incremental or interdiff review releases such a hold, and a full review, review --full,",
+      "  is what re-checks the finding once the value is fixed)",
+      "  and `runners` (the configured runner blocks); config warnings on stderr.",
       "Exit codes: 0 ok, 2 bad invocation or unreadable input (an --authorship file included)."
     )
   },
@@ -19190,12 +19260,15 @@ var COMMAND_HELP = {
       "Config: the pull request's own .review-voice/config.yaml is never read. The run uses --config,",
       "  else an absolute REVIEW_VOICE_CONFIG, else .review-voice/config.yaml at the base commit",
       "  (the built-in defaults when the base has none, or is not in the clone). The runners: block",
-      "  is honoured only from --config or REVIEW_VOICE_CONFIG, never from the base commit or a checkout.",
+      "  is honoured only from --config or an operator REVIEW_VOICE_CONFIG (no REVIEW_VOICE_CONFIG_SOURCE",
+      "  beside it, or flag or env there, as watch states it), never from the base commit or a checkout.",
       "Reads: GitHub (read-only), the clone, the local store and the config named above;",
       "  REVIEW_VOICE_FAKE_AGENTS selects the fake agent backend; REVIEW_VOICE_NO_COMMANDS=1 skips",
       "  the static evidence commands, the reproductions, the second-pass verification command and every",
       "  configured runners.<family> runner. A skipped second pass leaves the findings unchanged; a",
-      "  configured challenger that cannot run holds the challenged findings. In thorough mode, with a",
+      "  configured challenger that cannot run holds the challenged findings. No incremental or interdiff",
+      "  review releases such a hold, whether or not it read the file, until the pull request no longer",
+      "  changes that file. A full review (--full) re-checks the finding once the runner works. In thorough mode, with a",
       "  reproduction block in the configuration, the verifier writes a reproduction for each blocking or",
       "  important finding and `reproduce` runs it (Linux only); one that does not fail holds its finding",
       "  as reproduction-did-not-fail, unless its category is one no suppression may reach (docs/adr/0032).",
@@ -19270,14 +19343,14 @@ function topLevelHelp() {
 
 // plugins/review-voice/src/review/driver.ts
 import { execFileSync as execFileSync11 } from "node:child_process";
-import { appendFileSync, copyFileSync, existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync13, rmSync as rmSync6, writeFileSync as writeFileSync6 } from "node:fs";
-import { dirname as dirname10, isAbsolute as isAbsolute3, join as join17, resolve as resolve3, sep } from "node:path";
+import { appendFileSync, copyFileSync, existsSync as existsSync10, mkdirSync as mkdirSync6, readFileSync as readFileSync13, rmSync as rmSync6, writeFileSync as writeFileSync6 } from "node:fs";
+import { dirname as dirname10, isAbsolute as isAbsolute3, join as join17, resolve as resolve4, sep } from "node:path";
 
 // plugins/review-voice/src/agents/claude-cli.ts
 import { spawn as spawn2 } from "node:child_process";
 
 // plugins/review-voice/src/agents/tools.ts
-import { existsSync as existsSync6, readFileSync as readFileSync8 } from "node:fs";
+import { existsSync as existsSync7, readFileSync as readFileSync8 } from "node:fs";
 import { dirname as dirname8, join as join12 } from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 var RUNNER_TOOLS = ["Read", "Grep", "Glob"];
@@ -19287,7 +19360,7 @@ var AgentSpecError = class extends Error {
 function pluginRoot2() {
   const here = dirname8(fileURLToPath4(import.meta.url));
   for (let dir = here; ; dir = dirname8(dir)) {
-    if (existsSync6(join12(dir, ".claude-plugin", "plugin.json"))) return dir;
+    if (existsSync7(join12(dir, ".claude-plugin", "plugin.json"))) return dir;
     if (dirname8(dir) === dir) return join12(here, "..");
   }
 }
@@ -19303,7 +19376,7 @@ function checkAgentName(name) {
 function agentFile(name) {
   checkAgentName(name);
   const path = join12(agentsDir(), `${name}.md`);
-  if (!existsSync6(path)) throw new AgentSpecError(`Unknown agent: ${name} (no ${name}.md in ${agentsDir()})`);
+  if (!existsSync7(path)) throw new AgentSpecError(`Unknown agent: ${name} (no ${name}.md in ${agentsDir()})`);
   return path;
 }
 function readAgentTools(name) {
@@ -19446,7 +19519,7 @@ function interpretEnvelope(stdout, stderr, code2) {
   return { ok: false, output: null, costUsd, ...counted, error: detail };
 }
 function spawnWatched(bin, args, input, options) {
-  return new Promise((resolve12) => {
+  return new Promise((resolve13) => {
     const child = spawn2(process.execPath, ["-e", WATCHDOG, "--", bin, ...args], {
       cwd: options.cwd,
       env: options.env,
@@ -19465,7 +19538,7 @@ function spawnWatched(bin, args, input, options) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve12(result);
+      resolve13(result);
     };
     const stop = (reason2) => {
       stopped ??= reason2;
@@ -19518,7 +19591,7 @@ function killTree(child) {
 }
 
 // plugins/review-voice/src/agents/command-cli.ts
-import { existsSync as existsSync7, mkdtempSync as mkdtempSync3, readFileSync as readFileSync10, rmSync as rmSync5, writeFileSync as writeFileSync4 } from "node:fs";
+import { existsSync as existsSync8, mkdtempSync as mkdtempSync3, readFileSync as readFileSync10, rmSync as rmSync5, writeFileSync as writeFileSync4 } from "node:fs";
 import { tmpdir as tmpdir2 } from "node:os";
 import { join as join14 } from "node:path";
 
@@ -19643,13 +19716,16 @@ var spawnRunner = async (command, input, timeoutMs, cwd, env) => {
     }
     return {
       stdout,
-      // Once {output} is named the file is the only answer: a CLI's stderr is
-      // its event stream, and a verdict there must not decide a finding.
-      stderr: fromFile ? "" : result.stderr,
+      // An argv runner answers on stdout or through {output}, as the challenger's
+      // does. A CLI's stderr is its event stream, which can quote the tree under
+      // review, and a verdict there must not decide a finding.
+      stderr: argv === null ? result.stderr : "",
       // An EPIPE on the input write (a command that answered without reading it,
-      // #297) never reaches here: spawnCommand ignores errors on stdin. Only a
-      // command that never ran, or was killed (no exit status), is a failure.
-      failed: result.error !== void 0 || result.status === null
+      // #297) never reaches here: spawnCommand ignores errors on stdin. For a
+      // shell string only a command that never ran, or was killed (no exit
+      // status), is a failure. An argv runner answers only with exit status 0,
+      // as the challenger's does, so a CLI that failed cannot reject a finding.
+      failed: result.error !== void 0 || (argv === null ? result.status === null : result.status !== 0)
     };
   } finally {
     withdraw();
@@ -19787,7 +19863,7 @@ ${prompt}`, {
     });
     if (result.failed !== void 0) return { ok: false, output: null, costUsd: null, error: result.failed };
     const fromFile = runner.command.includes("{output}");
-    const written = fromFile && existsSync7(output);
+    const written = fromFile && existsSync8(output);
     const answer2 = written ? readFileSync10(output, "utf8") : fromFile ? "" : result.stdout;
     const parsed2 = result.code === 0 ? lastJsonObject(answer2) : void 0;
     if (parsed2 !== void 0) return { ok: true, output: maskPassthroughDeep(parsed2, env, passthrough), costUsd: null };
@@ -19800,14 +19876,14 @@ ${prompt}`, {
 }
 
 // plugins/review-voice/src/agents/fake.ts
-import { existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync11, writeFileSync as writeFileSync5 } from "node:fs";
+import { existsSync as existsSync9, mkdirSync as mkdirSync5, readFileSync as readFileSync11, writeFileSync as writeFileSync5 } from "node:fs";
 import { join as join15 } from "node:path";
 function runFake(spec, prompt, dir, cwd = "", addDirs = []) {
   checkAgentName(spec.name);
   const calls = join15(dir, ".calls");
   mkdirSync5(calls, { recursive: true });
   const counter = join15(calls, `${spec.name}.count`);
-  const n = (existsSync8(counter) ? Number(readFileSync11(counter, "utf8").trim()) || 0 : 0) + 1;
+  const n = (existsSync9(counter) ? Number(readFileSync11(counter, "utf8").trim()) || 0 : 0) + 1;
   writeFileSync5(counter, `${n}
 `);
   writeFileSync5(join15(calls, `${spec.name}.${n}.prompt.txt`), prompt);
@@ -19831,8 +19907,8 @@ function runFake(spec, prompt, dir, cwd = "", addDirs = []) {
   );
   const numbered = join15(dir, `${spec.name}.${n}.json`);
   const fallback = join15(dir, `${spec.name}.json`);
-  const path = existsSync8(numbered) ? numbered : fallback;
-  if (!existsSync8(path)) {
+  const path = existsSync9(numbered) ? numbered : fallback;
+  if (!existsSync9(path)) {
     return { ok: false, output: null, costUsd: null, error: `no fake output: neither ${numbered} nor ${fallback} exists` };
   }
   let parsed2;
@@ -19857,9 +19933,9 @@ function runFake(spec, prompt, dir, cwd = "", addDirs = []) {
 
 // plugins/review-voice/src/agents/schema.ts
 import { readFileSync as readFileSync12 } from "node:fs";
-import { dirname as dirname9, isAbsolute as isAbsolute2, relative as relative2, resolve as resolve2 } from "node:path";
+import { dirname as dirname9, isAbsolute as isAbsolute2, relative as relative2, resolve as resolve3 } from "node:path";
 function schemaForRunner(schema4, baseDir) {
-  const base = resolve2(baseDir);
+  const base = resolve3(baseDir);
   const prepared = prepare(schema4, { baseDir: base, dir: base, document: schema4, inlined: false, stack: [] });
   return prepared;
 }
@@ -19898,7 +19974,7 @@ function resolveFileRef(ref, ctx) {
     throw new AgentSpecError(`Schema $ref ${ref} is absolute; only a relative file is allowed`);
   }
   const hash2 = ref.indexOf("#");
-  const file2 = resolve2(ctx.dir, hash2 === -1 ? ref : ref.slice(0, hash2));
+  const file2 = resolve3(ctx.dir, hash2 === -1 ? ref : ref.slice(0, hash2));
   const fragment = hash2 === -1 ? "" : ref.slice(hash2 + 1);
   const fromBase = relative2(ctx.baseDir, file2);
   if (fromBase.startsWith("..") || isAbsolute2(fromBase)) {
@@ -21426,19 +21502,19 @@ function resolveConfig(run) {
     if (previousSource === void 0) delete process.env["REVIEW_VOICE_CONFIG_SOURCE"];
     else process.env["REVIEW_VOICE_CONFIG_SOURCE"] = previousSource;
   });
-  const chosen = (source) => {
+  const chosen = (source, stated = source.kind) => {
     run.configSource = source;
     process.env["REVIEW_VOICE_CONFIG"] = source.path;
-    process.env["REVIEW_VOICE_CONFIG_SOURCE"] = source.kind;
+    process.env["REVIEW_VOICE_CONFIG_SOURCE"] = stated;
   };
   const flagged = run.options.config;
   if (flagged != null && flagged !== "") {
-    const path2 = resolve3(flagged);
-    if (!existsSync9(path2)) throw new Stop(2, `--config ${flagged} does not exist.`);
+    const path2 = resolve4(flagged);
+    if (!existsSync10(path2)) throw new Stop(2, `--config ${flagged} does not exist.`);
     return chosen({ kind: "flag", path: path2 });
   }
   if (previous !== void 0 && previous !== "") {
-    if (isAbsolute3(previous)) return chosen({ kind: "env", path: previous });
+    if (isAbsolute3(previous)) return chosen({ kind: "env", path: previous }, environmentSource());
     run.notes.push("REVIEW_VOICE_CONFIG must be an absolute path, so it was ignored and the base commit supplied the configuration.");
   }
   const { sha, ref } = run.pullBase;
@@ -21535,7 +21611,7 @@ function runDirectory(options, head) {
   const name = `${options.repository.replace("/", "-")}-${options.pullNumber}-${head.slice(0, 8)}`;
   const base = join17(dataDirectory(), "runs", name);
   let dir = base;
-  for (let n = 2; existsSync9(dir); n += 1) dir = `${base}-${n}`;
+  for (let n = 2; existsSync10(dir); n += 1) dir = `${base}-${n}`;
   return dir;
 }
 async function prep(run) {
@@ -21693,8 +21769,8 @@ function prepareWorkspace(run) {
       run.notes.push(`No history written for ${path}: ${firstLines(error.message)}`);
     }
     if (changedFile["status"] === "added" || run.base === null) continue;
-    const target = resolve3(baseRoot, path);
-    if (!target.startsWith(`${resolve3(baseRoot)}${sep}`)) {
+    const target = resolve4(baseRoot, path);
+    if (!target.startsWith(`${resolve4(baseRoot)}${sep}`)) {
       run.notes.push(`No base copy for ${path}: it leaves the base directory.`);
       continue;
     }
@@ -22081,7 +22157,7 @@ async function challenge(run) {
     at(run, "candidates.json"),
     "--diff-file",
     at(run, "diff.patch"),
-    ...existsSync9(reproductions) ? ["--reproductions", reproductions] : []
+    ...existsSync10(reproductions) ? ["--reproductions", reproductions] : []
   ];
   const emitted = parsed(
     (await must(
@@ -22095,10 +22171,13 @@ async function challenge(run) {
   const family = plan.families.challenge;
   const configured = family === "claude" ? void 0 : plan.runners[family];
   const runner = family === "claude" || configured === void 0 ? void 0 : { family, ...configured };
-  const notRun = family === "claude" ? null : configured === void 0 ? `runners.${family} is not configured` : noCommands(run) ? `REVIEW_VOICE_NO_COMMANDS=1 keeps the configured ${family} runner from running` : null;
+  const unreadable = plan.families.notRun;
+  const notRun = unreadable !== void 0 ? unreadable : family === "claude" ? null : configured === void 0 ? `runners.${family} is not configured` : noCommands(run) ? `REVIEW_VOICE_NO_COMMANDS=1 keeps the configured ${family} runner from running` : null;
   if (notRun !== null) {
     skip(run, "challenge", `challenger not run: ${notRun}`);
-    run.notes.push(`The challenge was to run on ${family}, but ${notRun}, so every challenged finding is held and the review cannot approve.`);
+    run.notes.push(
+      unreadable !== void 0 ? `The configuration names no family for the challenge (${notRun}), so every challenged finding is held and the review cannot approve.` : `The challenge was to run on ${family}, but ${notRun}, so every challenged finding is held and the review cannot approve.`
+    );
   }
   const results = notRun !== null ? challenged.map(() => ({ ok: false, error: "" })) : await inParallel(challenged, (finding) => {
     const id = idOf3(finding);
@@ -22131,14 +22210,14 @@ async function challenge(run) {
 }
 async function edit(run) {
   const scoresFile = at(run, "scores.challenged.json");
-  const eligible = existsSync9(scoresFile) ? list(parsed(readFileSync13(scoresFile, "utf8"))["eligible"]) : [];
+  const eligible = existsSync10(scoresFile) ? list(parsed(readFileSync13(scoresFile, "utf8"))["eligible"]) : [];
   const policy = parsed(readFileSync13(at(run, "context.json"), "utf8"))["policy"];
   const limits = isRecord5(policy) ? policy : {};
   const validate = [
     "validate-output",
     "--scale-to-files",
     String(run.summary["hunkFileCount"] ?? 0),
-    ...existsSync9(scoresFile) ? ["--scores", scoresFile] : [],
+    ...existsSync10(scoresFile) ? ["--scores", scoresFile] : [],
     ...typeof limits["maxFindings"] === "number" ? ["--max-findings", String(limits["maxFindings"])] : [],
     ...typeof limits["maxWordsPerFinding"] === "number" ? ["--max-words-per-finding", String(limits["maxWordsPerFinding"])] : []
   ];
@@ -22168,14 +22247,14 @@ ${checked.stderr.trim()}`;
 }
 async function recordStage(run) {
   const scores = at(run, "scores.challenged.json");
-  const scored = existsSync9(scores);
+  const scored = existsSync10(scores);
   if (scored) writeJson(at(run, "record-candidates.json"), { candidates: list(parsed(readFileSync13(scores, "utf8"))["eligible"]) });
   await record2(run, [
     ...scored ? ["--scores", scores, "--candidates", at(run, "record-candidates.json")] : [],
     ...run.secondPass ? ["--verdicts", at(run, "second-pass.json")] : [],
     ...run.tieBroken ? ["--tie-breaks", at(run, "reconciled.json")] : [],
     ...run.followUps ? ["--follow-ups", at(run, "verification.json")] : [],
-    ...existsSync9(at(run, "reproductions.json")) ? ["--reproductions", at(run, "reproductions.json")] : []
+    ...existsSync10(at(run, "reproductions.json")) ? ["--reproductions", at(run, "reproductions.json")] : []
   ]);
 }
 function claudeVersionOf(run) {
@@ -22219,9 +22298,9 @@ async function record2(run, extra) {
       // Both reports are written in prep, even when the commands were switched
       // off, so the record says what ran and what did not; passed only when both
       // are there, as `record` refuses one without the other.
-      ...existsSync9(at(run, "evidence.json")) && existsSync9(at(run, "symbols.json")) ? ["--evidence", at(run, "evidence.json"), "--symbols", at(run, "symbols.json")] : [],
+      ...existsSync10(at(run, "evidence.json")) && existsSync10(at(run, "symbols.json")) ? ["--evidence", at(run, "evidence.json"), "--symbols", at(run, "symbols.json")] : [],
       // So a convention quote the analyst cited is stored only when the document holds it.
-      ...existsSync9(at(run, "conventions.json")) ? ["--conventions", at(run, "conventions.json")] : [],
+      ...existsSync10(at(run, "conventions.json")) ? ["--conventions", at(run, "conventions.json")] : [],
       "--origin",
       run.options.origin ?? "driver",
       ...run.plan?.mode === void 0 ? [] : ["--mode", run.plan.mode],
@@ -22450,7 +22529,7 @@ async function runReview(options, deps) {
     if (options.expectHead != null && options.expectHead !== run.head) {
       throw new Stop(3, `The head is ${run.head}, not the expected ${options.expectHead}.`);
     }
-    run.dir = resolve3(options.out === null ? runDirectory(options, run.head) : options.out);
+    run.dir = resolve4(options.out === null ? runDirectory(options, run.head) : options.out);
     mkdirSync6(run.dir, { recursive: true });
     resolveConfig(run);
     for (const stage of STAGES) {
@@ -22539,7 +22618,7 @@ function reportText(report) {
 }
 
 // plugins/review-voice/src/cli/shared.ts
-import { readSync, mkdirSync as mkdirSync7, statSync as statSync3, existsSync as existsSync10, realpathSync as realpathSync3 } from "node:fs";
+import { readSync, mkdirSync as mkdirSync7, statSync as statSync3, existsSync as existsSync11, realpathSync as realpathSync3 } from "node:fs";
 import { basename as basename5, dirname as dirname11, join as join18 } from "node:path";
 import { execFileSync as execFileSync12 } from "node:child_process";
 var STDIN_INPUT = {
@@ -22808,7 +22887,7 @@ function verdictList(parsed2) {
 function realExistingPath(path) {
   let existing = path;
   const rest = [];
-  while (!existsSync10(existing)) {
+  while (!existsSync11(existing)) {
     const parent = dirname11(existing);
     if (parent === existing) return path;
     rest.unshift(basename5(existing));
@@ -22936,21 +23015,21 @@ async function discoverCommand() {
 
 // plugins/review-voice/src/cli/evidence.ts
 import { statSync as statSync4 } from "node:fs";
-import { resolve as resolve4 } from "node:path";
+import { resolve as resolve5 } from "node:path";
 async function evidenceCommand(argv) {
   const cwdFlag = flag(argv, "--cwd");
   if (argv.includes("--cwd") && cwdFlag === null) {
     console.error("--cwd needs a directory.");
     return 2;
   }
-  if (cwdFlag !== null && statSync4(resolve4(cwdFlag), { throwIfNoEntry: false })?.isDirectory() !== true) {
+  if (cwdFlag !== null && statSync4(resolve5(cwdFlag), { throwIfNoEntry: false })?.isDirectory() !== true) {
     console.error(`--cwd ${cwdFlag} is not a directory.`);
     return 2;
   }
   try {
     const root = repositoryRoot(process.cwd());
     const config2 = loadConfig(root);
-    const cwd = cwdFlag === null ? root : resolve4(cwdFlag);
+    const cwd = cwdFlag === null ? root : resolve5(cwdFlag);
     const collected = process.env["REVIEW_VOICE_NO_COMMANDS"] === "1" ? notRunReport(
       config2.staticEvidence.commands.map((command) => command.name),
       "REVIEW_VOICE_NO_COMMANDS"
@@ -22974,8 +23053,8 @@ async function evidenceCommand(argv) {
 // plugins/review-voice/src/cli/reproduce.ts
 import { readFileSync as readFileSync14, statSync as statSync5, writeFileSync as writeFileSync7 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
-import { dirname as dirname12, resolve as resolve5 } from "node:path";
-var isDirectory = (path) => statSync5(resolve5(path), { throwIfNoEntry: false })?.isDirectory() === true;
+import { dirname as dirname12, resolve as resolve6 } from "node:path";
+var isDirectory = (path) => statSync5(resolve6(path), { throwIfNoEntry: false })?.isDirectory() === true;
 async function reproduceCommand(argv) {
   const probeOnly = argv.includes("--probe");
   const required = probeOnly ? ["--worktree", "--run-dir"] : ["--worktree", "--verification", "--candidates", "--out", "--run-dir"];
@@ -22985,7 +23064,7 @@ async function reproduceCommand(argv) {
       return 2;
     }
   }
-  const values = Object.fromEntries(required.map((name) => [name, resolve5(flag(argv, name))]));
+  const values = Object.fromEntries(required.map((name) => [name, resolve6(flag(argv, name))]));
   for (const name of ["--worktree", "--run-dir"]) {
     if (!isDirectory(values[name])) {
       console.error(`${name} ${values[name]} is not a directory.`);
@@ -23264,7 +23343,7 @@ function retrievePrecedents(db, query) {
 }
 
 // plugins/review-voice/src/retrieval/baseline.ts
-import { existsSync as existsSync11, readFileSync as readFileSync15 } from "node:fs";
+import { existsSync as existsSync12, readFileSync as readFileSync15 } from "node:fs";
 import { dirname as dirname13, join as join19 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 function isCorpusEmpty(db) {
@@ -23274,7 +23353,7 @@ function baselineVoice() {
   const here = dirname13(fileURLToPath5(import.meta.url));
   for (const relative6 of ["..", "../.."]) {
     const candidate = join19(here, relative6, "templates", "voice.baseline.md");
-    if (existsSync11(candidate)) return readFileSync15(candidate, "utf8").trim();
+    if (existsSync12(candidate)) return readFileSync15(candidate, "utf8").trim();
   }
   throw new Error("templates/voice.baseline.md is missing from the plugin.");
 }
@@ -23430,7 +23509,7 @@ function anchorsCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/context.ts
-import { existsSync as existsSync12 } from "node:fs";
+import { existsSync as existsSync13 } from "node:fs";
 import { join as join20 } from "node:path";
 
 // plugins/review-voice/src/policy/schema.ts
@@ -23518,7 +23597,7 @@ function contextCommand() {
           // Not raised on top of a parse failure: a config that did not parse
           // says nothing about whether it has a verification block, and the
           // parse error is the actionable item.
-          warnings: config2.verification.blockPresent || config2.warnings.some((warning) => warning.startsWith(".review-voice/config.yaml could not be parsed")) ? config2.warnings : existsSync12(configPath) ? [
+          warnings: config2.verification.blockPresent || config2.warnings.some((warning) => warning.startsWith(".review-voice/config.yaml could not be parsed")) ? config2.warnings : existsSync13(configPath) ? [
             ...config2.warnings,
             "No verification block in .review-voice/config.yaml, so the second-pass verifier never runs. Configs written before it existed do not have one. See the second-pass verification section of the README."
           ] : [
@@ -24264,11 +24343,11 @@ import { dirname as dirname14, join as join22, sep as sep3 } from "node:path";
 
 // plugins/review-voice/src/conventions/tree.ts
 import { execFileSync as execFileSync13 } from "node:child_process";
-import { existsSync as existsSync13, readFileSync as readFileSync19, readdirSync as readdirSync4, statSync as statSync6 } from "node:fs";
+import { existsSync as existsSync14, readFileSync as readFileSync19, readdirSync as readdirSync4, statSync as statSync6 } from "node:fs";
 import { join as join21, sep as sep2 } from "node:path";
 function filesystemReader(root) {
   return {
-    exists: (path) => existsSync13(join21(root, path)),
+    exists: (path) => existsSync14(join21(root, path)),
     isFile: (path) => {
       try {
         return statSync6(join21(root, path)).isFile();
@@ -24306,8 +24385,8 @@ function gitTreeReader(root, ref) {
     }
   }
   const key2 = (path) => {
-    const posix6 = path.split(sep2).join("/");
-    return posix6 === "." ? "" : posix6;
+    const posix7 = path.split(sep2).join("/");
+    return posix7 === "." ? "" : posix7;
   };
   const file2 = (path) => {
     const entry = files2.get(key2(path));
@@ -24828,19 +24907,19 @@ function checkIntentCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/recall.ts
-import { writeFileSync as writeFileSync9, mkdirSync as mkdirSync10, statSync as statSync8, lstatSync as lstatSync5, renameSync as renameSync3, rmSync as rmSync9, existsSync as existsSync16 } from "node:fs";
-import { dirname as dirname16, isAbsolute as isAbsolute4, relative as relative4, resolve as resolve8, sep as sep5 } from "node:path";
+import { writeFileSync as writeFileSync9, mkdirSync as mkdirSync10, statSync as statSync8, lstatSync as lstatSync5, renameSync as renameSync3, rmSync as rmSync9, existsSync as existsSync17 } from "node:fs";
+import { dirname as dirname16, isAbsolute as isAbsolute4, relative as relative4, resolve as resolve9, sep as sep5 } from "node:path";
 
 // plugins/review-voice/src/evaluate/recall.ts
 import { execFileSync as execFileSync15 } from "node:child_process";
-import { copyFileSync as copyFileSync2, existsSync as existsSync15, mkdirSync as mkdirSync9, mkdtempSync as mkdtempSync5, readdirSync as readdirSync6, readFileSync as readFileSync23, rmSync as rmSync8, statSync as statSync7 } from "node:fs";
+import { copyFileSync as copyFileSync2, existsSync as existsSync16, mkdirSync as mkdirSync9, mkdtempSync as mkdtempSync5, readdirSync as readdirSync6, readFileSync as readFileSync23, rmSync as rmSync8, statSync as statSync7 } from "node:fs";
 import { tmpdir as tmpdir4 } from "node:os";
-import { join as join24, resolve as resolve7 } from "node:path";
+import { join as join24, resolve as resolve8 } from "node:path";
 
 // plugins/review-voice/src/evaluate/fixtures.ts
 import { execFileSync as execFileSync14 } from "node:child_process";
 import {
-  existsSync as existsSync14,
+  existsSync as existsSync15,
   lstatSync as lstatSync4,
   mkdirSync as mkdirSync8,
   mkdtempSync as mkdtempSync4,
@@ -24850,7 +24929,7 @@ import {
   writeFileSync as writeFileSync8
 } from "node:fs";
 import { tmpdir as tmpdir3 } from "node:os";
-import { basename as basename6, dirname as dirname15, join as join23, relative as relative3, resolve as resolve6, sep as sep4 } from "node:path";
+import { basename as basename6, dirname as dirname15, join as join23, relative as relative3, resolve as resolve7, sep as sep4 } from "node:path";
 var AUTHOR_NAME = "review-voice-fixtures";
 var AUTHOR_EMAIL = "fixtures@example.com";
 var COMMIT_DATE = "2026-01-01T00:00:00Z";
@@ -24999,8 +25078,8 @@ function confinedPath(path, label2) {
   return path;
 }
 function writeInside(root, path, content, label2) {
-  const target = resolve6(root, path);
-  const inside2 = relative3(resolve6(root), target);
+  const target = resolve7(root, path);
+  const inside2 = relative3(resolve7(root), target);
   if (inside2 === "" || inside2.startsWith("..") || inside2.split(sep4).includes("..")) {
     throw new Error(`${label2}: ${JSON.stringify(path)} resolves outside the repository`);
   }
@@ -25091,10 +25170,10 @@ function git3(cwd, label2, args) {
   }
 }
 function materializeFixture(fixtureDir, targetDir, options = {}) {
-  const label2 = options.name ?? `${basename6(dirname15(resolve6(fixtureDir)))}/${basename6(resolve6(fixtureDir))}`;
+  const label2 = options.name ?? `${basename6(dirname15(resolve7(fixtureDir)))}/${basename6(resolve7(fixtureDir))}`;
   const patchPath2 = join23(fixtureDir, "diff.patch");
-  if (!existsSync14(patchPath2)) throw new Error(`${label2}: fixture has no diff.patch`);
-  if (existsSync14(targetDir) && readdirSync5(targetDir).length > 0) {
+  if (!existsSync15(patchPath2)) throw new Error(`${label2}: fixture has no diff.patch`);
+  if (existsSync15(targetDir) && readdirSync5(targetDir).length > 0) {
     throw new Error(`${label2}: target directory ${targetDir} is not empty`);
   }
   let normalised;
@@ -25111,7 +25190,7 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
   const images = reconstruct(files2, label2);
   const contextDir = join23(fixtureDir, "context");
   const supplied = /* @__PURE__ */ new Map();
-  if (existsSync14(contextDir)) {
+  if (existsSync15(contextDir)) {
     for (const path of contextFiles(contextDir, label2)) supplied.set(path, readFileSync22(join23(contextDir, path), "utf8"));
   }
   mkdirSync8(targetDir, { recursive: true });
@@ -25139,7 +25218,7 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
   for (const [path, text4] of supplied) writeInside(targetDir, path, text4, label2);
   const configPath = join23(fixtureDir, "config.yaml");
   let config2 = DEFAULT_CONFIG;
-  if (existsSync14(configPath)) {
+  if (existsSync15(configPath)) {
     if (!lstatSync4(configPath).isFile()) throw new Error(`${label2}: config.yaml is not a regular file`);
     config2 = readFileSync22(configPath, "utf8");
   }
@@ -25214,18 +25293,18 @@ function readExpectation(cls, name, caseText) {
   };
 }
 function selectFixtures(options) {
-  const root = resolve7(options.fixtures);
-  if (!existsSync15(root) || !statSync7(root).isDirectory()) throw new RecallUsageError(`--fixtures ${options.fixtures} is not a directory.`);
+  const root = resolve8(options.fixtures);
+  if (!existsSync16(root) || !statSync7(root).isDirectory()) throw new RecallUsageError(`--fixtures ${options.fixtures} is not a directory.`);
   const chosen = [];
   for (const cls of RECALL_CLASSES) {
     if (!options.classes.includes(cls)) continue;
     const classDir = join24(root, cls);
-    if (!existsSync15(classDir) || !statSync7(classDir).isDirectory()) continue;
+    if (!existsSync16(classDir) || !statSync7(classDir).isDirectory()) continue;
     for (const name of readdirSync6(classDir).sort()) {
       const dir = join24(classDir, name);
       if (!statSync7(dir).isDirectory()) continue;
       const casePath = join24(dir, "case.yaml");
-      if (!existsSync15(casePath)) throw new RecallUsageError(`${cls}/${name}: fixture has no case.yaml`);
+      if (!existsSync16(casePath)) throw new RecallUsageError(`${cls}/${name}: fixture has no case.yaml`);
       chosen.push({ dir, expectation: readExpectation(cls, name, readFileSync23(casePath, "utf8")) });
     }
   }
@@ -25347,7 +25426,7 @@ async function runFixture(fixture, index, context2) {
     const fakes = join24(context2.root, "agents", String(index));
     mkdirSync9(fakes, { recursive: true });
     const canned = join24(fixture.dir, "agents");
-    if (existsSync15(canned)) {
+    if (existsSync16(canned)) {
       for (const entry of readdirSync6(canned, { withFileTypes: true })) {
         if (entry.isFile() && CANNED_OUTPUT.test(entry.name)) copyFileSync2(join24(canned, entry.name), join24(fakes, entry.name));
       }
@@ -25358,7 +25437,7 @@ async function runFixture(fixture, index, context2) {
     delete env["REVIEW_VOICE_AGENT_RUNNER"];
   }
   const bodyPath = join24(fixture.dir, "pr-body.md");
-  const shim = pullRequestShim(repoDir, commits, { title: expectation.name, body: existsSync15(bodyPath) ? readFileSync23(bodyPath, "utf8") : "" }, context2.deps.onRequest);
+  const shim = pullRequestShim(repoDir, commits, { title: expectation.name, body: existsSync16(bodyPath) ? readFileSync23(bodyPath, "utf8") : "" }, context2.deps.onRequest);
   const saved = process.cwd();
   let report;
   process.chdir(repoDir);
@@ -25482,7 +25561,7 @@ async function recallCommand(argv, runInProcess2) {
     console.error(`--mode takes one of ${MODES.join(", ")}.`);
     return 2;
   }
-  const out = resolve8(flag(argv, "--out") ?? "results.json");
+  const out = resolve9(flag(argv, "--out") ?? "results.json");
   let linked = false;
   try {
     linked = lstatSync5(out).isSymbolicLink();
@@ -25492,13 +25571,13 @@ async function recallCommand(argv, runInProcess2) {
     console.error(`--out ${out} is a symbolic link; name the file itself.`);
     return 2;
   }
-  const inside2 = relative4(realExistingPath(resolve8(fixtures)), realExistingPath(out));
+  const inside2 = relative4(realExistingPath(resolve9(fixtures)), realExistingPath(out));
   const outside = inside2 === ".." || inside2.startsWith(`..${sep5}`) || isAbsolute4(inside2);
   if (!outside) {
     console.error(`--out ${out} is inside the fixtures; recall never writes there.`);
     return 2;
   }
-  if (existsSync16(out) && statSync8(out).isDirectory()) {
+  if (existsSync17(out) && statSync8(out).isDirectory()) {
     console.error(`--out ${out} is a directory; name the results file.`);
     return 2;
   }
@@ -25539,7 +25618,7 @@ async function recallCommand(argv, runInProcess2) {
 
 // plugins/review-voice/src/cli/worktree.ts
 import { statSync as statSync9, lstatSync as lstatSync6, rmSync as rmSync10 } from "node:fs";
-import { join as join25, resolve as resolve9 } from "node:path";
+import { join as join25, resolve as resolve10 } from "node:path";
 import { execFileSync as execFileSync16 } from "node:child_process";
 function worktreeCommand(argv) {
   const action = argv[0];
@@ -25548,7 +25627,7 @@ function worktreeCommand(argv) {
     console.error("Usage: review-voice worktree add --dir <dir> --head <commit> | review-voice worktree remove --dir <dir>");
     return 2;
   }
-  if (statSync9(resolve9(dir), { throwIfNoEntry: false })?.isDirectory() !== true) {
+  if (statSync9(resolve10(dir), { throwIfNoEntry: false })?.isDirectory() !== true) {
     console.error(`--dir ${dir} is not a directory.`);
     return 2;
   }
@@ -25562,7 +25641,7 @@ function worktreeCommand(argv) {
     }
     throw error;
   }
-  const headDir = join25(resolve9(dir), "head");
+  const headDir = join25(resolve10(dir), "head");
   if (action === "remove") {
     const present = lstatSync6(headDir, { throwIfNoEntry: false });
     if (present?.isSymbolicLink()) rmSync10(headDir, { force: true });
@@ -27955,7 +28034,7 @@ function checkSimplificationCommand(argv) {
 
 // plugins/review-voice/src/cli/verify.ts
 import { statSync as statSync10 } from "node:fs";
-import { resolve as resolve10 } from "node:path";
+import { resolve as resolve11 } from "node:path";
 import { execFileSync as execFileSync19 } from "node:child_process";
 async function verifyCommand(argv) {
   const cwdFlag = flag(argv, "--cwd");
@@ -27963,7 +28042,7 @@ async function verifyCommand(argv) {
     console.error("--cwd needs a directory.");
     return 2;
   }
-  if (cwdFlag !== null && statSync10(resolve10(cwdFlag), { throwIfNoEntry: false })?.isDirectory() !== true) {
+  if (cwdFlag !== null && statSync10(resolve11(cwdFlag), { throwIfNoEntry: false })?.isDirectory() !== true) {
     console.error(`--cwd ${cwdFlag} is not a directory.`);
     return 2;
   }
@@ -28008,12 +28087,12 @@ async function verifyCommand(argv) {
     const base = commitOf(flag(argv, "--base"));
     const head = commitOf(flag(argv, "--head"));
     const report = await verifyFindings(findings, config2.verification, {
-      cwd: cwdFlag === null ? root : resolve10(cwdFlag),
+      cwd: cwdFlag === null ? root : resolve11(cwdFlag),
       context: {
         repository: flag(argv, "--repository") ?? inferRepository(root),
         // Resolved here, where the caller named it: with --cwd the command runs
         // elsewhere, and a relative path would be read against that directory.
-        diffPath: flag(argv, "--diff-file") === null ? null : resolve10(flag(argv, "--diff-file")),
+        diffPath: flag(argv, "--diff-file") === null ? null : resolve11(flag(argv, "--diff-file")),
         // Only when the caller says they are readable. A ref that is not there
         // is worse than no ref: a command told to read it fails in a way it may
         // mistake for evidence.
@@ -28261,7 +28340,7 @@ function reanchorCommand(argv) {
 
 // plugins/review-voice/src/cli/agent.ts
 import { readFileSync as readFileSync32, statSync as statSync11 } from "node:fs";
-import { dirname as dirname17, resolve as resolve11 } from "node:path";
+import { dirname as dirname17, resolve as resolve12 } from "node:path";
 async function agentCommand(argv) {
   const name = flag(argv, "--name");
   const model = flag(argv, "--model");
@@ -28292,7 +28371,7 @@ async function agentCommand(argv) {
     console.error(`The schema ${schemaPath} must be a JSON object.`);
     return 2;
   }
-  const schemaDir = dirname17(resolve11(schemaPath));
+  const schemaDir = dirname17(resolve12(schemaPath));
   try {
     schemaForRunner(schema4, schemaDir);
   } catch (error) {
@@ -29170,7 +29249,7 @@ function carryCandidatesCommand(argv) {
 // plugins/review-voice/src/cli/record.ts
 import { execFileSync as execFileSync22 } from "node:child_process";
 import { readFileSync as readFileSync36 } from "node:fs";
-import { join as join28 } from "node:path";
+import { join as join28, posix as posix6 } from "node:path";
 
 // plugins/review-voice/src/cli/check-candidates.ts
 import { readFileSync as readFileSync35 } from "node:fs";
@@ -30242,6 +30321,7 @@ function checkCandidatesCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/record.ts
+var plainPath2 = (path) => posix6.normalize(path.split("\\").join("/")).replace(/^\.\//, "");
 function policyVersionRefs(value) {
   if (!Array.isArray(value)) return null;
   const refs = [];
@@ -30347,11 +30427,17 @@ function recordCommand(argv) {
   let scope;
   let complexity = null;
   const knownPaths = /* @__PURE__ */ new Set();
+  const pullFiles = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
     try {
       const manifest = JSON.parse(readFileSync36(filesFile, "utf8"));
       if (Array.isArray(manifest.files)) {
-        for (const file2 of manifest.files) if (typeof file2?.path === "string") knownPaths.add(file2.path);
+        for (const file2 of manifest.files) {
+          if (typeof file2?.path !== "string") continue;
+          knownPaths.add(file2.path);
+          pullFiles.add(plainPath2(file2.path));
+          if (typeof file2.previousPath === "string") pullFiles.add(plainPath2(file2.previousPath));
+        }
       }
       if (Number.isInteger(manifest.pullNumber) && manifest.pullNumber > 0) {
         pullNumber = manifest.pullNumber;
@@ -30571,6 +30657,15 @@ function recordCommand(argv) {
     let carry2;
     let carriedProvenance = null;
     let carriedVersions = null;
+    const left = new Set(
+      (scope?.kind === "unchanged" || scope?.kind === "interdiff" ? [...scope.noLongerChanged ?? [], ...scope.absorbedByBase ?? []] : []).map(plainPath2)
+    );
+    const stillChanged = (path) => !left.has(path) && (pullFiles.size === 0 || pullFiles.has(path));
+    const renamed = patchRenames(diff);
+    const unjudged = (prior) => (prior ?? []).filter(challengeNotRun).map((entry) => {
+      const to = renamed.get(plainPath2(entry.path));
+      return to === void 0 ? entry : { ...entry, path: to };
+    }).filter((entry) => stillChanged(plainPath2(entry.path)));
     const carriedFrom = flag(argv, "--carried-from");
     if (carriedFrom !== null) {
       const head = flag(argv, "--head");
@@ -30591,14 +30686,18 @@ function recordCommand(argv) {
         const source = runDetail(db, carriedFrom);
         const prior = source?.carry ?? null;
         if (prior !== null && !prior.covered) carry2 = { ...prior, inheritedFrom: prior.inheritedFrom ?? carriedFrom };
-        const settled = scope !== void 0 && "noLongerChanged" in scope ? scope.noLongerChanged ?? [] : [];
-        held = [...held, ...(source?.held ?? []).filter((entry) => challengeNotRun(entry) && !settled.includes(entry.path))];
+        held = [...held, ...unjudged(source?.held)];
         carriedProvenance = source?.provenance ?? null;
         carriedVersions = storedPolicyVersions(db, carriedFrom);
       } catch (error) {
         console.error(error.message);
         return 2;
       }
+    }
+    if (carriedFrom === null && (scope?.kind === "incremental" || scope?.kind === "interdiff") && scope.priorRunId !== null) {
+      const place = (entry) => `${plainPath2(entry.path)}:${entry.line}`;
+      const own = new Set(held.filter(challengeNotRun).map(place));
+      held = [...held, ...unjudged(runDetail(db, scope.priorRunId)?.held).filter((entry) => !own.has(place(entry)))];
     }
     const carryFile = flag(argv, "--carry");
     if (carryFile !== null) {
@@ -30832,11 +30931,17 @@ ${topLevelHelp()}`);
         root = repositoryRoot(process.cwd());
       } catch {
       }
+      const config2 = watchConfigSource(argv.slice(1), root);
+      if (typeof config2 === "string") {
+        console.error(config2);
+        return 2;
+      }
       const dataDir = dataDirectory();
-      const review2 = spawnReview(fileURLToPath6(import.meta.url), { configPath: join29(dataDir, CONFIG_COPY) });
+      const review2 = spawnReview(fileURLToPath6(import.meta.url), reviewSpawnOptions(dataDir, config2));
       return await watchCommand(argv.slice(1), {
-        configSource: root === null ? null : configFile(root),
-        loadSettings: (path) => loadConfig(root ?? process.cwd(), void 0, path),
+        configSource: config2?.path ?? null,
+        // The copy keeps the source of the file it was taken from.
+        loadSettings: (path) => loadConfig(root ?? process.cwd(), void 0, path, void 0, config2?.source),
         client: (allowlist) => new GitHubClient({ allowlist, allowGlobs: true }),
         // Built from the recorded run's repository by post, as for the post command.
         writerFor: (allowlist) => new ReviewWriter({ allowlist }),
@@ -30846,7 +30951,7 @@ ${topLevelHelp()}`);
         stopReview: review2.stop,
         prepareClone: gitPrepareClone(),
         now: () => /* @__PURE__ */ new Date(),
-        sleep: (ms) => new Promise((resolve12) => setTimeout(resolve12, ms)),
+        sleep: (ms) => new Promise((resolve13) => setTimeout(resolve13, ms)),
         out: (text4) => console.log(text4),
         err: (text4) => console.error(text4)
       });

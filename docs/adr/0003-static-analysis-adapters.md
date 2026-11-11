@@ -147,8 +147,18 @@ environment of issue 279 plus the names `runners.<family>.env_passthrough`
 lists, and never under `REVIEW_VOICE_NO_COMMANDS=1`. A second-pass runner that
 is refused or cannot run does not hold. The second pass is skipped, or its
 verdicts are unverified, and the findings go on unchanged, as with a shell
-verification command. A configured challenger that cannot run holds the
-challenged findings rather than passing them.
+verification command. Its answer counts only with exit status 0. A runner that
+exits with any other status, is killed by a signal or times out did not run,
+whatever it printed, so a CLI that failed cannot drop a finding. Its answer is
+read from stdout, or from `{output}` when the command names it, and never from
+stderr, so a verdict a CLI logs there while reading the tree under review
+decides nothing. A shell
+`verification.command` keeps its old exit-status reading and still reads both streams. A configured challenger that cannot run holds the
+challenged findings rather than passing them, and so does a `runners.use`
+value that names no family, which is never read as Claude. No incremental or
+interdiff review releases such a hold, whether or not it read the file. A
+full review (`review --full`) re-checks the finding once the runner works
+(ADR 0024).
 
 Unlike the other configured commands, `runners:` is read only from the
 operator's own configuration: the file `--config` names, an absolute
@@ -156,8 +166,14 @@ operator's own configuration: the file `--config` names, an absolute
 `--config`. A `runners:` block in a repository's own file, at a pull request's
 base commit or in a checkout, is ignored with one warning that names the rule,
 because a runner is a command the operator's machine executes and a repository
-must not choose it. The review driver tells the loader which source it chose
-through `REVIEW_VOICE_CONFIG_SOURCE`; elsewhere only a path the caller passed
-(`watch` passes its own copy) or an absolute `REVIEW_VOICE_CONFIG` counts.
+must not choose it. The source is stated, never inferred from a path being
+passed. `loadConfig` takes it beside a path, and a path with none is
+repository content. Whoever hands a file to another process through
+`REVIEW_VOICE_CONFIG` sets `REVIEW_VOICE_CONFIG_SOURCE` beside it. `watch`
+states `flag` only for its own `--config`, `env` for an operator
+`REVIEW_VOICE_CONFIG` and `checkout` otherwise, and the review driver keeps an
+inherited source and states its own for `--config`, the base commit or the
+defaults. An absolute `REVIEW_VOICE_CONFIG` with no source beside it is the
+operator's own environment.
 `doctor` reports whether `codex` and `gemini` are on `PATH` as information and
 never runs a configured command: detection suggests, configuration enables.

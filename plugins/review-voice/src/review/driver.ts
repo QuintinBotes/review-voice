@@ -12,6 +12,7 @@ import { stopCommands } from '../evidence/run.ts';
 import type { GitHubClient } from '../github/client.ts';
 import { descriptionOf } from '../intent.ts';
 import { blockingContext, isSuppressionExempt, type MissingContext } from '../scoring/score.ts';
+import { environmentSource, type ConfigSourceKind } from '../policy/load.ts';
 import { recordAudit } from '../store/audit.ts';
 import { openDatabase } from '../store/db.ts';
 import { dataDirectory } from '../store/paths.ts';
@@ -289,11 +290,11 @@ function resolveConfig(run: Run): void {
     else process.env['REVIEW_VOICE_CONFIG_SOURCE'] = previousSource;
   });
 
-  const chosen = (source: ConfigSource): void => {
+  // The loader honours `runners:` only from an operator source, so the stages get the source beside the path.
+  const chosen = (source: ConfigSource, stated: ConfigSourceKind = source.kind): void => {
     run.configSource = source;
     process.env['REVIEW_VOICE_CONFIG'] = source.path!;
-    // The loader honours `runners:` only from the operator's own configuration, so it needs the kind too.
-    process.env['REVIEW_VOICE_CONFIG_SOURCE'] = source.kind;
+    process.env['REVIEW_VOICE_CONFIG_SOURCE'] = stated;
   };
   const flagged = run.options.config;
   if (flagged != null && flagged !== '') {
@@ -302,7 +303,8 @@ function resolveConfig(run: Run): void {
     return chosen({ kind: 'flag', path });
   }
   if (previous !== undefined && previous !== '') {
-    if (isAbsolute(previous)) return chosen({ kind: 'env', path: previous });
+    // A file watch copied from a checkout arrives with that source beside it, and keeps it.
+    if (isAbsolute(previous)) return chosen({ kind: 'env', path: previous }, environmentSource());
     run.notes.push('REVIEW_VOICE_CONFIG must be an absolute path, so it was ignored and the base commit supplied the configuration.');
   }
 
@@ -1103,17 +1105,24 @@ async function challenge(run: Run): Promise<void> {
   const family = plan.families.challenge;
   const configured = family === 'claude' ? undefined : plan.runners[family];
   const runner = family === 'claude' || configured === undefined ? undefined : { family, ...configured };
+  const unreadable = plan.families.notRun;
   const notRun =
-    family === 'claude'
-      ? null
-      : configured === undefined
-        ? `runners.${family} is not configured`
-        : noCommands(run)
-          ? `REVIEW_VOICE_NO_COMMANDS=1 keeps the configured ${family} runner from running`
-          : null;
+    unreadable !== undefined
+      ? unreadable
+      : family === 'claude'
+        ? null
+        : configured === undefined
+          ? `runners.${family} is not configured`
+          : noCommands(run)
+            ? `REVIEW_VOICE_NO_COMMANDS=1 keeps the configured ${family} runner from running`
+            : null;
   if (notRun !== null) {
     skip(run, 'challenge', `challenger not run: ${notRun}`);
-    run.notes.push(`The challenge was to run on ${family}, but ${notRun}, so every challenged finding is held and the review cannot approve.`);
+    run.notes.push(
+      unreadable !== undefined
+        ? `The configuration names no family for the challenge (${notRun}), so every challenged finding is held and the review cannot approve.`
+        : `The challenge was to run on ${family}, but ${notRun}, so every challenged finding is held and the review cannot approve.`,
+    );
   }
   const results =
     notRun !== null

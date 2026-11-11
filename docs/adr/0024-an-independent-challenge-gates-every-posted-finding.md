@@ -102,17 +102,37 @@ verdict and the rule that only `confirmed` with the line confirmed or moved
 passes are unchanged.
 
 A challenge the configuration required and could not get holds the finding.
-When the configured family cannot run (`REVIEW_VOICE_NO_COMMANDS=1` or no
-`runners.<family>` block), every challenged finding is held as
-`challenge-partly` with a reason starting `challenger not run:`. A runner that
+When the configured family cannot run (`REVIEW_VOICE_NO_COMMANDS=1`, or no
+usable `runners.<family>` block, a rejected one included, since the selection
+keeps the family named and never becomes Claude), every challenged finding is
+held as `challenge-partly` with a reason starting `challenger not run:`. A runner that
 starts and fails twice on a finding holds that finding the same way, and a
 finding it judged keeps its verdict. Nothing falls back to another family on
-its own.
+its own. A `runners.use` value that names no family (a misspelling, a list,
+or a `use` that is not a mapping) is held the same way and never read as
+Claude. An unreadable `runners.use.challenge` or `use` holds every challenged
+finding, and an unreadable `runners.use.agent_authored_challenge` holds the
+findings of a change an agent of the base family wrote.
 Such a held finding keeps the review from approving, so the event is COMMENT
-at most. A carry to an unchanged scope keeps the hold unless the pull request
-no longer changes its file. A later review does not treat the hold as a
-conclusion: the finding, raised again, is verified and challenged again, so it
-holds again while the runner cannot run and is judged once it can. It is the
+at most. The hold outlives every review narrower than the pull request. A
+carry to an unchanged scope keeps it. An incremental or interdiff review
+inherits it from the prior run its scope links, whether or not it read the
+hold's file, so a clean review of a later commit cannot approve past it. Such
+a review saw only its own hunks, which may be far from the held line, and a
+finding it does not raise again is never challenged. Either drops the hold
+when the pull request no longer changes the file. The pull request's file
+list in `files.json` says so, a renamed file counting under both names, and
+so do `scope.noLongerChanged` and `scope.absorbedByBase`, a file whose change
+the new base already makes included. A hold on a file the review's own patch
+renames moves to the new name, so a file renamed a second time is not read as
+one that left the pull request. A finding the review holds again at the same
+path and line is recorded once. Paths are compared as the diff spells them,
+so a hold written as `./src/app.ts` counts as one on `src/app.ts`. Otherwise
+only a full review (`review --full`) ends the hold. It reads the whole pull
+request and inherits nothing, and it does not treat the hold as a conclusion.
+The finding, raised again, is verified and challenged again, so it holds
+again while the runner cannot run and is judged once it can. A full review is
+what re-checks such a finding once the runner works. This hold is the
 one held finding that changes the event; every other held
 finding still leaves it alone, and a Claude challenger that fails twice keeps
 its `challenger failed:` reason and its event as before.

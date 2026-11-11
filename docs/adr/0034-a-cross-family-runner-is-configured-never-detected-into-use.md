@@ -28,9 +28,19 @@ operator's own configuration names it; nothing is detected into use.**
 
 - **The runner.** `runners.<family>` (`codex`, `gemini`) names an argv the
   command backend runs without a shell (ADR 0021, amended). It is read only
-  from the operator's configuration, never a repository's base commit, and is
-  refused under `REVIEW_VOICE_NO_COMMANDS=1`. `doctor` reports whether `codex`
-  and `gemini` are on `PATH` and never runs a configured binary.
+  from the operator's configuration (`--config`, an absolute
+  `REVIEW_VOICE_CONFIG`, the Action's `config` input), never a repository's
+  own file at a base commit or in a checkout, and is refused under
+  `REVIEW_VOICE_NO_COMMANDS=1`. The source is stated and travels with the path
+  at every hop, as `REVIEW_VOICE_CONFIG_SOURCE` beside `REVIEW_VOICE_CONFIG`
+  between processes; it is never inferred from a path being passed, so `watch`
+  hands its reviews `flag` only for its own `--config`. As the second pass, a
+  runner's answer counts only with exit status 0; any other status, a signal
+  or a timeout is a second pass that did not run, never a rejection. Its
+  answer is read from stdout or the `{output}` file and never from stderr,
+  where a CLI logs what it read from the tree under review. `doctor`
+  reports whether `codex` and `gemini` are on `PATH` and never runs a
+  configured binary.
 - **Families are recorded.** Every run records which family ran its second
   pass and its challenge, as a `families` key beside the provenance in
   `provenance_json`. The independence label keeps its two values; a family is
@@ -51,7 +61,33 @@ operator's own configuration names it; nothing is detected into use.**
   starting `challenger not run:`. A runner that starts and fails twice on a
   finding holds that finding the same way, and a finding it judged keeps its
   verdict. Any such hold makes the review comment rather than approve (ADR
-  0024, amended). Nothing falls back to Claude on its own.
+  0024, amended). Nothing falls back to Claude on its own. A family
+  `runners.use` names whose block is missing or rejected stays named, with a
+  warning, so its challenges hold. A `runners.use` value that names no family
+  at all (a misspelling such as `Codex`, a list, or a `use` that is not a
+  mapping) is not read as Claude either. The loader marks it unreadable, the
+  plan carries the reason as `families.notRun`, and the challenge that key
+  governs does not run, so its findings hold. For `runners.use.challenge`
+  and for `use` itself that is every challenge. For
+  `runners.use.agent_authored_challenge` it is the challenge of a change an
+  agent of the base family wrote, and every other change is challenged on the
+  base family as before. An empty `use` asks for nothing and keeps the
+  defaults. The hold outlives every review narrower than the pull request. A
+  carry keeps it, and an incremental or interdiff review inherits it from the
+  prior run its scope links, whether or not that review read the hold's file.
+  Such a review saw only its own hunks, which may be far from the held line,
+  and a finding it does not raise again is never challenged. Two things end
+  the hold. The first is that the pull request no longer changes the file.
+  The pull request's file list in `files.json` says whether it does, a
+  renamed file counting under both names, and so do `scope.noLongerChanged`
+  and `scope.absorbedByBase`, which alone decide for a manifest with no file
+  list. The second is a full review (`review --full`), which reads the whole
+  pull request and inherits nothing. The finding, raised again, is verified
+  and challenged again, so a full review is what re-checks it once the runner
+  works. A hold on a file the review's own patch renames moves to the new
+  name, and a finding the review holds again at the same path and line is
+  recorded once. Paths are compared as the diff spells them, so a hold the
+  analyst wrote as `./src/app.ts` is a hold on `src/app.ts`.
 - **Per-family figures.** `evaluate --json` carries `by_family`, per family,
   the second pass's verdicts with drop, downgrade and tie-break rates, and the
   challenger's judged and held counts with a hold rate, plus the count of runs
@@ -85,6 +121,11 @@ command in use that no one configured.
 keeps reviews flowing at the price of a silent loss of the independence the
 configuration asked for. A challenge the configuration required and did not
 get is a missing gate, and ADR 0024 holds a finding whose gate is missing.
+
+**Treat a configuration file a caller passed as the operator's.** Rejected.
+`watch` passes a copy of whatever file it read, a checkout's included, so a
+path being present says nothing about who chose it. The source is stated
+instead.
 
 **Stop the review when the family cannot run.** Rejected. It posts nothing at
 all, where holding the challenged findings still posts what passed and says

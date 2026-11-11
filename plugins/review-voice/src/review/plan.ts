@@ -28,8 +28,12 @@ export interface StagePlan {
   laneModels: { diff: string; others: string | null };
   /** The configured overrides, kept so a per-finding model honours them. */
   overrides: ModelOverrides;
-  /** The family the challenger runs on, and the rule that chose it (docs/adr/0034). */
-  families: { challenge: Family; reason: string };
+  /**
+   * The family the challenger runs on, and the rule that chose it (docs/adr/0034).
+   * `notRun` is set when the configuration asked for a family it does not
+   * name. The challenger then runs on none, and `challenge` is only the default.
+   */
+  families: { challenge: Family; reason: string; notRun?: string };
   /** The configured external runners, echoed as `overrides` is, so the driver needs no second config read. */
   runners: LoadedConfig['runners']['external'];
 }
@@ -88,11 +92,19 @@ function autoMode(input: PlanInput): { mode: Mode; reason: string } {
  * challenge, and "different from" an unknown family (`other`) is undefined,
  * so neither triggers the rule.
  */
-function challengeFamily(input: PlanInput): { challenge: Family; reason: string } {
-  const base = input.runners?.use.challenge ?? 'claude';
-  const other = input.runners?.use.agentAuthoredChallenge ?? null;
-  if (other !== null && other !== base && input.authorship?.agent === true && input.authorship.family === base) {
-    return { challenge: other, reason: `agent-authored by ${base}; challenged on ${other} (runners.use.agent_authored_challenge)` };
+function challengeFamily(input: PlanInput): StagePlan['families'] {
+  const use = input.runners?.use;
+  const base = use?.challenge ?? 'claude';
+  if (use?.challengeUnreadable !== undefined) return { challenge: base, reason: 'runners.use.challenge', notRun: use.challengeUnreadable };
+  const other = use?.agentAuthoredChallenge ?? null;
+  if (input.authorship?.agent === true && input.authorship.family === base) {
+    // The rule applies and its family is unreadable, so the base family, the one it was to replace, must not run.
+    if (use?.agentAuthoredChallengeUnreadable !== undefined) {
+      return { challenge: base, reason: 'runners.use.agent_authored_challenge', notRun: use.agentAuthoredChallengeUnreadable };
+    }
+    if (other !== null && other !== base) {
+      return { challenge: other, reason: `agent-authored by ${base}; challenged on ${other} (runners.use.agent_authored_challenge)` };
+    }
   }
   return { challenge: base, reason: base === 'claude' ? 'default' : 'runners.use.challenge' };
 }

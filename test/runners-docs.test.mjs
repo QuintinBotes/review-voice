@@ -134,3 +134,91 @@ test('AC-13: a configured runner that fails twice holds only the findings it did
     assert.match(flat, /fails twice on a finding holds that finding the same way, and a finding it judged keeps its verdict/, name);
   }
 });
+
+test('D4: the verify help and the architecture say a failed argv runner keeps the finding and names the verifier, not the finding, in didNotRun', () => {
+  const passages = { 'verify help': commandHelp('verify'), 'ARCHITECTURE.md': read('docs/ARCHITECTURE.md') };
+  for (const [name, text] of Object.entries(passages)) {
+    const flat = text.replace(/\s+/g, ' ');
+    // didNotRun holds verifier names, as the evidence report does, never a candidate.
+    assert.doesNotMatch(flat, /finding[^.]*listed (in|under) `?didNotRun/, name);
+    assert.match(flat, /reason `?verifier did not run`?/, name);
+    assert.match(flat, /verifier's name/, name);
+  }
+});
+
+test('D2: the documents and the record help say what settles an inherited hold, absorbed files and path spelling included, as record does', () => {
+  const passages = {
+    'ADR 0034': adr('0034'),
+    'ADR 0024': amendments(adr('0024')).find((section) => section.body.includes('runners.use.challenge')).body,
+    'ARCHITECTURE.md': read('docs/ARCHITECTURE.md'),
+    'record help': commandHelp('record'),
+  };
+  for (const [name, text] of Object.entries(passages)) {
+    const flat = text.replace(/\s+/g, ' ');
+    assert.match(flat, /scope\.noLongerChanged/, name);
+    assert.match(flat, /scope\.absorbedByBase/, name);
+    assert.match(flat, /file list|files list/, name);
+    assert.match(flat, /\.\/src\/app\.ts/, name);
+  }
+});
+
+test('D3: the documents and the plan help say a runners.use value that names no family holds and is never read as Claude', () => {
+  const passages = {
+    'ADR 0034': adr('0034'),
+    'ADR 0024': amendments(adr('0024')).find((section) => section.body.includes('runners.use.challenge')).body,
+    'ADR 0003': amendments(adr('0003')).find((section) => section.body.includes('runners.<family>.command')).body,
+    'ARCHITECTURE.md': read('docs/ARCHITECTURE.md'),
+    'WATCHER.md': read('docs/WATCHER.md'),
+    'plan help': commandHelp('plan'),
+  };
+  for (const [name, text] of Object.entries(passages)) {
+    assert.match(text.replace(/\s+/g, ' '), /runners\.use`? value (that )?names no family/, name);
+  }
+  assert.match(commandHelp('plan'), /families\.notRun/);
+});
+
+test('D2: the documents and the record help say a narrowed review never releases a not-run hold, and that a full review is what re-checks it', () => {
+  const passages = {
+    'ADR 0034': adr('0034'),
+    'ADR 0024': amendments(adr('0024')).find((section) => section.body.includes('runners.use.challenge')).body,
+    'ARCHITECTURE.md': read('docs/ARCHITECTURE.md'),
+    'record help': commandHelp('record'),
+  };
+  for (const [name, text] of Object.entries(passages)) {
+    const flat = text.replace(/\s+/g, ' ');
+    assert.match(flat, /read the hold's file|review read or not/, name);
+    assert.match(flat, /review --full/, name);
+    assert.match(flat, /inherits nothing/, name);
+    assert.match(flat, /re-checks/, name);
+    assert.match(flat, /renames moves to the new name/, name);
+    assert.match(flat, /recorded once/, name);
+    // The rule this replaced released a hold once a review showed a hunk of its file.
+    assert.doesNotMatch(flat, /until a review covers its file|did cover is not inherited|was not read/, name);
+  }
+});
+
+test('D2: the other documents and the review and plan help name the full review as what re-checks a not-run hold', () => {
+  const passages = {
+    'ADR 0003': amendments(adr('0003')).find((section) => section.body.includes('runners.<family>.command')).body,
+    'WATCHER.md': read('docs/WATCHER.md'),
+    'review help': commandHelp('review'),
+    'plan help': commandHelp('plan'),
+  };
+  for (const [name, text] of Object.entries(passages)) {
+    const flat = text.replace(/\s+/g, ' ');
+    assert.match(flat, /incremental or interdiff review releases/, name);
+    assert.match(flat, /review --full|full review \(--full\)/, name);
+  }
+});
+
+test('D4: the documents and the verify help say an argv runner is never answered from stderr', () => {
+  const passages = {
+    'ADR 0034': adr('0034'),
+    'ADR 0003': amendments(adr('0003')).find((section) => section.body.includes('runners.<family>.command')).body,
+    'ARCHITECTURE.md': read('docs/ARCHITECTURE.md'),
+    'verify help': commandHelp('verify'),
+  };
+  for (const [name, text] of Object.entries(passages)) {
+    assert.match(text.replace(/\s+/g, ' '), /never (read )?from stderr|stderr is never read/, name);
+  }
+});

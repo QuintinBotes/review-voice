@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../plugins/review-voice/src/policy/load.ts';
+import { resolvePlan } from '../plugins/review-voice/src/review/plan.ts';
 
 const bundle = join(dirname(dirname(fileURLToPath(import.meta.url))), 'plugins/review-voice/dist/review-voice.mjs');
 
@@ -21,7 +22,7 @@ delete process.env.REVIEW_VOICE_CONFIG_SOURCE;
 
 /**
  * Loads `config`, written to a temp repository's own .review-voice/config.yaml.
- * By default the file is passed as `path`, as `watch` passes its copy;
+ * By default the file is passed as `path` with the `flag` source, as `watch --config` passes its copy;
  * 'checkout' leaves it as the repository's own file, 'env' and 'relative' name
  * it through REVIEW_VOICE_CONFIG, and a driver source ('flag', 'driver-env',
  * 'base', 'default') sets REVIEW_VOICE_CONFIG and REVIEW_VOICE_CONFIG_SOURCE as
@@ -35,7 +36,7 @@ function load(config, via = 'path') {
     execFileSync('git', ['init', '-q'], { cwd: dir });
     mkdirSync(join(dir, '.review-voice'));
     writeFileSync(file, config);
-    if (via === 'path') return loadConfig(dir, NO_BASELINE, file);
+    if (via === 'path') return loadConfig(dir, NO_BASELINE, file, undefined, 'flag');
     if (via !== 'checkout') process.env.REVIEW_VOICE_CONFIG = via === 'relative' ? '.review-voice/config.yaml' : file;
     const source = { flag: 'flag', 'driver-env': 'env', base: 'base', default: 'default' }[via];
     if (source !== undefined) process.env.REVIEW_VOICE_CONFIG_SOURCE = source;
@@ -118,17 +119,10 @@ test('AC-2: a shell string, an unknown token, a claude block, an unknown family 
   assert.ok(bogus.warnings.includes('runners.codex.bogus is not a setting Review Voice reads; ignoring it.'), bogus.warnings.join('\n'));
 });
 
-test('AC-2: a use value naming an unconfigured or unknown family warns and keeps the default', () => {
-  const unconfigured = load(`${CODEX}\n  use:\n    challenge: gemini\n    agent_authored_challenge: gemini\n`);
-  assert.deepEqual(warned(unconfigured, 'runners.use'), [
-    'runners.use.challenge names gemini, but there is no runners.gemini block; using claude.',
-    'runners.use.agent_authored_challenge names gemini, but there is no runners.gemini block; using none.',
-  ]);
-  assert.deepEqual(unconfigured.runners.use, DEFAULT_USE);
-
+test('AC-2: a use value naming no known family warns, and is marked unreadable so the challenge holds, never runs on claude', () => {
   const unknown = load('runners:\n  use:\n    challenge: llama\n');
-  assert.deepEqual(unknown.warnings, ['runners.use.challenge must be one of claude, codex, gemini; using claude.']);
-  assert.deepEqual(unknown.runners.use, DEFAULT_USE);
+  assert.deepEqual(unknown.warnings, ['runners.use.challenge must be one of claude, codex, gemini; the challenge does not run and every challenged finding is held until it names one.']);
+  assert.deepEqual(unknown.runners.use, { ...DEFAULT_USE, challengeUnreadable: 'runners.use.challenge is not one of claude, codex, gemini' });
 });
 
 test('AC-2: verification.runner makes the second pass the configured argv, with its timeout, family and env_passthrough', () => {
@@ -194,7 +188,7 @@ const RULE =
 const OFF = 'verification.runner names codex, but there is no runners.codex block; the second pass stays off.';
 const WITH_RUNNER = `${CODEX}\n  use:\n    challenge: codex\nverification:\n  enabled: true\n  runner: codex\nwatch:\n  run_repository_commands: true\n`;
 
-for (const [via, label] of [['path', 'a path the caller passed'], ['env', 'an absolute REVIEW_VOICE_CONFIG'], ['flag', 'the review driver resolving --config'], ['driver-env', 'the review driver resolving an absolute REVIEW_VOICE_CONFIG, as watch hands it over']]) {
+for (const [via, label] of [['path', 'a path the caller passed as the operator choice'], ['env', 'an absolute REVIEW_VOICE_CONFIG'], ['flag', 'the review driver resolving --config'], ['driver-env', 'the review driver resolving an absolute REVIEW_VOICE_CONFIG, as watch hands it over']]) {
   test(`runners is honoured from the operator configuration (${label})`, () => {
     const config = load(WITH_RUNNER, via);
     assert.deepEqual(config.warnings, []);
@@ -233,4 +227,68 @@ test('verify in a checkout whose own config names a runner never runs it', (t) =
   assert.equal(run.status, 0, run.stderr);
   assert.equal(JSON.parse(run.stdout).enabled, false, 'the second pass stays off');
   assert.equal(existsSync(ran), false, 'the checkout\'s own runner never ran');
+});
+
+// ---- a requested family is never replaced on a configuration error (D3) ----
+
+test('a use value naming a family whose block is missing or rejected keeps that family, with the warning, so its challenges hold', () => {
+  const kept = (family) => `names ${family}, but there is no runners.${family} block; every finding challenged on ${family} is held.`;
+  const missing = load(`${CODEX}\n  use:\n    challenge: gemini\n    agent_authored_challenge: gemini\n`);
+  assert.deepEqual(warned(missing, 'runners.use'), [`runners.use.challenge ${kept('gemini')}`, `runners.use.agent_authored_challenge ${kept('gemini')}`]);
+  assert.deepEqual(missing.runners.use, { challenge: 'gemini', agentAuthoredChallenge: 'gemini' });
+  assert.equal(missing.runners.external.gemini, undefined, 'no runner is invented for it');
+
+  for (const [label, block] of [['an empty command', 'command: []'], ['a shell string', 'command: codex exec -']]) {
+    const rejected = load(`runners:\n  codex:\n    ${block}\n  use:\n    challenge: codex\n`);
+    assert.equal(rejected.runners.use.challenge, 'codex', label);
+    assert.deepEqual(rejected.runners.external, {}, label);
+    assert.deepEqual(warned(rejected, 'runners.use'), [`runners.use.challenge ${kept('codex')}`], label);
+  }
+});
+
+const CHALLENGE_UNREADABLE = 'runners.use.challenge is not one of claude, codex, gemini';
+const ALTERNATIVE_UNREADABLE = 'runners.use.agent_authored_challenge is not one of claude, codex, gemini';
+const planFor = (runners, authorship) =>
+  resolvePlan({ requested: 'standard', productionSourceChanged: true, productionLinesChanged: 10, complexity: 'normal', secondPassConfigured: false, runners, authorship }).families;
+const agent = (family) => ({ agent: true, family, evidence: [] });
+
+for (const [label, value] of [['a misspelt family', 'Codex'], ['a binary name', 'codex-cli'], ['a list', '[codex]'], ['a number', '7']]) {
+  test(`a runners.use.challenge that is ${label} is unreadable, so the plan holds the challenge and names no fallback rule`, () => {
+    const config = load(`${CODEX}\n  use:\n    challenge: ${value}\n`);
+    assert.equal(config.runners.use.challengeUnreadable, CHALLENGE_UNREADABLE);
+    assert.equal(warned(config, 'runners.use.challenge must be one of').length, 1);
+    assert.equal(warned(config, 'using claude').length, 0, 'no warning says another family is used');
+    assert.deepEqual(planFor(config.runners, undefined), { challenge: 'claude', reason: 'runners.use.challenge', notRun: CHALLENGE_UNREADABLE });
+  });
+}
+
+test('a runners.use that is not a mapping is unreadable and holds the challenge, while an empty one asks for nothing', () => {
+  const text = load(`${CODEX}\n  use: codex\n`);
+  assert.deepEqual(warned(text, 'runners.use'), ['runners.use must be a mapping; the challenge does not run and every challenged finding is held until it is one.']);
+  assert.deepEqual(planFor(text.runners, undefined), { challenge: 'claude', reason: 'runners.use.challenge', notRun: 'runners.use is not a mapping' });
+
+  const empty = load(`${CODEX}\n  use:\n`);
+  assert.deepEqual(warned(empty, 'runners.use'), ['runners.use must be a mapping; using the defaults.']);
+  assert.deepEqual(empty.runners.use, DEFAULT_USE);
+  assert.deepEqual(planFor(empty.runners, undefined), { challenge: 'claude', reason: 'default' });
+});
+
+test('an unreadable runners.use.agent_authored_challenge holds the challenge only where the rule would have applied', () => {
+  const config = load(`${CODEX}\n  use:\n    agent_authored_challenge: Codex\n`);
+  assert.deepEqual(config.runners.use, { ...DEFAULT_USE, agentAuthoredChallengeUnreadable: ALTERNATIVE_UNREADABLE });
+  assert.deepEqual(warned(config, 'runners.use.agent_authored_challenge'), [
+    'runners.use.agent_authored_challenge must be one of claude, codex, gemini; the challenge of a change an agent of the challenge family wrote does not run and its findings are held until it names one.',
+  ]);
+  assert.deepEqual(planFor(config.runners, agent('claude')), { challenge: 'claude', reason: 'runners.use.agent_authored_challenge', notRun: ALTERNATIVE_UNREADABLE });
+  // The rule never applied to these, so the base family challenges them as a readable value would have left it.
+  for (const authorship of [undefined, agent('codex'), agent('other'), { agent: false, family: null, evidence: [] }]) {
+    assert.deepEqual(planFor(config.runners, authorship), { challenge: 'claude', reason: 'default' }, JSON.stringify(authorship));
+  }
+});
+
+test('a readable use block carries no unreadable mark and plans as before', () => {
+  const config = load(`${CODEX}\n  use:\n    challenge: claude\n    agent_authored_challenge: codex\n`);
+  assert.deepEqual(config.runners.use, { challenge: 'claude', agentAuthoredChallenge: 'codex' });
+  assert.deepEqual(planFor(config.runners, agent('claude')), { challenge: 'codex', reason: 'agent-authored by claude; challenged on codex (runners.use.agent_authored_challenge)' });
+  assert.deepEqual(planFor(config.runners, undefined), { challenge: 'claude', reason: 'default' });
 });

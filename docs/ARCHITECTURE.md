@@ -107,8 +107,13 @@ own, and the preamble states the confinement the configured flags enforce.
 `REVIEW_VOICE_NO_COMMANDS=1` fails such a call instead of running it, and the
 fake backend records the family and label. `runners:` is read only from
 `--config`, an absolute `REVIEW_VOICE_CONFIG` or the Action's `config` input,
-never a base commit; `doctor` reports whether `codex` and `gemini` are on
-`PATH` as information only.
+never a base commit or a checkout. The source is stated, never inferred from a
+path being passed. `loadConfig` takes it beside a path (a path with none is
+repository content), and a process that hands a file on through
+`REVIEW_VOICE_CONFIG` sets `REVIEW_VOICE_CONFIG_SOURCE` beside it, which the
+next loader reads. An absolute `REVIEW_VOICE_CONFIG` with no source beside it is
+the operator's own environment. `doctor` reports whether `codex` and `gemini`
+are on `PATH` as information only.
 
 ### The review driver
 
@@ -1015,8 +1020,16 @@ tier it traced is a proposal the tie-break settles.
 `verification.runner: codex` runs the second pass on a `runners.<family>` block
 instead of a shell string: the argv runs without a shell, `{schema}` holds the
 verdict schema, `{output}` is read in place of stdout, and every verdict
-carries the family. `verification.family` labels a hand-written command the
-same way, so verdicts can be grouped by family.
+carries the family. Its stderr is never read for a verdict, with or without
+`{output}`, since a CLI logs there what it read from the tree under review.
+Its answer counts only with exit status 0. Any other
+status, a signal or a timeout means the second pass did not run for that
+finding. The finding goes on unchanged and is never dropped. Its verdict is
+`unverified` with the reason `verifier did not run`, and `didNotRun` lists the
+verifier's name, not the finding. A shell string keeps its old reading, where
+an exit status of any value still reads the answer. `verification.family`
+labels a hand-written command the same way, so verdicts can be grouped by
+family.
 
 It is opt-in, and a config written before it existed has no block for it at all,
 so `RV context` reports whether yours does.
@@ -1106,12 +1119,37 @@ of the base family wrote to the configured alternative. For an external family
 the driver hands `runAgent` the `runners.<family>` block as the spec's `runner`
 and records the block's `label` as the stage's model. When that family cannot
 run, because `REVIEW_VOICE_NO_COMMANDS=1` is set or no `runners.<family>`
-block is configured, every challenged finding is held as `challenge-partly`
+block is configured (one the loader rejected included, since the selection keeps
+the family named, with a warning, and never becomes Claude), every challenged
+finding is held as `challenge-partly`
 through the same path a failed challenger takes, with a reason starting
 `challenger not run:` and one note on the run. A runner that starts and fails
 twice on a finding holds that finding the same way, and a finding it judged
-keeps its verdict. Nothing falls back to Claude. `planFindings` then keeps the event at COMMENT at most, the one
-held finding that changes it. With `verdict.scope_block_models: true` the scope
+keeps its verdict. Nothing falls back to Claude. A `runners.use` value that
+names no family (a misspelling, a list, or a `use` that is not a mapping) is
+marked unreadable by the loader, the plan carries the reason as
+`families.notRun`, and the driver holds the same way with that reason. An
+unreadable `runners.use.challenge` or `use` holds every challenged finding,
+and an unreadable `runners.use.agent_authored_challenge` holds the findings of
+a change an agent of the base family wrote. `planFindings` then keeps the event at COMMENT at most, the one
+held finding that changes it. The hold outlives every review
+narrower than the pull request. A carry to an unchanged scope keeps it, and
+`record` gives an incremental or interdiff review the holds of the prior run
+its scope links, whether or not that review read the hold's file. Such a
+review saw only its own hunks, which may be far from the held line, and the
+driver challenges only a finding raised again, so a clean review of a later
+commit cannot approve. Either drops a hold on a file the pull request no
+longer changes, which the file list in `files.json` says (a renamed file
+counts under both names), as do `scope.noLongerChanged` and
+`scope.absorbedByBase`. A hold on a file the patch itself renames moves to
+the new name, so a file renamed a second time is not read as one that left
+the pull request, and a finding held again at the same path and line is
+recorded once. `record` compares paths as the diff spells them, so a hold
+written as `./src/app.ts` is one on `src/app.ts`. Otherwise only a full
+review (`review --full`) ends the hold. It reads the whole pull request and
+inherits nothing, and the finding, raised again, is verified and challenged
+again, so a full review is what re-checks it once the runner works. With
+`verdict.scope_block_models: true` the scope
 block's origin sentence names a challenge family other than Claude and its
 trailer carries `families`.
 
@@ -1472,7 +1510,11 @@ decide posting or the allowlist (ADR 0006). `loadConfig` reads
 config to `<dataDir>/watch-config.yaml` at the start of every pass, reads the
 copy, and points every review child at it, so an edit or a branch switch in
 the operator's checkout mid-pass changes nothing, and a change to posting, the
-allowlist or a policy takes effect at the next pass. Before posting a recorded
+allowlist or a policy takes effect at the next pass. The child also gets
+`REVIEW_VOICE_CONFIG_SOURCE`: `flag` when the watcher's own `--config` named the
+file, `env` for an operator `REVIEW_VOICE_CONFIG`, `checkout` for the checkout's
+file. The driver keeps that source for its stages, so a checkout's `runners:`
+block never runs, however many hops it takes. Before posting a recorded
 run, the watcher checks the run's repository against the current allowlist.
 
 The child runs in its own process group with `--expect-head` (the driver exits

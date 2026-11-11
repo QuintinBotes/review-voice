@@ -250,13 +250,16 @@ const spawnRunner: Runner = async (command, input, timeoutMs, cwd, env) => {
     }
     return {
       stdout,
-      // Once {output} is named the file is the only answer: a CLI's stderr is
-      // its event stream, and a verdict there must not decide a finding.
-      stderr: fromFile ? '' : result.stderr,
+      // An argv runner answers on stdout or through {output}, as the challenger's
+      // does. A CLI's stderr is its event stream, which can quote the tree under
+      // review, and a verdict there must not decide a finding.
+      stderr: argv === null ? result.stderr : '',
       // An EPIPE on the input write (a command that answered without reading it,
-      // #297) never reaches here: spawnCommand ignores errors on stdin. Only a
-      // command that never ran, or was killed (no exit status), is a failure.
-      failed: result.error !== undefined || result.status === null,
+      // #297) never reaches here: spawnCommand ignores errors on stdin. For a
+      // shell string only a command that never ran, or was killed (no exit
+      // status), is a failure. An argv runner answers only with exit status 0,
+      // as the challenger's does, so a CLI that failed cannot reject a finding.
+      failed: result.error !== undefined || (argv === null ? result.status === null : result.status !== 0),
     };
   } finally {
     withdraw();

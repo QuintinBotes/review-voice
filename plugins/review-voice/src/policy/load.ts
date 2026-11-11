@@ -34,7 +34,17 @@ export interface ConfiguredRunner {
 /** `runners:`, the external families a review may run on and which one challenges. */
 export interface RunnersConfig {
   external: Partial<Record<ExternalFamily, ConfiguredRunner>>;
-  use: { challenge: Family; agentAuthoredChallenge: Family | null };
+  use: {
+    challenge: Family;
+    agentAuthoredChallenge: Family | null;
+    /**
+     * Why the challenge cannot run, set when `use` or one of its keys asked for
+     * something that names no family. The challenge that key governs is then
+     * held, never run on claude in its place (docs/adr/0034).
+     */
+    challengeUnreadable?: string;
+    agentAuthoredChallengeUnreadable?: string;
+  };
 }
 
 export interface LoadedConfig {
@@ -538,7 +548,13 @@ function readRunners(value: unknown, result: LoadedConfig): void {
   if (block['use'] === undefined) return;
   const use = section(block['use'], 'runners.use', result.warnings);
   if (use === null) {
-    result.warnings.push('runners.use must be a mapping; using the defaults.');
+    // An empty `use:` asks for nothing. Anything else asked for a family this cannot read.
+    if (block['use'] === null) {
+      result.warnings.push('runners.use must be a mapping; using the defaults.');
+      return;
+    }
+    result.runners.use.challengeUnreadable = 'runners.use is not a mapping';
+    result.warnings.push('runners.use must be a mapping; the challenge does not run and every challenged finding is held until it is one.');
     return;
   }
   const chosen = (key: 'challenge' | 'agent_authored_challenge', fallback: Family | null): Family | null => {
@@ -546,12 +562,21 @@ function readRunners(value: unknown, result: LoadedConfig): void {
     if (value === undefined) return fallback;
     const family = FAMILIES.find((known) => known === value);
     if (family === undefined) {
-      result.warnings.push(`runners.use.${key} must be one of ${FAMILIES.join(', ')}; using ${fallback ?? 'none'}.`);
+      // A misspelt family is a request this cannot carry out, so it holds like a family that cannot run.
+      const reason = `runners.use.${key} is not one of ${FAMILIES.join(', ')}`;
+      if (key === 'challenge') result.runners.use.challengeUnreadable = reason;
+      else result.runners.use.agentAuthoredChallengeUnreadable = reason;
+      result.warnings.push(
+        `runners.use.${key} must be one of ${FAMILIES.join(', ')}; ` +
+          (key === 'challenge'
+            ? 'the challenge does not run and every challenged finding is held until it names one.'
+            : 'the challenge of a change an agent of the challenge family wrote does not run and its findings are held until it names one.'),
+      );
       return fallback;
     }
+    // Kept, never replaced: a challenge the configuration asked for and cannot get holds its findings (docs/adr/0034).
     if (family !== 'claude' && result.runners.external[family] === undefined) {
-      result.warnings.push(`runners.use.${key} names ${family}, but there is no runners.${family} block; using ${fallback ?? 'none'}.`);
-      return fallback;
+      result.warnings.push(`runners.use.${key} names ${family}, but there is no runners.${family} block; every finding challenged on ${family} is held.`);
     }
     return family;
   };
@@ -560,19 +585,27 @@ function readRunners(value: unknown, result: LoadedConfig): void {
 }
 
 /**
- * Whether `runners:` is read at all. Only the operator's own configuration
- * counts: the file --config names, an absolute REVIEW_VOICE_CONFIG, or the
- * Action's config input, which arrives as --config. The review driver records
- * the source it chose in REVIEW_VOICE_CONFIG_SOURCE; elsewhere the file is
- * the operator's only when the caller passed it (`watch` passes its own copy)
- * or an absolute REVIEW_VOICE_CONFIG named it. A repository's own file, at a
- * base commit or checked out, is repository content, while a runner is a
- * command this machine executes.
+ * Where a configuration file came from, stated by whoever chose it and carried
+ * with the path at every hop (REVIEW_VOICE_CONFIG_SOURCE beside
+ * REVIEW_VOICE_CONFIG between processes). `runners:` is read only from `flag`
+ * (a --config the operator passed, the Action's config input included) and
+ * `env` (an absolute REVIEW_VOICE_CONFIG the operator set): a repository's
+ * own file, checked out or at a base commit, is repository content, while a
+ * runner is a command this machine executes (owner decision 1).
  */
-function runnersHonoured(path: string | undefined, configPath: string): boolean {
-  const source = process.env['REVIEW_VOICE_CONFIG_SOURCE'];
-  if (source !== undefined) return source === 'flag' || source === 'env';
-  return path !== undefined || configPath === process.env['REVIEW_VOICE_CONFIG'];
+export const CONFIG_SOURCES = ['flag', 'env', 'checkout', 'base', 'default'] as const;
+export type ConfigSourceKind = (typeof CONFIG_SOURCES)[number];
+const OPERATOR_SOURCES: readonly ConfigSourceKind[] = ['flag', 'env'];
+
+/**
+ * The source of an absolute REVIEW_VOICE_CONFIG: the operator's own
+ * environment, unless REVIEW_VOICE_CONFIG_SOURCE beside it names where whoever
+ * set it got the file. A value that names no source is not the operator's.
+ */
+export function environmentSource(): ConfigSourceKind {
+  const stated = process.env['REVIEW_VOICE_CONFIG_SOURCE'];
+  if (stated === undefined) return 'env';
+  return CONFIG_SOURCES.find((kind) => kind === stated) ?? 'checkout';
 }
 
 /** Words that appear in nearly every failure, so alone they would turn every failure into a rerun. */
@@ -1034,18 +1067,23 @@ function readReviewers(identity: Record<string, unknown> | null, result: LoadedC
  * config, which is repository content (docs/adr/0006), never decides posting.
  */
 export function configFile(repositoryRoot: string, warnings: string[] = []): string {
+  return configFileSource(repositoryRoot, warnings).path;
+}
+
+/** The file `configFile` names and its source: `environmentSource` for an absolute REVIEW_VOICE_CONFIG, else the checkout. */
+export function configFileSource(repositoryRoot: string, warnings: string[] = []): { path: string; source: ConfigSourceKind } {
   const override = process.env['REVIEW_VOICE_CONFIG'];
   if (override !== undefined && override.length > 0) {
-    if (isAbsolute(override)) return override;
+    if (isAbsolute(override)) return { path: override, source: environmentSource() };
     warnings.push(`REVIEW_VOICE_CONFIG must be an absolute path; reading .review-voice/config.yaml instead.`);
   }
-  return join(repositoryRoot, '.review-voice', 'config.yaml');
+  return { path: join(repositoryRoot, '.review-voice', 'config.yaml'), source: 'checkout' };
 }
 
 /**
  * Reads a parsed config document into `result`. Split from `loadConfig` so a
- * test can see every key it reads (issue 318). `honourRunners` is
- * `runnersHonoured` for the file the document came from.
+ * test can see every key it reads (issue 318). `honourRunners` is whether
+ * the file the document came from has an operator source.
  */
 export function readConfigDocument(value: unknown, repositoryRoot: string, result: LoadedConfig, honourRunners: boolean): void {
   const doc = section(value, '', result.warnings);
@@ -1225,13 +1263,16 @@ export function readConfigDocument(value: unknown, repositoryRoot: string, resul
 }
 
 /**
- * `path` reads that config file instead of the one `configFile` names; `watch` passes its own copy.
+ * `path` reads that config file instead of the one `configFile` names, and
+ * `source` says where the caller got it (`watch` passes its copy with the
+ * source of the file it copied). A path with no stated source is not the
+ * operator's configuration, so its `runners:` is ignored.
  *
  * `db` is optional and the only thing that loads approved policies: without a
  * store the layers are the baseline and the repository config, as they always
  * were, so a caller that has no store is unaffected (docs/adr/0032).
  */
-export function loadConfig(repositoryRoot: string, baselinePath?: string, path?: string, db?: Database): LoadedConfig {
+export function loadConfig(repositoryRoot: string, baselinePath?: string, path?: string, db?: Database, source?: ConfigSourceKind): LoadedConfig {
   const result: LoadedConfig = {
     ownerReviewer: null,
     reviewers: [],
@@ -1266,10 +1307,11 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     warnings: [],
   };
 
-  const configPath = path ?? configFile(repositoryRoot, result.warnings);
+  const chosen = path === undefined ? configFileSource(repositoryRoot, result.warnings) : { path, source: source ?? 'checkout' };
+  const configPath = chosen.path;
   if (existsSync(configPath)) {
     try {
-      readConfigDocument(parseYaml(readFileSync(configPath, 'utf8')), repositoryRoot, result, runnersHonoured(path, configPath));
+      readConfigDocument(parseYaml(readFileSync(configPath, 'utf8')), repositoryRoot, result, OPERATOR_SOURCES.includes(chosen.source));
     } catch (error) {
       result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
     }
