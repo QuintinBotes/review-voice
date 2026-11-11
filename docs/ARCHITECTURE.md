@@ -1144,7 +1144,8 @@ review saw only its own hunks, which may be far from the held line, and the
 driver challenges only a finding raised again, so a clean review of a later
 commit cannot approve. Either drops a hold on a file the pull request no
 longer changes, which the file list in `files.json` says (a renamed file
-counts under both names), as do `scope.noLongerChanged` and
+counts under both names, and a list that is present and empty names no file,
+so it ends every such hold), as do `scope.noLongerChanged` and
 `scope.absorbedByBase`. A hold on a file the patch itself renames moves to
 the new name, so a file renamed a second time is not read as one that left
 the pull request, and a finding held again at the same path and line is
@@ -1154,8 +1155,12 @@ review (`review --full`) ends the hold. It reads the whole pull request and
 inherits nothing, and the finding, raised again, is verified and challenged
 again, so a full review is what re-checks it once the runner works. A finding
 held below the confidence gate (ADR 0016, amended) travels by the same code
-and the same rules, and also ends when the owner declines it or when the
-narrowed review itself holds or raises a finding at the same path and line.
+and the same rules, and also ends when the owner declines it. An inherited
+hold of either kind is replaced only by a hold of the narrowed review at the
+same path and line that itself keeps a review from approving, which is the
+one entry per place above. A finding in its review text there, or a claim it
+holds there as `unverified`, `refuted` or `partly`, ends nothing, since that
+is another claim and not a judgement of the held one.
 With `verdict.scope_block_models: true` the scope
 block's origin sentence names a challenge family other than Claude and its
 trailer carries `families`.

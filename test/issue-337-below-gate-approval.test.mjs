@@ -193,7 +193,8 @@ const full = (since, priorRunId) => ({ kind: 'full', cause: 'requested', since, 
 /**
  * A pull request whose first review holds `held`. `next` records one more
  * review at a new commit with the scope `scopeOf(since, priorRunId)` names and
- * returns what that run holds and the event its findings call for. `decline`
+ * returns what that run holds and the event its findings call for (`files` is
+ * the pull request's file list, null for a manifest with no list). `decline`
  * is the owner declining a held finding of the latest run.
  */
 function pull(t, held) {
@@ -239,7 +240,7 @@ function pull(t, held) {
     next(scopeOf, { files = PULL, held, text, patch } = {}) {
       const head = commit(`follow ${count}`);
       const scope = scopeOf(prior, runId);
-      runId = record(head, { files: files.map((path) => ({ path })), scope }, { held, text, patch: patch ?? (scope.files ?? []).map((path) => hunk(path)).join('') });
+      runId = record(head, { ...(files === null ? {} : { files: files.map((path) => ({ path })) }), scope }, { held, text, patch: patch ?? (scope.files ?? []).map((path) => hunk(path)).join('') });
       prior = head;
       const db = openDatabase(join(dataDir, 'review-voice.db'));
       try {
@@ -291,20 +292,51 @@ test('337: the hold follows a file the patch renames', (t) => {
   assert.deepEqual(chain.next(incremental(['moved.ts']), { files: ['moved.ts', 'b.ts', 'c.ts'], patch: rename }), { held: ['moved.ts:20 below-gate'], mapped: 'COMMENT' });
 });
 
-test('337: a finding this run holds at the same path and line ends the inherited hold, one entry per place', (t) => {
-  const refuted = { path: 'a.ts', line: 20, verdict: 'refuted', source: 'verifier', reason: 'the caller checks the value first', severity: 'minor', text: 'the value at a.ts:20 is never checked' };
-  const held = pull(t, [hold('./a.ts', 20), hold('a.ts', 40)]);
-  assert.deepEqual(held.next(incremental(['a.ts']), { held: [refuted] }), { held: ['a.ts:20 refuted', 'a.ts:40 below-gate'], mapped: 'COMMENT' }, 'the run judged a.ts:20 itself; a.ts:40 is still inherited');
+// What a narrowed run says about the held place is not a judgement of the held finding (docs/adr/0016, amended).
+for (const [verdict, source, reason] of [
+  ['unverified', 'verifier', 'the verifier did not answer'],
+  ['refuted', 'verifier', 'the caller checks the value first'],
+  ['partly', 'cross-check', 'the second pass confirmed half of the claim'],
+]) {
+  test('337: this run holding the held path and line as ' + verdict + ' does not end the inherited hold, and the review still comments', (t) => {
+    const chain = pull(t, [hold('./a.ts', 20, { severity: 'blocking' }), hold('a.ts', 40)]);
+    const own = { path: 'a.ts', line: 20, verdict, source, reason, severity: 'minor', text: 'the value at a.ts:20 is never checked' };
+    assert.deepEqual(chain.next(incremental(['a.ts']), { held: [own] }), { held: [`a.ts:20 ${verdict}`, './a.ts:20 below-gate', 'a.ts:40 below-gate'], mapped: 'COMMENT' });
+    assert.deepEqual(chain.next(incremental(['b.ts'])), { held: ['./a.ts:20 below-gate', 'a.ts:40 below-gate'], mapped: 'COMMENT' }, 'and the next narrowed review inherits it again');
+  });
+}
 
-  const again = pull(t, [hold('a.ts', 20)]);
-  assert.deepEqual(again.next(incremental(['a.ts']), { held: [hold('a.ts', 20, { candidateId: 'cand_009' })] }), { held: ['a.ts:20 below-gate'], mapped: 'COMMENT' }, 'held again is recorded once');
+test('337: an unrelated claim this run holds at the held path and line leaves a lone blocking hold in place', (t) => {
+  const chain = pull(t, [hold('a.ts', 20, { severity: 'blocking' })]);
+  const other = { path: 'a.ts', line: 20, verdict: 'refuted', source: 'verifier', reason: 'the loop is bounded by the caller', severity: 'nit', candidateId: 'cand_044', text: 'the loop at a.ts:20 may not end' };
+  assert.deepEqual(chain.next(incremental(['a.ts']), { held: [other] }), { held: ['a.ts:20 refuted', 'a.ts:20 below-gate'], mapped: 'COMMENT' });
+});
+
+test('337: this run holding the same path and line again under the confidence gate records one entry, not two', (t) => {
+  const chain = pull(t, [hold('./a.ts', 20), hold('a.ts', 40)]);
+  assert.deepEqual(chain.next(incremental(['a.ts']), { held: [hold('a.ts', 20, { candidateId: 'cand_009' })] }), { held: ['a.ts:20 below-gate', 'a.ts:40 below-gate'], mapped: 'COMMENT' });
+});
+
+test('337: a hold of this run that does not cap, by the score gate or for a nit, does not replace the inherited hold', (t) => {
+  const chain = pull(t, [hold('a.ts', 20), hold('a.ts', 40)]);
+  const result = chain.next(incremental(['a.ts']), { held: [hold('a.ts', 20, { reason: SCORE }), hold('a.ts', 40, { severity: 'nit' })] });
+  assert.deepEqual(result, { held: ['a.ts:20 below-gate', 'a.ts:40 below-gate', 'a.ts:20 below-gate', 'a.ts:40 below-gate'], mapped: 'COMMENT' });
 });
 
 // Each severity on its own: a rule that read the severity of the raised finding would end the hold for some and not others.
 for (const severity of ['blocking', 'important', 'minor', 'question', 'nit']) {
-  test('337: a finding the review text raises as ' + severity + ' at the held path and line ends the inherited hold there and nowhere else', (t) => {
+  test('337: a finding the review text raises as ' + severity + ' at the held path and line does not end the inherited hold', (t) => {
     const chain = pull(t, [hold('a.ts', 20), hold('a.ts', 40)]);
     const result = chain.next(incremental(['a.ts']), { text: `[${severity}] \`a.ts:20\` - The value here is read before it is set. It is stated as the contract asks.` });
-    assert.deepEqual(result.held, ['a.ts:40 below-gate'], 'the run raised a finding at a.ts:20, so its own account stands; a.ts:40 is still inherited');
+    assert.deepEqual(result.held, ['a.ts:20 below-gate', 'a.ts:40 below-gate'], 'a finding in the review text is another claim, not a judgement of the held one');
   });
 }
+
+test('337: a manifest whose file list is empty ends the hold, and one with no file list or a malformed entry keeps it', (t) => {
+  const emptied = pull(t, [hold('a.ts', 20, { severity: 'blocking' })]);
+  assert.deepEqual(emptied.next(incremental([]), { files: [] }), { held: [], mapped: 'APPROVE' }, 'an empty list says the pull request changes no file');
+  const unlisted = pull(t, [hold('a.ts', 20, { severity: 'blocking' })]);
+  assert.deepEqual(unlisted.next(incremental(['b.ts']), { files: null }), { held: ['a.ts:20 below-gate'], mapped: 'COMMENT' }, 'with no list only the scope lists could say the file left');
+  const malformed = pull(t, [hold('a.ts', 20, { severity: 'blocking' })]);
+  assert.deepEqual(malformed.next(incremental(['b.ts']), { files: ['b.ts', null] }), { held: ['a.ts:20 below-gate'], mapped: 'COMMENT' }, 'a list with an entry that names no file releases nothing');
+});

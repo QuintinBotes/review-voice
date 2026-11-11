@@ -19809,8 +19809,12 @@ var COMMAND_HELP = {
       "                         (review --full) is what re-checks such a finding once the runner works.",
       "                         A below-gate hold of a blocking, important or minor finding whose reason is",
       '                         "below the confidence gate" is kept by the same rules (docs/adr/0016), and also',
-      "                         ends once the owner declines it or this run holds or raises a finding at the",
-      "                         same path and line. A nit or a question held that way is not kept",
+      "                         ends once the owner declines it; a nit or a question held that way is not kept.",
+      "                         An inherited hold of either kind is replaced only by a hold of this run at the",
+      "                         same path and line that itself keeps a review from approving. A finding in the",
+      "                         review text there, or a claim held there as unverified, refuted or partly, ends",
+      "                         nothing. A files list that is present and empty names no file, so it ends every",
+      "                         inherited hold; a manifest with no files list leaves that to the two scope lists",
       "  --candidates <path>    Scored candidates, so findings carry their category",
       "  --scores <path>        Score breakdowns, so explain can show its working",
       "  --verdicts <path>      Verification verdicts, including findings that were dropped",
@@ -20148,7 +20152,8 @@ var COMMAND_HELP = {
       "  important or minor finding that the verifier confirmed under the confidence gate is held as",
       "  below-gate, keeps the review from approving and is kept the same way, until a full review, the",
       "  file leaving the pull request or `decline` ends it; a nit or a question held that way does",
-      "  neither (docs/adr/0016). In thorough mode, with a",
+      "  neither (docs/adr/0016). A finding raised at the held path and line, or a claim held there as",
+      "  unverified, refuted or partly, does not end either hold. In thorough mode, with a",
       "  reproduction block in the configuration, the verifier writes a reproduction for each blocking or",
       "  important finding and `reproduce` runs it (Linux only); one that does not fail holds its finding",
       "  as reproduction-did-not-fail, unless its category is one no suppression may reach (docs/adr/0032).",
@@ -32131,10 +32136,12 @@ function recordCommand(argv) {
   let structure;
   const knownPaths = /* @__PURE__ */ new Set();
   const pullFiles = /* @__PURE__ */ new Set();
+  let pullFilesListed = false;
   if (filesFile !== null) {
     try {
       const manifest = JSON.parse(readFileSync38(filesFile, "utf8"));
       if (Array.isArray(manifest.files)) {
+        pullFilesListed = manifest.files.every((file2) => typeof file2?.path === "string");
         for (const file2 of manifest.files) {
           if (typeof file2?.path !== "string") continue;
           knownPaths.add(file2.path);
@@ -32368,7 +32375,7 @@ function recordCommand(argv) {
     const left = new Set(
       (scope?.kind === "unchanged" || scope?.kind === "interdiff" ? [...scope.noLongerChanged ?? [], ...scope.absorbedByBase ?? []] : []).map(plainPath2)
     );
-    const stillChanged = (path) => !left.has(path) && (pullFiles.size === 0 || pullFiles.has(path));
+    const stillChanged = (path) => !left.has(path) && (!pullFilesListed || pullFiles.has(path));
     const renamed = patchRenames(diff);
     const unjudged = (prior) => (prior ?? []).filter((entry) => challengeNotRun(entry) || heldBelowConfidenceGate(entry)).map((entry) => {
       const to = renamed.get(plainPath2(entry.path));
@@ -32404,15 +32411,8 @@ function recordCommand(argv) {
     }
     if (carriedFrom === null && (scope?.kind === "incremental" || scope?.kind === "interdiff") && scope.priorRunId !== null) {
       const place = (entry) => `${plainPath2(entry.path)}:${entry.line}`;
-      const own = new Set(held.filter(challengeNotRun).map(place));
-      const judged = /* @__PURE__ */ new Set([
-        ...held.map(place),
-        ...splitFindings(output).map((block) => parseFinding(block.raw, block.startLine)).flatMap((finding) => finding.path === null || finding.line === null ? [] : [place({ path: finding.path, line: finding.line })])
-      ]);
-      held = [
-        ...held,
-        ...unjudged(runDetail(db, scope.priorRunId)?.held).filter((entry) => !(challengeNotRun(entry) ? own : judged).has(place(entry)))
-      ];
+      const own = new Set(held.filter((entry) => challengeNotRun(entry) || heldBelowConfidenceGate(entry)).map(place));
+      held = [...held, ...unjudged(runDetail(db, scope.priorRunId)?.held).filter((entry) => !own.has(place(entry)))];
     }
     const carryFile = flag(argv, "--carry");
     if (carryFile !== null) {

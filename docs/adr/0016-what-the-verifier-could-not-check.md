@@ -134,14 +134,25 @@ to an unchanged scope keeps it, and an incremental or interdiff review
 inherits it from the prior run its scope links, following a file the patch
 renames. It ends when one of these is true.
 
-- The pull request no longer changes the file.
+- The pull request no longer changes the file. A manifest whose file list is
+  present and empty says that of every file. A manifest with no file list
+  leaves it to the two scope lists.
 - A review that is not narrowed runs. It inherits nothing, reads the whole
   pull request and judges again.
 - The owner declines the held finding with `decline`, which sets the entry's
   verdict to `owner-declined` in that run.
-- The narrowed review itself holds or raises a finding at the same path and
-  line. That run's own account of the place stands, and the place is recorded
-  once.
+- The narrowed review itself holds the same path and line again with a hold
+  that keeps a review from approving, which is one under the confidence gate
+  above a nit or one for a challenger that did not run. That entry stands and
+  the place is recorded once.
+
+Nothing else the narrowed review says about the place ends the hold. A finding
+in its review text there, of any severity, is another claim and not a
+judgement of the held one, and so is an entry it holds there as `unverified`,
+`refuted` or `partly`. Were any of these to end the hold, an unrelated nit or
+a refuted claim on the same line would let the review approve past a blocking
+finding the verifier confirmed. The same one rule covers an inherited hold for
+a challenger that did not run.
 
 The owner can still post the finding with `score --promote`, as before.
 
