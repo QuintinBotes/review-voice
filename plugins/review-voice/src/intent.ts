@@ -21,6 +21,14 @@ export interface IntentStatement {
   scope?: 'complete';
   /** The heading of the section a short `quote` sits in or answers (#164, #222). Set by the CLI. */
   heading?: string;
+  /** The linked issue the `quote` is a sentence of; absent for a quote from the description. Set by the CLI. */
+  issue?: number;
+}
+
+/** One text a quote may come from: the description (`issue` null) or a linked issue's body. */
+interface Source {
+  issue: number | null;
+  sentences: Sentences;
 }
 
 export interface IntentDocument {
@@ -257,11 +265,14 @@ function answeredHeading(quote: string, sentences: Sentences): string | null {
   return (sentences.sections.find(matches) ?? sentences.answers.find(matches))?.heading ?? null;
 }
 
+/** How a note names a source. */
+const whereOf = (source: Source): string => (source.issue === null ? 'the description' : `issue #${source.issue}`);
+
 /** A valid excerpt for `value`: as given, or widened to its sentence, with a note when widened. */
-function excerptOf(value: string, sentences: Sentences, name: string, id: string, notes: string[]): Parsed<string> {
+function excerptOf(value: string, sentences: Sentences, name: string, id: string, notes: string[], where: string): Parsed<string> {
   const problem = excerptProblem(value, sentences, name);
   if (problem === null) {
-    if (isShort(value)) notes.push(`Kept ${name.split('.').pop()} of ${id} under ${MIN_QUOTE_WORDS} words: it is a whole sentence of the description`);
+    if (isShort(value)) notes.push(`Kept ${name.split('.').pop()} of ${id} under ${MIN_QUOTE_WORDS} words: it is a whole sentence of ${where}`);
     return { value, problem: null };
   }
   if (!problem.endsWith('not part of one')) return { value: null, problem };
@@ -269,6 +280,32 @@ function excerptOf(value: string, sentences: Sentences, name: string, id: string
   if (widened === null || excerptProblem(widened, sentences, name) !== null) return { value: null, problem };
   notes.push(`Widened ${name.split('.').pop()} of ${id} to its whole sentence`);
   return { value: widened, problem: null };
+}
+
+/**
+ * The quote as the first source that accepts it does (as given, or widened to
+ * its sentence), with that source and the heading it sits under. When none
+ * accepts it, the problem is the one from the first source the text occurs in,
+ * so a fragment of an issue sentence still reads `not part of one`; when it
+ * occurs in none, the not-found message names both sources.
+ */
+function quoteFrom(
+  value: string,
+  sources: Source[],
+  name: string,
+  id: string,
+  notes: string[],
+): { value: string; source: Source; answered: string | null; problem: null } | { value: null; problem: string } {
+  let problem: string | null = null;
+  const notFound = `${name} does not occur in the pull request description`;
+  for (const source of sources) {
+    // A supplied heading is recomputed, so re-checking this command's output passes and a made-up one never does.
+    const answered = answeredHeading(value, source.sentences);
+    const quote: Parsed<string> = answered === null ? excerptOf(value, source.sentences, name, id, notes, whereOf(source)) : { value, problem: null };
+    if (quote.problem === null) return { value: quote.value, source, answered, problem: null };
+    if (problem === null && quote.problem !== notFound) problem = quote.problem;
+  }
+  return { value: null, problem: problem ?? `${notFound}${sources.length > 1 ? ' or in a linked issue' : ''}` };
 }
 
 function text(value: unknown, name: string, max = MAX_TEXT): Parsed<string> {
@@ -288,12 +325,22 @@ export function descriptionOf(thread: unknown): string | null {
   return bodies.length === 0 ? null : bodies.join('\n');
 }
 
+/** The linked issues of a thread.json (`review.linked_issues`), or none when the key is absent. */
+export function linkedIssuesOf(thread: unknown): { number: number; body: string }[] {
+  const issues = (thread as { linkedIssues?: unknown } | null)?.linkedIssues;
+  if (!Array.isArray(issues)) return [];
+  return issues.flatMap((issue) => {
+    const { number, body } = (issue ?? {}) as { number?: unknown; body?: unknown };
+    return Number.isInteger(number) && typeof body === 'string' ? [{ number: number as number, body }] : [];
+  });
+}
+
 /**
  * One statement of the extractor output, or the first rule it breaks. A
  * misplaced optional `scope` or `reason` is stripped and named in `removed`
  * instead: the statement itself is still a valid author statement.
  */
-function statementOf(rawEntry: unknown, at: string, sentences: Sentences, removed: string[]): Parsed<IntentStatement> {
+function statementOf(rawEntry: unknown, at: string, sources: Source[], removed: string[]): Parsed<IntentStatement> {
   if (typeof rawEntry !== 'object' || rawEntry === null || Array.isArray(rawEntry)) {
     return { value: null, problem: `${at} must be an object` };
   }
@@ -301,7 +348,7 @@ function statementOf(rawEntry: unknown, at: string, sentences: Sentences, remove
   const entry = Object.fromEntries(
     Object.entries(rawEntry as Record<string, unknown>).filter(([key, value]) => !(value === null && (key === 'reason' || key === 'scope'))),
   );
-  const unexpected = Object.keys(entry).find((key) => !['id', 'kind', 'statement', 'quote', 'reason', 'scope', 'heading'].includes(key));
+  const unexpected = Object.keys(entry).find((key) => !['id', 'kind', 'statement', 'quote', 'reason', 'scope', 'heading', 'issue'].includes(key));
   if (unexpected !== undefined) return { value: null, problem: `${at} has an unexpected ${JSON.stringify(unexpected)} field` };
 
   const id = entry['id'];
@@ -315,12 +362,12 @@ function statementOf(rawEntry: unknown, at: string, sentences: Sentences, remove
   if (statement.problem !== null) return { value: null, problem: statement.problem };
   const rawQuote = text(entry['quote'], `${at}.quote`, MAX_QUOTE);
   if (rawQuote.problem !== null) return { value: null, problem: rawQuote.problem };
-  // A supplied heading is recomputed, so re-checking this command's output passes and a made-up one never does.
-  const answered = answeredHeading(rawQuote.value, sentences);
-  const quote: Parsed<string> = answered === null ? excerptOf(rawQuote.value, sentences, `${at}.quote`, id, removed) : rawQuote;
+  // A supplied issue is recomputed like the heading: the source the quote came from decides it.
+  const quote = quoteFrom(rawQuote.value, sources, `${at}.quote`, id, removed);
   if (quote.problem !== null) return { value: null, problem: quote.problem };
+  const { source, answered } = quote;
   // A short quote keeps the heading it sits under as context (#222).
-  const heading = answered ?? (isShort(quote.value) ? sectionHeading(quote.value, sentences) : null);
+  const heading = answered ?? (isShort(quote.value) ? sectionHeading(quote.value, source.sentences) : null);
   if (kind !== 'non-goal') {
     // Only a quote that is a section's whole body answers its heading; elsewhere the heading is context, not support.
     const quoted = significantWords(answered === null ? quote.value : `${answered} ${quote.value}`);
@@ -333,8 +380,12 @@ function statementOf(rawEntry: unknown, at: string, sentences: Sentences, remove
   if (kind === 'deliberate') {
     const parsed = text(entry['reason'], `${at}.reason`, MAX_QUOTE);
     if (parsed.problem !== null) return { value: null, problem: `${parsed.problem} on a deliberate statement` };
-    const excerpt = excerptOf(parsed.value, sentences, `${at}.reason`, id, removed);
-    if (excerpt.problem !== null) return { value: null, problem: excerpt.problem };
+    // An issue's requirement paired with a description's excuse is not one author's choice.
+    const excerpt = excerptOf(parsed.value, source.sentences, `${at}.reason`, id, removed, whereOf(source));
+    if (excerpt.problem !== null) {
+      const elsewhere = sources.some((other) => other !== source && excerptOf(parsed.value, other.sentences, '', id, [], '').problem === null);
+      return { value: null, problem: elsewhere ? `${at}.reason must be in the same source as its quote` : excerpt.problem };
+    }
     reason = excerpt.value;
   } else if (entry['reason'] !== undefined) {
     removed.push(`Removed reason from ${id} (only a deliberate statement takes reason)`);
@@ -351,6 +402,7 @@ function statementOf(rawEntry: unknown, at: string, sentences: Sentences, remove
       ...(reason === undefined ? {} : { reason }),
       ...(complete ? { scope: 'complete' as const } : {}),
       ...(heading === null ? {} : { heading }),
+      ...(source.issue === null ? {} : { issue: source.issue }),
     },
     problem: null,
   };
@@ -358,13 +410,18 @@ function statementOf(rawEntry: unknown, at: string, sentences: Sentences, remove
 
 /**
  * Parses the intent-extractor output; every quote and reason must be a whole
- * sentence of `description`. A statement that breaks a rule is dropped and
- * named in `dropped`, so one bad entry does not cost the rest of the table;
- * a misplaced optional key is stripped and named in `removed`. The whole
- * output is refused only when its shape is broken, two kept statements share
- * an id, or none survives.
+ * sentence of `description` or, failing that, of one of the linked `issues`,
+ * which then names the statement's `issue`. A statement that breaks a rule is
+ * dropped and named in `dropped`, so one bad entry does not cost the rest of
+ * the table; a misplaced optional key is stripped and named in `removed`. The
+ * whole output is refused only when its shape is broken, two kept statements
+ * share an id, or none survives.
  */
-export function parseIntent(value: unknown, description: string): Parsed<IntentDocument> & { dropped: string[]; removed: string[] } {
+export function parseIntent(
+  value: unknown,
+  description: string,
+  issues: { number: number; body: string }[] = [],
+): Parsed<IntentDocument> & { dropped: string[]; removed: string[] } {
   const removed: string[] = [];
   const refuse = (problem: string, dropped: string[] = []) => ({ value: null, problem, dropped, removed });
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return refuse('expected {"statements": [...]}');
@@ -375,12 +432,16 @@ export function parseIntent(value: unknown, description: string): Parsed<IntentD
   if (!Array.isArray(raw)) return refuse('statements must be an array');
   if (raw.length > MAX_INTENT_STATEMENTS) return refuse(`statements must list at most ${MAX_INTENT_STATEMENTS} entries`);
 
-  const sentences = sentencesOf(description);
+  // The description first, so a sentence in both is the author's own. An empty issue body accepts nothing but is still an issue given.
+  const sources: Source[] = [
+    { issue: null, sentences: sentencesOf(description) },
+    ...issues.map((issue) => ({ issue: issue.number, sentences: sentencesOf(issue.body) })),
+  ];
   const statements: IntentStatement[] = [];
   const dropped: string[] = [];
   for (const [index, rawEntry] of raw.entries()) {
     const removedHere: string[] = [];
-    const parsed = statementOf(rawEntry, `statements[${index}]`, sentences, removedHere);
+    const parsed = statementOf(rawEntry, `statements[${index}]`, sources, removedHere);
     // A dropped statement's stripped keys are moot; only report kept ones.
     if (parsed.problem === null) removed.push(...removedHere);
     if (parsed.problem === null) statements.push(parsed.value);

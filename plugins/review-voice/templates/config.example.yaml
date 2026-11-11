@@ -26,6 +26,9 @@ review:
   # Which stages run and on which model (docs/adr/0025): fast, standard,
   # thorough, or auto, which picks from the diff. `--mode` beats this.
   mode: auto
+  # Also read the issues the description closes (`Closes #12`; same repository,
+  # at most five). A quote from an issue is checked like one from the description.
+  linked_issues: false
   # Set the model for a stage in every mode; an override never turns a stage
   # on or off. Keys: intent, analyst (the diff lane), lanes, verify, tie-break,
   # challenge, edit. Defaults are sonnet, or opus where the mode calls for it.
@@ -178,6 +181,16 @@ verdict:
   # true turns every APPROVE into COMMENT, so approval is left to a person.
   # REQUEST_CHANGES is unchanged, and a needs-rerun hold still applies.
   never_approve: false
+  # Globs of paths whose change leaves approval to a person. An APPROVE becomes
+  # COMMENT and the posted summary names this setting, never a path. A rename
+  # counts by both names and a deleted file counts. Unlike
+  # review.human_review.sensitive_paths this costs no thorough review and adds
+  # no note, and cap_approval does not lift it. A list that does not load holds
+  # every approval until it is fixed.
+  never_approve_paths: []
+  # Globs every changed path must match for Review Voice to approve; empty means
+  # no restriction. "The bot may approve only documentation" is ["docs/**"].
+  only_approve_paths: []
   # The recorded scope and check counts help readers judge what the review covered.
   scope_block: false
   # Model ids stay private unless this is true and the scope block is enabled.
@@ -186,6 +199,12 @@ verdict:
   evidence_block: false
   # The owner precedent count reveals that a precedent store exists, so it needs its own switch.
   evidence_block_precedents: false
+  # true lists every held finding, with its verdict and reason, in review --json,
+  # the job summary inside GitHub Actions and the watcher report, never on the
+  # pull request. A below-gate or policy-suppressed one carries the score
+  # --promote command that re-scores the run (inside GitHub Actions, only its
+  # candidate id).
+  held_queue: false
   # true posts nothing when a clean approval's scope is unchanged since the
   # commit the owner approved and that approval still stands (it needs
   # identity.owner_reviewer).

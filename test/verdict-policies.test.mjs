@@ -748,10 +748,13 @@ test('config: each setting is read', () => {
       '  carry_approval_on_unchanged: true',
       '  recheck_thread_before_post: true',
       '  never_approve: false',
+      '  never_approve_paths: ["db/migrate/**"]',
+      '  only_approve_paths: ["docs/**", "*.md"]',
       '  scope_block: true',
       '  scope_block_models: true',
       '  evidence_block: true',
       '  evidence_block_precedents: true',
+      '  held_queue: true',
       'review:',
       '  suggestions: true',
       '  human_review:',
@@ -767,11 +770,15 @@ test('config: each setting is read', () => {
     carryApprovalOnUnchanged: true,
     recheckThreadBeforePost: true,
     neverApprove: false,
+    neverApprovePaths: ['db/migrate/**'],
+    onlyApprovePaths: ['docs/**', '*.md'],
+    malformedApprovalPaths: null,
     scopeBlock: true,
     scopeBlockModels: true,
     suggestions: true,
     evidenceBlock: true,
     evidenceBlockPrecedents: true,
+    heldQueue: true,
   });
   assert.deepEqual(config.warnings, []);
 });
@@ -806,7 +813,7 @@ test('config: an invalid value warns and keeps that setting\'s default', () => {
 test('help for verdict and post names the settings and exit 8', () => {
   const help = (command) => execFileSync(process.execPath, [bundle, command, '--help'], { encoding: 'utf8' });
   const verdictHelp = help('verdict');
-  for (const key of ['ci_pending', 'ci_red', 'ci_needs_rerun', 'cap_approval', 'carry_approval_on_unchanged', 'never_approve', 'scope_block', 'scope_block_models', 'evidence_block', 'evidence_block_precedents']) {
+  for (const key of ['ci_pending', 'ci_red', 'ci_needs_rerun', 'cap_approval', 'carry_approval_on_unchanged', 'never_approve', 'never_approve_paths', 'only_approve_paths', 'scope_block', 'scope_block_models', 'evidence_block', 'evidence_block_precedents', 'held_queue']) {
     // With its dot and colon, since evidence_block is a prefix of evidence_block_precedents.
     assert.ok(verdictHelp.includes(`.${key}:`), `verdict --help: ${key}`);
   }
