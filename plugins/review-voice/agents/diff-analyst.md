@@ -213,6 +213,20 @@ name the description sentence in `evidence` so the verifier can see which
 claim the finding contradicts. A finding that disagrees with the description is
 not a repeat of it, however many words they share.
 
+**Requirements from linked issues.** A statement with `issue` is a requirement
+from an issue the author set out to close, quoted from that issue's entry under
+`linkedIssues` in `thread.json`. When the head does not meet it, no `non-goal`
+or `deliberate` statement covers the gap, and a search of the changed scope
+plus the entry points that reach the changed code (the completeness rule's
+bound) finds no code that does it, raise one `question` with `intent_ref`,
+anchored on the changed line nearest the requirement's subject, asking whether
+the requirement is meant to land in this change. A requirement gap is a
+`question` at most, never a higher tier, because an issue is often closed across
+several pull requests, and `question` is the tier for what the author can
+answer and you cannot. Code in the change that contradicts an issue requirement
+with an exact location, a concrete failure mode and evidence is an ordinary
+candidate under "What qualifies", not a question.
+
 **Factual claims.** Check factual claims in the description and in comments or
 documentation the diff changes against the final head, the diff, configuration
 and CI: scope, flags, counts, test locations or coverage, data exposure,

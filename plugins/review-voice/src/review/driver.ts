@@ -10,7 +10,7 @@ import { originRepository } from '../diff/pull-request.ts';
 import { parseHunks } from '../diff/hunks.ts';
 import { stopCommands } from '../evidence/run.ts';
 import type { GitHubClient } from '../github/client.ts';
-import { descriptionOf } from '../intent.ts';
+import { descriptionOf, linkedIssuesOf } from '../intent.ts';
 import { blockingContext, isSuppressionExempt, type MissingContext } from '../scoring/score.ts';
 import { environmentSource, type ConfigSourceKind } from '../policy/load.ts';
 import { recordAudit } from '../store/audit.ts';
@@ -702,11 +702,13 @@ export function heldForRecord(held: readonly HeldFinding[], diff: string): { hel
 }
 
 async function intent(run: Run): Promise<void> {
-  const description = descriptionOf(readJson(at(run, 'thread.json')));
+  const thread = readJson(at(run, 'thread.json'));
+  const description = descriptionOf(thread);
   if (description === null || description.trim() === '') return skip(run, 'intent', 'the pull request has no description');
   const manifest = readJson(at(run, 'files.json'));
   const title = isRecord(manifest) && typeof manifest['title'] === 'string' ? manifest['title'] : '';
-  const result = await agent(run, 'intent', 'intent-extractor', run.plan!.stages.intent.model ?? 'sonnet', prompts.SCHEMAS.intent, prompts.intentPrompt(files(run), title), async (output) => {
+  const issues = linkedIssuesOf(thread).map((issue) => issue.number);
+  const result = await agent(run, 'intent', 'intent-extractor', run.plan!.stages.intent.model ?? 'sonnet', prompts.SCHEMAS.intent, prompts.intentPrompt(files(run), title, issues), async (output) => {
     const checked = await cli(run, ['check-intent', '--thread', at(run, 'thread.json')], JSON.stringify(output));
     if (checked.code !== 0) return checked.stderr.trim() || `check-intent exited ${checked.code}`;
     writeFileSync(at(run, 'intent.json'), checked.stdout);
