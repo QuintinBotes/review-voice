@@ -621,6 +621,12 @@ export interface RecordedChecks {
   symbolsInconclusive: number;
   /** True when the symbol search stopped on its time budget. */
   symbolsBudgetExhausted: boolean;
+  /**
+   * The linked issues the thread read for intent (`review.linked_issues`), by
+   * number; `[]` when the thread read none. Absent on a row recorded before
+   * the thread said, which never claims it read no issues.
+   */
+  issuesRead?: number[];
 }
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
@@ -703,11 +709,13 @@ function storedChecks(raw: unknown): RecordedChecks | null {
     if (c === null || typeof c['name'] !== 'string' || typeof c['reason'] !== 'string') return null;
     didNot.push({ name: c['name'], reason: c['reason'] });
   }
+  const issuesRead = value['issuesRead'];
   return {
     staticRan: ran,
     staticDidNotRun: didNot,
     symbolsInconclusive: value['symbolsInconclusive'] as number,
     symbolsBudgetExhausted: value['symbolsBudgetExhausted'] as boolean,
+    ...(Array.isArray(issuesRead) ? { issuesRead: issuesRead.filter((n): n is number => Number.isInteger(n)) } : {}),
   };
 }
 
@@ -721,7 +729,9 @@ export function describeChecks(checks: RecordedChecks | null): string {
     checks.symbolsInconclusive === 0
       ? 'every symbol file finished'
       : `${checks.symbolsInconclusive} symbol file${checks.symbolsInconclusive === 1 ? '' : 's'} not finished${checks.symbolsBudgetExhausted ? ' (time budget)' : ''}`;
-  return `Checks ${staticParts.length === 0 ? 'no static checks' : staticParts.join('; ')}; ${symbols}`;
+  const issues =
+    checks.issuesRead === undefined ? '' : `; linked issues ${checks.issuesRead.length === 0 ? 'none' : checks.issuesRead.map((n) => `#${n}`).join(', ')}`;
+  return `Checks ${staticParts.length === 0 ? 'no static checks' : staticParts.join('; ')}; ${symbols}${issues}`;
 }
 
 /**

@@ -24,6 +24,12 @@ export type AuditAction =
   | 'review_post_sent'
   | 'review_post_refused'
   | 'review_post_failed'
+  // Replying under one of this tool's own inline comments (docs/adr/0035): the
+  // second write, with the same four rows as a review.
+  | 'review_reply_attempted'
+  | 'review_reply_sent'
+  | 'review_reply_refused'
+  | 'review_reply_failed'
   // An unchanged scope whose owner approval stands: nothing was posted (docs/adr/0028).
   | 'review_carried'
   // A review that could not complete: ids, the exit code, the stage and the failure mode (docs/adr/0022).

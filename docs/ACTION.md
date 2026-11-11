@@ -32,6 +32,8 @@ jobs:
           post: false
 ```
 
+The `permissions` block grants `contents: read` and `pull-requests: write` only. With `review.linked_issues: true` in the repository config, a private repository's workflow also needs `issues: read`; without it every issue read fails, stays a local warning and the review goes on without the issues.
+
 Pin the action to a release tag. Tags are named `review-voice--v<version>`; the first release with the action is 1.19.0, and 1.22.0 is the first ready for the GitHub Marketplace. Pin a full commit SHA instead if your organisation requires it.
 
 Pin both actions by commit SHA in your own repository.

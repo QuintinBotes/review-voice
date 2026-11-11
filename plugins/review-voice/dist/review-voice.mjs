@@ -179,8 +179,8 @@ function scanFindings(output) {
   return { blocks, stray };
 }
 function parseFinding(raw, startLine) {
-  const joined = raw.replace(/\s*\n\s*/g, " ").trim();
-  const match = FINDING.exec(joined);
+  const joined2 = raw.replace(/\s*\n\s*/g, " ").trim();
+  const match = FINDING.exec(joined2);
   if (!match) {
     return { startLine, raw, severity: null, path: null, line: null, prose: "" };
   }
@@ -513,12 +513,12 @@ function parseNameStatus(raw) {
   const fields = raw.split("\0").filter((field) => field.length > 0);
   const out = [];
   for (let i = 0; i < fields.length; ) {
-    const code2 = fields[i];
-    if (code2.startsWith("R") || code2.startsWith("C")) {
-      out.push({ status: code2[0], previousPath: fields[i + 1], path: fields[i + 2] });
+    const code3 = fields[i];
+    if (code3.startsWith("R") || code3.startsWith("C")) {
+      out.push({ status: code3[0], previousPath: fields[i + 1], path: fields[i + 2] });
       i += 3;
     } else {
-      out.push({ status: code2[0], path: fields[i + 1] });
+      out.push({ status: code3[0], path: fields[i + 1] });
       i += 2;
     }
   }
@@ -1298,7 +1298,7 @@ function globToRegExp(glob) {
     }
     source += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   }
-  return new RegExp(`^${source}$`);
+  return new RegExp(`^${source}$`, "su");
 }
 function governsCount(globs, changedPaths) {
   if (globs.length === 0 || changedPaths.length === 0) return 0;
@@ -2928,8 +2928,8 @@ function doubleQuotedString(value, ctx) {
         case "u":
           {
             str += json2.slice(start, i);
-            const code2 = json2.substr(i + 2, 4);
-            switch (code2) {
+            const code3 = json2.substr(i + 2, 4);
+            switch (code3) {
               case "0000":
                 str += "\\0";
                 break;
@@ -2955,8 +2955,8 @@ function doubleQuotedString(value, ctx) {
                 str += "\\P";
                 break;
               default:
-                if (code2.substr(0, 2) === "00")
-                  str += "\\x" + code2.substr(2);
+                if (code3.substr(0, 2) === "00")
+                  str += "\\x" + code3.substr(2);
                 else
                   str += json2.substr(i, 6);
             }
@@ -5100,22 +5100,22 @@ function assertCollection(contents) {
 
 // node_modules/yaml/browser/dist/errors.js
 var YAMLError = class extends Error {
-  constructor(name, pos, code2, message) {
+  constructor(name, pos, code3, message) {
     super();
     this.name = name;
-    this.code = code2;
+    this.code = code3;
     this.message = message;
     this.pos = pos;
   }
 };
 var YAMLParseError = class extends YAMLError {
-  constructor(pos, code2, message) {
-    super("YAMLParseError", pos, code2, message);
+  constructor(pos, code3, message) {
+    super("YAMLParseError", pos, code3, message);
   }
 };
 var YAMLWarning = class extends YAMLError {
-  constructor(pos, code2, message) {
-    super("YAMLWarning", pos, code2, message);
+  constructor(pos, code3, message) {
+    super("YAMLWarning", pos, code3, message);
   }
 };
 var prettifyError = (src, lc) => (error) => {
@@ -5926,7 +5926,7 @@ function resolveFlowScalar(scalar2, strict, onError) {
   const { offset, type, source, end } = scalar2;
   let _type;
   let value;
-  const _onError = (rel, code2, msg) => onError(offset + rel, code2, msg);
+  const _onError = (rel, code3, msg) => onError(offset + rel, code3, msg);
   switch (type) {
     case "scalar":
       _type = Scalar.PLAIN;
@@ -6124,9 +6124,9 @@ var escapeCodes = {
 function parseCharCode(source, offset, length, onError) {
   const cc = source.substr(offset, length);
   const ok = cc.length === length && /^[0-9a-fA-F]+$/.test(cc);
-  const code2 = ok ? parseInt(cc, 16) : NaN;
+  const code3 = ok ? parseInt(cc, 16) : NaN;
   try {
-    return String.fromCodePoint(code2);
+    return String.fromCodePoint(code3);
   } catch {
     const raw = source.substr(offset - 2, length + 2);
     onError(offset - 2, "BAD_DQ_ESCAPE", `Invalid escape sequence ${raw}`);
@@ -6396,12 +6396,12 @@ var Composer = class {
     this.prelude = [];
     this.errors = [];
     this.warnings = [];
-    this.onError = (source, code2, message, warning) => {
+    this.onError = (source, code3, message, warning) => {
       const pos = getErrorPos(source);
       if (warning)
-        this.warnings.push(new YAMLWarning(pos, code2, message));
+        this.warnings.push(new YAMLWarning(pos, code3, message));
       else
-        this.errors.push(new YAMLParseError(pos, code2, message));
+        this.errors.push(new YAMLParseError(pos, code3, message));
     };
     this.directives = new Directives({ version: options.version || "1.2" });
     this.options = options;
@@ -6983,9 +6983,9 @@ var Lexer = class {
     }
   }
   *parseQuotedScalar() {
-    const quote2 = this.charAt(0);
-    let end = this.buffer.indexOf(quote2, this.pos + 1);
-    if (quote2 === "'") {
+    const quote3 = this.charAt(0);
+    let end = this.buffer.indexOf(quote3, this.pos + 1);
+    if (quote3 === "'") {
       while (end !== -1 && this.buffer[end + 1] === "'")
         end = this.buffer.indexOf("'", end + 2);
     } else {
@@ -9740,7 +9740,10 @@ var GitHubClient = class {
   }
   /**
    * `retryRateLimits: false` fails at once on a rate limit instead of waiting
-   * it out, for a read the caller can do without.
+   * it out, for a read the caller can do without. `followRedirects: false`
+   * makes a redirect fail the read: a transferred issue answers with a 301 to
+   * another repository, and following it would send the credential to a read
+   * the allowlist never checked.
    */
   async get(path, init = {}) {
     if (init.method !== void 0 && init.method.toUpperCase() !== "GET") {
@@ -9749,15 +9752,17 @@ var GitHubClient = class {
       );
     }
     this.assertAllowed(path);
-    return this.request(path, init.retryRateLimits !== false);
+    return this.request(path, init.retryRateLimits !== false, init.followRedirects !== false);
   }
   /** The GET itself, once the caller has checked the path. */
-  async request(path, retryRateLimits) {
+  async request(path, retryRateLimits, followRedirects = true) {
     const { url: resolved, apiPath } = this.resolve(path);
     const url = resolved.href;
     for (let attempt = 0; ; attempt += 1) {
       const response = await this.doFetch(url, {
         method: "GET",
+        // A 3xx then comes back as a non-ok response, which the check below refuses.
+        redirect: followRedirects ? "follow" : "manual",
         headers: {
           accept: "application/vnd.github+json",
           authorization: this.authorization(),
@@ -10189,31 +10194,31 @@ var LANGUAGES2 = {
 };
 function splitLine(text4, language3) {
   if (language3.blockComments && text4.trimStart().startsWith("*")) return { code: "", comment: text4, raw: "" };
-  let code2 = "";
+  let code3 = "";
   let raw = "";
   let comment = "";
-  let quote2 = null;
+  let quote3 = null;
   for (let index = 0; index < text4.length; index += 1) {
     const char = text4[index];
-    if (quote2 !== null) {
+    if (quote3 !== null) {
       if (char === "\\") {
-        code2 += "  ";
+        code3 += "  ";
         raw += text4.slice(index, index + 2);
         index += 1;
-      } else if (text4.startsWith(quote2, index)) {
-        code2 += quote2;
-        raw += quote2;
-        index += quote2.length - 1;
-        quote2 = null;
+      } else if (text4.startsWith(quote3, index)) {
+        code3 += quote3;
+        raw += quote3;
+        index += quote3.length - 1;
+        quote3 = null;
       } else {
-        code2 += " ";
+        code3 += " ";
         raw += char;
       }
     } else if (language3.quotes.includes(char)) {
-      quote2 = language3.tripleQuotes === true && text4.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
-      code2 += quote2;
-      raw += quote2;
-      index += quote2.length - 1;
+      quote3 = language3.tripleQuotes === true && text4.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
+      code3 += quote3;
+      raw += quote3;
+      index += quote3.length - 1;
     } else if (text4.startsWith(language3.lineComment, index)) {
       comment += text4.slice(index);
       break;
@@ -10225,22 +10230,22 @@ function splitLine(text4, language3) {
       comment += `${text4.slice(index, end === -1 ? void 0 : end + 2)} `;
       if (end === -1) break;
       index = end + 1;
-    } else if (language3.regexLiterals === true && char === "/" && opensRegex(code2)) {
+    } else if (language3.regexLiterals === true && char === "/" && opensRegex(code3)) {
       const end = regexEnd(text4, index);
       if (end === -1) {
-        code2 += char;
+        code3 += char;
         raw += char;
       } else {
-        code2 += `/${" ".repeat(end - index - 1)}/`;
+        code3 += `/${" ".repeat(end - index - 1)}/`;
         raw += text4.slice(index, end + 1);
         index = end;
       }
     } else {
-      code2 += char;
+      code3 += char;
       raw += char;
     }
   }
-  return { code: code2, comment, raw };
+  return { code: code3, comment, raw };
 }
 function opensRegex(before) {
   const trimmed = before.trimEnd();
@@ -10326,24 +10331,24 @@ var GUARD_WORD = new RegExp(
   `(?<![A-Za-z])(?:${GUARD_WORDS.join("|")}|${GUARD_WORDS.map(capitalised).join("|")}|${GUARD_WORDS.map((w) => w.toUpperCase()).join("|")})|(?<=[a-z0-9])(?:${GUARD_WORDS.map(capitalised).join("|")})`
 );
 function conditionAfter(line3, from) {
-  const code2 = line3.code.slice(from);
-  const open = /^\s*\(/.exec(code2);
-  if (open === null) return line3.raw.slice(from, toBody(code2, from, 0));
+  const code3 = line3.code.slice(from);
+  const open = /^\s*\(/.exec(code3);
+  if (open === null) return line3.raw.slice(from, toBody(code3, from, 0));
   let depth = 0;
-  for (let index = open[0].length - 1; index < code2.length; index += 1) {
-    if (code2[index] === "(") depth += 1;
-    else if (code2[index] === ")") {
+  for (let index = open[0].length - 1; index < code3.length; index += 1) {
+    if (code3[index] === "(") depth += 1;
+    else if (code3[index] === ")") {
       depth -= 1;
       if (depth === 0) {
-        const continues = /^\s*(?:and|or|&&|\|\|)(?![\w$])/.test(code2.slice(index + 1));
-        return line3.raw.slice(from, continues ? toBody(code2, from, index + 1) : from + index + 1);
+        const continues = /^\s*(?:and|or|&&|\|\|)(?![\w$])/.test(code3.slice(index + 1));
+        return line3.raw.slice(from, continues ? toBody(code3, from, index + 1) : from + index + 1);
       }
     }
   }
   return line3.raw.slice(from);
 }
-function toBody(code2, from, start) {
-  const body = /:(?=\s|$)|\{|\bthen\b|\bdo\b/.exec(code2.slice(start));
+function toBody(code3, from, start) {
+  const body = /:(?=\s|$)|\{|\bthen\b|\bdo\b/.exec(code3.slice(start));
   return body === null ? void 0 : from + start + body.index;
 }
 var MIDDLEWARE_NAME = "(?:[Aa]uth|[Vv]erify|[Rr]equire[A-Z_]|[Cc]srf|CSRF|[Rr]ate_?[Ll]imit|RATE_?LIMIT)";
@@ -10354,8 +10359,8 @@ function isListElement(raw) {
   let text4 = raw.trim();
   if (text4.endsWith(",")) text4 = text4.slice(0, -1).trimEnd();
   if (text4 === "") return false;
-  const quote2 = text4[0];
-  if ((quote2 === '"' || quote2 === "'" || quote2 === "`") && text4.length >= 2 && text4.endsWith(quote2) && !text4.slice(1, -1).includes(quote2)) {
+  const quote3 = text4[0];
+  if ((quote3 === '"' || quote3 === "'" || quote3 === "`") && text4.length >= 2 && text4.endsWith(quote3) && !text4.slice(1, -1).includes(quote3)) {
     return true;
   }
   if (/^[\w$.@*/-]+$/.test(text4)) return true;
@@ -10569,28 +10574,28 @@ var CODE_RULES = [
   }
 ];
 var URL_RULE = { kind: "new-route", in: "code", pattern: /(?<![\w.])path\s*\(/g };
-function buildsQuery(code2, raw, quotes, triple, at2) {
+function buildsQuery(code3, raw, quotes, triple, at2) {
   let index = 0;
-  while (index < code2.length) {
-    const char = code2[index];
+  while (index < code3.length) {
+    const char = code3[index];
     if (!quotes.includes(char)) {
       index += 1;
       continue;
     }
-    const delimiter = triple && code2.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
+    const delimiter = triple && code3.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
     const open = index;
-    const close = code2.indexOf(delimiter, open + delimiter.length);
-    const end = close === -1 ? code2.length : close;
+    const close = code3.indexOf(delimiter, open + delimiter.length);
+    const end = close === -1 ? code3.length : close;
     if (at2 > open && at2 < end) {
       const inside2 = raw.slice(open + delimiter.length, end);
-      const prefix = code2.slice(0, open);
+      const prefix = code3.slice(0, open);
       const interpolated = /\$\{|%s/.test(inside2) || /(?<![\w$])(?:rf|fr|f)$/i.test(prefix) && inside2.includes("{");
       const before = prefix.trimEnd();
-      const after = close === -1 ? "" : code2.slice(end + delimiter.length).trimStart();
-      const joined = before.endsWith("+") || /^(?:\+|%(?!=)|\.format\s*\()/.test(after);
-      return interpolated || joined;
+      const after = close === -1 ? "" : code3.slice(end + delimiter.length).trimStart();
+      const joined2 = before.endsWith("+") || /^(?:\+|%(?!=)|\.format\s*\()/.test(after);
+      return interpolated || joined2;
     }
-    index = close === -1 ? code2.length : close + delimiter.length;
+    index = close === -1 ? code3.length : close + delimiter.length;
   }
   return false;
 }
@@ -11542,9 +11547,9 @@ function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */
   return { carried, notCarried, heldBack, settled, output };
 }
 function findingBody(text4) {
-  const joined = text4.replace(/\s+/g, " ").trim();
-  const match = /^\[[a-z_]+\]\s+`[^`]+:\d+`\s*(.*)$/i.exec(joined);
-  return match === null ? joined : match[1] ?? "";
+  const joined2 = text4.replace(/\s+/g, " ").trim();
+  const match = /^\[[a-z_]+\]\s+`[^`]+:\d+`\s*(.*)$/i.exec(joined2);
+  return match === null ? joined2 : match[1] ?? "";
 }
 function matchCarried(recorded2, carried) {
   const matches = /* @__PURE__ */ new Map();
@@ -12156,11 +12161,13 @@ function storedChecks(raw) {
     if (c === null || typeof c["name"] !== "string" || typeof c["reason"] !== "string") return null;
     didNot.push({ name: c["name"], reason: c["reason"] });
   }
+  const issuesRead = value["issuesRead"];
   return {
     staticRan: ran,
     staticDidNotRun: didNot,
     symbolsInconclusive: value["symbolsInconclusive"],
-    symbolsBudgetExhausted: value["symbolsBudgetExhausted"]
+    symbolsBudgetExhausted: value["symbolsBudgetExhausted"],
+    ...Array.isArray(issuesRead) ? { issuesRead: issuesRead.filter((n) => Number.isInteger(n)) } : {}
   };
 }
 function describeChecks(checks) {
@@ -12169,7 +12176,8 @@ function describeChecks(checks) {
   const didNot = checks.staticDidNotRun.map((c) => `${c.name} did not run (${c.reason})`);
   const staticParts = [...ran, ...didNot];
   const symbols = checks.symbolsInconclusive === 0 ? "every symbol file finished" : `${checks.symbolsInconclusive} symbol file${checks.symbolsInconclusive === 1 ? "" : "s"} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}`;
-  return `Checks ${staticParts.length === 0 ? "no static checks" : staticParts.join("; ")}; ${symbols}`;
+  const issues = checks.issuesRead === void 0 ? "" : `; linked issues ${checks.issuesRead.length === 0 ? "none" : checks.issuesRead.map((n) => `#${n}`).join(", ")}`;
+  return `Checks ${staticParts.length === 0 ? "no static checks" : staticParts.join("; ")}; ${symbols}${issues}`;
 }
 var REMOVED_CONTROL_ORDER = { guard: 0, refusal: 1, decorator: 2, middleware: 3, "allowlist-entry": 4 };
 var RISK_MARKER_ORDER = { "new-route": 0, "lock-or-async": 1, "string-built-query": 2, unsafe: 3 };
@@ -12331,8 +12339,8 @@ function conventionQuotesFor(evidence, documents) {
     const document = documentNamed(entry, documents);
     if (document === void 0) continue;
     const content = squashed(document.content).toLowerCase();
-    const quote2 = [...entry.matchAll(QUOTED)].map((match) => squashed(match[1] ?? "")).find((segment) => segment.split(" ").length >= 4 && content.includes(segment.toLowerCase()));
-    if (quote2 !== void 0) found.push({ path: document.path, quote: redactedAsPosted(quote2) });
+    const quote3 = [...entry.matchAll(QUOTED)].map((match) => squashed(match[1] ?? "")).find((segment) => segment.split(" ").length >= 4 && content.includes(segment.toLowerCase()));
+    if (quote3 !== void 0) found.push({ path: document.path, quote: redactedAsPosted(quote3) });
   }
   return found.length === 0 ? void 0 : found;
 }
@@ -12658,8 +12666,8 @@ function validateOutput(output, limits = DEFAULT_LIMITS) {
     }
     return { valid: violations.length === 0, findingCount: 0, totalWords: 0, violations };
   }
-  for (const { pattern, code: code2, message } of STRUCTURAL_NOISE) {
-    if (pattern.test(output)) violations.push({ code: code2, message });
+  for (const { pattern, code: code3, message } of STRUCTURAL_NOISE) {
+    if (pattern.test(output)) violations.push({ code: code3, message });
   }
   const findings = splitFindings(output).map((block) => parseFinding(block.raw, block.startLine));
   for (const line3 of strayLines(output)) {
@@ -13039,16 +13047,61 @@ var DEFAULT_VERDICT_POLICY = Object.freeze({
   carryApprovalOnUnchanged: false,
   recheckThreadBeforePost: false,
   neverApprove: false,
+  neverApprovePaths: [],
+  onlyApprovePaths: [],
+  malformedApprovalPaths: null,
   scopeBlock: false,
   scopeBlockModels: false,
   suggestions: false,
   evidenceBlock: false,
   evidenceBlockPrecedents: false,
+  heldQueue: false,
   minPostedTier: "nit",
   readingGuide: false
 });
 function verdictPolicy(policy) {
   return { ...DEFAULT_VERDICT_POLICY, ...policy };
+}
+function namedPaths(paths) {
+  const sorted = [...new Set(paths)].sort();
+  const more = sorted.length - 3;
+  return `${sorted.slice(0, 3).join(", ")}${more > 0 ? `, +${more} more` : ""}`;
+}
+function approvalPathHold(changed, policy) {
+  const unchecked = (setting) => `Approval is held because the changed files could not be checked against ${setting}.`;
+  if (policy.malformedApprovalPaths !== null) {
+    return {
+      reason: `approval is left to a person, as verdict.${policy.malformedApprovalPaths} did not load, so the approval paths cannot be checked`,
+      posted: unchecked(policy.malformedApprovalPaths)
+    };
+  }
+  if (policy.neverApprovePaths.length === 0 && policy.onlyApprovePaths.length === 0) return null;
+  const unreadable = changed.truncated ? "the pull request lists more files than GitHub returns" : changed.malformed === true ? "GitHub listed a changed file without a usable name" : changed.untied === true ? "GitHub did not list the files of the commit being approved" : null;
+  if (unreadable !== null) {
+    return {
+      reason: `approval is left to a person, as ${unreadable}, so the approval paths cannot be checked`,
+      posted: unchecked(policy.neverApprovePaths.length > 0 ? "never_approve_paths" : "only_approve_paths")
+    };
+  }
+  const never = policy.neverApprovePaths.map(globToRegExp);
+  const matched = changed.paths.filter((path) => never.some((glob) => glob.test(path)));
+  if (matched.length > 0) {
+    return {
+      reason: `approval is left to a person, as verdict.never_approve_paths matches ${namedPaths(matched)}`,
+      posted: "Approval is held because a changed file matches never_approve_paths."
+    };
+  }
+  if (policy.onlyApprovePaths.length > 0) {
+    const only = policy.onlyApprovePaths.map(globToRegExp);
+    const outside = changed.paths.filter((path) => !only.some((glob) => glob.test(path)));
+    if (outside.length > 0) {
+      return {
+        reason: `approval is left to a person, as verdict.only_approve_paths does not cover ${namedPaths(outside)}`,
+        posted: "Approval is held because a changed file is outside only_approve_paths."
+      };
+    }
+  }
+  return null;
 }
 var MAX_ANNOTATED_CHECKS = 5;
 var MAX_CHECK_NAME = 60;
@@ -13125,12 +13178,16 @@ function decide(input) {
     }
     return done({ event: "COMMENT", action: "post", reasons: [...reasons, why], exitCode: 0, cappedByCi: false }, annotations);
   }
-  if (policy.neverApprove && input.mapped === "APPROVE") {
+  const policyHold = policy.neverApprove ? "approval is left to a person by policy" : input.approvalPathHold ?? null;
+  if (policyHold !== null && input.mapped === "APPROVE") {
     if (input.recheck) {
       return done({
         event: "COMMENT",
         action: "refuse",
-        reasons: [...reasons, "there is no approval to re-check under never_approve"],
+        reasons: [
+          ...reasons,
+          policy.neverApprove ? "there is no approval to re-check under never_approve" : "there is no approval to re-check under the approval paths"
+        ],
         exitCode: 2,
         cappedByCi: false,
         cappedByPolicy: true
@@ -13140,7 +13197,7 @@ function decide(input) {
       {
         event: "COMMENT",
         action: "post",
-        reasons: [...reasons, "approval is left to a person by policy"],
+        reasons: [...reasons, policyHold],
         exitCode: 0,
         cappedByCi: false,
         cappedByPolicy: true
@@ -13297,7 +13354,7 @@ ${suggestionBlock(patch.replacement)}`,
 function buildPayload(input) {
   const posted = [...input.planned.inline, ...input.planned.unanchored];
   const body = [
-    summaryLine(input.event, posted, input.cappedBy),
+    `${summaryLine(input.event, posted, input.cappedBy)}${input.pathHold === void 0 ? "" : ` ${input.pathHold}`}`,
     ...input.planned.unanchored.map((finding) => finding.raw),
     ...(input.bodyFindings ?? []).map(renderSimplification)
   ].join("\n\n");
@@ -13351,13 +13408,13 @@ function scopeBlock(run, planned, policy) {
   const families = policy.scopeBlockModels ? run.families ?? null : null;
   const challengeFamily2 = families !== null && families.challenge !== null && families.challenge !== "claude" ? families.challenge : null;
   const originPart = (provenance === null ? `Origin: ${NOT_RECORDED}.` : `Origin: ${safeCheckName(provenance.origin)} (${safeCheckName(provenance.independence)}).`) + (challengeFamily2 === null ? "" : ` Challenge: ${safeCheckName(challengeFamily2)}.`);
-  const code2 = (name) => `\`${name}\``;
+  const code3 = (name) => `\`${name}\``;
   const stageNames = run.stages.flatMap((stage) => {
     if (typeof stage.name !== "string" || safeCheckName(stage.name) === "") return [];
-    const name = code2(safeCheckName(stage.name));
+    const name = code3(safeCheckName(stage.name));
     if (!policy.scopeBlockModels) return [name];
     const models = [.../* @__PURE__ */ new Set([...Array.isArray(stage.models) ? stage.models : [], ...typeof stage.model === "string" ? [stage.model] : []])].filter((model) => typeof model === "string").map((model) => safeCheckName(model)).filter((model) => model !== "");
-    return [models.length === 0 ? name : `${name} (${[...new Set(models)].map(code2).join(", ")})`];
+    return [models.length === 0 ? name : `${name} (${[...new Set(models)].map(code3).join(", ")})`];
   });
   const stagesLine = `Stages: ${stageNames.length === 0 ? NOT_RECORDED : stageNames.join(", ")}.`;
   let staticLine = `Static checks: ${NOT_RECORDED}.`;
@@ -13366,14 +13423,16 @@ function scopeBlock(run, planned, policy) {
   if (checks !== null) {
     const parts = [
       ...checks.staticRan.map(
-        (check) => `${code2(safeCheckName(check.name))} ran (exit ${check.exitCode ?? "none"}, ${plural2(check.signals, "signal")})`
+        (check) => `${code3(safeCheckName(check.name))} ran (exit ${check.exitCode ?? "none"}, ${plural2(check.signals, "signal")})`
       ),
-      ...checks.staticDidNotRun.map((check) => `${code2(safeCheckName(check.name))} did not run (${code2(safeCheckName(check.reason))})`)
+      ...checks.staticDidNotRun.map((check) => `${code3(safeCheckName(check.name))} did not run (${code3(safeCheckName(check.reason))})`)
     ];
     staticLine = `Static checks: ${parts.length === 0 ? "none configured" : parts.join("; ")}.`;
     symbolLine = checks.symbolsInconclusive === 0 ? "Symbol context: every changed file finished." : `Symbol context: ${plural2(checks.symbolsInconclusive, "file")} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}.`;
     if (checks.symbolsInconclusive > 0) notChecked.push("files the symbol search did not finish");
   }
+  const issuesRead = checks?.issuesRead ?? null;
+  const linkedLine = issuesRead === null || issuesRead.length === 0 ? null : `Linked issues: ${issuesRead.map((n) => code3(`#${n}`)).join(", ")} read for intent.`;
   const held = heldCounts(run.held);
   held.other += planned.held.length;
   held.belowTier = planned.belowTier.length;
@@ -13400,6 +13459,8 @@ function scopeBlock(run, planned, policy) {
     findings,
     held,
     checks: checks === null ? null : { ran: checks.staticRan.length, didNotRun: checks.staticDidNotRun.length },
+    // Null when not recorded, as `checks` is, so an unrecorded run shows no data and never a zero.
+    issues: issuesRead,
     ...families !== null && (challengeFamily2 !== null || families.secondPass !== null) ? { families: { secondPass: families.secondPass, challenge: families.challenge } } : {}
   };
   const trailer = JSON.stringify(facts).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
@@ -13410,6 +13471,7 @@ function scopeBlock(run, planned, policy) {
     stagesLine,
     staticLine,
     symbolLine,
+    ...linkedLine === null ? [] : [linkedLine],
     `Not posted: ${notPosted.length === 0 ? "nothing held back" : notPosted.join(", ")}.`,
     `Not checked: ${notChecked.join(", ")}.`,
     "",
@@ -13611,7 +13673,7 @@ function expiredRunDirectories(dataDir, days, now) {
     return entry.mtimeMs < now.getTime() - limit * DAY_MS;
   }).map((entry) => entry.path);
 }
-var AUDIT_WHERE = "created_at < ? AND action NOT LIKE 'review_post_%'";
+var AUDIT_WHERE = "created_at < ? AND action NOT LIKE 'review_post_%' AND action NOT LIKE 'review_reply_%'";
 function auditCutoff(days, now) {
   return enabled(days) ? new Date(now.getTime() - days * DAY_MS).toISOString() : null;
 }
@@ -13929,8 +13991,8 @@ function spawnCommand(command, options) {
     const sizes = { stdout: 0, stderr: 0 };
     let failure;
     let settled = false;
-    const stop = (code2) => {
-      failure ??= code2;
+    const stop = (code3) => {
+      failure ??= code3;
       if (pid !== void 0) killGroup(pid, options.killSignal);
       child.stdout.destroy();
       child.stderr.destroy();
@@ -14359,9 +14421,9 @@ function recorded(text4) {
 }
 function stateOf(result, reached, text4, timeoutSeconds, cpuSeconds) {
   if (result.error !== void 0) {
-    const code2 = result.error.code;
-    if (code2 === "ETIMEDOUT") return { kind: "not-run", reason: `timed out after ${timeoutSeconds}s` };
-    if (code2 === "ENOBUFS") return { kind: "not-run", reason: "killed at the output cap" };
+    const code3 = result.error.code;
+    if (code3 === "ETIMEDOUT") return { kind: "not-run", reason: `timed out after ${timeoutSeconds}s` };
+    if (code3 === "ENOBUFS") return { kind: "not-run", reason: "killed at the output cap" };
     return { kind: "not-run", reason: `could not start: ${result.error.message}` };
   }
   if (result.status === null) return { kind: "not-run", reason: "ended by a signal" };
@@ -14387,8 +14449,8 @@ async function runReproduction(record3, content, runner, layout, ctx) {
       const changed = differs(before, snapshot(layout.worktree, cap));
       return changed > 0 ? `the reproduction modified the worktree (${changed} paths)` : null;
     } catch (error) {
-      const code2 = error.code;
-      return `the reproduction modified the worktree (${code2 === void 0 ? error.message : `walk failed: ${code2}`})`;
+      const code3 = error.code;
+      return `the reproduction modified the worktree (${code3 === void 0 ? error.message : `walk failed: ${code3}`})`;
     }
   };
   let firstCode = 0;
@@ -14541,6 +14603,7 @@ var CONFIG_KEYS = {
     "final_score_threshold",
     "lanes",
     "suggestions",
+    "linked_issues",
     "max_findings",
     "max_words_per_finding",
     "max_total_words"
@@ -14571,10 +14634,13 @@ var CONFIG_KEYS = {
     "carry_approval_on_unchanged",
     "recheck_thread_before_post",
     "never_approve",
+    "never_approve_paths",
+    "only_approve_paths",
     "scope_block",
     "scope_block_models",
     "evidence_block",
     "evidence_block_precedents",
+    "held_queue",
     "min_posted_tier",
     "reading_guide"
   ],
@@ -15035,16 +15101,44 @@ function readVerdictPolicy(block, result) {
     return fallback;
   };
   const policy = result.verdictPolicy;
+  const globs = (key2, fallback) => {
+    const value = block[key2];
+    if (value === void 0) return [...fallback];
+    const entries = Array.isArray(value) ? value : null;
+    const parses = (entry) => {
+      if (typeof entry !== "string" || entry.trim() === "") return false;
+      try {
+        globToRegExp(entry);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const bad = entries === null ? value : entries.find((entry) => !parses(entry));
+    if (entries !== null && bad === void 0) return [...entries];
+    policy.malformedApprovalPaths ??= key2;
+    let shown;
+    try {
+      shown = JSON.stringify(bad);
+    } catch {
+      shown = "a value that refers to itself";
+    }
+    result.warnings.push(`verdict.${key2} must be a list of globs; ${shown} is not one, so every approval is held until it is fixed.`);
+    return [...fallback];
+  };
   policy.ciPending = choice("ci_pending", ["wait", "proceed"], DEFAULT_VERDICT_POLICY.ciPending);
   policy.ciRed = choice("ci_red", ["cap", "annotate"], DEFAULT_VERDICT_POLICY.ciRed);
   policy.ciNeedsRerun = choice("ci_needs_rerun", ["hold", "annotate"], DEFAULT_VERDICT_POLICY.ciNeedsRerun);
   policy.carryApprovalOnUnchanged = enabled2("carry_approval_on_unchanged", DEFAULT_VERDICT_POLICY.carryApprovalOnUnchanged);
   policy.recheckThreadBeforePost = enabled2("recheck_thread_before_post", DEFAULT_VERDICT_POLICY.recheckThreadBeforePost);
   policy.neverApprove = enabled2("never_approve", DEFAULT_VERDICT_POLICY.neverApprove);
+  policy.neverApprovePaths = globs("never_approve_paths", DEFAULT_VERDICT_POLICY.neverApprovePaths);
+  policy.onlyApprovePaths = globs("only_approve_paths", DEFAULT_VERDICT_POLICY.onlyApprovePaths);
   policy.scopeBlock = enabled2("scope_block", DEFAULT_VERDICT_POLICY.scopeBlock);
   policy.scopeBlockModels = enabled2("scope_block_models", DEFAULT_VERDICT_POLICY.scopeBlockModels);
   policy.evidenceBlock = enabled2("evidence_block", DEFAULT_VERDICT_POLICY.evidenceBlock);
   policy.evidenceBlockPrecedents = enabled2("evidence_block_precedents", DEFAULT_VERDICT_POLICY.evidenceBlockPrecedents);
+  policy.heldQueue = enabled2("held_queue", DEFAULT_VERDICT_POLICY.heldQueue);
   policy.minPostedTier = choice("min_posted_tier", POSTED_TIERS, DEFAULT_VERDICT_POLICY.minPostedTier);
   policy.readingGuide = enabled2("reading_guide", DEFAULT_VERDICT_POLICY.readingGuide);
 }
@@ -15468,6 +15562,9 @@ function readConfigDocument(value, repositoryRoot2, result, honourRunners) {
     const suggestions = review2["suggestions"];
     if (typeof suggestions === "boolean") result.verdictPolicy.suggestions = suggestions;
     else if (suggestions !== void 0) result.warnings.push("review.suggestions must be true or false; using false.");
+    const linkedIssues = review2["linked_issues"];
+    if (typeof linkedIssues === "boolean") result.linkedIssues = linkedIssues;
+    else if (linkedIssues !== void 0) result.warnings.push("review.linked_issues must be true or false; using false.");
     result.layers.push({
       scope: { type: "repository", key: repositoryRoot2 },
       source: ".review-voice/config.yaml",
@@ -15506,6 +15603,7 @@ function loadConfig(repositoryRoot2, baselinePath, path, db, source) {
     verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
     lanes: [DIFF_LANE],
     thresholds: {},
+    linkedIssues: false,
     layers: [],
     suppressions: [],
     activePolicyVersions: [],
@@ -15518,7 +15616,8 @@ function loadConfig(repositoryRoot2, baselinePath, path, db, source) {
     try {
       readConfigDocument(parse(readFileSync5(configPath, "utf8")), repositoryRoot2, result, OPERATOR_SOURCES.includes(chosen.source));
     } catch (error) {
-      result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
+      result.postingEnabled = false;
+      result.warnings.push(`.review-voice/config.yaml could not be parsed, so posting is off until it is fixed: ${String(error)}`);
     }
   }
   const approved = db === void 0 ? null : approvedPolicyLayers(db, result.warnings);
@@ -15895,6 +15994,8 @@ var WriteViolation = class extends Error {
 };
 var REVIEW_EVENTS = ["APPROVE", "COMMENT", "REQUEST_CHANGES"];
 var REVIEW_PATH = /^\/repos\/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)\/pulls\/([1-9][0-9]*)\/reviews$/;
+var REPLY_PATH = /^\/repos\/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)\/pulls\/([1-9][0-9]*)\/comments\/([1-9][0-9]*)\/replies$/;
+var REPLY_MAX_LENGTH = 600;
 var SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 var ReviewWriter = class {
   allowlist;
@@ -15921,18 +16022,34 @@ var ReviewWriter = class {
       state: typeof record3["state"] === "string" ? record3["state"] : null
     };
   }
+  /** Replies under one of this tool's own inline comments, with exactly `{ body }`. */
+  async replyToComment(repository, pullNumber, commentId, body) {
+    if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+      throw new WriteViolation(`Refused a reply on pull request ${String(pullNumber)}: not a pull request number.`);
+    }
+    if (!Number.isInteger(commentId) || commentId < 1) {
+      throw new WriteViolation(`Refused a reply to comment ${String(commentId)}: not a comment id.`);
+    }
+    const data = await this.request("POST", `/repos/${repository}/pulls/${pullNumber}/comments/${commentId}/replies`, { body });
+    const record3 = typeof data === "object" && data !== null ? data : {};
+    return {
+      id: typeof record3["id"] === "number" ? record3["id"] : null,
+      htmlUrl: typeof record3["html_url"] === "string" ? record3["html_url"] : null
+    };
+  }
   /**
-   * Every request goes through here, and here admits one method and one path.
+   * Every request goes through here, and here admits one method and two paths.
    * Public so the refusal can be tested directly rather than inferred.
    */
   async request(method, path, body) {
     if (method !== "POST") {
-      throw new WriteViolation(`Review Voice writes one thing; refused a ${method} to ${path}.`);
+      throw new WriteViolation(`Review Voice writes two things, a review and a reply to its own comment; refused a ${method} to ${path}.`);
     }
-    const match = REVIEW_PATH.exec(path);
+    const match = REVIEW_PATH.exec(path) ?? REPLY_PATH.exec(path);
     if (match === null) {
-      throw new WriteViolation(`Review Voice writes one thing; refused a POST to ${path}.`);
+      throw new WriteViolation(`Review Voice writes two things, a review and a reply to its own comment; refused a POST to ${path}.`);
     }
+    if (REPLY_PATH.test(path)) assertReplyBody(body);
     const repository = `${match[1]}/${match[2]}`;
     if (!this.allowlist.has(repository.toLowerCase())) {
       throw new NotAllowlisted(`${repository} is not a repository this writer may post to.`);
@@ -15987,9 +16104,55 @@ function assertPayload(payload) {
     throw new WriteViolation(`Refused a review with unexpected fields: ${keys}.`);
   }
 }
+function assertReplyBody(payload) {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    throw new WriteViolation("Refused a reply whose payload is not an object.");
+  }
+  const body = payload["body"];
+  if (typeof body !== "string" || body.trim().length === 0) {
+    throw new WriteViolation("Refused a reply without a body.");
+  }
+  if (body.length > REPLY_MAX_LENGTH) {
+    throw new WriteViolation(`Refused a reply over ${REPLY_MAX_LENGTH} characters.`);
+  }
+  const keys = Object.keys(payload).join(",");
+  if (keys !== "body") {
+    throw new WriteViolation(`Refused a reply with unexpected fields: ${keys}.`);
+  }
+}
 
 // plugins/review-voice/src/diff/thread.ts
 var MAX_COMMENTS = 300;
+var MAX_LINKED_ISSUES = 5;
+var MAX_ISSUE_BODY = 1e4;
+var cappedBody = (body) => {
+  if (body.length <= MAX_ISSUE_BODY) return body;
+  const cut2 = body.slice(0, MAX_ISSUE_BODY);
+  const paragraph = cut2.lastIndexOf("\n\n");
+  if (paragraph !== -1) return cut2.slice(0, paragraph);
+  const line3 = cut2.lastIndexOf("\n");
+  if (line3 !== -1) return cut2.slice(0, line3);
+  const sentence = [...cut2.matchAll(/[.!?](?=\s)/gu)].at(-1);
+  return sentence === void 0 ? "" : cut2.slice(0, sentence.index + 1);
+};
+var CLOSING_REFERENCE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)|([\w.-]+\/[\w.-]+)#(\d+)|#(\d+))\b/giu;
+function closingReferences(description, repository) {
+  const numbers = [];
+  const beyond = [];
+  const skipped = [];
+  for (const match of description.matchAll(CLOSING_REFERENCE)) {
+    const [, text4, urlRepository, urlNumber, shortRepository, shortNumber, bareNumber] = match;
+    const named = urlRepository ?? shortRepository;
+    if (named !== void 0 && named.toLowerCase() !== repository.toLowerCase()) {
+      skipped.push(text4);
+      continue;
+    }
+    const number = Number(urlNumber ?? shortNumber ?? bareNumber);
+    if (numbers.includes(number) || beyond.includes(number)) continue;
+    (numbers.length < MAX_LINKED_ISSUES ? numbers : beyond).push(number);
+  }
+  return { numbers, beyond, skipped };
+}
 function clean(body, author) {
   if (body === void 0 || body.trim().length === 0) return null;
   return { body: redact(stripEvidenceBlock(body)).text, author: author ?? "unknown" };
@@ -16004,11 +16167,42 @@ async function readThread(options) {
   if (description !== null) {
     comments.push({ path: null, line: null, author: description.author, body: description.body, kind: "description" });
   }
+  const warnings = [];
+  const linkedIssues = [];
+  if (options.linkedIssues === true) {
+    const references = closingReferences(description?.body ?? "", options.repository);
+    for (const text4 of references.skipped) warnings.push(`Skipped ${text4}: a linked issue outside ${options.repository} is not read.`);
+    if (references.beyond.length > 0) {
+      warnings.push(`Read the first ${MAX_LINKED_ISSUES} linked issues; not read: ${references.beyond.map((n) => `#${n}`).join(", ")}.`);
+    }
+    for (const number of references.numbers) {
+      try {
+        const { data } = await client.get(`/repos/${options.repository}/issues/${number}`, { retryRateLimits: false, followRedirects: false });
+        if (data.number !== number || !(data.repository_url ?? "").toLowerCase().endsWith(`/repos/${options.repository}`.toLowerCase())) {
+          warnings.push(`Could not read issue #${number} (GitHub answered for another issue or repository); continuing without it.`);
+          continue;
+        }
+        if (data.pull_request !== void 0) continue;
+        const body = redact(data.body ?? "").text;
+        linkedIssues.push({
+          number,
+          title: redact(data.title ?? "").text,
+          body: cappedBody(body),
+          state: data.state ?? "unknown",
+          url: data.html_url ?? "",
+          ...body.length > MAX_ISSUE_BODY ? { truncated: true } : {}
+        });
+      } catch (error) {
+        warnings.push(
+          `Could not read issue #${number} (${error instanceof Error ? error.message.slice(0, 160) : String(error)}); continuing without it.`
+        );
+      }
+    }
+  }
   const inline = await client.paginate(
     `/repos/${options.repository}/pulls/${options.pullNumber}/comments?per_page=100`,
     MAX_COMMENTS
   );
-  const warnings = [];
   let states = /* @__PURE__ */ new Map();
   if (inline.length > 0) {
     try {
@@ -16107,6 +16301,8 @@ async function readThread(options) {
     pullNumber: options.pullNumber,
     comments,
     reviews: threadReviews,
+    // Absent when the option is off, so every existing reader of a thread file sees what it saw before.
+    ...options.linkedIssues === true ? { linkedIssues } : {},
     truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS,
     ...warnings.length > 0 ? { warnings } : {}
   };
@@ -16254,6 +16450,25 @@ function sentRuns(db, options) {
   return runs;
 }
 var isBot = (user) => user?.type === "Bot" || (user?.login ?? "").endsWith("[bot]");
+var asksQuestion = (body) => body.split("\n").some((line3) => !/^\s*>/.test(line3) && line3.includes("?"));
+function replyWanted(root, replies, state, ownerReviewer) {
+  if (state === null || state.resolved) return null;
+  const login = (user) => user?.login?.toLowerCase() ?? null;
+  const poster = login(root.user);
+  if (poster === null) return null;
+  const under = replies.filter((reply) => reply.in_reply_to_id === root.id).sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
+  if (under.some((reply) => login(reply.user) === poster)) return null;
+  const owner = ownerReviewer?.toLowerCase() ?? null;
+  const latest = [...under].reverse().find((reply) => {
+    const author = login(reply.user);
+    return author !== null && !isBot(reply.user) && author !== owner;
+  });
+  if (latest === void 0) return null;
+  const body = latest.body ?? "";
+  const stance = classifyReply(body);
+  if (stance === "acknowledge" || !asksQuestion(body)) return null;
+  return { askedBy: latest.user.login, askedAt: latest.created_at ?? "", stance: stance === "reject" ? "reject" : "question" };
+}
 function sameHead(a, b) {
   const left = a.toLowerCase();
   const right = b.toLowerCase();
@@ -16261,9 +16476,10 @@ function sameHead(a, b) {
 }
 async function checkOutcomes(options) {
   const allowed = new Set(options.allowlist.map((name) => name.toLowerCase()));
-  const result = { outcomes: [], skipped: [], warnings: [] };
+  const result = { outcomes: [], skipped: [], warnings: [], questions: [] };
   const byPull = /* @__PURE__ */ new Map();
   for (const run of sentRuns(options.db, { since: options.since, repository: options.repository })) {
+    if (options.pullNumber !== void 0 && run.pullNumber !== options.pullNumber) continue;
     const key2 = `${run.repository.toLowerCase()}#${run.pullNumber}`;
     byPull.set(key2, [...byPull.get(key2) ?? [], run]);
   }
@@ -16281,8 +16497,12 @@ async function checkOutcomes(options) {
     }
     try {
       const context2 = await readPull(options.client, repository, pullNumber, result.warnings);
+      const cut2 = context2.replies.length >= READ_LIMIT;
+      if (cut2 && options.pullNumber !== void 0) result.warnings.push(`${repository}#${pullNumber}: only the first ${READ_LIMIT} inline comments were read, so no reply is offered on it`);
       for (const run of runs) {
-        result.outcomes.push(...await followRun(options, context2, run, viewerLogin));
+        const followed = await followRun(options, context2, run, viewerLogin);
+        result.outcomes.push(...followed.outcomes);
+        if (!cut2) result.questions.push(...followed.questions);
       }
     } catch (error) {
       result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
@@ -16315,14 +16535,29 @@ async function reviewIdsOf(options, run, viewerLogin) {
 function severityPrefix(finding) {
   return `**${finding.severity}** - `;
 }
+function postedProse(body) {
+  const prose = stripEvidenceBlock(body);
+  const block = prose.lastIndexOf("\n\n```suggestion\n");
+  return block >= 0 && prose.endsWith("```") ? prose.slice(0, block) : prose;
+}
+function postedAs(comment, finding) {
+  return postedProse(comment.body ?? "") === `${severityPrefix(finding)}${parseFinding(finding.text, 0).prose}`;
+}
 function matchComments(findings, comments) {
   const taken = /* @__PURE__ */ new Set();
   const matched = /* @__PURE__ */ new Map();
+  const at2 = (comment, finding) => typeof comment.id === "number" && !taken.has(comment.id) && comment.in_reply_to_id == null && comment.path === finding.path && (comment.original_line === finding.line || comment.line === finding.line);
   for (const finding of findings) {
+    const exact = comments.find((comment) => at2(comment, finding) && postedAs(comment, finding));
+    if (exact !== void 0) {
+      taken.add(exact.id);
+      matched.set(finding.findingId, exact);
+    }
+  }
+  for (const finding of findings) {
+    if (matched.has(finding.findingId)) continue;
     const words = significantWords(finding.text);
-    const candidates = comments.filter(
-      (comment) => typeof comment.id === "number" && !taken.has(comment.id) && comment.in_reply_to_id == null && comment.path === finding.path && (comment.original_line === finding.line || comment.line === finding.line)
-    );
+    const candidates = comments.filter((comment) => at2(comment, finding));
     let best;
     let bestScore = -1;
     for (const comment of candidates) {
@@ -16342,7 +16577,7 @@ function matchComments(findings, comments) {
 }
 async function followRun(options, context2, run, viewerLogin) {
   const detail = runDetail(options.db, run.runId);
-  if (detail === null) return [];
+  if (detail === null) return { outcomes: [], questions: [] };
   const { ids, source } = await reviewIdsOf(options, run, viewerLogin);
   const comments = [];
   for (const id of ids) {
@@ -16356,9 +16591,23 @@ async function followRun(options, context2, run, viewerLogin) {
   const matched = matchComments(detail.findings, comments);
   const checkedAt = (options.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
   const outcomes = [];
+  const questions = [];
   for (const finding of detail.findings) {
     const comment = matched.get(finding.findingId);
     if (comment === void 0) continue;
+    const wanted = source === "audit" && postedAs(comment, finding) ? replyWanted(comment, context2.replies, context2.states?.get(comment.id) ?? null, options.ownerReviewer ?? null) : null;
+    if (wanted !== null) {
+      questions.push({
+        reviewRunId: run.runId,
+        findingId: finding.findingId,
+        repository: run.repository,
+        pullNumber: run.pullNumber,
+        rootCommentId: comment.id,
+        path: finding.path,
+        line: finding.line,
+        ...wanted
+      });
+    }
     const decided = await decide2(options, context2, run, finding, comment);
     const outcome = {
       reviewRunId: run.runId,
@@ -16373,10 +16622,11 @@ async function followRun(options, context2, run, viewerLogin) {
       line: finding.line,
       reviewIdSource: source
     };
+    options.db.prepare("DELETE FROM finding_outcomes WHERE review_run_id = ? AND comment_id = ? AND finding_id <> ?").run(run.runId, outcome.commentId, outcome.findingId);
     saveOutcome(options.db, outcome);
     outcomes.push(outcome);
   }
-  return outcomes;
+  return { outcomes, questions };
 }
 async function linesChanged(options, context2, run, comment, finding) {
   if (run.headRef === null || context2.currentHead === null) return null;
@@ -16512,6 +16762,16 @@ function postedStats(db, { since } = {}) {
          JOIN review_runs r ON r.review_run_id = o.review_run_id WHERE r.created_at >= ?`
     ).all(since)
   );
+}
+function replyStats(db) {
+  const rows = db.prepare(
+    `SELECT o.outcome AS outcome, o.strength AS strength FROM (
+         SELECT DISTINCT json_extract(metadata_json, '$.run') AS run, json_extract(metadata_json, '$.finding') AS finding
+         FROM audit_events WHERE action = 'review_reply_sent' AND json_valid(metadata_json)
+       ) r LEFT JOIN finding_outcomes o ON o.review_run_id = r.run AND o.finding_id = r.finding`
+  ).all();
+  const { tracked, fixed, dismissed, fixedRate } = statsOf(rows);
+  return { replied: tracked, fixed, dismissed, fixedRate };
 }
 function evidenceBlockGroups(db) {
   const sent = /* @__PURE__ */ new Set();
@@ -16822,6 +17082,7 @@ function computeMetrics(db, options = {}) {
   const posted = postedStats(db);
   const recent = postedStats(db, { since: windowStart(windowDays, options.now) });
   const recentDecided = recent.fixed + recent.dismissed;
+  const replies = replyStats(db);
   const metric = (name, value, target, meets, basis, kind = "gate") => ({
     name,
     value,
@@ -16997,6 +17258,23 @@ function computeMetrics(db, options = {}) {
       () => true,
       `${recent.dismissed} dismissed / ${recentDecided} fixed or dismissed from runs created in the last ${windowDays} days; weak outcomes excluded`,
       "goal"
+    ),
+    // The one reply per thread (docs/adr/0035), and what the author did after it.
+    metric(
+      "posted_replies",
+      replies.replied === 0 ? null : replies.replied,
+      "no target",
+      () => true,
+      "findings this tool replied under once; run `review-voice reply --pr N` to answer a pending question",
+      "goal"
+    ),
+    metric(
+      "replied_fixed_rate",
+      replies.fixedRate,
+      "no target",
+      () => true,
+      `${replies.fixed} fixed / (${replies.fixed + replies.dismissed} fixed or dismissed) of ${replies.replied} replied finding(s); weak outcomes excluded`,
+      "goal"
     )
   ];
 }
@@ -17119,6 +17397,27 @@ async function readHead(client, repository, pullNumber) {
   const { data } = await client.get(`/repos/${repository}/pulls/${pullNumber}`);
   const sha = data?.head?.sha;
   return typeof sha === "string" ? sha.toLowerCase() : null;
+}
+var MAX_LISTED_FILES = 3e3;
+async function readChangedPaths(client, repository, pullNumber, head) {
+  const listed = [];
+  let untied = false;
+  let next = `/repos/${repository}/pulls/${pullNumber}/files?per_page=100`;
+  while (next !== null && listed.length < MAX_LISTED_FILES) {
+    const page = await client.get(next);
+    if (!Array.isArray(page.data)) throw new GitHubError(`GitHub returned no file list for ${next}`, 200);
+    const entries = page.data.map(
+      (file2) => typeof file2 === "object" && file2 !== null && !Array.isArray(file2) ? file2 : {}
+    );
+    const refs = entries.filter((file2) => file2["status"] !== "removed").map((file2) => typeof file2["contents_url"] === "string" ? /[?&]ref=([^&#]*)/.exec(file2["contents_url"])?.[1]?.toLowerCase() : void 0);
+    if (refs.length === 0 || refs.some((ref) => ref !== head)) untied = true;
+    listed.push(...entries);
+    next = page.linkNext;
+  }
+  const named = (name) => typeof name === "string" && name !== "";
+  const malformed = listed.some((file2) => !named(file2["filename"]) || file2["status"] === "renamed" && !named(file2["previous_filename"]));
+  const paths = listed.flatMap((file2) => [file2["filename"], file2["previous_filename"]].filter(named));
+  return { paths, truncated: listed.length >= MAX_LISTED_FILES, malformed, untied };
 }
 function refusal(head, reason2) {
   return {
@@ -17338,6 +17637,12 @@ async function computeVerdict(options) {
   const needsHuman = complexity?.level === "high";
   const lookupReasons = [];
   const carriedReviewUrl = !headMoved && policy.carryApprovalOnUnchanged ? await carriedApproval(options, run, lookupReasons) : null;
+  const pathRule = policy.malformedApprovalPaths !== null || policy.neverApprovePaths.length > 0 || policy.onlyApprovePaths.length > 0;
+  const mayApprove = !headMoved && planned.mapped === "APPROVE" && !policy.neverApprove && carriedReviewUrl === null;
+  const pathHold = pathRule && mayApprove ? approvalPathHold(
+    policy.malformedApprovalPaths === null ? await readChangedPaths(options.client, options.repository, options.pullNumber, head) : { paths: [], truncated: false },
+    policy
+  ) : null;
   const decision = decide({
     mapped: planned.mapped,
     headMoved,
@@ -17349,6 +17654,7 @@ async function computeVerdict(options) {
     needsHuman,
     uncoveredCarry: run.carry?.covered === false,
     carriedReviewUrl,
+    approvalPathHold: pathHold?.reason ?? null,
     policy
   });
   decision.reasons.push(...lookupReasons);
@@ -17370,9 +17676,12 @@ async function computeVerdict(options) {
       bodyFindings: run.bodyFindings,
       ...checked === null ? {} : { suggestions: checked.suggestions },
       // One plain summary line whichever cap applies: CI first, then a held
-      // finding or an uncovered carry, then complexity. None of them names
-      // human review or the carry in the posted body.
-      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval || run.carry?.covered === false && planned.mapped === "APPROVE" ? "held" : policy.neverApprove && planned.mapped === "APPROVE" ? "policy" : needsHuman && policy.capApproval && planned.mapped === "APPROVE" ? "complexity" : null
+      // finding or an uncovered carry, then policy, then complexity. None of
+      // them names human review or the carry in the posted body. A path hold
+      // alone ends the line with its fixed sentence, which names the setting
+      // and never a path.
+      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval || run.carry?.covered === false && planned.mapped === "APPROVE" ? "held" : decision.cappedByPolicy ? "policy" : needsHuman && policy.capApproval && planned.mapped === "APPROVE" ? "complexity" : null,
+      ...decision.cappedByPolicy && !policy.neverApprove && pathHold !== null ? { pathHold: pathHold.posted } : {}
     });
     key2 = idempotencyKey(options.repository, options.pullNumber, full2);
     const sent = sentInline(options.db, options.repository, options.pullNumber, head);
@@ -17491,18 +17800,18 @@ async function raisedByOthers(options, run, findings) {
   }
   return raised;
 }
-function keyBlocked(db, key2) {
+function keyBlocked(db, key2, prefix = "review_post_") {
   const rows = db.prepare(
     `SELECT audit_id, action, metadata_json FROM audit_events
-       WHERE action LIKE 'review_post_%' AND json_extract(metadata_json, '$.key') = ?`
-  ).all(key2);
+       WHERE action LIKE ? AND json_extract(metadata_json, '$.key') = ?`
+  ).all(`${prefix}%`, key2);
   const parsed2 = rows.map((row) => ({ id: row.audit_id, action: row.action, meta: JSON.parse(row.metadata_json) }));
-  if (parsed2.some((row) => row.action === "review_post_sent")) {
-    return "this exact review of this head was already sent";
+  if (parsed2.some((row) => row.action === `${prefix}sent`)) {
+    return prefix === "review_post_" ? "this exact review of this head was already sent" : "a reply on this thread was already sent";
   }
-  for (const attempt of parsed2.filter((row) => row.action === "review_post_attempted")) {
+  for (const attempt of parsed2.filter((row) => row.action === `${prefix}attempted`)) {
     const outcome = parsed2.find(
-      (row) => (row.action === "review_post_sent" || row.action === "review_post_failed") && row.meta["attempt"] === attempt.id
+      (row) => (row.action === `${prefix}sent` || row.action === `${prefix}failed`) && row.meta["attempt"] === attempt.id
     );
     if (outcome === void 0 || outcome.meta["uncertain"] === true) {
       return "an earlier attempt with this key got no definite answer from GitHub and may have posted; check the pull request";
@@ -17510,15 +17819,15 @@ function keyBlocked(db, key2) {
   }
   return null;
 }
-function claimKey(db, key2, subject, metadata) {
+function claimKey(db, key2, subject, metadata, action = "review_post_attempted") {
   db.exec("BEGIN IMMEDIATE");
   try {
-    const blocked = keyBlocked(db, key2);
+    const blocked = keyBlocked(db, key2, action.slice(0, -"attempted".length));
     if (blocked !== null) {
       db.exec("ROLLBACK");
       return { blocked };
     }
-    const attempt = recordAudit(db, "review_post_attempted", subject, { key: key2, ...metadata });
+    const attempt = recordAudit(db, action, subject, { key: key2, ...metadata });
     db.exec("COMMIT");
     return attempt;
   } catch (error) {
@@ -17701,6 +18010,82 @@ async function postReview(options) {
       exitCode: 1,
       output: { status: "failed", reasons: [message], key: key2, verdict: verdict2, postCheck, error: { status, message } }
     };
+  }
+}
+
+// plugins/review-voice/src/review/held-queue.ts
+import { appendFileSync } from "node:fs";
+import { isAbsolute as isAbsolute2 } from "node:path";
+var PROMOTABLE = /* @__PURE__ */ new Set(["below-gate", "policy-suppressed"]);
+var UNSAFE = /[`\u0000-\u001f\u007f-\u009f​-‍‪-‮⁦-⁩﻿]/;
+var BARE = /^[A-Za-z0-9_@%+=:,./-]+$/;
+var quote = (word) => BARE.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
+function promoteCommand(call, candidateId) {
+  const env = Object.entries(call.env);
+  const words = [call.cwd, ...env.flat(), ...call.program, ...call.args, candidateId, call.stdin, call.stdout];
+  if (words.some((word) => UNSAFE.test(word))) return null;
+  return [
+    "cd",
+    quote(call.cwd),
+    "&&",
+    ...env.map(([name, value]) => `${name}=${quote(value)}`),
+    ...[...call.program, ...call.args, "--promote", candidateId].map(quote),
+    "<",
+    quote(call.stdin),
+    ">",
+    quote(call.stdout)
+  ].join(" ");
+}
+function heldQueue(held, call) {
+  return held.map((entry) => {
+    const candidateId = entry.candidateId || null;
+    return {
+      path: entry.path,
+      line: entry.line,
+      severity: entry.severity ?? null,
+      verdict: entry.verdict,
+      reason: entry.reason,
+      candidateId,
+      promote: call !== null && candidateId !== null && PROMOTABLE.has(entry.verdict) ? promoteCommand(call, candidateId) : null
+    };
+  });
+}
+function isHeldQueueEntry(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const entry = value;
+  const optional = (key2) => entry[key2] === null || typeof entry[key2] === "string";
+  return typeof entry["path"] === "string" && Number.isInteger(entry["line"]) && typeof entry["verdict"] === "string" && typeof entry["reason"] === "string" && optional("severity") && optional("candidateId") && optional("promote");
+}
+var PROMOTE_NOTE = "A promoted finding still has to pass the challenge. Continue from step 4b of commands/review.md, with scores.promoted.json in place of scores.json.";
+var code2 = (text4, max) => `\`${safeCheckName(text4, max) || "none"}\``;
+function heldQueueLines(entries, runId) {
+  if (entries.length === 0) return [];
+  return [
+    `Held by Review Voice (${entries.length})${runId === null ? "" : `, run ${code2(runId)}`}`,
+    PROMOTE_NOTE,
+    ...entries.map((entry) => {
+      const location = `\`${safeCheckName(entry.path, 200) || "none"}:${entry.line}\``;
+      const what = [location, code2(entry.severity ?? "no severity"), code2(entry.verdict), code2(entry.reason, 120)].join(", ");
+      const next = entry.promote !== null && !UNSAFE.test(entry.promote) ? `Promote with \`${entry.promote}\`.` : entry.candidateId !== null && PROMOTABLE.has(entry.verdict) ? `Promotable as ${code2(entry.candidateId)}.` : "Not promotable.";
+      return `- ${what}. ${next}`;
+    })
+  ];
+}
+function writeJobSummary(report, env) {
+  const path = env["GITHUB_STEP_SUMMARY"];
+  const [heading, note, ...items] = heldQueueLines(report.heldQueue ?? [], report.runId);
+  if (env["GITHUB_ACTIONS"] !== "true" || path === void 0 || !isAbsolute2(path) || heading === void 0) return null;
+  try {
+    appendFileSync(path, `## ${heading}
+
+${note}
+
+${items.join("\n")}
+
+`);
+    return null;
+  } catch (error) {
+    return `The held findings were not added to the job summary: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
@@ -18002,6 +18387,7 @@ async function runPass(options, json2) {
     });
     const rows = [];
     const lines2 = [];
+    const held = [];
     const counts = /* @__PURE__ */ new Map();
     for (const entry of queue.entries) {
       const outcome = await handle(options, client, db, entry);
@@ -18016,11 +18402,15 @@ async function runPass(options, json2) {
       counts.set(row.status, (counts.get(row.status) ?? 0) + 1);
       const event = row.event === null ? "" : ` ${row.event}`;
       lines2.push(`${summary}${event} (${row.status} ${row.reviewUrl ?? row.detail ?? ""})`.replace(/ \)$/, ")"));
+      const listed = (outcome.held ?? []).map((line3) => `  ${line3}`);
+      lines2.push(...listed);
+      held.push(...listed);
     }
     const followed = await followOutcomes(client, db, deps, config2.ownerReviewer);
     const swept = sweepRetention(db, config2, deps);
     if (json2) {
       deps.out(JSON.stringify(rows, null, 2));
+      if (held.length > 0) deps.err(held.join("\n"));
       if (swept !== null) deps.err(swept);
     } else {
       const totals = [...counts].map(([status, count3]) => `${count3} ${status}`).join(", ");
@@ -18076,6 +18466,7 @@ async function review(options, entry) {
     runRepositoryCommands: options.config.watch.runRepositoryCommands
   });
   if (result.exitCode === 3) return { row: null, detail: result.detail ?? "head moved" };
+  const held = heldQueueLines(result.heldQueue ?? [], result.runId);
   const status = result.exitCode === 0 ? options.post && result.carried === true ? "carried" : result.reviewUrl === null ? "reviewed" : "posted" : result.exitCode === 4 ? "waiting-ci" : result.exitCode === 6 ? "held" : result.failureMode === "failed_open" ? "failed-open" : result.failureMode === "failed_closed" ? "failed-closed" : "failed";
   return {
     row: {
@@ -18088,7 +18479,8 @@ async function review(options, entry) {
       status,
       // A failed-closed head is left for a person, so its detail says so in the words the review reported.
       detail: isFailure2(status) ? `${status === "failed-closed" ? "failed_closed: " : ""}${result.detail ?? `review exited ${result.exitCode}`}` : result.detail
-    }
+    },
+    ...held.length === 0 ? {} : { held }
   };
 }
 async function verdict(options, client, db, entry, recheck) {
@@ -18112,7 +18504,7 @@ async function verdict(options, client, db, entry, recheck) {
   };
   const computed = await computeVerdict({ ...target, recheck });
   const { exitCode, output } = computed;
-  const waiting = (code2) => code2 === 4 || code2 === 5 ? "waiting-ci" : code2 === 6 ? "held" : null;
+  const waiting = (code3) => code3 === 4 || code3 === 5 ? "waiting-ci" : code3 === 6 ? "held" : null;
   if (exitCode === 3) return { row: null, detail: "head moved" };
   const paused = waiting(exitCode);
   if (paused !== null) return { row: { ...base, event: output.event, status: paused, detail: output.reasons.join("; ") || null } };
@@ -18183,6 +18575,7 @@ function reviewResult(exitCode, stdout, stderr) {
   const carried = doc["carried"] === true || verdict2["action"] === "carry";
   const failure = typeof doc["failure"] === "object" && doc["failure"] !== null ? doc["failure"] : {};
   const failureMode = failure["mode"] === "failed_open" || failure["mode"] === "failed_closed" ? failure["mode"] : null;
+  const heldQueue2 = Array.isArray(doc["heldQueue"]) ? doc["heldQueue"].filter(isHeldQueueEntry) : [];
   return {
     exitCode,
     runId: text4(doc["runId"]),
@@ -18190,7 +18583,8 @@ function reviewResult(exitCode, stdout, stderr) {
     reviewUrl: text4(doc["reviewUrl"]),
     detail,
     carried,
-    ...failureMode === null ? {} : { failureMode }
+    ...failureMode === null ? {} : { failureMode },
+    ...heldQueue2.length === 0 ? {} : { heldQueue: heldQueue2 }
   };
 }
 var DRAIN_MS = 1e3;
@@ -18267,8 +18661,8 @@ function spawnReview(bundle, options) {
       spawnError = error.message;
       finish();
     });
-    child.on("exit", (code2, signal2) => {
-      exitCode = code2;
+    child.on("exit", (code3, signal2) => {
+      exitCode = code3;
       exitSignal = signal2;
       if (terminating) {
         killGroup2(pid, "SIGKILL");
@@ -18461,6 +18855,7 @@ var COMMAND_HELP = {
       "  --pr <number>          Pull request whose existing comments to read (required)",
       "  --repository <name>    owner/repo; inferred from the git remote if absent",
       "  --out <path>           Write <path> or <dir>/thread.json instead of stdout",
+      "With review.linked_issues: true, also reads the same-repository issues the description closes (at most five) as linkedIssues.",
       "Reads: nothing on stdin (reads GitHub, read-only).",
       "Writes: JSON on stdout, or to --out.",
       "Exit codes: 0 ok, 2 bad invocation, missing credential or repository not allowlisted."
@@ -18942,16 +19337,46 @@ var COMMAND_HELP = {
       "  resolved, outdated, open or unknown. Fixed and dismissed are strong; the rest are weak.",
       "  Reads GitHub and writes nothing there. `evaluate` reports precision from the strong ones.",
       "  A posted suggestion whose replacement now stands at the current head is fixed, strong,",
-      '  with evidence "suggestion applied".',
+      '  with evidence "suggestion applied". On an open thread no poster has answered, when the',
+      "  newest reply from someone other than the poster, the owner or a bot asks a question, one",
+      '  more line prints: "<repo>#<pr> <finding> <path>:<line> question from <login>',
+      '  awaiting a reply; run reply --pr <pr>". A disagreement counts only when it asks; an',
+      "  acknowledgement never does, even with a question mark. Nothing is posted here.",
       "",
       "Flags:",
       "  --repository <name>    Only runs for owner/repo; naming it allows reading it",
       "  --since <Nd>           Only reviews sent in the last N days (default 30d)",
-      "  --json                 Emit one row per finding as JSON",
+      "  --json                 Emit one row per finding as JSON (the pending-question lines are text mode only)",
       "Reads: the local store, the allowlist in the repository config, and GitHub comments, threads and commits,",
       "  and for a finding with a suggestion, its file at the current head.",
       "Writes: one line per finding and totals on stdout (JSON with --json); outcomes in the local store.",
       "Exit codes: 0 ok, 2 bad invocation."
+    )
+  },
+  reply: {
+    summary: "Answer a question under an own inline comment, once; needs --confirm",
+    body: lines(
+      "review-voice reply --pr <number> [flags]",
+      "  Post one bounded reply under each of this tool's own inline comments on one pull request",
+      "  that a question or a questioning disagreement is waiting under (docs/adr/0035). The text",
+      "  is built by code from the recorded run: the head reviewed and the path:line references",
+      "  the challenger confirmed or the analyst cited, in a fixed template that adds no claim. No",
+      "  model runs. One reply per thread, ever; the thread is never resolved, edited or dismissed.",
+      "  Without --confirm each reply is previewed and nothing is sent.",
+      "",
+      "Flags:",
+      "  --pr <number>          Pull request number (required)",
+      "  --repository <name>    owner/repo; inferred from the git remote if absent",
+      "  --since <Nd>           Only reviews sent in the last N days (default 30d)",
+      "  --confirm              Send the replies; without it, only a preview",
+      "  --json                 Emit {questions, replies, refused} as JSON",
+      "Reads: the local store, the repository config (writes.github_posting_enabled, the owner, the",
+      "  allowlist) and GitHub comments and threads, as `outcomes` reads them.",
+      "Writes: one block per question on stdout (JSON with --json); with --confirm, WRITES one reply",
+      "  per thread to GitHub through the same writer as `post`, behind a per-thread idempotency key",
+      "  and review_reply_* audit rows. The writer allows only the recorded run's repository.",
+      "Exit codes: 0 every question sent, previewed or refused on its key, 1 a send failed,",
+      "  2 posting disabled or bad invocation."
     )
   },
   draft: {
@@ -19004,6 +19429,16 @@ var COMMAND_HELP = {
       "                                          the local note stays",
       "  verdict.never_approve: false            true turns every APPROVE into COMMENT;",
       "                                          approval is left to a person",
+      "  verdict.never_approve_paths: []         globs; a pull request changing a matching path",
+      "                                          (a rename by either name, a deleted file too) posts",
+      "                                          COMMENT instead of APPROVE, and the summary ends",
+      '                                          "Approval is held because a changed file matches',
+      '                                          never_approve_paths."',
+      "  verdict.only_approve_paths: []          globs; a changed path outside them all does the same,",
+      "                                          naming only_approve_paths. Both read the pull",
+      "                                          request's whole file list, add no thorough review",
+      "                                          and no note (unlike sensitive_paths), and a list that",
+      "                                          does not load holds every approval until it is fixed",
       "  verdict.carry_approval_on_unchanged: false",
       '                                          true returns action "carry" and posts nothing',
       "                                          when a clean approval's scope is unchanged and",
@@ -19030,6 +19465,10 @@ var COMMAND_HELP = {
       "                                          true also counts the owner precedents retrieved that",
       "                                          favoured the finding in that block, which reveals that",
       "                                          a precedent store exists",
+      "  verdict.held_queue: false               true lists every held finding, with its verdict and",
+      "                                          reason, in `review --json` (heldQueue), the job summary",
+      "                                          inside GitHub Actions and the watcher report, never on",
+      "                                          the pull request; the verdict is unchanged",
       "  verdict.min_posted_tier: nit            nit posts every tier; minor, important or blocking",
       "                                          withholds a verified finding below it, which stays in",
       '                                          the record, is listed in "belowTier" and counted in the',
@@ -19073,7 +19512,7 @@ var COMMAND_HELP = {
       "  the idempotency key is taken and is left out of the comment signature, so turning it on",
       "  or off never makes the same review, or the same comment, a second post.",
       "Reads: the validated review on stdin.",
-      "Writes: JSON on stdout. With --confirm, WRITES the review to GitHub (the plugin's only write).",
+      "Writes: JSON on stdout. With --confirm, WRITES the review to GitHub (one of the plugin's two writes; see reply).",
       "Exit codes: 0 sent, previewed or carried, 1 the send failed, 2 refused or bad invocation,",
       "  3 the head moved, 4 CI still running on an approval, 5 CI red, 6 CI needs a rerun,",
       '  8 the thread re-check found a finding someone else raised ({refused: "thread-changed",',
@@ -19131,6 +19570,8 @@ var COMMAND_HELP = {
       "  After the outcomes, each pass applies retention (retention.runs_days, default 30, and",
       "  retention.audit_days, default 180; 0 or null disables): run directories and audit events",
       "  older than that are removed, except posting records, and a line names what was removed.",
+      "  The watcher never replies under a comment. A question that `outcomes` reports as awaiting",
+      "  a reply is answered by a person with `reply --pr <n> --confirm` (docs/adr/0035).",
       "",
       "Flags:",
       "  --once                 Run one pass and exit, for a scheduler",
@@ -19145,7 +19586,8 @@ var COMMAND_HELP = {
       "  --json                 Emit the rows each pass wrote as JSON",
       "Reads: nothing on stdin; GitHub search, pull requests and CI (read-only), the local store and config.",
       "Writes: one line per entry, `owner/repo#n: <action> [event] (<status> <url or detail>)`, then",
-      "  totals (JSON rows with --json); watch_heads rows in the local store; clones under",
+      "  totals (JSON rows with --json); under verdict.held_queue, a review's held findings two spaces",
+      "  in below its line (on stderr with --json); watch_heads rows in the local store; clones under",
       "  watch.workspace (default <data directory>/clones); <data directory>/watch.lock (the pid, for",
       "  display only) while running, and <data directory>/watch-config.yaml.",
       "  With --post, reviews through `post` and its guards.",
@@ -19490,7 +19932,12 @@ var COMMAND_HELP = {
       "                         `watch` passes it itself",
       "  --json                 print one JSON document instead of the text report; a run that could",
       "                         not complete carries failure {code, stage, mode, risk, reasons, facts}",
-      "                         with mode failed_open (normal risk) or failed_closed (high or unknown)",
+      "                         with mode failed_open (normal risk) or failed_closed (high or unknown);",
+      "                         under verdict.held_queue it carries heldQueue, one entry per held finding",
+      "                         with its verdict and reason, and for a below-gate or policy-suppressed one",
+      "                         the `score --promote` command that re-scores the run from its directory",
+      "                         (inside GitHub Actions only its candidate id). Inside GitHub Actions the",
+      "                         list is also appended to the job summary.",
       "Config: the pull request's own .review-voice/config.yaml is never read. The run uses --config,",
       "  else an absolute REVIEW_VOICE_CONFIG, else .review-voice/config.yaml at the base commit",
       "  (the built-in defaults when the base has none, or is not in the clone). The runners: block",
@@ -19506,9 +19953,10 @@ var COMMAND_HELP = {
       "  reproduction block in the configuration, the verifier writes a reproduction for each blocking or",
       "  important finding and `reproduce` runs it (Linux only); one that does not fail holds its finding",
       "  as reproduction-did-not-fail, unless its category is one no suppression may reach (docs/adr/0032).",
-      "Writes: every stage's input and output under the run directory, and the recorded run;",
-      "  with --post, the one review `post` sends. The report on stdout. A run that cannot complete",
-      "  records no run, only a review_failed audit event, and posts nothing.",
+      "Writes: every stage's input and output under the run directory, score-input.json included,",
+      "  and the recorded run; with --post, the one review `post` sends. The report on stdout, and",
+      "  under verdict.held_queue inside GitHub Actions, the held list in the job summary. A run",
+      "  that cannot complete records no run, only a review_failed audit event, and posts nothing.",
       "Exit codes: 0 done, 2 refused or bad invocation, 3 head moved, 4 waiting on CI,",
       "  6 CI needs a rerun, 7 an agent failed twice, 8 thread changed before posting."
     )
@@ -19577,8 +20025,8 @@ function topLevelHelp() {
 
 // plugins/review-voice/src/review/driver.ts
 import { execFileSync as execFileSync11 } from "node:child_process";
-import { appendFileSync, copyFileSync, existsSync as existsSync10, mkdirSync as mkdirSync6, readFileSync as readFileSync13, rmSync as rmSync6, writeFileSync as writeFileSync6 } from "node:fs";
-import { dirname as dirname10, isAbsolute as isAbsolute3, join as join17, resolve as resolve4, sep } from "node:path";
+import { appendFileSync as appendFileSync2, copyFileSync, existsSync as existsSync10, mkdirSync as mkdirSync6, readFileSync as readFileSync13, rmSync as rmSync6, writeFileSync as writeFileSync6 } from "node:fs";
+import { dirname as dirname10, isAbsolute as isAbsolute4, join as join17, resolve as resolve4, sep } from "node:path";
 
 // plugins/review-voice/src/agents/claude-cli.ts
 import { spawn as spawn2 } from "node:child_process";
@@ -19734,7 +20182,7 @@ function claudeArguments(spec, addDirs, env) {
 function firstChars(text4) {
   return text4.trim().slice(0, ERROR_CHARS);
 }
-function interpretEnvelope(stdout, stderr, code2) {
+function interpretEnvelope(stdout, stderr, code3) {
   let envelope = null;
   try {
     const parsed2 = JSON.parse(stdout);
@@ -19745,11 +20193,11 @@ function interpretEnvelope(stdout, stderr, code2) {
   const costUsd = typeof envelope?.total_cost_usd === "number" ? envelope.total_cost_usd : null;
   const tokens = tokensOf(envelope?.usage);
   const counted = tokens === void 0 ? {} : { tokens };
-  if (code2 === 0 && envelope !== null && envelope.is_error === false && envelope.structured_output !== void 0) {
+  if (code3 === 0 && envelope !== null && envelope.is_error === false && envelope.structured_output !== void 0) {
     return { ok: true, output: envelope.structured_output, costUsd, ...counted };
   }
   const result = typeof envelope?.result === "string" ? envelope.result : "";
-  const detail = firstChars(result) || firstChars(stderr) || firstChars(stdout) || (code2 === 0 ? "claude returned no structured output" : `claude exited with code ${code2}`);
+  const detail = firstChars(result) || firstChars(stderr) || firstChars(stdout) || (code3 === 0 ? "claude returned no structured output" : `claude exited with code ${code3}`);
   return { ok: false, output: null, costUsd, ...counted, error: detail };
 }
 function spawnWatched(bin, args, input, options) {
@@ -19793,9 +20241,9 @@ function spawnWatched(bin, args, input, options) {
     child.on("error", (error) => {
       finish({ code: null, stdout: "", stderr: "", failed: `could not start ${bin}: ${error.message}` });
     });
-    child.on("close", (code2) => {
+    child.on("close", (code3) => {
       finish({
-        code: code2,
+        code: code3,
         stdout: Buffer.concat(stdout).toString("utf8"),
         stderr: Buffer.concat(stderr).toString("utf8"),
         ...stopped === null ? {} : { failed: stopped }
@@ -20167,7 +20615,7 @@ function runFake(spec, prompt, dir, cwd = "", addDirs = []) {
 
 // plugins/review-voice/src/agents/schema.ts
 import { readFileSync as readFileSync12 } from "node:fs";
-import { dirname as dirname9, isAbsolute as isAbsolute2, relative as relative2, resolve as resolve3 } from "node:path";
+import { dirname as dirname9, isAbsolute as isAbsolute3, relative as relative2, resolve as resolve3 } from "node:path";
 function schemaForRunner(schema4, baseDir) {
   const base = resolve3(baseDir);
   const prepared = prepare(schema4, { baseDir: base, dir: base, document: schema4, inlined: false, stack: [] });
@@ -20204,14 +20652,14 @@ function checkInternalRef(ref, ctx) {
   }
 }
 function resolveFileRef(ref, ctx) {
-  if (/^[a-z][a-z0-9+.-]*:/i.test(ref) || ref.startsWith("//") || isAbsolute2(ref)) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(ref) || ref.startsWith("//") || isAbsolute3(ref)) {
     throw new AgentSpecError(`Schema $ref ${ref} is absolute; only a relative file is allowed`);
   }
   const hash2 = ref.indexOf("#");
   const file2 = resolve3(ctx.dir, hash2 === -1 ? ref : ref.slice(0, hash2));
   const fragment = hash2 === -1 ? "" : ref.slice(hash2 + 1);
   const fromBase = relative2(ctx.baseDir, file2);
-  if (fromBase.startsWith("..") || isAbsolute2(fromBase)) {
+  if (fromBase.startsWith("..") || isAbsolute3(fromBase)) {
     throw new AgentSpecError(`Schema $ref ${ref} leaves ${ctx.baseDir}`);
   }
   const key2 = `${file2}#${fragment}`;
@@ -20734,15 +21182,15 @@ function sentencesOf(description) {
 function statesSomething(wanted, sentences) {
   return LEAD_LABEL.exec(wanted)?.[0] !== wanted && !sentences.headings.has(wanted);
 }
-function sectionHeading(quote2, sentences) {
-  const wanted = collapse2(quote2.replace(LIST_OR_HEADING, ""));
+function sectionHeading(quote3, sentences) {
+  const wanted = collapse2(quote3.replace(LIST_OR_HEADING, ""));
   let at2 = sentences.text.indexOf(wanted);
   while (at2 !== -1 && !(sentences.starts.has(at2) && sentences.ends.has(at2 + wanted.length))) at2 = sentences.text.indexOf(wanted, at2 + 1);
   return sentences.sections.find(({ from, to }) => at2 >= from && at2 < to)?.heading ?? null;
 }
-var isShort = (quote2) => collapse2(quote2.replace(LIST_OR_HEADING, "")).split(" ").length < MIN_QUOTE_WORDS;
-function excerptProblem(quote2, sentences, name) {
-  const wanted = collapse2(quote2.replace(LIST_OR_HEADING, ""));
+var isShort = (quote3) => collapse2(quote3.replace(LIST_OR_HEADING, "")).split(" ").length < MIN_QUOTE_WORDS;
+function excerptProblem(quote3, sentences, name) {
+  const wanted = collapse2(quote3.replace(LIST_OR_HEADING, ""));
   if (isShort(wanted) && !statesSomething(wanted, sentences)) return `${name} must be at least ${MIN_QUOTE_WORDS} words`;
   let at2 = sentences.text.indexOf(wanted);
   if (at2 === -1) return `${name} does not occur in the pull request description`;
@@ -20751,8 +21199,8 @@ function excerptProblem(quote2, sentences, name) {
   }
   return `${name} must be a whole sentence or list item of the description, not part of one`;
 }
-function widenToSentence(quote2, sentences) {
-  const wanted = collapse2(quote2.replace(LIST_OR_HEADING, ""));
+function widenToSentence(quote3, sentences) {
+  const wanted = collapse2(quote3.replace(LIST_OR_HEADING, ""));
   const at2 = sentences.text.indexOf(wanted);
   if (at2 === -1) return null;
   const end = at2 + wanted.length;
@@ -20764,8 +21212,8 @@ function widenToSentence(quote2, sentences) {
   const sentence = sentences.text.slice(from, to);
   return sentence.length <= MAX_QUOTE ? sentence : null;
 }
-function answeredHeading(quote2, sentences) {
-  const wanted = collapse2(quote2.replace(LIST_OR_HEADING, ""));
+function answeredHeading(quote3, sentences) {
+  const wanted = collapse2(quote3.replace(LIST_OR_HEADING, ""));
   if (wanted === "" || wanted.split(" ").length >= MIN_QUOTE_WORDS) return null;
   const matches = ({ from, to }) => {
     const body = sentences.text.slice(from, to);
@@ -20773,10 +21221,11 @@ function answeredHeading(quote2, sentences) {
   };
   return (sentences.sections.find(matches) ?? sentences.answers.find(matches))?.heading ?? null;
 }
-function excerptOf(value, sentences, name, id, notes) {
+var whereOf = (source) => source.issue === null ? "the description" : `issue #${source.issue}`;
+function excerptOf(value, sentences, name, id, notes, where) {
   const problem = excerptProblem(value, sentences, name);
   if (problem === null) {
-    if (isShort(value)) notes.push(`Kept ${name.split(".").pop()} of ${id} under ${MIN_QUOTE_WORDS} words: it is a whole sentence of the description`);
+    if (isShort(value)) notes.push(`Kept ${name.split(".").pop()} of ${id} under ${MIN_QUOTE_WORDS} words: it is a whole sentence of ${where}`);
     return { value, problem: null };
   }
   if (!problem.endsWith("not part of one")) return { value: null, problem };
@@ -20784,6 +21233,17 @@ function excerptOf(value, sentences, name, id, notes) {
   if (widened === null || excerptProblem(widened, sentences, name) !== null) return { value: null, problem };
   notes.push(`Widened ${name.split(".").pop()} of ${id} to its whole sentence`);
   return { value: widened, problem: null };
+}
+function quoteFrom(value, sources, name, id, notes) {
+  let problem = null;
+  const notFound = `${name} does not occur in the pull request description`;
+  for (const source of sources) {
+    const answered = answeredHeading(value, source.sentences);
+    const quote3 = answered === null ? excerptOf(value, source.sentences, name, id, notes, whereOf(source)) : { value, problem: null };
+    if (quote3.problem === null) return { value: quote3.value, source, answered, problem: null };
+    if (problem === null && quote3.problem !== notFound) problem = quote3.problem;
+  }
+  return { value: null, problem: problem ?? `${notFound}${sources.length > 1 ? " or in a linked issue" : ""}` };
 }
 function text2(value, name, max = MAX_TEXT2) {
   if (typeof value !== "string" || value.trim().length === 0) return { value: null, problem: `${name} must be non-empty text` };
@@ -20796,14 +21256,22 @@ function descriptionOf(thread) {
   const bodies = comments.filter((comment) => comment?.kind === "description").map((comment) => comment.body).filter((body) => typeof body === "string");
   return bodies.length === 0 ? null : bodies.join("\n");
 }
-function statementOf(rawEntry, at2, sentences, removed) {
+function linkedIssuesOf(thread) {
+  const issues = thread?.linkedIssues;
+  if (!Array.isArray(issues)) return [];
+  return issues.flatMap((issue) => {
+    const { number, body } = issue ?? {};
+    return Number.isInteger(number) && typeof body === "string" ? [{ number, body }] : [];
+  });
+}
+function statementOf(rawEntry, at2, sources, removed) {
   if (typeof rawEntry !== "object" || rawEntry === null || Array.isArray(rawEntry)) {
     return { value: null, problem: `${at2} must be an object` };
   }
   const entry = Object.fromEntries(
     Object.entries(rawEntry).filter(([key2, value]) => !(value === null && (key2 === "reason" || key2 === "scope")))
   );
-  const unexpected = Object.keys(entry).find((key2) => !["id", "kind", "statement", "quote", "reason", "scope", "heading"].includes(key2));
+  const unexpected = Object.keys(entry).find((key2) => !["id", "kind", "statement", "quote", "reason", "scope", "heading", "issue"].includes(key2));
   if (unexpected !== void 0) return { value: null, problem: `${at2} has an unexpected ${JSON.stringify(unexpected)} field` };
   const id = entry["id"];
   if (typeof id !== "string" || !ID.test(id)) return { value: null, problem: `${at2}.id must match int_NNN` };
@@ -20815,12 +21283,12 @@ function statementOf(rawEntry, at2, sentences, removed) {
   if (statement.problem !== null) return { value: null, problem: statement.problem };
   const rawQuote = text2(entry["quote"], `${at2}.quote`, MAX_QUOTE);
   if (rawQuote.problem !== null) return { value: null, problem: rawQuote.problem };
-  const answered = answeredHeading(rawQuote.value, sentences);
-  const quote2 = answered === null ? excerptOf(rawQuote.value, sentences, `${at2}.quote`, id, removed) : rawQuote;
-  if (quote2.problem !== null) return { value: null, problem: quote2.problem };
-  const heading = answered ?? (isShort(quote2.value) ? sectionHeading(quote2.value, sentences) : null);
+  const quote3 = quoteFrom(rawQuote.value, sources, `${at2}.quote`, id, removed);
+  if (quote3.problem !== null) return { value: null, problem: quote3.problem };
+  const { source, answered } = quote3;
+  const heading = answered ?? (isShort(quote3.value) ? sectionHeading(quote3.value, source.sentences) : null);
   if (kind !== "non-goal") {
-    const quoted = significantWords(answered === null ? quote2.value : `${answered} ${quote2.value}`);
+    const quoted = significantWords(answered === null ? quote3.value : `${answered} ${quote3.value}`);
     if (![...significantWords(statement.value)].some((word) => quoted.has(word))) {
       return { value: null, problem: `${at2}.quote shares no significant word with its statement` };
     }
@@ -20829,8 +21297,11 @@ function statementOf(rawEntry, at2, sentences, removed) {
   if (kind === "deliberate") {
     const parsed2 = text2(entry["reason"], `${at2}.reason`, MAX_QUOTE);
     if (parsed2.problem !== null) return { value: null, problem: `${parsed2.problem} on a deliberate statement` };
-    const excerpt = excerptOf(parsed2.value, sentences, `${at2}.reason`, id, removed);
-    if (excerpt.problem !== null) return { value: null, problem: excerpt.problem };
+    const excerpt = excerptOf(parsed2.value, source.sentences, `${at2}.reason`, id, removed, whereOf(source));
+    if (excerpt.problem !== null) {
+      const elsewhere = sources.some((other) => other !== source && excerptOf(parsed2.value, other.sentences, "", id, [], "").problem === null);
+      return { value: null, problem: elsewhere ? `${at2}.reason must be in the same source as its quote` : excerpt.problem };
+    }
     reason2 = excerpt.value;
   } else if (entry["reason"] !== void 0) {
     removed.push(`Removed reason from ${id} (only a deliberate statement takes reason)`);
@@ -20842,15 +21313,16 @@ function statementOf(rawEntry, at2, sentences, removed) {
       id,
       kind,
       statement: statement.value,
-      quote: quote2.value,
+      quote: quote3.value,
       ...reason2 === void 0 ? {} : { reason: reason2 },
       ...complete ? { scope: "complete" } : {},
-      ...heading === null ? {} : { heading }
+      ...heading === null ? {} : { heading },
+      ...source.issue === null ? {} : { issue: source.issue }
     },
     problem: null
   };
 }
-function parseIntent(value, description) {
+function parseIntent(value, description, issues = []) {
   const removed = [];
   const refuse = (problem, dropped2 = []) => ({ value: null, problem, dropped: dropped2, removed });
   if (typeof value !== "object" || value === null || Array.isArray(value)) return refuse('expected {"statements": [...]}');
@@ -20860,12 +21332,15 @@ function parseIntent(value, description) {
   const raw = document["statements"];
   if (!Array.isArray(raw)) return refuse("statements must be an array");
   if (raw.length > MAX_INTENT_STATEMENTS) return refuse(`statements must list at most ${MAX_INTENT_STATEMENTS} entries`);
-  const sentences = sentencesOf(description);
+  const sources = [
+    { issue: null, sentences: sentencesOf(description) },
+    ...issues.map((issue) => ({ issue: issue.number, sentences: sentencesOf(issue.body) }))
+  ];
   const statements = [];
   const dropped = [];
   for (const [index, rawEntry] of raw.entries()) {
     const removedHere = [];
-    const parsed2 = statementOf(rawEntry, `statements[${index}]`, sentences, removedHere);
+    const parsed2 = statementOf(rawEntry, `statements[${index}]`, sources, removedHere);
     if (parsed2.problem === null) removed.push(...removedHere);
     if (parsed2.problem === null) statements.push(parsed2.value);
     else {
@@ -20929,7 +21404,8 @@ function challengePrompt(finding, candidate, statements, diffFile, reproduction)
   if (diffFile !== void 0 && diffFile !== null) rows.push(`Diff under review: ${diffFile}`);
   if (reproduction !== void 0) rows.push(...reproductionRows(reproduction));
   if (cited.length > 0) {
-    rows.push("", "Stated intent the finding cites, quoted from the pull request description (untrusted):");
+    const from = [...new Set(cited.map((s) => typeof s.issue === "number" ? `linked issue #${s.issue}` : "the pull request description"))];
+    rows.push("", `Stated intent the finding cites, quoted from ${from.join(" and ")} (untrusted):`);
     for (const s of cited) {
       rows.push(`- ${s.id} (${s.kind ?? "statement"}): "${s.quote ?? s.statement ?? ""}"`);
       if (s.reason !== void 0) rows.push(`  Reason given: "${s.reason}"`);
@@ -21521,10 +21997,11 @@ function context(run, extra = []) {
     `- ${join16(run.dir, "history")}/: the last commits that touched each changed file, one file per path named <URI-encoded path>.txt`
   ];
 }
-function intentPrompt(run, title) {
+function intentPrompt(run, title, issues = []) {
   return [
     `Extract what the description of the pull request titled ${JSON.stringify(title)} states.`,
     file(run, "thread.json", "the thread; the description is its description entry"),
+    ...issues.length === 0 ? [] : [`The description closes ${issues.map((n) => `#${n}`).join(", ")}. Their linkedIssues entries in the thread are a second source to quote from.`],
     "",
     'Return {"statements": [...]} as schemas/intent.schema.json describes. {"statements": []} is valid.'
   ].join("\n");
@@ -21661,9 +22138,9 @@ var STAGES = [
 var NO_FINDINGS = "No actionable findings.";
 var Stop = class extends Error {
   code;
-  constructor(code2, message) {
+  constructor(code3, message) {
     super(message);
-    this.code = code2;
+    this.code = code3;
   }
 };
 var isRecord5 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -21691,7 +22168,7 @@ async function cli(run, argv, stdin) {
   run.lock = next.catch(() => void 0);
   const result = await next;
   try {
-    appendFileSync(at(run, "commands.log"), `$ review-voice ${argv.join(" ")}
+    appendFileSync2(at(run, "commands.log"), `$ review-voice ${argv.join(" ")}
 exit ${result.code}
 ${result.stderr}
 `);
@@ -21701,9 +22178,9 @@ ${result.stderr}
   }
   return result;
 }
-async function must(run, argv, stdin, code2 = 2) {
+async function must(run, argv, stdin, code3 = 2) {
   const result = await cli(run, argv, stdin);
-  if (result.code !== 0) throw new Stop(code2, `${argv[0]} exited ${result.code}: ${firstLines(result.stderr)}`);
+  if (result.code !== 0) throw new Stop(code3, `${argv[0]} exited ${result.code}: ${firstLines(result.stderr)}`);
   return result;
 }
 async function headOf(run) {
@@ -21748,7 +22225,7 @@ function resolveConfig(run) {
     return chosen({ kind: "flag", path: path2 });
   }
   if (previous !== void 0 && previous !== "") {
-    if (isAbsolute3(previous)) return chosen({ kind: "env", path: previous }, environmentSource());
+    if (isAbsolute4(previous)) return chosen({ kind: "env", path: previous }, environmentSource());
     run.notes.push("REVIEW_VOICE_CONFIG must be an absolute path, so it was ignored and the base commit supplied the configuration.");
   }
   const { sha, ref } = run.pullBase;
@@ -22045,11 +22522,13 @@ function heldForRecord(held, diff) {
   return { held: kept, notes };
 }
 async function intent(run) {
-  const description = descriptionOf(readJson(at(run, "thread.json")));
+  const thread = readJson(at(run, "thread.json"));
+  const description = descriptionOf(thread);
   if (description === null || description.trim() === "") return skip(run, "intent", "the pull request has no description");
   const manifest = readJson(at(run, "files.json"));
   const title = isRecord5(manifest) && typeof manifest["title"] === "string" ? manifest["title"] : "";
-  const result = await agent(run, "intent", "intent-extractor", run.plan.stages.intent.model ?? "sonnet", SCHEMAS.intent, intentPrompt(files(run), title), async (output) => {
+  const issues = linkedIssuesOf(thread).map((issue) => issue.number);
+  const result = await agent(run, "intent", "intent-extractor", run.plan.stages.intent.model ?? "sonnet", SCHEMAS.intent, intentPrompt(files(run), title, issues), async (output) => {
     const checked = await cli(run, ["check-intent", "--thread", at(run, "thread.json")], JSON.stringify(output));
     if (checked.code !== 0) return checked.stderr.trim() || `check-intent exited ${checked.code}`;
     writeFileSync6(at(run, "intent.json"), checked.stdout);
@@ -22319,29 +22798,42 @@ async function tieBreak(run) {
 async function score(run) {
   const candidates = [...run.reconciled ?? run.survivors, ...run.setAside];
   if (candidates.length === 0) return skip(run, "score", "nothing verified");
-  const scored = await must(
-    run,
-    [
-      "score",
-      "--repository",
-      run.options.repository,
-      "--verification",
-      at(run, "verification.json"),
-      ...run.base === null ? [] : ["--base", run.base],
-      "--diff-file",
-      at(run, "diff.patch"),
-      "--head",
-      run.head,
-      "--thread",
-      at(run, "thread.json"),
-      "--exclude-pull",
-      String(run.options.pullNumber)
-    ],
-    JSON.stringify({ candidates }),
-    1
-  );
+  const args = [
+    "score",
+    "--repository",
+    run.options.repository,
+    "--verification",
+    at(run, "verification.json"),
+    ...run.base === null ? [] : ["--base", run.base],
+    "--diff-file",
+    at(run, "diff.patch"),
+    "--head",
+    run.head,
+    "--thread",
+    at(run, "thread.json"),
+    "--exclude-pull",
+    String(run.options.pullNumber)
+  ];
+  const input = JSON.stringify({ candidates });
+  writeFileSync6(at(run, "score-input.json"), input);
+  const scored = await must(run, args, input, 1);
   writeFileSync6(at(run, "scores.json"), scored.stdout);
   run.scored = true;
+  if (run.deps.cli !== void 0) {
+    const env = {};
+    for (const name of ["REVIEW_VOICE_CONFIG", "REVIEW_VOICE_DATA_DIR"]) {
+      const value = process.env[name];
+      if (value !== void 0 && value !== "") env[name] = value;
+    }
+    run.promoteCall = {
+      program: [process.execPath, run.deps.cli],
+      cwd: process.cwd(),
+      env,
+      args,
+      stdin: at(run, "score-input.json"),
+      stdout: at(run, "scores.promoted.json")
+    };
+  }
   const scores = parsed(scored.stdout);
   const hold = (entry, verdict2, source, reason2) => {
     run.held.push({
@@ -22550,6 +23042,11 @@ async function record2(run, extra) {
   run.provenance = isRecord5(result["provenance"]) ? result["provenance"] : null;
   run.families = isRecord5(result["families"]) ? result["families"] : null;
   for (const warning of Array.isArray(result["warnings"]) ? result["warnings"] : []) run.notes.push(String(warning));
+  const context2 = readJson(at(run, "context.json"));
+  if (isRecord5(context2) && context2["heldQueue"] === true && !run.carried) {
+    const actions = (run.deps.env ?? process.env)["GITHUB_ACTIONS"] === "true";
+    run.heldQueue = heldQueue(run.held, actions ? null : run.promoteCall);
+  }
   const target = ["--repository", run.options.repository, "--pr", String(run.options.pullNumber), "--head", run.head, "--run", run.runId ?? ""];
   const verdict2 = await cli(run, ["verdict", ...target], run.text ?? "");
   writeFileSync6(at(run, "verdict.json"), verdict2.stdout);
@@ -22649,7 +23146,7 @@ function priorRisk(run) {
     return "unknown";
   }
 }
-function failureOf(run, code2) {
+function failureOf(run, code3) {
   const assessed = run.summary["complexity"];
   const complexity = isRecord5(assessed) && (assessed["level"] === "high" || assessed["level"] === "normal") ? assessed : null;
   const assessedRisk = complexity === null ? "unknown" : complexity.level;
@@ -22665,7 +23162,7 @@ function failureOf(run, code2) {
   const [sizeCrossings, branchGrowth, typeEscapes] = [size("sizeCrossings"), size("branchGrowth"), size("typeEscapes")];
   const note = run.summary["humanReviewNote"];
   return {
-    code: code2,
+    code: code3,
     stage: run.stage,
     mode: risk === "normal" ? "failed_open" : "failed_closed",
     risk,
@@ -22731,6 +23228,8 @@ async function runReview(options, deps) {
     reconciled: null,
     tieBroken: false,
     scored: false,
+    promoteCall: null,
+    heldQueue: null,
     text: null,
     runId: null,
     findings: [],
@@ -22796,6 +23295,7 @@ async function runReview(options, deps) {
     plan: run.plan,
     findings: run.findings,
     held: run.held,
+    ...run.heldQueue === null ? {} : { heldQueue: run.heldQueue },
     verdict: run.verdict,
     posted: run.posted,
     carried: run.carried,
@@ -22902,12 +23402,12 @@ function readStdin() {
     try {
       read = readSync(0, buffer, 0, buffer.length, null);
     } catch (error) {
-      const code2 = error.code;
-      if (code2 === "EAGAIN") {
+      const code3 = error.code;
+      if (code3 === "EAGAIN") {
         Atomics.wait(pause, 0, 0, 5);
         continue;
       }
-      if (code2 === "EOF") break;
+      if (code3 === "EOF") break;
       return chunks.length === 0 ? "" : Buffer.concat(chunks).toString("utf8");
     }
     if (read === 0) break;
@@ -23812,6 +24312,8 @@ function contextCommand() {
           staticEvidence: config2.staticEvidence,
           // The driver reads the runners from context.json, as it reads the configured check names.
           reproduction: { enabled: config2.reproduction.enabled, runners: config2.reproduction.runners },
+          // The driver reads it here too, and lists the held findings only when it is true.
+          heldQueue: config2.verdictPolicy.heldQueue,
           // The review command needs the structural opt-ins after resolving
           // config, including the optional simplification pass.
           structure: config2.structure,
@@ -25111,8 +25613,11 @@ function checkIntentCommand(argv) {
     return 2;
   }
   let description;
+  let issues;
   try {
-    description = descriptionOf(JSON.parse(readFileSync21(threadFile, "utf8")));
+    const thread = JSON.parse(readFileSync21(threadFile, "utf8"));
+    description = descriptionOf(thread);
+    issues = linkedIssuesOf(thread);
   } catch (error) {
     console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -25128,7 +25633,7 @@ function checkIntentCommand(argv) {
     console.error('Expected {"statements": [...]} on stdin.');
     return 2;
   }
-  const intent2 = parseIntent(document, description);
+  const intent2 = parseIntent(document, description, issues);
   for (const problem of intent2.dropped) console.error(`${intent2.problem === null ? "Dropped" : "Invalid"} statement ${problem}.`);
   for (const note of intent2.removed) console.error(`${note}.`);
   if (intent2.problem !== null) {
@@ -25142,7 +25647,7 @@ function checkIntentCommand(argv) {
 
 // plugins/review-voice/src/cli/recall.ts
 import { writeFileSync as writeFileSync9, mkdirSync as mkdirSync10, statSync as statSync8, lstatSync as lstatSync5, renameSync as renameSync3, rmSync as rmSync9, existsSync as existsSync17 } from "node:fs";
-import { dirname as dirname16, isAbsolute as isAbsolute4, relative as relative4, resolve as resolve9, sep as sep5 } from "node:path";
+import { dirname as dirname16, isAbsolute as isAbsolute5, relative as relative4, resolve as resolve9, sep as sep5 } from "node:path";
 
 // plugins/review-voice/src/evaluate/recall.ts
 import { execFileSync as execFileSync15 } from "node:child_process";
@@ -25806,7 +26311,7 @@ async function recallCommand(argv, runInProcess2) {
     return 2;
   }
   const inside2 = relative4(realExistingPath(resolve9(fixtures)), realExistingPath(out));
-  const outside = inside2 === ".." || inside2.startsWith(`..${sep5}`) || isAbsolute4(inside2);
+  const outside = inside2 === ".." || inside2.startsWith(`..${sep5}`) || isAbsolute5(inside2);
   if (!outside) {
     console.error(`--out ${out} is inside the fixtures; recall never writes there.`);
     return 2;
@@ -26693,7 +27198,8 @@ async function threadCommand(argv) {
     console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
     return 2;
   }
-  const result = await readThread({ repository, pullNumber, client: githubClient([repository]) });
+  const linkedIssues = repositoryConfig()?.linkedIssues === true;
+  const result = await readThread({ repository, pullNumber, client: githubClient([repository]), linkedIssues });
   for (const warning of result.warnings ?? []) console.error(`Warning: ${warning}`);
   const out = flag(argv, "--out");
   if (out === null) {
@@ -26708,6 +27214,7 @@ async function threadCommand(argv) {
         {
           path,
           comments: result.comments.length,
+          ...result.linkedIssues === void 0 ? {} : { linkedIssues: result.linkedIssues.length },
           truncated: result.truncated,
           ...result.warnings === void 0 ? {} : { warnings: result.warnings }
         },
@@ -27314,12 +27821,12 @@ function computeReach(text4, changedPath, cwd, ref = null, search = gitGrepPaths
     } catch {
       return result(null, true);
     }
-    const code2 = found.filter(isCode);
-    if (source !== "diff" && !code2.some((path) => normalisePath3(path) === normalisedChangedPath)) {
+    const code3 = found.filter(isCode);
+    if (source !== "diff" && !code3.some((path) => normalisePath3(path) === normalisedChangedPath)) {
       ignored.push(symbol);
       continue;
     }
-    if (directoryCount(code2) > NON_DISCRIMINATING_DIRECTORIES) {
+    if (directoryCount(code3) > NON_DISCRIMINATING_DIRECTORIES) {
       ignored.push(symbol);
       continue;
     }
@@ -27495,12 +28002,12 @@ function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declara
       incomplete = true;
       break;
     }
-    const code2 = new Set(found.filter(isCode).map(normalisePath4));
-    if (directoryCount2(code2) > NON_DISCRIMINATING_DIRECTORIES) {
+    const code3 = new Set(found.filter(isCode).map(normalisePath4));
+    if (directoryCount2(code3) > NON_DISCRIMINATING_DIRECTORIES) {
       symbols.push({ symbol, common: true });
       continue;
     }
-    const others = [...code2].filter((candidate) => candidate !== normalisedPath).sort();
+    const others = [...code3].filter((candidate) => candidate !== normalisedPath).sort();
     const paths = others.filter((candidate) => !isTestPath(candidate));
     const tests = others.filter((candidate) => isTestPath(candidate));
     for (const candidate of paths) references.add(candidate);
@@ -28491,6 +28998,9 @@ async function syncCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/outcomes.ts
+function pendingQuestionLine(question) {
+  return `${question.repository}#${question.pullNumber} ${question.findingId} ${question.path}:${question.line} question from ${question.askedBy} awaiting a reply; run reply --pr ${question.pullNumber}`;
+}
 async function outcomesCommand(argv) {
   const repository = flag(argv, "--repository");
   if (argv.includes("--repository") && (repository === null || !/^[^/\s]+\/[^/\s]+$/.test(repository))) {
@@ -28516,7 +29026,7 @@ async function outcomesCommand(argv) {
   try {
     const result = await checkOutcomes({
       db,
-      client: new GitHubClient({ allowlist }),
+      client: githubClient(allowlist),
       allowlist,
       repository: repository ?? void 0,
       since,
@@ -28552,11 +29062,202 @@ async function outcomesCommand(argv) {
     for (const o of result.outcomes) {
       console.log(`${o.repository}#${o.pullNumber} ${o.findingId} ${o.path}:${o.line} ${o.outcome} (${o.strength}): ${o.evidence}`);
     }
+    for (const question of result.questions) console.log(pendingQuestionLine(question));
     const count3 = (name) => result.outcomes.filter((o) => o.outcome === name).length;
     console.log(
       `${result.outcomes.length} finding(s) tracked: ${count3("fixed")} fixed, ${count3("dismissed")} dismissed, ${count3("resolved")} resolved, ${count3("outdated")} outdated, ${count3("open")} open, ${count3("unknown")} unknown`
     );
     return 0;
+  } finally {
+    db.close();
+  }
+}
+
+// plugins/review-voice/src/publish/reply.ts
+var MAX_REFERENCES = 4;
+var isRecord7 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+function safeReference(raw) {
+  const reference = raw.replace(new RegExp("\\p{Cf}", "gu"), "").trim();
+  if (new RegExp("\\p{Cc}", "u").test(reference) || !/^\S+:\d+(?:-\d+)?$/.test(reference)) return null;
+  const path = reference.replace(/:\d+(?:-\d+)?$/, "");
+  if (/[\s`:]/.test(path) || path.startsWith("~")) return null;
+  if (!path.split(/[\\/]/).every((part) => part !== "" && part !== "." && part !== "..")) return null;
+  return reference;
+}
+function obeys(text4) {
+  return text4.length <= REPLY_MAX_LENGTH && findForbiddenPhrases(text4, DEFAULT_LIMITS.forbiddenPhrases).length === 0 && classifyReply(text4) === "other";
+}
+function joined(references) {
+  const code3 = references.map((reference) => `\`${reference}\``);
+  if (code3.length === 1) return code3[0];
+  return `${code3.slice(0, -1).join(", ")} and ${code3[code3.length - 1]}`;
+}
+function renderReply(input) {
+  const challenge2 = isRecord7(input.score?.challenge) ? input.score.challenge : null;
+  const challengeConfirmed = challenge2?.["verdict"] === "confirmed";
+  const cited = challengeConfirmed ? (Array.isArray(challenge2?.["decisive_evidence"]) ? challenge2["decisive_evidence"] : []).filter((entry) => typeof entry === "string") : (input.candidate?.evidence ?? []).filter((entry) => !MACHINE_PATH.test(flatten(entry, Number.POSITIVE_INFINITY))).flatMap((entry) => [...entry.matchAll(CITATION)].map((match) => match[0].replace(/`/g, "")));
+  const references = [];
+  for (const entry of cited) {
+    const reference = safeReference(entry);
+    if (reference !== null && obeys(reference) && !references.includes(reference)) references.push(reference);
+    if (references.length === MAX_REFERENCES) break;
+  }
+  if (references.length === 0) return null;
+  const head = typeof input.head === "string" && input.head.length >= 7 ? input.head.slice(0, 7) : "the head it reviewed";
+  const body = redact(
+    `Review Voice checked this at ${head}. The claim rests on ${joined(references)}.` + (challengeConfirmed ? " An independent challenge confirmed it at those lines." : "") + " This reply is built from the recorded review and is not repeated."
+  ).text;
+  return obeys(body) ? { body, references, challengeConfirmed } : null;
+}
+var replyKey = (question) => `reply:${question.repository.toLowerCase()}#${question.pullNumber}:${question.rootCommentId}`;
+async function postReplies(options) {
+  const subject = { type: "pull_request", id: `${options.repository.toLowerCase()}#${options.pullNumber}` };
+  if (!options.postingEnabled) {
+    const reasons = ["writes.github_posting_enabled is false in .review-voice/config.yaml"];
+    recordAudit(options.db, "review_reply_refused", subject, { reasons, questions: options.questions.length });
+    return { exitCode: 2, refused: reasons, replies: options.questions.map((question) => ({ question, status: "refused", reasons, key: replyKey(question), body: null })) };
+  }
+  const replies = [];
+  let failed2 = false;
+  for (const question of options.questions) {
+    const key2 = replyKey(question);
+    const refuse = (reasons, body2 = null, status = "refused") => {
+      recordAudit(options.db, "review_reply_refused", subject, { reasons, key: key2, run: question.reviewRunId, finding: question.findingId, rootCommentId: question.rootCommentId });
+      replies.push({ question, status, reasons, key: key2, body: body2 });
+    };
+    const run = runDetail(options.db, question.reviewRunId);
+    if (run === null || run.repository === null || run.repository.toLowerCase() !== question.repository.toLowerCase()) {
+      refuse([`run ${question.reviewRunId} is not a recorded review of ${question.repository}`]);
+      continue;
+    }
+    const finding = run.findings.find((entry) => entry.findingId === question.findingId);
+    if (finding === void 0) {
+      refuse([`run ${question.reviewRunId} has no finding ${question.findingId}`]);
+      continue;
+    }
+    const planned = planFindings(run.output, run, (id) => runDetail(options.db, id));
+    const posted = planned.inline.find((entry) => entry.findingId === finding.findingId);
+    const backing = posted === void 0 ? void 0 : planned.backing.get(posted);
+    const rendered = renderReply({
+      head: run.headRef,
+      finding,
+      score: backing?.score,
+      candidate: backing === void 0 ? void 0 : recordedCandidates(options.db, backing.runId).find((candidate) => candidate.candidateId === backing.score.candidateId)
+    });
+    if (rendered === null) {
+      refuse(["no recorded path:line evidence to quote"]);
+      continue;
+    }
+    const blocked = keyBlocked(options.db, key2, "review_reply_");
+    if (blocked !== null) {
+      refuse([blocked], rendered.body);
+      continue;
+    }
+    if (!options.confirm) {
+      refuse(["no --confirm: nothing is posted without one, per reply"], rendered.body, "previewed");
+      continue;
+    }
+    const claimed = claimKey(
+      options.db,
+      key2,
+      subject,
+      { run: run.reviewRunId, finding: finding.findingId, rootCommentId: question.rootCommentId, askedBy: question.askedBy, stance: question.stance },
+      "review_reply_attempted"
+    );
+    if (typeof claimed !== "string") {
+      refuse([claimed.blocked], rendered.body);
+      continue;
+    }
+    const { body } = rendered;
+    try {
+      const reply = await options.writerFor([run.repository]).replyToComment(options.repository, options.pullNumber, question.rootCommentId, body);
+      recordAudit(options.db, "review_reply_sent", subject, {
+        key: key2,
+        attempt: claimed,
+        run: run.reviewRunId,
+        finding: finding.findingId,
+        rootCommentId: question.rootCommentId,
+        replyId: reply.id,
+        url: reply.htmlUrl,
+        askedBy: question.askedBy,
+        stance: question.stance,
+        head: run.headRef
+      });
+      replies.push({ question, status: "sent", reasons: [], key: key2, body, reply: { id: reply.id, url: reply.htmlUrl } });
+    } catch (error) {
+      const status = error instanceof GitHubError ? error.status : null;
+      const message = error instanceof Error ? error.message : String(error);
+      recordAudit(options.db, "review_reply_failed", subject, {
+        key: key2,
+        attempt: claimed,
+        status,
+        message: message.slice(0, 300),
+        // Refused in code before any request, or GitHub answered with a 4xx:
+        // not sent, so a retry is safe. Anything else may have been.
+        uncertain: !(error instanceof WriteViolation || error instanceof NotAllowlisted || error instanceof AuthError || status !== null && status < 500)
+      });
+      replies.push({ question, status: "failed", reasons: [message], key: key2, body });
+      failed2 = true;
+    }
+  }
+  return { exitCode: failed2 ? 1 : 0, replies, refused: [] };
+}
+
+// plugins/review-voice/src/cli/reply.ts
+async function replyCommand(argv) {
+  const pullNumber = Number(flag(argv, "--pr"));
+  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+    console.error("--pr needs a pull request number.");
+    return 2;
+  }
+  const named = flag(argv, "--repository");
+  if (argv.includes("--repository") && (named === null || !/^[^/\s]+\/[^/\s]+$/.test(named))) {
+    console.error("--repository takes owner/repo.");
+    return 2;
+  }
+  const repository = named ?? inferRepository(process.cwd());
+  if (repository === null) {
+    console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
+    return 2;
+  }
+  const sinceFlag = flag(argv, "--since");
+  const days = sinceFlag === null ? 30 : /^(\d+)d$/.exec(sinceFlag)?.[1];
+  if (days === void 0 || argv.includes("--since") && sinceFlag === null) {
+    console.error("--since takes a number of days such as 30d.");
+    return 2;
+  }
+  const since = new Date(Date.now() - Number(days) * 864e5).toISOString();
+  const config2 = repositoryConfig();
+  const allowlist = named === null ? config2?.allowlist ?? [] : [named];
+  const db = openDatabase();
+  try {
+    const client = githubClient(allowlist);
+    const checked = await checkOutcomes({ db, client, allowlist, repository, pullNumber, since, ownerReviewer: config2?.ownerReviewer ?? null });
+    for (const warning of checked.warnings) console.error(warning);
+    for (const skipped of checked.skipped) console.error(`${skipped.repository}#${skipped.pullNumber}: skipped, ${skipped.reason}`);
+    const { exitCode, replies, refused } = await postReplies({
+      db,
+      client,
+      repository,
+      pullNumber,
+      questions: checked.questions,
+      // Built from the recorded run's repository, not from --repository.
+      writerFor: (runRepositories) => new ReviewWriter({ allowlist: runRepositories, ...inProcessState()?.fetchImpl === void 0 ? {} : { fetchImpl: inProcessState().fetchImpl } }),
+      confirm: argv.includes("--confirm"),
+      postingEnabled: config2?.postingEnabled ?? false
+    });
+    for (const reason2 of refused) console.error(`${reason2}; nothing can be sent.`);
+    if (argv.includes("--json")) {
+      console.log(JSON.stringify({ questions: checked.questions, replies, refused }, null, 2));
+      return exitCode;
+    }
+    if (replies.length === 0) console.log(`No pending question on ${repository}#${pullNumber}.`);
+    for (const result of replies) {
+      const { question } = result;
+      console.log(`${question.path}:${question.line} ${question.askedBy} (${question.stance}) ${result.status}${result.reasons.length === 0 ? "" : `: ${result.reasons.join("; ")}`}`);
+      if (result.body !== null) console.log(`  ${result.body}`);
+    }
+    return exitCode;
   } finally {
     db.close();
   }
@@ -29490,7 +30191,7 @@ function postedReviewIds(db, runId) {
   }
   return reviewIds;
 }
-function quote(text4) {
+function quote2(text4) {
   const flat = text4.replace(/\s+/g, " ").trim();
   return `"${flat.length > QUOTE_LIMIT ? `${flat.slice(0, QUOTE_LIMIT)}...` : flat}"`;
 }
@@ -29524,14 +30225,14 @@ function heldBackFindings(findings, thread, run, reviewIds) {
     const parts = [];
     if (resolved) parts.push(`its thread was resolved${comment?.resolvedBy === void 0 ? "" : ` by ${comment.resolvedBy}`}`);
     if (review2 !== void 0) {
-      parts.push(`the review was dismissed${review2.dismissalMessage === void 0 ? "" : `: ${quote(review2.dismissalMessage)}`}`);
+      parts.push(`the review was dismissed${review2.dismissalMessage === void 0 ? "" : `: ${quote2(review2.dismissalMessage)}`}`);
     }
     const replies = comment?.id === void 0 ? [] : thread.comments.filter((c) => c.inReplyTo === comment.id);
     const last = replies.reduce(
       (latest, reply) => latest === void 0 || (reply.createdAt ?? "") >= (latest.createdAt ?? "") ? reply : latest,
       void 0
     );
-    if (last !== void 0) parts.push(`${last.author} replied: ${quote(last.body)}`);
+    if (last !== void 0) parts.push(`${last.author} replied: ${quote2(last.body)}`);
     held.set(finding.findingId, parts.join("; "));
   }
   return held;
@@ -29925,7 +30626,7 @@ import { join as join30, posix as posix6 } from "node:path";
 
 // plugins/review-voice/src/cli/check-candidates.ts
 import { readFileSync as readFileSync37 } from "node:fs";
-import { isAbsolute as isAbsolute5, posix as posix5, relative as relative5 } from "node:path";
+import { isAbsolute as isAbsolute6, posix as posix5, relative as relative5 } from "node:path";
 
 // plugins/review-voice/src/cli/score.ts
 import { readFileSync as readFileSync36 } from "node:fs";
@@ -30664,8 +31365,8 @@ function readSignals(file2, root) {
     const s = entry;
     if (typeof s !== "object" || s === null || typeof s.path !== "string" || typeof s.line !== "number" || typeof s.claim !== "string") return [];
     const spelled = s.path.split("\\").join("/");
-    const path = isAbsolute5(spelled) ? relative5(realExistingPath(signalRoot), realExistingPath(spelled)) : posix5.normalize(spelled).replace(/^\.\//, "");
-    if (path === "" || path === "." || path.startsWith("..") || isAbsolute5(path)) return [];
+    const path = isAbsolute6(spelled) ? relative5(realExistingPath(signalRoot), realExistingPath(spelled)) : posix5.normalize(spelled).replace(/^\.\//, "");
+    if (path === "" || path === "." || path.startsWith("..") || isAbsolute6(path)) return [];
     return [
       {
         kind: typeof s.kind === "string" ? s.kind : "",
@@ -31308,6 +32009,7 @@ function recordCommand(argv) {
       if (!Array.isArray(list2)) throw new Error("comments is not a list");
       followUpThread = list2;
       followUpThreadFor = Array.isArray(parsed2) ? { repository: void 0, pullNumber: void 0 } : { repository: parsed2.repository, pullNumber: parsed2.pullNumber };
+      if (checks !== void 0) checks.issuesRead = linkedIssuesOf(parsed2).map((issue) => issue.number);
     } catch (error) {
       console.error(`Cannot read ${followUpThreadFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -31588,6 +32290,8 @@ ${topLevelHelp()}`);
       return importBenchmarkCommand(argv.slice(1));
     case "outcomes":
       return outcomesCommand(argv.slice(1));
+    case "reply":
+      return await replyCommand(argv.slice(1));
     case "draft":
       return draftCommand(argv.slice(1));
     case "verdict":
@@ -31725,21 +32429,21 @@ async function runInProcess(argv, options = {}) {
     out.push(String(chunk));
     return true;
   });
-  let code2;
+  let code3;
   try {
-    code2 = await inCommand.run(true, () => dispatch(argv));
+    code3 = await inCommand.run(true, () => dispatch(argv));
   } catch (error) {
     const failure = failureOf2(error);
     err.push(`${failure.message}
 `);
-    code2 = failure.code;
+    code3 = failure.code;
   } finally {
     console.log = saved.log;
     console.error = saved.error;
     process.stdout.write = saved.write;
     setInProcess(null);
   }
-  return { code: code2, stdout: out.join(""), stderr: err.join("") };
+  return { code: code3, stdout: out.join(""), stderr: err.join("") };
 }
 async function reviewCommand(argv) {
   const pullNumber = Number(flag(argv, "--pr"));
@@ -31784,8 +32488,15 @@ async function reviewCommand(argv) {
       config: flag(argv, "--config"),
       origin: reviewOrigin
     },
-    { command: (args, stdin) => runInProcess(args, { stdin }), client: githubClient([repository]) }
+    {
+      command: (args, stdin) => runInProcess(args, { stdin }),
+      client: githubClient([repository]),
+      // The bundle `watch` spawns too; each promote command in the held queue names it.
+      cli: fileURLToPath6(import.meta.url)
+    }
   );
+  const summaryWarning = writeJobSummary(report, process.env);
+  if (summaryWarning !== null) console.error(summaryWarning);
   if (argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
   else console.log(reportText(report));
   return report.exitCode;

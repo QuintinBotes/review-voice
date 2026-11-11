@@ -48,6 +48,7 @@ import { noFindingsHint, readStdin, inferRepository, flag, boundLists } from './
 import { reviewScopeFromManifest } from './explain.ts';
 import { carryForRun, sameCommit } from './carry.ts';
 import { readSignals } from './check-candidates.ts';
+import { linkedIssuesOf } from '../intent.ts';
 import { repositoryRoot } from '../diff/acquire.ts';
 import { SAFE_GIT } from '../review/worktree.ts';
 import type { EvidenceSignal } from '../evidence/types.ts';
@@ -463,6 +464,8 @@ export function recordCommand(argv: string[]): number {
       followUpThreadFor = Array.isArray(parsed)
         ? { repository: undefined, pullNumber: undefined }
         : { repository: parsed.repository, pullNumber: parsed.pullNumber };
+      // The scope block names the issues the thread read for intent; `[]` when it read none (S19).
+      if (checks !== undefined) checks.issuesRead = linkedIssuesOf(parsed).map((issue) => issue.number);
     } catch (error) {
       console.error(`Cannot read ${followUpThreadFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;

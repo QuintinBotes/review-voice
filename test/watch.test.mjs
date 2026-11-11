@@ -20,10 +20,13 @@ import { queueCommand, renderQueue } from '../plugins/review-voice/src/queue/com
 import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
 import { recordAudit } from '../plugins/review-voice/src/store/audit.ts';
 import { recordRun } from '../plugins/review-voice/src/store/runs.ts';
+import { checkOutcomes } from '../plugins/review-voice/src/store/outcomes.ts';
+import { postReplies } from '../plugins/review-voice/src/publish/reply.ts';
 import { saveWatchHead, watchHead, watchSummary } from '../plugins/review-voice/src/store/watch.ts';
 import { defaultWatchConfig, parseDuration } from '../plugins/review-voice/src/watch/config.ts';
 import { watchCommand } from '../plugins/review-voice/src/watch/command.ts';
 import { reviewResult, spawnReview } from '../plugins/review-voice/src/watch/review.ts';
+import { heldQueueLines } from '../plugins/review-voice/src/review/held-queue.ts';
 import { pathToFileURL } from 'node:url';
 import { cloneDir, gitPrepareClone, removeStaleGitLocks } from '../plugins/review-voice/src/watch/workspace.ts';
 import { acquireLock, lockPort } from '../plugins/review-voice/src/watch/lock.ts';
@@ -496,6 +499,59 @@ test('without --post a recorded run is reviewed, not posted, and the outcomes st
       '1 entry: 1 reviewed; 0 not reached; outcomes followed on 1 pull request(s)',
     ]);
     assert.equal(impl.posts().length, 0);
+  });
+});
+
+test('a pass over a thread with a pending question posts no reply, with --post or without', async () => {
+  await withWatcher(async (h) => {
+    const db = h.openDb();
+    // A confirmed score and its candidate give the reply evidence to quote, so a watcher that replied would send one.
+    const challenge = { verdict: 'confirmed', line_ok: true, decisive_evidence: ['src/cart.ts:12', 'src/pricing.ts:48'], reason: 'r' };
+    const scores = [{ candidateId: 'cart', path: 'src/cart.ts', line: 12, severity: { severity: 'minor' }, confidenceSource: 'verifier', eligible: true, challenge }];
+    const candidates = [{ candidate_id: 'cart', path: 'src/cart.ts', line: 12, category: 'correctness', severity: 'minor', claim: 'The total skips the discount.', failure_mode: 'f', evidence: ['src/cart.ts:12'], technical_confidence: 0.9 }];
+    const { reviewRunId } = recordRun(db, { repository: REPO, baseRef: null, headRef: sha('a'), pullNumber: 7, diff: 'diff', output: '[minor] `src/cart.ts:12` - The total skips the discount.', scores, candidates });
+    const subject = { type: 'pull_request', id: `${REPO}#7` };
+    const attempt = recordAudit(db, 'review_post_attempted', subject, { run: reviewRunId });
+    recordAudit(db, 'review_post_sent', subject, { attempt, head: sha('a'), reviewId: 9 });
+    db.close();
+    // The posted root comment on an open thread, and a question under it from someone else.
+    const root = { id: 555, path: 'src/cart.ts', line: 12, original_line: 12, body: '**minor** - The total skips the discount.', user: { login: ME }, created_at: '2026-10-20T10:00:00Z' };
+    const why = { id: 556, in_reply_to_id: 555, user: { login: 'alice' }, body: 'Why?', created_at: '2026-10-21T10:00:00Z' };
+    const base = fakeGitHub({ pulls: { [`${REPO}#7`]: openPull() } });
+    const calls = [];
+    const impl = async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      calls.push({ method: init.method ?? 'GET', path });
+      if (path === '/graphql') {
+        const nodes = [{ isResolved: false, isOutdated: false, comments: { nodes: [{ databaseId: root.id }] } }];
+        return json({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false }, nodes } } } } });
+      }
+      if (path === `/repos/${REPO}/pulls/7/comments`) return json([root, why]);
+      if (path === `/repos/${REPO}/pulls/7/reviews/9/comments`) return json([root]);
+      return base(url, init);
+    };
+    for (const argv of [['--once', '--post'], ['--once']]) {
+      calls.length = 0;
+      assert.equal(await h.run(argv, { impl }), 0, argv.join(' '));
+      assert.match(h.out.join('\n'), /outcomes followed on 1 pull request\(s\)/);
+      assert.ok(calls.some((c) => c.path === `/repos/${REPO}/pulls/7/comments`), 'the pass read the thread');
+      // GraphQL is a read; nothing else is sent, so no reply under the comment.
+      assert.deepEqual(calls.filter((c) => c.method !== 'GET' && c.path !== '/graphql'), [], argv.join(' '));
+      assert.doesNotMatch([...h.out, ...h.err].join('\n'), /repl/i);
+    }
+    // The question is there to answer: the same reads give it to the reply command, which renders a reply for it.
+    const check = h.openDb();
+    try {
+      const client = new GitHubClient({ allowlist: [REPO], token: 't', fetchImpl: impl, sleep: async () => {} });
+      const { questions } = await checkOutcomes({ db: check, client, allowlist: [REPO], since: '2000-01-01T00:00:00Z', ownerReviewer: ME });
+      assert.deepEqual(questions.map((q) => [q.findingId, q.rootCommentId, q.askedBy]), [['rv_01', 555, 'alice']]);
+      const writerFor = () => assert.fail('a preview makes no writer');
+      const { replies } = await postReplies({ db: check, client, repository: REPO, pullNumber: 7, questions, writerFor, confirm: false, postingEnabled: true });
+      assert.deepEqual(replies.map((r) => r.status), ['previewed']);
+      assert.match(replies[0].body, /`src\/cart\.ts:12`/);
+    } finally {
+      check.close();
+    }
   });
 });
 
@@ -1279,4 +1335,65 @@ test('once a stopped review exits, the rest of its group is killed at once, not 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- S22 part B: the held queue in the watcher report ---
+
+const queued = (verdict, line, promote = null) => ({
+  path: 'src/cart.ts',
+  line,
+  severity: 'minor',
+  verdict,
+  reason: verdict === 'below-gate' ? 'below the confidence gate' : 'could not check: the caller',
+  candidateId: `cand_00${line}`,
+  promote,
+});
+const QUEUE = [queued('below-gate', 1, 'cd /work && node rv.mjs score --promote cand_001 < in.json > out.json'), queued('unverified', 2)];
+
+test('S22: reviewResult carries the well-formed entries of heldQueue and omits the key otherwise', () => {
+  const doc = { runId: 'r', verdict: { event: 'COMMENT' }, reviewUrl: 'u' };
+  const malformed = [{ ...queued('below-gate', 3), line: 'three' }, { ...queued('below-gate', 4), promote: 5 }, 'entry', null];
+  assert.deepEqual(reviewResult(0, JSON.stringify({ ...doc, heldQueue: [...QUEUE, ...malformed] }), '').heldQueue, QUEUE);
+  for (const heldQueue of [undefined, [], malformed, 'not a list', { 0: QUEUE[0] }]) {
+    assert.equal('heldQueue' in reviewResult(0, JSON.stringify({ ...doc, heldQueue }), ''), false, JSON.stringify(heldQueue));
+  }
+});
+
+test('S22: a watch --once pass prints the held queue of a review entry two spaces in under its line', async () => {
+  await withWatcher(async (h) => {
+    const impl = fakeGitHub({ requested: [item(REPO, 7)], pulls: { [`${REPO}#7`]: openPull() } });
+    const review = fakeReview([{ ...posted, heldQueue: QUEUE }]);
+    assert.equal(await h.run(['--once', '--post'], { impl, review }), 0);
+    const lines = h.out[0].split('\n');
+    const expected = heldQueueLines(QUEUE, 'run-1');
+    assert.equal(expected.length, 4);
+    assert.match(lines[0], /^acme\/web#7: review APPROVE \(posted https:/);
+    assert.deepEqual(lines.slice(1, 5), expected.map((line) => `  ${line}`));
+    assert.equal(lines[5], '1 entry: 1 posted; 0 not reached; outcomes followed on 0 pull request(s)');
+    assert.equal(lines.length, 6);
+  });
+});
+
+test('S22: with --json the held lines go to stderr and stdout stays one JSON array', async () => {
+  await withWatcher(async (h) => {
+    const impl = fakeGitHub({ requested: [item(REPO, 7)], pulls: { [`${REPO}#7`]: openPull() } });
+    assert.equal(await h.run(['--once', '--json'], { impl, review: fakeReview([{ ...posted, heldQueue: QUEUE }]) }), 0);
+    assert.equal(h.out.length, 1);
+    const rows = JSON.parse(h.out[0]);
+    assert.ok(Array.isArray(rows));
+    assert.deepEqual(rows.map((row) => row.pull), [7]);
+    assert.deepEqual(h.err.join('\n').split('\n'), heldQueueLines(QUEUE, 'run-1').map((line) => `  ${line}`));
+  });
+});
+
+test('S22: a review result without a queue prints exactly what it printed before', async () => {
+  await withWatcher(async (h) => {
+    const impl = fakeGitHub({ requested: [item(REPO, 7)], pulls: { [`${REPO}#7`]: openPull() } });
+    assert.equal(await h.run(['--once', '--post'], { impl, review: fakeReview([posted]) }), 0);
+    assert.deepEqual(h.out[0].split('\n'), [
+      `acme/web#7: review APPROVE (posted ${posted.reviewUrl})`,
+      '1 entry: 1 posted; 0 not reached; outcomes followed on 0 pull request(s)',
+    ]);
+    assert.deepEqual(h.err, []);
+  });
 });

@@ -84,7 +84,10 @@ export function globToRegExp(glob: string): RegExp {
     source += char.replace(/[.+^${}()|[\]\\]/g, '\\$&');
   }
 
-  return new RegExp(`^${source}$`);
+  // dotAll, because a filename may hold a line terminator, and `**` stopping at
+  // one would let that name escape a guarded glob. Unicode, so `?` matches a
+  // character outside the BMP whole rather than half of its surrogate pair.
+  return new RegExp(`^${source}$`, 'su');
 }
 
 /**

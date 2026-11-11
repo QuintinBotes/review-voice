@@ -137,6 +137,19 @@ test('AC-1: explain prints the recorded checks in one line', (t) => {
   ]);
 });
 
+test('S19: explain names the linked issues the thread read, or none, after the checks', (t) => {
+  const data = dataDir(t);
+  const checks = { staticRan: [], staticDidNotRun: [], symbolsInconclusive: 0, symbolsBudgetExhausted: false };
+  const line = (issuesRead) => {
+    const id = inStore(data, (db) => record(db, { checks: { ...checks, issuesRead } }).reviewRunId);
+    const result = cli(data, ['explain', '--run', id]);
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.split('\n').filter((l) => l.startsWith('Checks '));
+  };
+  assert.deepEqual(line([12, 34]), ['Checks no static checks; every symbol file finished; linked issues #12, #34']);
+  assert.deepEqual(line([]), ['Checks no static checks; every symbol file finished; linked issues none']);
+});
+
 test('AC-1: explain names missing checks for an old run', (t) => {
   const data = dataDir(t);
   const id = inStore(data, (db) => record(db).reviewRunId);
