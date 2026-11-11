@@ -1,6 +1,6 @@
 --- a/src/auth/session.ts
 +++ b/src/auth/session.ts
-@@ -60,10 +60,14 @@ export async function issueRefreshToken(userId: string, res: Response) {
+@@ -10,5 +10,9 @@ export async function issueRefreshToken(userId: string, res: Response) {
    const tx = await db.begin();
 -  const token = await tx.tokens.create({ userId, value: randomToken() });
 -  await tx.commit();

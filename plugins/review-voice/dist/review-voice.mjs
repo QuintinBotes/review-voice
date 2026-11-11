@@ -25506,8 +25506,8 @@ function scoreFixture(expectation, outcome) {
   if (!outcome.completed || expectation.path === null || expectation.line === null) {
     return { hit: null, lineDelta: null, categoryMatch: null, findings: outcome.findings.length };
   }
-  const line3 = expectation.line;
-  const onPath = outcome.findings.filter((finding) => finding.path === expectation.path).map((finding) => ({ finding, delta: Math.abs(finding.line - line3) })).sort((a, b) => a.delta - b.delta);
+  const anchors = [{ path: expectation.path, line: expectation.line }, ...expectation.anchors ?? []];
+  const onPath = outcome.findings.flatMap((finding) => anchors.filter((anchor) => anchor.path === finding.path).map((anchor) => ({ finding, delta: Math.abs(finding.line - anchor.line) }))).sort((a, b) => a.delta - b.delta);
   const nearest = onPath[0];
   if (nearest === void 0) return { hit: false, lineDelta: null, categoryMatch: null, findings: outcome.findings.length };
   const category = nearest.finding.category;
@@ -25644,8 +25644,8 @@ function recallMetrics(results) {
     kind: "goal"
   });
   return [
-    metric("fixture_key_bug_recall", results.summary.keyBugRecall, `${tally.hits}/${tally.completedPositives} completed positives had a finding on the causal line`),
-    metric("fixture_causal_line_hit", results.summary.causalLineHit, `${tally.hits}/${tally.onPath} positives with a finding on the expected file hit the causal line within ${AGREEMENT_LINE_TOLERANCE}`),
+    metric("fixture_key_bug_recall", results.summary.keyBugRecall, `${tally.hits}/${tally.completedPositives} completed positives had a finding on an accepted anchor`),
+    metric("fixture_causal_line_hit", results.summary.causalLineHit, `${tally.hits}/${tally.onPath} positives with a finding on an expected file hit an accepted anchor within ${AGREEMENT_LINE_TOLERANCE}`),
     metric("fixture_clean_silence", results.summary.cleanSilence, `${tally.silent}/${tally.completedClean} completed clean fixtures ended with exactly the no-findings sentence`)
   ];
 }
@@ -26657,6 +26657,22 @@ function scalar(raw) {
   if (quoted !== null) return quoted[2];
   return text5.replace(/\s+#.*$/, "");
 }
+function readAnchors(label2, block) {
+  const start = block.findIndex((line3) => /^  anchors:/.test(line3));
+  if (start === -1) return [];
+  const form = "`- { path: <path>, line: <number> }`";
+  if (!/^  anchors:\s*$/.test(block[start])) throw new RecallUsageError(`${label2}: expect.anchors is a list with one ${form} entry per line.`);
+  const anchors = [];
+  for (const line3 of block.slice(start + 1)) {
+    if (line3.trim() === "") continue;
+    if (!/^ {3}/.test(line3)) break;
+    const entry = /^\s+-\s*\{\s*path:\s*(.+?)\s*,\s*line:\s*([1-9]\d*)\s*\}\s*$/.exec(line3);
+    if (entry === null) throw new RecallUsageError(`${label2}: expect.anchors entry ${JSON.stringify(line3.trim())} is not ${form}.`);
+    anchors.push({ path: scalar(entry[1]), line: Number(entry[2]) });
+  }
+  if (anchors.length === 0) throw new RecallUsageError(`${label2}: expect.anchors is empty.`);
+  return anchors;
+}
 function readExpectation(cls, name, caseText) {
   const lines2 = caseText.split("\n");
   const start = lines2.findIndex((line4) => /^expect:/.test(line4));
@@ -26682,6 +26698,7 @@ function readExpectation(cls, name, caseText) {
     name,
     path: inExpect("path"),
     line: line3,
+    anchors: readAnchors(`${cls}/${name}`, block),
     category: inExpect("category"),
     skip: top("harness") === "skip" ? reason2 === null || reason2 === "" ? "harness: skip" : reason2 : null
   };
@@ -26983,7 +27000,7 @@ async function recallCommand(argv, runInProcess2) {
       {
         commandWith: (fetchImpl) => (args, stdin) => runInProcess2(args, { stdin, fetchImpl }),
         onResult: (result) => {
-          const verdict2 = result.skipped !== void 0 ? `skipped: ${result.skipped}` : result.error !== void 0 ? `failed: ${result.error.split("\n")[0]}` : result.class === "positive" ? result.hit === true ? `hit (line delta ${result.lineDelta})` : result.lineDelta === null || result.lineDelta === void 0 ? "miss (no finding on the expected file)" : `miss (line delta ${result.lineDelta})` : result.silent === true ? "silent" : `not silent (${result.findings} finding(s))`;
+          const verdict2 = result.skipped !== void 0 ? `skipped: ${result.skipped}` : result.error !== void 0 ? `failed: ${result.error.split("\n")[0]}` : result.class === "positive" ? result.hit === true ? `hit (line delta ${result.lineDelta})` : result.lineDelta === null || result.lineDelta === void 0 ? "miss (no finding on an expected file)" : `miss (line delta ${result.lineDelta})` : result.silent === true ? "silent" : `not silent (${result.findings} finding(s))`;
           console.log(`${result.name.padEnd(48)} ${verdict2}`);
         }
       }

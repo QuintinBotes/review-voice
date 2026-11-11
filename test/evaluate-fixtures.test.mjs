@@ -12,6 +12,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseHunks } from '../plugins/review-voice/src/diff/hunks.ts';
 import { materializeFixture, normalisePatch } from '../plugins/review-voice/src/evaluate/fixtures.ts';
+import { selectFixtures } from '../plugins/review-voice/src/evaluate/recall.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const fixtures = join(root, 'fixtures');
@@ -608,27 +609,39 @@ test('every positive anchors on a line git reports as added once the fixture is 
   // A line the patch removes and adds back unchanged comes out of git as context;
   // check-candidates refuses an anchor there, so such a fixture could never score.
   let checked = 0;
-  for (const { group, name, dir } of all) {
-    if (group !== 'positive') continue;
-    const { path, line } = expectation(dir);
+  let further = 0;
+  // Read by the harness, so the anchors checked are the ones a recall run scores against.
+  for (const { dir, expectation: { class: group, name, path, line, anchors } } of selectFixtures({ fixtures, classes: ['positive'], only: null })) {
     if (path === null || line === null) continue;
     const target = join(scratch(t), 'repo');
     const result = materializeFixture(dir, target);
-    const added = parseHunks(materialisedDiff(target, result)).get(path)?.added ?? new Set();
-    assert.ok(added.has(Number(line)), `${group}/${name}: expect.line ${path}:${line} is not an added line of the diff git reports (${[...added].sort((a, b) => a - b).join(',')})`);
+    const reported = parseHunks(materialisedDiff(target, result));
+    // The accepted anchors of expect.anchors are held to the same check as expect.line.
+    for (const [key, anchor] of [['expect.line', { path, line }], ...anchors.map((anchor) => ['expect.anchors', anchor])]) {
+      const added = reported.get(anchor.path)?.added ?? new Set();
+      assert.ok(added.has(Number(anchor.line)), `${group}/${name}: ${key} ${anchor.path}:${anchor.line} is not an added line of the diff git reports (${[...added].sort((a, b) => a - b).join(',')})`);
+    }
     checked += 1;
+    further += anchors.length;
   }
   assert.ok(checked >= 19, `expected every positive with a path to be checked, found ${checked}`);
+  assert.ok(further >= 4, `expected the accepted anchors of issue 340 to be checked, found ${further}`);
 });
 
-test('a line git pairs with a removed line is found from what git reported', () => {
-  // What git reports for transaction-ordering: line 62 of the base is replaced
-  // by new lines 62 and 63, and two more lines are added at 65 and 66.
-  const actual = { added: new Map([[62, ''], [63, 'c'], [65, ''], [66, 'd']]), removed: new Map([[62, 'd']]) };
-  assert.equal(headLineOf(60, actual), 60);
-  assert.equal(headLineOf(61, actual), 61);
-  assert.equal(headLineOf(63, actual), 64);
-  assert.equal(headLineOf(64, actual), 67);
+test('a line git pairs with a removed line is found from what git reported', (t) => {
+  // What git reports for transaction-ordering: line 12 of the base is replaced
+  // by new lines 12 and 13, and two more lines are added at 15 and 16. It is
+  // read from the built fixture, because written out here it went stale when
+  // the fixture's hunk moved.
+  const target = join(scratch(t), 'repo');
+  const built = materializeFixture(join(fixtures, 'positive/transaction-ordering'), target);
+  const actual = changedLines(materialisedDiff(target, built)).get('src/auth/session.ts');
+  assert.deepEqual([...actual.added.keys()].sort(ascending), [12, 13, 15, 16]);
+  assert.deepEqual([...actual.removed.keys()], [12]);
+  assert.equal(headLineOf(10, actual), 10);
+  assert.equal(headLineOf(11, actual), 11);
+  assert.equal(headLineOf(13, actual), 14);
+  assert.equal(headLineOf(14, actual), 17);
   // With nothing reported every line stays where it is, and an insertion shifts what follows.
   assert.equal(headLineOf(7, none()), 7);
   assert.equal(headLineOf(2, { added: new Map([[2, 'x']]), removed: new Map() }), 3);

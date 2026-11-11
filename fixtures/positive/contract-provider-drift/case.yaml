@@ -7,5 +7,7 @@ expect:
   min_findings: 1
   severity: minor
   path: test/contracts/SubmitOrderContractTests.cs
-  line: 3
+  line: 6
+  anchors:
+    - { path: .ci/verify.yml, line: 5 }
   category: test_coverage

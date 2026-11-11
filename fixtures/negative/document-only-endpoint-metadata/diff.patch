@@ -1,19 +1,20 @@
 --- /dev/null
 +++ b/src/ItemsEndpoints.cs
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,22 @@
 +public static class ItemsEndpoints
 +{
 +    public static void Map(WebApplication app)
 +    {
 +        app.MapPut("/items/{id}", Update)
 +            .WithOpenApi()
-+            .AddEndpointFilter<PlainTextFilter>();
++            .AddEndpointFilter<JsonOnlyFilter>();
 +    }
 +
-+    private static Task<IResult> Update(ItemRequest request) => Task.FromResult(Results.Ok());
++    // Takes the raw request, since a bound body would have the framework answer 415 before the filter runs.
++    private static Task<IResult> Update(HttpRequest request) => Task.FromResult(Results.Ok());
 +}
 +
-+public sealed class PlainTextFilter : IEndpointFilter
++public sealed class JsonOnlyFilter : IEndpointFilter
 +{
 +    public ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
 +    {
@@ -22,3 +23,12 @@
 +        return next(context);
 +    }
 +}
+--- a/src/Program.cs
++++ b/src/Program.cs
+@@ -1,5 +1,6 @@
+ var builder = WebApplication.CreateBuilder(args);
+ var app = builder.Build();
+ 
+ app.MapGet("/health", () => Results.Ok());
++ItemsEndpoints.Map(app);
+ app.Run();
