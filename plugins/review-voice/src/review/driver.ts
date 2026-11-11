@@ -3,7 +3,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSy
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { claudeBin } from '../agents/claude-cli.ts';
 import { ownSignals, readAgentTools, runAgent, stopAll, type AgentResult } from '../agents/runner.ts';
-import { DEFAULT_AGENT_PARALLELISM } from '../agents/types.ts';
+import { DEFAULT_AGENT_PARALLELISM, type Family, type RunnerSpec } from '../agents/types.ts';
 import { seriousNotCarried, type NotCarriedFinding } from '../diff/carry.ts';
 import type { ComplexityAssessment } from '../diff/complexity.ts';
 import { originRepository } from '../diff/pull-request.ts';
@@ -12,12 +12,14 @@ import { stopCommands } from '../evidence/run.ts';
 import type { GitHubClient } from '../github/client.ts';
 import { descriptionOf, linkedIssuesOf } from '../intent.ts';
 import { blockingContext, isSuppressionExempt, type MissingContext } from '../scoring/score.ts';
+import { environmentSource, type ConfigSourceKind } from '../policy/load.ts';
 import { recordAudit } from '../store/audit.ts';
 import { openDatabase } from '../store/db.ts';
 import { dataDirectory } from '../store/paths.ts';
-import { describeProvenance, heldProblem, runDetail, type HeldFinding, type RunProvenance, type StageTiming } from '../store/runs.ts';
+import { describeFamilies, describeProvenance, heldProblem, runDetail, type HeldFinding, type RunFamilies, type RunProvenance, type StageTiming } from '../store/runs.ts';
 import { parseChallengeVerdicts } from '../verify/challenge.ts';
 import { parseTieBreaks } from '../verify/reconcile.ts';
+import { detectAuthorship, type Authorship } from './authorship.ts';
 import type { Lane, LaneEligibility } from './lanes.ts';
 import { modelForFinding, type RequestedMode, type StagePlan } from './plan.ts';
 import * as prompts from './prompts.ts';
@@ -131,6 +133,8 @@ export interface ReviewReport {
   configSource: ConfigSource | null;
   /** What `record` stored about the run; null when nothing was recorded. */
   provenance: RunProvenance | null;
+  /** Which family ran the second pass and the challenge, as `record` derived them; null when nothing was recorded. */
+  families: RunFamilies | null;
   /** Why the review is unavailable; null when it completed, and for exit 3 (the head moved), which is not a failure. */
   failure: ReviewFailure | null;
   error?: string;
@@ -159,10 +163,13 @@ interface Run {
   stage: StageId | 'unknown';
   /** The pull request's base commit and branch, as the same response that names the head gave them. */
   pullBase: { sha: string | null; ref: string | null };
+  /** Who opened the pull request, as the same response gave it; null when it named no user. */
+  pullAuthor: { login: string; type: string } | null;
   configSource: ConfigSource | null;
   /** `claude --version`, read on first use; undefined until then, null when it could not be read. */
   claudeVersion: string | null | undefined;
   provenance: RunProvenance | null;
+  families: RunFamilies | null;
   /** The ref the diff was taken against: the merge base, else a readable base. */
   base: string | null;
   summary: Json;
@@ -238,15 +245,17 @@ async function must(run: Run, argv: string[], stdin?: string, code = 2): Promise
   return result;
 }
 
-async function headOf(run: Run): Promise<{ sha: string; base: { sha: string | null; ref: string | null } }> {
+async function headOf(run: Run): Promise<{ sha: string; base: { sha: string | null; ref: string | null }; author: Run['pullAuthor'] }> {
   const { repository, pullNumber } = run.options;
-  const { data } = await run.deps.client.get<{ head?: { sha?: unknown }; base?: { sha?: unknown; ref?: unknown } }>(
+  const { data } = await run.deps.client.get<{ head?: { sha?: unknown }; base?: { sha?: unknown; ref?: unknown }; user?: { login?: unknown; type?: unknown } }>(
     `/repos/${repository}/pulls/${pullNumber}`,
   );
   const sha = data.head?.sha;
   if (typeof sha !== 'string') throw new Stop(2, `GitHub returned no head for ${repository}#${pullNumber}.`);
   const base = { sha: typeof data.base?.sha === 'string' ? data.base.sha : null, ref: typeof data.base?.ref === 'string' ? data.base.ref : null };
-  return { sha, base };
+  const login = data.user?.login;
+  const author = typeof login === 'string' ? { login, type: typeof data.user?.type === 'string' ? data.user.type : '' } : null;
+  return { sha, base, author };
 }
 
 const CONFIG_PATH = '.review-voice/config.yaml';
@@ -273,14 +282,19 @@ function showAt(ref: string, path: string): Buffer | null {
  */
 function resolveConfig(run: Run): void {
   const previous = process.env['REVIEW_VOICE_CONFIG'];
+  const previousSource = process.env['REVIEW_VOICE_CONFIG_SOURCE'];
   run.cleanup.push(() => {
     if (previous === undefined) delete process.env['REVIEW_VOICE_CONFIG'];
     else process.env['REVIEW_VOICE_CONFIG'] = previous;
+    if (previousSource === undefined) delete process.env['REVIEW_VOICE_CONFIG_SOURCE'];
+    else process.env['REVIEW_VOICE_CONFIG_SOURCE'] = previousSource;
   });
 
-  const chosen = (source: ConfigSource): void => {
+  // The loader honours `runners:` only from an operator source, so the stages get the source beside the path.
+  const chosen = (source: ConfigSource, stated: ConfigSourceKind = source.kind): void => {
     run.configSource = source;
     process.env['REVIEW_VOICE_CONFIG'] = source.path!;
+    process.env['REVIEW_VOICE_CONFIG_SOURCE'] = stated;
   };
   const flagged = run.options.config;
   if (flagged != null && flagged !== '') {
@@ -289,7 +303,8 @@ function resolveConfig(run: Run): void {
     return chosen({ kind: 'flag', path });
   }
   if (previous !== undefined && previous !== '') {
-    if (isAbsolute(previous)) return chosen({ kind: 'env', path: previous });
+    // A file watch copied from a checkout arrives with that source beside it, and keeps it.
+    if (isAbsolute(previous)) return chosen({ kind: 'env', path: previous }, environmentSource());
     run.notes.push('REVIEW_VOICE_CONFIG must be an absolute path, so it was ignored and the base commit supplied the configuration.');
   }
 
@@ -330,11 +345,11 @@ function skip(run: Run, name: string, reason: string): void {
   run.stages.push({ name, seconds: 0, skipped: reason });
 }
 
-/** Adds one agent call to its stage's timing. */
-function account(run: Run, name: string, model: string, result: AgentResult): void {
+/** Adds one agent call to its stage's timing; `family` is the configured runner's, else Claude's. */
+function account(run: Run, name: string, model: string, result: AgentResult, family: Family = 'claude'): void {
   let stage = run.stages.find((entry) => entry.name === name && entry.skipped === undefined);
   if (stage === undefined) {
-    stage = { name, seconds: 0, model };
+    stage = { name, seconds: 0, model, family };
     run.stages.push(stage);
   }
   stage.models = [...(stage.models ?? []), model];
@@ -361,17 +376,19 @@ async function agent(
   schema: object,
   prompt: string,
   check: (output: unknown) => Promise<string | null> | string | null,
+  runner?: RunnerSpec & { timeoutSeconds: number },
 ): Promise<{ ok: true; output: unknown } | { ok: false; error: string }> {
   let current = prompt;
   let refusal = '';
+  const spec = { name, model, tools: readAgentTools(name), schema, ...(runner === undefined ? {} : { runner, timeoutMs: runner.timeoutSeconds * 1000 }) };
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let result: AgentResult;
     try {
-      result = await runAgent({ name, model, tools: readAgentTools(name), schema }, current, run.headDir ?? process.cwd(), [run.dir], run.deps.env);
+      result = await runAgent(spec, current, run.headDir ?? process.cwd(), [run.dir], run.deps.env);
     } catch (error) {
       result = { ok: false, output: null, costUsd: null, seconds: 0, error: error instanceof Error ? error.message : String(error) };
     }
-    account(run, stage, model, result);
+    account(run, stage, model, result, runner?.family);
     const problem = result.ok ? await check(result.output) : `the call failed: ${result.error ?? 'no output'}`;
     if (problem === null) return { ok: true, output: result.output };
     refusal = problem;
@@ -515,11 +532,40 @@ async function prep(run: Run): Promise<void> {
   const followUps = (await must(run, ['follow-ups', ...pr])).stdout;
   writeFileSync(at(run, 'follow-ups.json'), followUps);
   run.followUps = list(parsed(followUps)['followUps']).length > 0;
+  writeJson(at(run, 'authorship.json'), authorshipOf(run));
   const input = ['--files', at(run, 'files.json'), '--diff-file', at(run, 'diff.patch')];
-  const plan = (await must(run, ['plan', ...input, ...(run.options.mode === undefined ? [] : ['--mode', run.options.mode])])).stdout;
+  const plan = (
+    await must(run, ['plan', ...input, '--authorship', at(run, 'authorship.json'), ...(run.options.mode === undefined ? [] : ['--mode', run.options.mode])])
+  ).stdout;
   writeFileSync(at(run, 'plan.json'), plan);
   run.plan = parsed(plan) as unknown as StagePlan;
   writeFileSync(at(run, 'lanes.json'), (await must(run, ['lanes', ...input])).stdout);
+}
+
+/**
+ * Who wrote the change (docs/adr/0034), from the pull request's author and the
+ * Co-authored-by trailers of the commits it adds, read with SAFE_GIT so the
+ * clone's configuration runs nothing. A lead for the challenge family only.
+ */
+function authorshipOf(run: Run): Authorship {
+  let trailers: string[] = [];
+  let unread: string | null = null;
+  if (run.base === null) unread = 'base not readable, trailers not read';
+  else {
+    try {
+      const log = execFileSync(
+        'git',
+        [...SAFE_GIT, 'log', '--max-count=500', '--format=%(trailers:key=Co-authored-by,valueonly,unfold)', `${run.base}..${run.head}`],
+        { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024 },
+      );
+      trailers = log.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+    } catch {
+      unread = 'head not readable, trailers not read';
+    }
+  }
+  const authorship = detectAuthorship({ author: run.pullAuthor, trailers });
+  if (unread !== null) authorship.evidence.push(unread);
+  return authorship;
 }
 
 /** An unchanged scope carries the earlier run instead of reviewing again. */
@@ -1055,20 +1101,59 @@ async function challenge(run: Run): Promise<void> {
     ).stdout,
   );
   const promptOf = new Map(list(emitted['prompts']).map((entry) => [idOf(entry), String(entry['prompt'])]));
-  const results = await inParallel(challenged, (finding) => {
-    const id = idOf(finding);
-    const { model } = modelForFinding(plan, 'challenge', finding['severity'] as 'nit');
-    return agent(run, 'challenge', 'challenger', model ?? 'sonnet', prompts.SCHEMAS.challenge, prompts.challengerPrompt(files(run), promptOf.get(id) ?? ''), (output) => {
-      const verdicts = parseChallengeVerdicts(output);
-      if (!verdicts.ok) return verdicts.problems.join('\n');
-      return verdicts.verdicts.length === 1 && verdicts.verdicts[0]!.candidate_id === id ? null : `Return exactly one verdict, for ${id}.`;
-    });
-  });
-  // A challenger that failed twice holds its finding (docs/adr/0024).
+  // The family the plan names (docs/adr/0034). One the configuration asked for
+  // and that cannot run is a missing gate, so its findings are held; nothing
+  // falls back to another family on its own.
+  const family = plan.families.challenge;
+  const configured = family === 'claude' ? undefined : plan.runners[family];
+  const runner = family === 'claude' || configured === undefined ? undefined : { family, ...configured };
+  const unreadable = plan.families.notRun;
+  const notRun =
+    unreadable !== undefined
+      ? unreadable
+      : family === 'claude'
+        ? null
+        : configured === undefined
+          ? `runners.${family} is not configured`
+          : noCommands(run)
+            ? `REVIEW_VOICE_NO_COMMANDS=1 keeps the configured ${family} runner from running`
+            : null;
+  if (notRun !== null) {
+    skip(run, 'challenge', `challenger not run: ${notRun}`);
+    run.notes.push(
+      unreadable !== undefined
+        ? `The configuration names no family for the challenge (${notRun}), so every challenged finding is held and the review cannot approve.`
+        : `The challenge was to run on ${family}, but ${notRun}, so every challenged finding is held and the review cannot approve.`,
+    );
+  }
+  const results =
+    notRun !== null
+      ? challenged.map(() => ({ ok: false as const, error: '' }))
+      : await inParallel(challenged, (finding) => {
+          const id = idOf(finding);
+          const { model } = modelForFinding(plan, 'challenge', finding['severity'] as 'nit');
+          const check = (output: unknown): string | null => {
+            const verdicts = parseChallengeVerdicts(output);
+            if (!verdicts.ok) return verdicts.problems.join('\n');
+            return verdicts.verdicts.length === 1 && verdicts.verdicts[0]!.candidate_id === id ? null : `Return exactly one verdict, for ${id}.`;
+          };
+          const prompt = prompts.challengerPrompt(files(run), promptOf.get(id) ?? '');
+          return agent(run, 'challenge', 'challenger', runner?.label ?? model ?? 'sonnet', prompts.SCHEMAS.challenge, prompt, check, runner);
+        });
+  // A challenger that failed twice holds its finding (docs/adr/0024); so does one on a family that could not run.
+  const why = (error: string): string =>
+    notRun !== null
+      ? `challenger not run: ${notRun}`
+      : runner !== undefined
+        ? `challenger not run: the configured ${family} runner failed: ${firstLines(error)}`
+        : `challenger failed: ${firstLines(error)}`;
+  if (notRun === null && runner !== undefined && results.some((result) => !result.ok)) {
+    run.notes.push(`The configured ${family} challenger failed, so the findings it did not judge are held and the review cannot approve.`);
+  }
   const verdicts = results.map((result, index) =>
     result.ok
       ? list((result.output as Json)['verdicts'])[0]
-      : { candidate_id: idOf(challenged[index]!), verdict: 'partly', line_ok: true, decisive_evidence: [], reason: `challenger failed: ${firstLines(result.error)}` },
+      : { candidate_id: idOf(challenged[index]!), verdict: 'partly', line_ok: true, decisive_evidence: [], reason: why(result.error) },
   );
   writeJson(at(run, 'challenge-verdicts.json'), { verdicts });
   await must(run, ['challenge', ...base, '--out', out], JSON.stringify({ verdicts }), 1);
@@ -1194,6 +1279,7 @@ async function record(run: Run, extra: string[]): Promise<void> {
   run.runId = typeof result['reviewRunId'] === 'string' ? result['reviewRunId'] : null;
   run.findings = list(result['findings']) as unknown as ReviewReport['findings'];
   run.provenance = isRecord(result['provenance']) ? (result['provenance'] as unknown as RunProvenance) : null;
+  run.families = isRecord(result['families']) ? (result['families'] as unknown as RunFamilies) : null;
   for (const warning of Array.isArray(result['warnings']) ? result['warnings'] : []) run.notes.push(String(warning));
 
   const target = ['--repository', run.options.repository, '--pr', String(run.options.pullNumber), '--head', run.head, '--run', run.runId ?? ''];
@@ -1398,9 +1484,11 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     head: '',
     stage: 'unknown',
     pullBase: { sha: null, ref: null },
+    pullAuthor: null,
     configSource: null,
     claudeVersion: undefined,
     provenance: null,
+    families: null,
     base: null,
     summary: {},
     plan: null,
@@ -1450,6 +1538,7 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     const pull = await headOf(run);
     run.head = pull.sha;
     run.pullBase = pull.base;
+    run.pullAuthor = pull.author;
     if (options.expectHead != null && options.expectHead !== run.head) {
       throw new Stop(3, `The head is ${run.head}, not the expected ${options.expectHead}.`);
     }
@@ -1501,6 +1590,7 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     notes: run.notes,
     configSource: run.configSource,
     provenance: run.provenance,
+    families: run.families,
     failure,
     ...(error === undefined ? {} : { error }),
   };
@@ -1537,7 +1627,7 @@ export function reportText(report: ReviewReport): string {
     lines.push(`Verdict: ${String(verdict['event'] ?? 'none')} (${String(verdict['action'] ?? '')})`);
   }
   if (report.reviewUrl !== null) lines.push(`${report.posted ? 'Posted' : 'Review'}: ${report.reviewUrl}`);
-  if (report.provenance !== null) lines.push(describeProvenance(report.provenance));
+  if (report.provenance !== null) lines.push(describeProvenance(report.provenance), describeFamilies(report.families));
   const source = report.configSource;
   if (source !== null) {
     const where = { flag: `--config ${source.path}`, env: `REVIEW_VOICE_CONFIG ${source.path}`, base: `base commit ${shortRef(source.ref ?? '')}`, default: 'built-in defaults' }[source.kind];

@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { productionChange, resolvePlan, MODES, type RequestedMode } from '../review/plan.ts';
+import type { Authorship } from '../review/authorship.ts';
 import { DIFF_LANE, eligibleLanes } from '../review/lanes.ts';
 import { flag, repositoryConfig } from './shared.ts';
 import { readFilesAndDiff } from './diff.ts';
@@ -8,9 +10,23 @@ export function planCommand(argv: string[]): number {
   const diffPath = flag(argv, '--diff-file');
   const modeFlag = flag(argv, '--mode');
   const requested = MODES.find((mode) => mode === modeFlag);
-  if (filesPath === null || diffPath === null || (argv.includes('--mode') && requested === undefined)) {
-    console.error('Usage: plan --files <files.json> --diff-file <diff.patch> [--mode fast|standard|thorough|auto]');
+  const authorshipPath = flag(argv, '--authorship');
+  if (filesPath === null || diffPath === null || (argv.includes('--mode') && requested === undefined) || (argv.includes('--authorship') && authorshipPath === null)) {
+    console.error('Usage: plan --files <files.json> --diff-file <diff.patch> [--mode fast|standard|thorough|auto] [--authorship <authorship.json>]');
     return 2;
+  }
+  // Only compared, never trusted. resolvePlan reads `agent === true` and a
+  // family equal to a configured one, so a malformed file changes nothing.
+  let authorship: Authorship | undefined;
+  if (authorshipPath !== null) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(authorshipPath, 'utf8'));
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('not a JSON object');
+      authorship = parsed as Authorship;
+    } catch (error) {
+      console.error(`Cannot read --authorship ${authorshipPath}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
   }
 
   const input = readFilesAndDiff(filesPath, diffPath);
@@ -29,6 +45,8 @@ export function planCommand(argv: string[]): number {
     removedControls: structureEntries(manifest['structure'], 'removedControls'),
     secondPassConfigured: config?.verification.enabled ?? false,
     reproductionConfigured: config !== null && config.reproduction.enabled && config.reproduction.runners.length > 0,
+    runners: config?.runners,
+    authorship,
   });
   console.log(JSON.stringify(plan, null, 2));
   return 0;

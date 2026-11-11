@@ -127,3 +127,17 @@ posted to the pull request.
 Every review the action runs is recorded with the origin `action`, which
 `explain`, `status` and the report's `Provenance` line show, so an Action
 review can be told apart from a local `review --pr`.
+
+## Configured runners
+
+A `runners:` block names another model family for the second pass or the
+challenge (ADR 0003, amended 2026-11-09). It is honoured only from a `config`
+input other than the default, which the step passes as `--config`, or from an
+absolute `REVIEW_VOICE_CONFIG` in the job's `env`; a block in the default
+`.review-voice/config.yaml` read from the base commit is ignored with a warning,
+because a runner is a command the job executes. The workflow must install the
+binary the block names (`codex`, `gemini`) before the step. A configured
+challenger that cannot run holds the challenged findings instead of passing
+them. A second-pass runner that cannot run leaves its verdicts unverified and
+the findings unchanged, as a shell verification command does. Either way the
+review goes on.

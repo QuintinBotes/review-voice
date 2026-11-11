@@ -66,8 +66,25 @@ function checkClaude(): Check {
   };
 }
 
+/**
+ * A runner family is probed by its name on PATH, never by the command a
+ * configuration names: doctor runs in whatever checkout it was started in,
+ * and a configured binary runs only where configuration enables it
+ * (docs/adr/0003). Detection suggests; it never writes configuration.
+ */
+function checkFamily(family: 'codex' | 'gemini'): Check {
+  const found = checkBinary(family, ['--version']);
+  return {
+    name: family,
+    ok: found.ok,
+    detail: found.ok
+      ? `found (used only when runners.${family} is configured): ${found.detail}`
+      : `not found on PATH (needed only when runners.${family} is configured)`,
+  };
+}
+
 /** Checks reported for information; their failure does not fail doctor. */
-export const OPTIONAL_CHECKS = new Set(['gh', 'claude']);
+export const OPTIONAL_CHECKS = new Set(['gh', 'claude', 'codex', 'gemini']);
 
 export function runDoctor(): Check[] {
   return [
@@ -77,5 +94,7 @@ export function runDoctor(): Check[] {
     // gh is how Review Voice borrows GitHub credentials; see docs/adr/0002.
     checkBinary('gh', ['--version']),
     checkClaude(),
+    checkFamily('codex'),
+    checkFamily('gemini'),
   ];
 }

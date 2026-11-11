@@ -398,3 +398,66 @@ test('a finding withheld at posting is counted among the held claims', async (t)
   assert.equal(trailer(body).held.other, 1);
   assert.deepEqual(trailer(body).findings, ZERO_FINDINGS);
 });
+
+// ---------------------------------------------------------------- S17 part B: the challenge family, with the models only
+
+const MODELS = { scopeBlock: true, scopeBlockModels: true };
+const challengedOn = (family) => STAGES.map((stage) => (stage.name === 'challenge' ? { ...stage, family } : stage));
+
+test('S17 AC-12: a codex challenge ends the origin sentence and adds families as the last trailer key', async (t) => {
+  const { db } = fixture(t);
+  const id = record(db, { stages: challengedOn('codex') }).reviewRunId;
+  const { output } = await computeVerdict(options(db, fakeGitHub(), { policy: MODELS, runId: id }));
+  const body = output.payload.body;
+  assert.match(body, /^Head `a1b2c3d`, full scope, standard mode\. Origin: driver \(independent\)\. Challenge: codex\.$/m);
+  const facts = trailer(body);
+  assert.deepEqual(facts.families, { secondPass: null, challenge: 'codex' });
+  assert.equal(Object.keys(facts).at(-1), 'families');
+});
+
+test('S17 AC-12: without scope_block_models the family is neither in the prose nor in the trailer', async (t) => {
+  const { db } = fixture(t);
+  const id = record(db, { stages: challengedOn('codex') }).reviewRunId;
+  const { output } = await computeVerdict(options(db, fakeGitHub(), { policy: { scopeBlock: true, scopeBlockModels: false }, runId: id }));
+  assert.doesNotMatch(output.payload.body, /Challenge:/);
+  assert.equal('families' in trailer(output.payload.body), false);
+});
+
+test('S17 AC-12: a claude challenge with no second-pass family, or no recorded families, adds nothing', async (t) => {
+  const { db } = fixture(t);
+  const claude = record(db).reviewRunId;
+  const without = record(db, { provenance: undefined }).reviewRunId;
+  // A row recorded before families were stored.
+  const older = record(db, { stages: challengedOn('codex') }).reviewRunId;
+  const stored = JSON.parse(db.prepare('SELECT provenance_json FROM review_runs WHERE review_run_id = ?').get(older).provenance_json);
+  delete stored.families;
+  db.prepare('UPDATE review_runs SET provenance_json = ? WHERE review_run_id = ?').run(JSON.stringify(stored), older);
+  for (const id of [claude, without, older]) {
+    const { output } = await computeVerdict(options(db, fakeGitHub(), { policy: MODELS, runId: id }));
+    assert.doesNotMatch(output.payload.body, /Challenge:/, id);
+    assert.equal('families' in trailer(output.payload.body), false, id);
+  }
+  assert.equal(runDetail(db, older).families, null);
+});
+
+test('S17 AC-12: a second pass with a family puts families in the trailer while the prose names no challenge family', async (t) => {
+  const { db } = fixture(t);
+  const verdicts = [{ candidateId: 'cart', path: 'src/cart.ts', line: 12, verdict: 'confirmed', confidence: 0.9, reason: 'Holds.', outcome: 'kept', originalSeverity: 'minor', finalSeverity: 'minor', verifier: 'codex', family: 'codex' }];
+  const id = record(db, { verdicts }).reviewRunId;
+  const { output } = await computeVerdict(options(db, fakeGitHub(), { policy: MODELS, runId: id }));
+  assert.doesNotMatch(output.payload.body, /Challenge:/);
+  assert.deepEqual(trailer(output.payload.body).families, { secondPass: 'codex', challenge: 'claude' });
+});
+
+test('S17: a finding held because its challenger did not run keeps the review from approving; no other hold does', async (t) => {
+  const { db } = fixture(t);
+  const notRun = { ...held('challenge-partly'), source: 'challenge', severity: 'minor', reason: 'challenger not run: runners.codex is not configured' };
+  const capped = record(db, { held: [notRun] }).reviewRunId;
+  const other = record(db, { held: [{ ...notRun, reason: 'challenger failed: the call failed: boom' }, held('challenge-refuted')] }).reviewRunId;
+  const cappedVerdict = await computeVerdict(options(db, fakeGitHub(), { runId: capped }));
+  assert.equal(cappedVerdict.planned.heldBackApproval, true);
+  assert.equal(cappedVerdict.planned.mapped, 'COMMENT');
+  const otherVerdict = await computeVerdict(options(db, fakeGitHub(), { runId: other }));
+  assert.equal(otherVerdict.planned.heldBackApproval, false);
+  assert.equal(otherVerdict.planned.mapped, 'APPROVE');
+});
