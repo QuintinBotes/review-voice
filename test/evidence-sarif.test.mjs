@@ -318,6 +318,12 @@ test('AC-1: a null entry in runs, extensions, rules, results or suppressions is 
   const rules = [null, { id: 'first' }, { id: 'second' }];
   const indexed = parse(doc([result({ ruleId: undefined, ruleIndex: 1, message: undefined, locations: at('a.py') })], { name: 'tool', version: '1.0', rules }));
   assert.equal(indexed.signals[0].claim, 'first');
+  const artifacts = [null, { location: { uri: 'src/one.ts' } }, { location: { uri: 'src/two.ts' } }];
+  const located = parse(JSON.stringify({
+    version: '2.1.0',
+    runs: [{ tool: run.tool, artifacts, results: [result({ locations: [{ physicalLocation: { artifactLocation: { index: 1 }, region: { startLine: 3 } } }] })] }],
+  }));
+  assert.deepEqual(located.signals.map((signal) => [signal.path, signal.line]), [['src/one.ts', 3]]);
 });
 
 test('AC-3: a token-shaped rule id is redacted in the claim and in the evidence that falls back to it', () => {
@@ -650,9 +656,10 @@ test('AC-3: a path carrying a passed-through value, token-shaped or not, is drop
     [null, null, 'src/[redacted:S20_PROBE_DB_PASSWORD]/a.ts(4,1): error TS2345: bad'],
     ['src/kept.ts', 5, 'src/kept.ts(5,1): error TS2345: bad'],
   ]);
+  // A message each, since results at one stored path, line and claim are kept once.
   const sarif = await collected(doc([
-    result({ locations: at(`build/cache_${values.S20_PROBE_GH}/a.py`, 3) }),
-    result({ locations: at(`src/${values.S20_PROBE_DB_PASSWORD}.py`, 4) }),
+    result({ message: { text: 'm1' }, locations: at(`build/cache_${values.S20_PROBE_GH}/a.py`, 3) }),
+    result({ message: { text: 'm2' }, locations: at(`src/${values.S20_PROBE_DB_PASSWORD}.py`, 4) }),
     result({ locations: at('src/kept.py', 5) }),
   ]), { envPassthrough });
   assert.deepEqual(sarif.signals.map((signal) => [signal.path, signal.line]), [[null, null], [null, null], ['src/kept.py', 5]]);
@@ -660,19 +667,374 @@ test('AC-3: a path carrying a passed-through value, token-shaped or not, is drop
   for (const [name, value] of Object.entries(values)) assert.ok(!stored.includes(value.slice(0, 8)), name);
 });
 
-test('AC-3: text is cut before it is redacted, so a long run that one secret pattern rescans cannot stall the review', async () => {
-  // Word boundaries inside a run of URL-scheme characters, which the connection string pattern rescans from each one.
+test('AC-3: a secret crossing the cut of a diagnostic, a rule id, a message or a version is redacted whole, and a path is kept or dropped by what it holds, not by its length', async () => {
+  // Built at run time so no secret-shaped string sits in the repository.
+  const token = 'ghp_' + 'a9'.repeat(18);
+  // Longer than every cut below, so cut first it is left unclosed and matches nothing.
+  const assignment = `password="${'Qz7'.repeat(1867)}"`;
+  // The token starts at point 4091 of the diagnostic, so a cut before redaction keeps its first six characters.
+  const prefix = 'src/a.ts(1,1): error TS2345: ';
+  const text = await collected(`${prefix}${'x'.repeat(4060)} ${token} tail\n`, { command: 'tsc --noEmit', version: `tsc ${'1'.repeat(60)} ${assignment}\n` });
+  assert.deepEqual(text.signals.map((signal) => [signal.claim, signal.evidence[0]]), [
+    [`TS2345: ${'x'.repeat(4060)} [REDACTED:GITHUB_TOKEN] tai`, `${prefix}${'x'.repeat(4060)} [REDAC`],
+  ]);
+  assert.equal(text.commands[0].version, `tsc ${'1'.repeat(60)} password="[REDA`);
+  const long = `src/${'d/'.repeat(3000)}`;
+  const sarif = await collected(doc([
+    result({ ruleId: `${'y'.repeat(180)} ${assignment}`, locations: at('a.py', 1) }),
+    result({ message: { text: `${'x'.repeat(470)} ${assignment}` }, locations: at('a.py', 2) }),
+    result({ locations: at(`${long}a.py`, 3) }),
+    result({ locations: at(`${long}${token}.py`, 4) }),
+  ], { name: 'tool', version: `${'1'.repeat(60)} ${assignment}` }));
+  assert.deepEqual(sarif.signals.map((signal) => [signal.path, signal.line, signal.claim, signal.evidence[0]]), [
+    ['a.py', 1, `${'y'.repeat(180)} password="[REDACTED: m`, 'm'],
+    ['a.py', 2, `r: ${'x'.repeat(470)} password="[REDACTED:SECRET_AS`, `${'x'.repeat(470)} password="[REDACTED:SECRET_AS`],
+    [`${long}a.py`, 3, 'r: m', 'm'],
+    [null, null, 'r: m', 'm'],
+  ]);
+  assert.equal(sarif.commands[0].version, `tool ${'1'.repeat(60)} password="[RED`);
+  const stored = JSON.stringify([text, sarif]);
+  for (const leak of ['ghp_', 'Qz7']) assert.ok(!stored.includes(leak), leak);
+});
+
+test('AC-3: a long run of URL-scheme characters is collected about as fast as plain text of the same length', async () => {
+  // The text is redacted whole before it is cut, so this holds only while every pattern is linear; a connection string pattern that rescanned such a run from each word boundary took seconds.
   const timed = async (filler) => {
     const started = performance.now();
     const text = await collected(`a.py:1: error: ${filler}\n`, { command: 'ruff check .', version: `tool ${filler}\n` });
     await collected(doc([result({ ruleId: filler, message: { text: filler }, locations: at('a.py') })]));
     return { elapsed: performance.now() - started, text };
   };
-  // Against the same length with no such run, so the bound holds on a slower machine; uncut, the run took seconds.
+  // Against the same length with no such run, so the bound holds on a slower machine.
   const plain = await timed('a '.repeat(20000));
   const run = await timed('a.'.repeat(20000));
   assert.ok(run.elapsed < 10 * plain.elapsed + 2000, `${Math.round(run.elapsed)} ms against ${Math.round(plain.elapsed)} ms`);
   assert.equal([...run.text.signals[0].evidence[0]].length, 4096);
+});
+
+test('AC-2: results sharing one long rule id, rule description, artifact or eslint file clean it once, so many of them cannot stall collection', async () => {
+  const lines = Array.from({ length: 1000 }, (_, index) => index + 1);
+  const driver = { name: 'tool', version: '1.0' };
+  const cases = {
+    'rule id': (value) => collected(doc(lines.map((line) => ({ ruleIndex: 0, level: 'error', message: { text: 'm' }, locations: at('a.py', line) })), { ...driver, rules: [{ id: value }] })),
+    'rule description': (value) => collected(doc(lines.map((line) => ({ ruleId: 'r', level: 'error', locations: at('a.py', line) })), { ...driver, rules: [{ id: 'r', shortDescription: { text: value } }] })),
+    artifact: (value) => collected(JSON.stringify({
+      version: '2.1.0',
+      runs: [{
+        tool: { driver },
+        artifacts: [{ location: { uri: `${value}.py` } }],
+        results: lines.map((line) => result({ locations: [{ physicalLocation: { artifactLocation: { index: 0 }, region: { startLine: line } } }] })),
+      }],
+    })),
+    'eslint file': (value) => collected([`${value}.ts`, ...lines.map((line) => `  ${line}:1  error  bad  no-bad`)].join('\n'), { command: 'eslint .' }),
+  };
+  for (const [name, run] of Object.entries(cases)) {
+    const timed = async (value) => {
+      const started = performance.now();
+      const { signals } = await run(value);
+      const elapsed = performance.now() - started;
+      assert.equal(signals.length, 1000, name);
+      assert.ok(signals.every((signal) => signal.path !== null), name);
+      return elapsed;
+    };
+    // Against a short value of the same shape, so the bound holds on a slower machine; cleaned for each result, the long one took seconds.
+    const short = await timed('a.a.');
+    const long = await timed('a.'.repeat(50000));
+    assert.ok(long < 10 * short + 250, `${name}: ${Math.round(long)} ms for a long shared value, ${Math.round(short)} ms for a short one`);
+  }
+});
+
+test('AC-3: a SARIF location is checked as printed and as decoded before it is normalised, so a value or secret normalising would hide is not kept (issue 279)', async (t) => {
+  // Built at run time. Normalising joins the doubled slash, which splits the value from what a mask or the connection string pattern looks for.
+  const value = 'AbCdEfGh' + '//IjKlMnOp';
+  const password = 'Secr3t' + 'Pass99';
+  process.env.S20_PROBE_PATH = value;
+  t.after(() => {
+    delete process.env.S20_PROBE_PATH;
+  });
+  // A message each, since results at one stored path, line and claim are kept once.
+  const report = await collected(doc([
+    result({ message: { text: 'm1' }, locations: at(`src/${value}/app.py`, 3) }),
+    // Only the decoded form spells the value.
+    result({ message: { text: 'm2' }, locations: at(`src/%41bCdEfGh//IjKlMnOp/app.py`, 4) }),
+    result({ message: { text: 'm3' }, locations: at(`cache/redis://:${password}@db/app.py`, 5) }),
+    result({ locations: at('src/kept//app.py', 6) }),
+  ]), { envPassthrough: ['S20_PROBE_PATH'] });
+  assert.deepEqual(report.signals.map((signal) => [signal.path, signal.line]), [[null, null], [null, null], [null, null], ['src/kept/app.py', 6]]);
+  const stored = JSON.stringify(report);
+  for (const leak of ['IjKl', password]) assert.ok(!stored.includes(leak), leak);
+});
+
+test('AC-3: a SARIF location is checked in every form its path is built from, so a stray escape, a query, a fragment, a tab, a backslash or a long uri hides no value or password (issue 279)', async (t) => {
+  // Built at run time. Each uri spells the value or the connection string only in a form the path passes through before normalising joins its doubled slash.
+  const values = { S20_PROBE_FORM: 'AbCdEfGh' + '//IjKlMnOp', S20_PROBE_RAW: 'AbCd%2B' + 'EfGhIj%3D' };
+  for (const [name, value] of Object.entries(values)) process.env[name] = value;
+  t.after(() => {
+    for (const name of Object.keys(values)) delete process.env[name];
+  });
+  const password = 'hun' + 'ter2' + 'Sec' + 'ret9';
+  const base = 'file:///synthetic/repository';
+  const uris = [
+    // A malformed escape after the path, which URL parsing drops, once left the whole uri undecoded.
+    `${base}/src/AbCdEfGh%2F%2FIjKlMnOp/app.py?%zz`,
+    `${base}/src/AbCdEfGh%2F%2FIjKlMnOp/app.py#%`,
+    `${base}/cache/redis://:${password}%40db/app.py?%zz`,
+    `${base}/cache/redis:%2F%2F:${password}@db/app.py#%`,
+    // URL parsing strips a tab or newline and turns a backslash into a slash.
+    `${base}/cache/redis:/\t/:${password}@db/app.py`,
+    `${base}/cache/redis:/\n/:${password}@db/app.py`,
+    `${base}/cache/redis:\\\\:${password}@db/app.py`,
+    // A stray escape in the path itself leaves the rest decoded.
+    `cache/redis:%2F%2F:${password}@db/100%/app.py`,
+    // A run of escapes that is not UTF-8 still has its ASCII escapes decoded.
+    `cache/redis:%2F%2F%ffuser:${password}@db//app.py`,
+    // Only the uri as printed spells this value.
+    `cache/sig=${values.S20_PROBE_RAW}/app.py`,
+    // Past the first 4096 points, where a cut before the check would hide it.
+    `src/${'x'.repeat(4090)}/redis://:${password}@db/app.py`,
+    `src/${'x'.repeat(20000)}/redis://:${password}@db/app.py`,
+  ];
+  const output = JSON.stringify({
+    version: '2.1.0',
+    runs: [{
+      tool: { driver: { name: 'tool', version: '1.0' } },
+      artifacts: [{ location: { uri: uris[2] } }],
+      results: [
+        ...uris.map((uri, index) => result({ message: { text: `m${index}` }, locations: at(uri, 3) })),
+        // The same uri given only by an artifact index.
+        result({ message: { text: 'indexed' }, locations: [{ physicalLocation: { artifactLocation: { index: 0 }, region: { startLine: 3 } } }] }),
+        result({ message: { text: 'kept' }, locations: at(`src/${'x'.repeat(20000)}//app.py`, 3) }),
+      ],
+    }],
+  });
+  const report = await collected(output, { envPassthrough: Object.keys(values) });
+  assert.deepEqual(report.signals.map((signal) => [signal.path, signal.line]), [...uris, 'indexed'].map(() => [null, null]).concat([[`src/${'x'.repeat(20000)}/app.py`, 3]]));
+  const stored = JSON.stringify(report);
+  for (const leak of [password, 'IjKlMnOp', 'EfGhIj']) assert.ok(!stored.includes(leak), leak);
+});
+
+test('AC-2: a result repeated at one stored path, line and claim is kept once, however its uri is spelled or whatever line it cannot use', () => {
+  const located = (uri, startLine) => [{ physicalLocation: { ...(uri === undefined ? {} : { artifactLocation: { uri } }), ...(startLine === undefined ? {} : { region: { startLine } }) } }];
+  const results = [
+    ...['src/a.py', './src/a.py', 'file:///work/repo/src/a.py', 'src/b/../a.py'].map((uri) => result({ locations: located(uri, 3) })),
+    ...['src/my module.py', 'src/my%20module.py'].map((uri) => result({ locations: located(uri, 3) })),
+    ...[undefined, 0, -1, 1.5].map((startLine) => result({ locations: located('src/c.py', startLine) })),
+    // No uri, or one outside the root, names no path, so its line goes too.
+    ...[1, 2].map((startLine) => result({ locations: located(undefined, startLine) })),
+    ...['../out.py', '/elsewhere/out.py'].map((uri, index) => result({ locations: located(uri, index + 4) })),
+  ];
+  // Across runs as within one.
+  const twice = JSON.parse(doc(results));
+  twice.runs.push({ ...twice.runs[0], results: [...results].reverse() });
+  assert.deepEqual(parse(JSON.stringify(twice), '/work/repo').signals.map((signal) => [signal.path, signal.line, signal.claim]), [
+    ['src/a.py', 3, 'r: m'], ['src/my module.py', 3, 'r: m'], ['src/c.py', null, 'r: m'], [null, null, 'r: m'],
+  ]);
+});
+
+test('AC-3: a text adapter claim is read from its line once masked and redacted, so a secret or value its own order or separator splits is not kept (issue 279)', async (t) => {
+  // Built at run time. Each crosses the separator the claim rewrites, so only the line as printed shows it whole.
+  const value = 'AbCdEfGh' + '  IjKlMnOp';
+  process.env.S20_PROBE_LINT = value;
+  t.after(() => {
+    delete process.env.S20_PROBE_LINT;
+  });
+  const bearer = 'abcd' + 'EFGH' + 'ijkl' + 'MNOP' + 'qrst';
+  const assigned = 'S3cr' + 'etVa' + 'lue1';
+  const password = 'hun' + 'ter2' + 'Sec' + 'ret9';
+  const eslint = await collected([
+    'src/a.ts',
+    `  1:1  error  Authorization: Bearer  ${bearer}`,
+    `  2:1  error  api_key  ="${assigned}"`,
+    `  3:1  error  value ${value}`,
+    '  4:1  error  kept message  no-kept',
+  ].join('\n'), { command: 'eslint .', envPassthrough: ['S20_PROBE_LINT'] });
+  assert.deepEqual(eslint.signals.map((signal) => [signal.line, signal.claim]), [
+    [1, '[REDACTED:AUTHORIZATION_HEADER]: Authorization: Bearer'],
+    [2, '="[REDACTED:SECRET_ASSIGNMENT]": api_key'],
+    // Masked, the line no longer parses, so the claim is the line as cleaned.
+    [3, '3:1  error  value [redacted:S20_PROBE_LINT]'],
+    [4, 'no-kept: kept message'],
+  ]);
+  // The python adapter drops the colon a scheme ends with.
+  const python = await collected(`a.py:1: error://:${password}@db/x\n`, { command: 'ruff check .' });
+  assert.deepEqual(python.signals.map((signal) => signal.claim), ['error: //:[REDACTED:DB_CREDENTIALS]@db/x']);
+  const stored = JSON.stringify([eslint, python]);
+  for (const leak of [bearer, assigned, 'IjKlMnOp', password]) assert.ok(!stored.includes(leak), leak);
+});
+
+test('AC-3: a location giving only an artifact index takes its uri from run.artifacts and is handled as an inline one, so distinct files stay distinct (SARIF 3.4.5)', async (t) => {
+  const artifacts = [
+    { location: { uri: 'src/one.ts' } },
+    { location: { uri: 'src/two.ts' } },
+    { location: { uri: 'file:///work/repo/src/%74hree.ts' } },
+    { location: { uri: '/outside/four.ts' } },
+    { length: 10 },
+    null,
+  ];
+  const located = (artifactLocations, root) => parse(JSON.stringify({
+    version: '2.1.0',
+    runs: [{
+      tool: { driver: { name: 'tool', version: '1.0' } },
+      artifacts,
+      // The first two share a line and a message, so only their files tell them apart.
+      results: artifactLocations.map((artifactLocation, index) => result({ locations: [{ physicalLocation: { artifactLocation, region: { startLine: Math.max(index, 1) } } }] })),
+    }],
+  }), root).signals.map((signal) => [signal.path, signal.line]);
+  assert.deepEqual(located([{ index: 0 }, { index: 1 }, { index: 2 }, { uri: 'src/inline.ts', index: 1 }], '/work/repo'), [
+    ['src/one.ts', 1], ['src/two.ts', 1], ['src/three.ts', 2], ['src/inline.ts', 3],
+  ]);
+  // Outside the root, out of range, negative, fractional, with no location, a null entry, or a uri of another type.
+  for (const artifactLocation of [{ index: 3 }, { index: 9 }, { index: -1 }, { index: 0.5 }, { index: 4 }, { index: 5 }, { uri: 7, index: 0 }]) {
+    assert.deepEqual(located([artifactLocation], '/work/repo'), [[null, null]], JSON.stringify(artifactLocation));
+  }
+  assert.deepEqual(located([{ index: 2 }], undefined), [['/work/repo/src/three.ts', 1]]);
+  // The check on a uri as printed applies to one an index gives (issue 279).
+  const value = 'Qq9wEe8r' + 'Tt7y';
+  process.env.S20_PROBE_ARTIFACT = value;
+  t.after(() => {
+    delete process.env.S20_PROBE_ARTIFACT;
+  });
+  const report = await collected(JSON.stringify({
+    version: '2.1.0',
+    runs: [{ tool: { driver: { name: 'tool', version: '1.0' } }, artifacts: [{ location: { uri: `src/${value}//a.ts` } }], results: [result({ locations: [{ physicalLocation: { artifactLocation: { index: 0 }, region: { startLine: 2 } } }] })] }],
+  }), { envPassthrough: ['S20_PROBE_ARTIFACT'] });
+  assert.deepEqual(report.signals.map((signal) => [signal.path, signal.line]), [[null, null]]);
+  assert.ok(!JSON.stringify(report).includes(value));
+});
+
+test('AC-2: a message given by id is the rule message string with its arguments, read before the rule description, then redacted and cut (SARIF 3.11)', () => {
+  // Built at run time. The template holds the assignment and the argument the value, so only the composed text matches a pattern.
+  const value = 'Hunter2' + 'Corr3ct';
+  const token = 'ghp_' + 'a9'.repeat(18);
+  const rules = [{
+    id: 'r',
+    shortDescription: { text: 'generic description' },
+    messageStrings: {
+      default: { text: 'Variable {0} is assigned at {1} and never read.' },
+      braces: { text: 'Use {{ and }} around {0}, not {{0}}.' },
+      gap: { text: 'Missing {2} and {0}.' },
+      secret: { text: 'password="{0}" and {1}' },
+      long: { text: '{0}' },
+    },
+  }];
+  const by = (id, values, line, overrides = {}) => result({ message: { id, ...(values === undefined ? {} : { arguments: values }) }, locations: at('a.py', line), ...overrides });
+  const { signals } = parse(doc([
+    by('default', ['count', 'line 3'], 1),
+    by('braces', ['name'], 2),
+    // An argument that is missing or not a string leaves its placeholder.
+    by('gap', [7], 3),
+    by('default', undefined, 4),
+    // An id the rule does not hold, or one only its prototype has, falls back to the description.
+    by('unknown', ['x'], 5),
+    by('constructor', [], 6),
+    // Text wins over an id.
+    result({ message: { text: 'own words', id: 'default' }, locations: at('a.py', 7) }),
+    // Two results at one location with different ids stay two signals.
+    by('default', ['a', 'b'], 8),
+    by('braces', ['a'], 8),
+    // The rule found by index, as the existing resolution finds it.
+    by('braces', ['indexed'], 9, { ruleId: undefined, ruleIndex: 0 }),
+    by('secret', [value, token], 10),
+    by('long', ['\u{1f680}'.repeat(600)], 11),
+  ], { name: 'tool', version: '1.0', rules }));
+  assert.deepEqual(signals.map((signal) => [signal.line, signal.claim]), [
+    [1, 'r: Variable count is assigned at line 3 and never read.'],
+    [2, 'r: Use { and } around name, not {0}.'],
+    [3, 'r: Missing {2} and {0}.'],
+    [4, 'r: Variable {0} is assigned at {1} and never read.'],
+    [5, 'r: generic description'],
+    [6, 'r: generic description'],
+    [7, 'r: own words'],
+    [8, 'r: Variable a is assigned at b and never read.'],
+    [8, 'r: Use { and } around a, not {0}.'],
+    [9, 'r: Use { and } around indexed, not {0}.'],
+    [10, 'r: password="[REDACTED:SECRET_ASSIGNMENT]" and [REDACTED:GITHUB_TOKEN]'],
+    [11, `r: ${'\u{1f680}'.repeat(500)}`],
+  ]);
+  assert.equal(signals[10].evidence[0], 'password="[REDACTED:SECRET_ASSIGNMENT]" and [REDACTED:GITHUB_TOKEN]');
+  for (const leak of [value, 'ghp_']) assert.ok(!JSON.stringify(signals).includes(leak), leak);
+});
+
+test('AC-2: every reference that resolves composes its message, however many compact results share a template many times as long as one of them (SARIF 3.11)', () => {
+  const template = `{0} is flagged because a mitigation is disabled. ${'The value flows through several calls before it is used. '.repeat(16)}`;
+  assert.ok(template.length > 900);
+  const signals = (startLine) => parse(JSON.stringify({
+    version: '2.1.0',
+    runs: [{
+      tool: { driver: { name: 'tool', version: '1.0', rules: [{ id: 'R1', shortDescription: { text: 'Generic description' }, messageStrings: { Error: { text: template } } }] } },
+      artifacts: [{ location: { uri: 'bin/manifest.json' } }],
+      // Compact and located by index, as a tool writes them, so each result is under a quarter of the template it names.
+      results: Array.from({ length: 400 }, (_, index) => ({
+        ruleId: 'R1', ruleIndex: 0, level: 'error', message: { id: 'Error', arguments: [`module${index}.dll`] },
+        locations: [{ physicalLocation: { artifactLocation: { index: 0 }, region: { startLine: startLine(index) } } }],
+      })),
+    }],
+  })).signals;
+  const named = Array.from({ length: 400 }, (_, index) => `R1: module${index}.dll is flagged`);
+  assert.deepEqual(signals((index) => index + 1).map((signal) => signal.claim.split(' because')[0]), named);
+  // At one location, distinct diagnostics stay distinct signals.
+  assert.deepEqual(signals(() => 1).map((signal) => signal.claim.split(' because')[0]), named);
+});
+
+test('AC-2: what one output composes from referenced messages is held to eight times its own length and to 16 MiB, counting the longer of each template and its text and what redaction adds, so a long template or a repeated placeholder cannot stall collection or outgrow a string', () => {
+  // Distinct arguments, so no two results compose the same text. True where the message was composed.
+  const composed = (messageStrings, messages, description = 'generic description') => {
+    const output = doc(
+      messages.map(([id, value], index) => result({ message: { id, arguments: [value] }, locations: at('a.py', index + 1) })),
+      { name: 'tool', version: '1.0', rules: [{ id: 'r', shortDescription: { text: description }, messageStrings }] },
+    );
+    // A description is cut at 500 code points.
+    return { length: output.length, composed: parse(output).signals.map((signal) => signal.claim !== `r: ${description.slice(0, 500)}`) };
+  };
+  const first = (count, total) => Array.from({ length: total }, (_, index) => index < count);
+  const defaults = (from, to) => Array.from({ length: to - from }, (_, index) => ['default', String(from + index)]);
+  // Each composes to the length of its template, 200004 units, and eight times the output holds 16 of those; past them a reference falls back as one that does not resolve.
+  // The room then left is under the template of braces, though its text of half that would fit, so it is not read. The description only makes the output longer.
+  const long = { default: { text: `{0} ${'a.'.repeat(100000)}` }, braces: { text: '{{'.repeat(100000) } };
+  const shared = composed(long, [...defaults(0, 16), ['braces', ''], ...defaults(16, 24)], 'd'.repeat(15000));
+  const left = 8 * shared.length - 16 * 200004;
+  assert.ok(left > 100000 && left < 200000, `${left} units left`);
+  assert.deepEqual(shared.composed, first(16, 25));
+  // Each would compose to two million units from a template of 6000 in an output a hundredth of that, so none does.
+  assert.deepEqual(composed({ default: { text: '{0}'.repeat(2000) } }, Array.from({ length: 12 }, (_, index) => ['default', `${index}`.padEnd(1000, 'x')])).composed, first(0, 12));
+  // Eight times this output is over 16 MiB, which holds seven of its messages of 2200004 units, not eight.
+  const capped = composed({ default: { text: `{0} ${'a.'.repeat(1100000)}` } }, defaults(0, 9));
+  assert.ok(8 * capped.length > 8 * 2200004 && 7 * 2200004 < 16 * 1024 * 1024);
+  assert.deepEqual(capped.composed, first(7, 9));
+  // Composed in full, this would be longer than any string the runtime can hold.
+  assert.deepEqual(composed({ default: { text: '{0}'.repeat(100000) } }, [['default', 'x'.repeat(100000)]]).composed, [false]);
+  // What redaction adds counts too, since the longer text is cleaned again. Each message is 18004 units and 66004 once redacted, so the third takes the room that nine would fit in as composed.
+  const dense = composed({ default: { text: `{0} ${'a://b:c@\n'.repeat(2000)}` } }, defaults(0, 12));
+  assert.ok(8 * dense.length > 9 * 18004 && 8 * dense.length > 2 * 66004 + 18004 && 8 * dense.length < 3 * 66004, `${dense.length} units`);
+  assert.deepEqual(dense.composed, first(3, 12));
+});
+
+test('AC-2: a short document cannot repeat a placeholder into a long message, so one with a referenced message is collected about as fast as one of its length with the message inline', async () => {
+  // The text every connection string pattern matches, which redaction makes several times as long.
+  const unit = 'a://b:c@\n';
+  const timed = async (output) => {
+    const started = performance.now();
+    const { signals } = await collected(output);
+    return { elapsed: performance.now() - started, length: output.length, claim: signals[0].claim };
+  };
+  // Composed, the reference is sixteen million units from a document of sixteen thousand, and took seconds and most of a gigabyte.
+  const referenced = await timed(doc([result({ message: { id: 'a', arguments: [unit.repeat(1100)] } })], { name: 'tool', version: '1.0', rules: [{ id: 'r', messageStrings: { a: { text: '{0}'.repeat(1650) } } }] }));
+  const inline = await timed(doc([result({ message: { text: unit.repeat(1600) } })]));
+  assert.ok(Math.abs(referenced.length - inline.length) < 200, `${referenced.length} and ${inline.length} units`);
+  // Against the inline document, so the bound holds on a slower machine.
+  assert.ok(referenced.elapsed < 10 * inline.elapsed + 250, `${Math.round(referenced.elapsed)} ms referenced, ${Math.round(inline.elapsed)} ms inline`);
+  // Past the bound the reference does not resolve, and the rule has no description to fall back to.
+  assert.equal(referenced.claim, 'r');
+  // Within it, a repeated placeholder still composes.
+  const { signals } = parse(doc([result({ message: { id: 'a', arguments: ['twice'] } })], { name: 'tool', version: '1.0', rules: [{ id: 'r', messageStrings: { a: { text: '{0} and {0}' } } }] }));
+  assert.equal(signals[0].claim, 'r: twice and twice');
+});
+
+test('AC-2: results sharing a message string and its arguments compose it once, so however many there are they spend the bound once', () => {
+  const rules = [{ id: 'r', shortDescription: { text: 'generic description' }, messageStrings: { default: { text: `{0} ${'a.'.repeat(100000)}` } } }];
+  const { signals } = parse(doc(Array.from({ length: 1000 }, (_, index) => result({ message: { id: 'default', arguments: ['shared'] }, locations: at('a.py', index + 1) })), { name: 'tool', version: '1.0', rules }));
+  assert.equal(signals.length, 1000);
+  assert.ok(signals.every((signal) => signal.claim === `r: shared ${'a.'.repeat(246)}a`), signals.at(-1).claim.slice(0, 40));
 });
 
 test('AC-2: a reference that names a component with no rule index finds the id in that component before any other', () => {
@@ -719,4 +1081,407 @@ test('AC-4: a version is masked and redacted before its first line is taken, so 
     const fromCommand = await collected('', { version: `tool ${version}\n`, envPassthrough: ['S20_PROBE_MULTI'] });
     assert.deepEqual([fromDocument.commands[0].version, fromCommand.commands[0].version], [expected, expected], expected);
   }
+});
+
+test('AC-3: a passed-through value a tool wrapped across lines is masked once the message is collapsed, as text, as an argument or as the rule description, so none of it crosses the cut (issue 279)', async (t) => {
+  // Built at run time. Wrapped, the value is spelled only once the whitespace is collapsed.
+  const words = ['Corr3ct', 'Hors3', 'Batt3ry', 'Stapl3'];
+  process.env.S20_PROBE_WRAPPED = words.join(' ');
+  t.after(() => {
+    delete process.env.S20_PROBE_WRAPPED;
+  });
+  // The value starts at point 482, so masked only before the collapsing it keeps its first 19 characters.
+  const wrapped = (separator, pad = 480) => `${'x'.repeat(pad)} ${words.join(separator)} tail`;
+  const rules = [
+    { id: 'r', messageStrings: { m: { text: `${'x'.repeat(480)} {0} tail` } } },
+    { id: 'described', shortDescription: { text: wrapped('\n\t') } },
+  ];
+  const report = await collected(doc([
+    result({ message: { text: wrapped('\n    ') }, locations: at('a.py', 1) }),
+    result({ message: { text: wrapped('  ') }, locations: at('a.py', 2) }),
+    result({ message: { id: 'm', arguments: [words.join('\t')] }, locations: at('a.py', 3) }),
+    result({ ruleId: 'described', message: undefined, locations: at('a.py', 4) }),
+    result({ message: { text: wrapped('\n    ', 100) }, locations: at('a.py', 5) }),
+  ], { name: 'tool', version: '1.0', rules }), { envPassthrough: ['S20_PROBE_WRAPPED'] });
+  const cutAt500 = `${'x'.repeat(480)} [redacted:S20_PROBE`;
+  assert.deepEqual(report.signals.map((signal) => signal.evidence[0]), [cutAt500, cutAt500, cutAt500, cutAt500, `${'x'.repeat(100)} [redacted:S20_PROBE_WRAPPED] tail`]);
+  const stored = JSON.stringify(report);
+  for (const word of words) assert.ok(!stored.includes(word), word);
+});
+
+test('AC-3: a passed-through value saved with a newline or a space at its edge is masked in every text adapter, in claim, evidence and path (issue 279)', async (t) => {
+  // Built at run time. An adapter reads by line and trims, so the value as saved is never in what it keeps.
+  const core = ['Hunter2', 'Corr3ct', 'Horse9'].join('');
+  t.after(() => {
+    delete process.env.S20_PROBE_EDGE;
+  });
+  const printed = (value, command, stdout) => {
+    process.env.S20_PROBE_EDGE = value;
+    return collected(stdout, { command, envPassthrough: ['S20_PROBE_EDGE'] });
+  };
+  const marker = '[redacted:S20_PROBE_EDGE]';
+  const reports = [];
+  for (const [command, head, code] of [
+    ['tsc --noEmit', 'src/a.ts(1,1): error TS2345: bad token ', 'TS2345'],
+    ['ruff check .', 'a.py:1: error: bad token ', 'error'],
+    ['dotnet build', 'P.cs(1,1): error CS1002: bad token ', 'CS1002'],
+  ]) {
+    // A trailing newline, a trailing space, and a second line.
+    for (const value of [`${core}\n`, `${core} `, `${core}\nSecondLine99`]) {
+      const report = await printed(value, command, `${head}${value}\n`);
+      assert.deepEqual([report.signals[0].claim, report.signals[0].evidence[0]], [`${code}: bad token ${marker}`, `${head}${marker}`], `${command} ${JSON.stringify(value)}`);
+      reports.push(report);
+    }
+  }
+  // A leading space, which the dotnet pattern and the eslint file line strip before the path is checked.
+  const spaced = ` ${['Zq7wXv9p', 'Lm3nRt5k', 'Bd2f'].join('')}`;
+  const dotnet = await printed(spaced, 'dotnet build', `  ${spaced}(1,1): error CS1002: bad\n`);
+  assert.deepEqual(dotnet.signals.map((signal) => [signal.path, signal.line, signal.evidence[0]]), [[null, null, `${marker}(1,1): error CS1002: bad`]]);
+  const eslint = await printed(spaced, 'eslint .', `${spaced}.ts\n  1:1  error  bad  no-bad\n`);
+  assert.deepEqual(eslint.signals.map((signal) => [signal.path, signal.line, signal.claim]), [[null, null, 'no-bad: bad']]);
+  const stored = JSON.stringify([reports, dotnet, eslint]);
+  for (const leak of [core, 'SecondLine99', spaced.trim()]) assert.ok(!stored.includes(leak), leak);
+});
+
+test('AC-3: a uri of dot-dot segments is collected about as fast as a plain one of the same length, and resolves as it did', async () => {
+  const timed = async (uri) => {
+    const started = performance.now();
+    const { signals } = await collected(doc([result({ locations: at(uri, 3) })]));
+    return { elapsed: performance.now() - started, path: signals[0].path };
+  };
+  // Against the same length with no such segment, so the bound holds on a slower machine; normalised by the library, each took seconds.
+  const plain = await timed('x'.repeat(375000));
+  const inside = await timed(`${'x'.repeat(250000)}${'/a/..'.repeat(25000)}`);
+  const escaping = await timed('../'.repeat(125000));
+  for (const [name, run] of Object.entries({ inside, escaping })) {
+    assert.ok(run.elapsed < 10 * plain.elapsed + 250, `${name}: ${Math.round(run.elapsed)} ms against ${Math.round(plain.elapsed)} ms`);
+  }
+  assert.deepEqual([plain.path, inside.path, escaping.path], ['x'.repeat(375000), 'x'.repeat(250000), null]);
+  const paths = (uris, root) => parse(doc(uris.map((uri, index) => result({ message: { text: `m${index}` }, locations: at(uri) }))), root).signals.map((signal) => signal.path);
+  const uris = ['src/./a/../b//c.py', 'a/..', 'a/../', '../a/../../b', '/a/../../b/', '/..', './'];
+  assert.deepEqual(paths(uris), ['src/b/c.py', '.', './', '../../b', '/b/', '/', './']);
+  assert.deepEqual(paths(uris, '/work/repo'), ['src/b/c.py', null, null, null, null, null, null]);
+});
+
+test('AC-3: a dotnet claim keeps a mask or redaction marker and the text after it, so two diagnostics at one position stay two (issue 279)', async (t) => {
+  // Built at run time so no token-shaped string sits in the repository.
+  const token = 'ghp_' + 'a9'.repeat(18);
+  const feed = ['feed', 'internal', 'nuget'].join('-');
+  process.env.S20_PROBE_FEED = feed;
+  t.after(() => {
+    delete process.env.S20_PROBE_FEED;
+  });
+  // MSBuild ends a line with the project in brackets, as a marker is bracketed.
+  const project = ' [/work/repo/App.csproj]';
+  const report = await collected([
+    `Program.cs(7,1): error CS0618: Key ${token} is obsolete in Startup.Configure${project}`,
+    `Program.cs(7,1): error CS0618: Key ${token} must not be passed to Logger.Write${project}`,
+    `Program.cs(12,3): error NU1101: Source ${feed} rejected package Acme.Core${project}`,
+    `Program.cs(12,3): error NU1101: Source ${feed} rejected package Acme.Data${project}`,
+    `Program.cs(9,1): error CS1002: ends with ${token}${project}`,
+    `Program.cs(10,1): error CS1002: ends with ${token}`,
+    // The same diagnostic from a second target is still kept once.
+    `Program.cs(7,1): error CS0618: Key ${token} is obsolete in Startup.Configure${project}`,
+  ].join('\n'), { command: 'dotnet build', envPassthrough: ['S20_PROBE_FEED'] });
+  assert.deepEqual(report.signals.map((signal) => [signal.line, signal.claim]), [
+    [7, 'CS0618: Key [REDACTED:GITHUB_TOKEN] is obsolete in Startup.Configure'],
+    [7, 'CS0618: Key [REDACTED:GITHUB_TOKEN] must not be passed to Logger.Write'],
+    [12, 'NU1101: Source [redacted:S20_PROBE_FEED] rejected package Acme.Core'],
+    [12, 'NU1101: Source [redacted:S20_PROBE_FEED] rejected package Acme.Data'],
+    [9, 'CS1002: ends with [REDACTED:GITHUB_TOKEN]'],
+    [10, 'CS1002: ends with [REDACTED:GITHUB_TOKEN]'],
+  ]);
+  const stored = JSON.stringify(report);
+  for (const leak of ['ghp_', feed]) assert.ok(!stored.includes(leak), leak);
+});
+
+test('AC-2: a text adapter matches a line once when masking and redaction leave it as printed, so a slow pattern is not run twice', () => {
+  const lines = {
+    'tsc --noEmit': 'src/a.ts(1,1): error TS2345: bad',
+    'dotnet build': 'Program.cs(1,1): error CS1002: bad [/work/repo/App.csproj]',
+    'ruff check .': 'a.py:1: error: bad',
+    'eslint .': '  1:1  error  bad  no-bad',
+  };
+  const exec = RegExp.prototype.exec;
+  for (const [command, line] of Object.entries(lines)) {
+    let matched = 0;
+    // Counts each pattern match of the whole line, which only an adapter makes.
+    RegExp.prototype.exec = function counted(text) {
+      const match = exec.call(this, text);
+      if (text === line && match !== null && match[0] === line) matched += 1;
+      return match;
+    };
+    try {
+      assert.equal(parseOutput('check', command, `src/a.ts\n${line}\n`).signals.length, 1, command);
+    } finally {
+      RegExp.prototype.exec = exec;
+    }
+    assert.equal(matched, 1, command);
+  }
+});
+
+test('AC-3: a secret far longer than every cut is redacted whole in a diagnostic, a composed message and a rule description', async () => {
+  // Built at run time. Longer than any window a cut before redaction could leave, where it would be unclosed and match nothing.
+  const secret = 'Qz7'.repeat(1867);
+  const prefix = 'src/a.ts(1,1): error TS2345: ';
+  const text = await collected(`${prefix}${'x'.repeat(4000)} password="${secret}" tail\n`, { command: 'tsc --noEmit' });
+  const cleaned = `${'x'.repeat(4000)} password="[REDACTED:SECRET_ASSIGNMENT]" tail`;
+  assert.deepEqual(text.signals.map((signal) => [signal.claim, signal.evidence[0]]), [[`TS2345: ${cleaned}`, `${prefix}${cleaned}`]]);
+  const rules = [
+    { id: 'r', messageStrings: { m: { text: 'found password="{0}" here' } } },
+    { id: 'described', shortDescription: { text: `found password="${secret}" here` } },
+  ];
+  const sarif = await collected(doc([
+    result({ message: { id: 'm', arguments: [secret] }, locations: at('a.py', 1) }),
+    result({ ruleId: 'described', message: undefined, locations: at('a.py', 2) }),
+  ], { name: 'tool', version: '1.0', rules }));
+  assert.deepEqual(sarif.signals.map((signal) => signal.claim), [
+    'r: found password="[REDACTED:SECRET_ASSIGNMENT]" here',
+    'described: found password="[REDACTED:SECRET_ASSIGNMENT]" here',
+  ]);
+  assert.ok(!JSON.stringify([text, sarif]).includes('Qz7'));
+});
+
+test('AC-3: where signals enter the report, the whole claim and evidence of any adapter are cleaned before they are cut', async (t) => {
+  // An adapter of the test, since each one shipped cleans its claim itself, which would hide a cut made here.
+  const probe = {
+    name: 'probe',
+    matches: (haystack) => haystack.includes('s20-probe'),
+    parse: (output, tool) => [{ kind: 'probe', path: null, line: null, claim: output.trim(), evidence: [output.trim()], confidence: 0.9, tool }],
+  };
+  ADAPTERS.push(probe);
+  t.after(() => {
+    ADAPTERS.splice(ADAPTERS.indexOf(probe), 1);
+  });
+  // Built at run time. The value ends past point 8192, so cleaned in any shorter window it is unclosed and matches nothing.
+  const report = await collected(`${'x'.repeat(4000)} password="${'Qz7'.repeat(1867)}" tail`, { command: 's20-probe' });
+  const cleaned = `${'x'.repeat(4000)} password="[REDACTED:SECRET_ASSIGNMENT]" tail`;
+  assert.deepEqual(report.signals.map((signal) => [signal.claim, signal.evidence[0]]), [[cleaned, cleaned]]);
+});
+
+test('AC-3: a rule id and a version are cleaned again once spaced or stripped and only then cut, so a secret that both joins and crosses the cut is not kept', async () => {
+  // Built at run time. The control character keeps the header from matching until it becomes a space, and the token then crosses the 200 point cut.
+  const bearer = ['abcd', 'EFGH', 'ijkl', 'MNOP', 'qrst'].join('');
+  const secret = 'Qz7'.repeat(1867);
+  // The zero-width space keeps the assignment from matching until it is stripped, and the value then crosses the 80 point cut.
+  const version = `pass\u200bword="${secret}"`;
+  const report = await collected(doc([result({ ruleId: `${'y'.repeat(170)} Authorization: Bearer\u0007${bearer}`, locations: at('a.py') })], { name: 'tool', version }));
+  assert.deepEqual(report.signals.map((signal) => signal.claim), [`${'y'.repeat(170)} Authorization: Bearer [REDACT: m`]);
+  const fromCommand = await collected('', { version: `tool ${version}\n` });
+  const expected = 'tool password="[REDACTED:SECRET_ASSIGNMENT]"';
+  assert.deepEqual([report.commands[0].version, fromCommand.commands[0].version], [expected, expected]);
+  const stored = JSON.stringify([report, fromCommand]);
+  for (const leak of [bearer.slice(0, 7), 'Qz7']) assert.ok(!stored.includes(leak), leak);
+});
+
+test('AC-3: a file uri is checked as printed, as decoded, and as the pathname URL parsing leaves of it, printed and decoded, each on its own (issue 279)', async (t) => {
+  t.after(() => {
+    delete process.env.S20_PROBE_URI;
+  });
+  // URL parsing turns the backslash into a slash and decoding turns the escape into a plus, so each form spells the folder its own way; normalising then joins the doubled slash.
+  const uri = 'file:///synthetic/repository/src/AbCd%2BEf\\GhIjKl//app.py';
+  const located = async (value) => {
+    if (value !== undefined) process.env.S20_PROBE_URI = value;
+    const report = await collected(doc([result({ locations: at(uri, 3) })]), { envPassthrough: ['S20_PROBE_URI'] });
+    return [report.signals[0].path, report.signals[0].line];
+  };
+  assert.deepEqual(await located(undefined), ['src/AbCd+Ef/GhIjKl/app.py', 3]);
+  // Built at run time. Each value is spelled by one form only, and by no path once normalised.
+  const forms = { printed: ['AbCd%2BEf', '\\GhIjKl//app'], decoded: ['AbCd+Ef', '\\GhIjKl//app'], pathname: ['AbCd%2BEf', '/GhIjKl//app'], 'decoded pathname': ['AbCd+Ef', '/GhIjKl//app'] };
+  for (const [form, parts] of Object.entries(forms)) assert.deepEqual(await located(parts.join('')), [null, null], form);
+});
+
+test('AC-2: a message id is read from the rule the result references before another rule sharing its id, and a placeholder may have more than one digit (SARIF 3.11)', () => {
+  const rules = [
+    { id: 'r', messageStrings: { m: { text: 'first rule {0}' }, many: { text: 'first {0}, last {10}' } } },
+    { id: 'r', messageStrings: { m: { text: 'second rule {0}' } } },
+  ];
+  const letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'eleventh'];
+  const { signals } = parse(doc([
+    result({ ruleIndex: 1, message: { id: 'm', arguments: ['x'] }, locations: at('a.py', 1) }),
+    result({ ruleIndex: 0, message: { id: 'm', arguments: ['x'] }, locations: at('a.py', 2) }),
+    result({ message: { id: 'many', arguments: letters }, locations: at('a.py', 3) }),
+  ], { name: 'tool', version: '1.0', rules }));
+  assert.deepEqual(signals.map((signal) => signal.claim), ['r: second rule x', 'r: first rule x', 'r: first a, last eleventh']);
+});
+
+test('AC-3: a typescript, dotnet or python claim is read from its line once masked, so a value crossing the spacing the claim rewrites is not kept (issue 279)', async (t) => {
+  t.after(() => {
+    delete process.env.S20_PROBE_CODE;
+  });
+  // Built at run time. Each value crosses the two spaces after the code, which the claim writes as one.
+  const tail = ['Zq', 'Xv', 'Lm', 'Np'].join('');
+  for (const [command, head, code] of [
+    ['tsc --noEmit', 'src/a.ts(1,1): error ', 'TS2345:'],
+    ['dotnet build', 'Program.cs(1,1): error ', 'CS1002:'],
+    ['ruff check .', 'a.py:1: ', 'error:'],
+  ]) {
+    process.env.S20_PROBE_CODE = `${code}  ${tail}`;
+    const report = await collected(`${head}${code}  ${tail}\n`, { command, envPassthrough: ['S20_PROBE_CODE'] });
+    // Masked, the line no longer parses, so the claim is the line as cleaned.
+    const cleaned = `${head}[redacted:S20_PROBE_CODE]`;
+    assert.deepEqual(report.signals.map((signal) => [signal.claim, signal.evidence[0]]), [[cleaned, cleaned]], command);
+    assert.ok(!JSON.stringify(report).includes(tail), command);
+  }
+});
+
+test('AC-3: a passed-through value that is the scheme or keyword a redaction pattern needs does not keep the secret beside it, in a message, a referenced message, a text diagnostic or a version (issue 279)', async (t) => {
+  // Built at run time so no secret-shaped string sits in the repository.
+  const password = 'hunter2' + 'Zw9Kq';
+  // Masked first, the first two take the scheme and the keyword out of the reach of the pattern that finds the password. The third is the middle of the password, so redacted first it is split and its ends stay.
+  const values = { S20_PROBE_USER: 'postgres', S20_PROBE_KEYWORD: 'password', S20_PROBE_PART: password.slice(2, 10) };
+  for (const [name, value] of Object.entries(values)) process.env[name] = value;
+  t.after(() => {
+    for (const name of Object.keys(values)) delete process.env[name];
+  });
+  const envPassthrough = Object.keys(values);
+  const user = '[redacted:S20_PROBE_USER]';
+  const url = (host, name = 'postgres') => `postgres://${name}:${password}@${host}`;
+  const cleaned = (host, name = user) => `${user}://${name}:[REDACTED:DB_CREDENTIALS]@${host}`;
+  const sarif = await collected(doc([
+    result({ message: { text: `Hardcoded connection string ${url('localhost:5432/app')}` }, locations: at('a.py', 1) }),
+    result({ message: { id: 'm', arguments: [url('localhost')] }, locations: at('a.py', 2) }),
+    // On its own, the part of the password is a listed value like any other.
+    result({ message: { text: `seen ${values.S20_PROBE_PART} alone` }, locations: at('a.py', 3) }),
+  ], { name: 'tool', version: `1.0 ${url('db', 'app')}`, rules: [{ id: 'r', messageStrings: { m: { text: 'uses {0}' } } }] }), { envPassthrough });
+  assert.deepEqual(sarif.signals.map((signal) => signal.evidence[0]), [
+    `Hardcoded connection string ${cleaned('localhost:5432/app')}`,
+    `uses ${cleaned('localhost')}`,
+    'seen [redacted:S20_PROBE_PART] alone',
+  ]);
+  assert.deepEqual(sarif.signals.map((signal) => signal.claim), sarif.signals.map((signal) => `r: ${signal.evidence[0]}`));
+  // A user of its own, so the line stays under the cap of 80 code points.
+  assert.equal(sarif.commands[0].version, `tool 1.0 ${cleaned('db', 'app')}`);
+  const python = await collected(`tests/test_db.py:12: error: could not connect to ${url('db.internal/app')}\n`, { command: 'pytest -q', version: `pytest 8.0 ${url('db', 'app')}\n`, envPassthrough });
+  assert.deepEqual(python.signals.map((signal) => [signal.path, signal.line, signal.claim, signal.evidence[0]]), [
+    ['tests/test_db.py', 12, `error: could not connect to ${cleaned('db.internal/app')}`, `tests/test_db.py:12: error: could not connect to ${cleaned('db.internal/app')}`],
+  ]);
+  assert.equal(python.commands[0].version, `pytest 8.0 ${cleaned('db', 'app')}`);
+  const typescript = await collected(`src/a.ts(1,2): error TS2322: Type '{ password: "${password}"; }' is not assignable\n`, { command: 'tsc --noEmit', envPassthrough });
+  assert.deepEqual(typescript.signals.map((signal) => [signal.path, signal.line, signal.claim]), [
+    ['src/a.ts', 1, 'TS2322: Type \'{ [redacted:S20_PROBE_KEYWORD]: "[REDACTED:SECRET_ASSIGNMENT]"; }\' is not assignable'],
+  ]);
+  const stored = JSON.stringify([sarif, python, typescript]);
+  for (const leak of [password, password.slice(0, 6), password.slice(6)]) assert.ok(!stored.includes(leak), leak);
+});
+
+test('AC-3: a text adapter keeps a path and line only when cleaning leaves its line as printed up to the line number, so a value or key block running from the path into what follows is not kept (issue 279)', async (t) => {
+  // Built at run time. Each value runs from the path into the line number, so the path alone shows nothing and the two stored together spell it.
+  const values = { S20_PROBE_ADDR: ['db.internal.example.com', '5432'].join(':'), S20_PROBE_GEN: ['srcdir/gen', '41'].join('('), S20_PROBE_PIN: '1234' + '5678', S20_PROBE_DIR: 'AbCdEf' + 'GhIjKl' };
+  for (const [name, value] of Object.entries(values)) process.env[name] = value;
+  t.after(() => {
+    for (const name of Object.keys(values)) delete process.env[name];
+  });
+  const located = async (command, lines) => (await collected(lines.join('\n'), { command, envPassthrough: Object.keys(values) })).signals.map((signal) => [signal.path, signal.line, signal.claim]);
+  const reports = [];
+  const address = '[redacted:S20_PROBE_ADDR]';
+  reports.push(await located('pytest -q', [
+    `could not connect to ${values.S20_PROBE_ADDR}: error: connection refused`,
+    `${values.S20_PROBE_ADDR}: error: connection refused`,
+    // In the message alone, the value leaves the position as printed.
+    `tests/test_db.py:12: error: no route to ${values.S20_PROBE_ADDR}`,
+  ]));
+  assert.deepEqual(reports.at(-1), [
+    [null, null, `could not connect to ${address}: error: connection refused`],
+    [null, null, `${address}: error: connection refused`],
+    ['tests/test_db.py', 12, `error: no route to ${address}`],
+  ]);
+  for (const [command, code] of [['tsc --noEmit', 'TS2345'], ['dotnet build', 'CS1002']]) {
+    reports.push(await located(command, [`${values.S20_PROBE_GEN},7): error ${code}: bad`, `src/kept.ts(5,1): error ${code}: bad ${values.S20_PROBE_GEN}`]));
+    assert.deepEqual(reports.at(-1), [
+      [null, null, `[redacted:S20_PROBE_GEN],7): error ${code}: bad`],
+      ['src/kept.ts', 5, `${code}: bad [redacted:S20_PROBE_GEN]`],
+    ], command);
+  }
+  // The eslint file is a line of its own, so only the line number goes.
+  reports.push(await located('eslint .', ['src/a.ts', `  ${values.S20_PROBE_PIN}:1  error  bad  no-bad`, '  3:1  error  bad  no-bad']));
+  assert.deepEqual(reports.at(-1), [['src/a.ts', null, '[redacted:S20_PROBE_PIN]:1  error  bad  no-bad'], ['src/a.ts', 3, 'no-bad: bad']]);
+  // Two diagnostics that lose their paths are still two, and one MSBuild repeats is still one.
+  reports.push(await located('dotnet build', [
+    `src/${values.S20_PROBE_DIR}/a.cs(3,1): error CS1002: ; expected`,
+    `src/${values.S20_PROBE_DIR}/b.cs(7,1): error CS1002: ; expected`,
+    `src/${values.S20_PROBE_DIR}/b.cs(7,1): error CS1002: ; expected [/work/app.csproj]`,
+  ]));
+  assert.deepEqual(reports.at(-1), [[null, null, 'CS1002: ; expected'], [null, null, 'CS1002: ; expected']]);
+  // A key block that opens in the path and closes in the message is one secret, which the path alone does not show.
+  const edge = (name) => `-----${name} ${['PRIVATE', 'KEY'].join(' ')}-----`;
+  const body = ['MIIEv', 'Synthetic', 'KeyBody', 'NotARealKey', '0123456789'].join('');
+  for (const [command, between] of [['tsc --noEmit', '(1,1): error TS1: '], ['ruff check .', ':1:1: F401 '], ['dotnet build', '(1,1): error CS1: ']]) {
+    reports.push(await located(command, [`${edge('BEGIN')}${body}${between}${edge('END')}`]));
+    assert.deepEqual(reports.at(-1), [[null, null, '[REDACTED:PRIVATE_KEY]']], command);
+  }
+  const stored = JSON.stringify(reports);
+  for (const leak of ['example.com', '5432', 'srcdir', values.S20_PROBE_PIN, values.S20_PROBE_DIR, body.slice(0, 12)]) assert.ok(!stored.includes(leak), leak);
+});
+
+test('AC-4: a passed-through value a tool wrapped at the end of the first line of a version is masked whole, and one wrapped further down leaves the line alone (issue 279)', async (t) => {
+  // Built at run time. Wrapped, the value is spelled only once the line break is a space.
+  const words = ['Corr3ct', 'Hors3', 'Batt3ry', 'Stapl3'];
+  process.env.S20_PROBE_NOTE = words.join(' ');
+  t.after(() => {
+    delete process.env.S20_PROBE_NOTE;
+  });
+  const wrapped = `${words.slice(0, 2).join(' ')}\n   ${words.slice(2).join(' ')}`;
+  const versions = async (version) => {
+    const fromDocument = await collected(doc([], { name: 'tool', version }), { envPassthrough: ['S20_PROBE_NOTE'] });
+    const fromCommand = await collected('', { version: `tool ${version}\n`, envPassthrough: ['S20_PROBE_NOTE'] });
+    assert.ok(!JSON.stringify([fromDocument, fromCommand]).includes(words[0]), version);
+    return [fromDocument.commands[0].version, fromCommand.commands[0].version];
+  };
+  assert.deepEqual(await versions(`1.0 using ${wrapped}`), ['tool 1.0 using [redacted:S20_PROBE_NOTE]', 'tool 1.0 using [redacted:S20_PROBE_NOTE]']);
+  // The value starts the second line, so nothing of it is in the first.
+  assert.deepEqual(await versions(`1.0\nusing ${wrapped}`), ['tool 1.0', 'tool 1.0']);
+});
+
+test('AC-2: arguments nested deeper than the stack do not end the collection, and the results beside them still yield (SARIF 3.11)', async () => {
+  // Written as text, since building the nesting would itself overflow. An argument that is not a string leaves its placeholder.
+  const nested = `${'['.repeat(20000)}${']'.repeat(20000)}`;
+  const output = doc([
+    result({ message: { id: 'a', arguments: 'NESTED' }, locations: at('a.py', 1) }),
+    result({ message: { id: 'a', arguments: ['flat'] }, locations: at('a.py', 2) }),
+    result({ locations: at('a.py', 3) }),
+  ], { name: 'tool', version: '1.0', rules: [{ id: 'r', messageStrings: { a: { text: 'value {0} here' } } }] }).replace('"NESTED"', nested);
+  const report = await collected(output);
+  assert.deepEqual(report.signals.map((signal) => [signal.line, signal.claim]), [[1, 'r: value {0} here'], [2, 'r: value flat here'], [3, 'r: m']]);
+});
+
+test('AC-3: a uri of stray percent escapes is collected about as fast as one of valid escapes of the same length, and is kept as printed', async () => {
+  const timed = async (escape) => {
+    // One long uri, then many results with a uri each.
+    const outputs = [
+      doc([result({ locations: at(`src/${`${escape}a`.repeat(480000)}`, 3) })]),
+      doc(Array.from({ length: 3500 }, (_, index) => result({ message: { text: `m${index}` }, locations: at(`src/${index}/${`${escape}a`.repeat(100)}`, 3) }))),
+    ];
+    const started = performance.now();
+    const paths = [];
+    for (const output of outputs) paths.push((await collected(output)).signals.map((signal) => signal.path));
+    return { elapsed: performance.now() - started, paths };
+  };
+  // Against escapes that decode, so the bound holds on a slower machine; decoded by a call that throws for each run that is not UTF-8, the stray ones took seconds.
+  const valid = await timed('%41');
+  const stray = await timed('%ff');
+  assert.ok(stray.elapsed < 4 * valid.elapsed + 250, `${Math.round(stray.elapsed)} ms stray, ${Math.round(valid.elapsed)} ms valid`);
+  assert.deepEqual([valid.paths[0], stray.paths[0]], [[`src/${'Aa'.repeat(480000)}`], [`src/${'%ffa'.repeat(480000)}`]]);
+  assert.deepEqual([valid.paths[1].length, stray.paths[1].at(-1)], [3500, `src/3499/${'%ffa'.repeat(100)}`]);
+});
+
+test('AC-2: results in different files whose paths are dropped for what the uri carries stay distinct signals, and one of them repeated is still kept once (issue 279)', async (t) => {
+  // The directory the command ran in, as a workspace variable holds it, and a folder name. Every uri carries one, so no path is kept.
+  const values = { S20_PROBE_WORKSPACE: '/synthetic/repository', S20_PROBE_FOLDER: 'AbCdEf' + 'GhIjKl' };
+  for (const [name, value] of Object.entries(values)) process.env[name] = value;
+  t.after(() => {
+    for (const name of Object.keys(values)) delete process.env[name];
+  });
+  const unused = (uri, startLine) => result({ ruleId: 'F401', message: { text: '`os` imported but unused' }, locations: at(uri, startLine) });
+  const report = await collected(doc([
+    unused('file:///synthetic/repository/src/one.py', 1),
+    unused('file:///synthetic/repository/src/two.py', 1),
+    unused('file:///synthetic/repository/src/three.py', 7),
+    // The first again, which is the one result repeated.
+    unused('file:///synthetic/repository/src/one.py', 1),
+    unused(`src/${values.S20_PROBE_FOLDER}/one.py`, 3),
+    unused(`src/${values.S20_PROBE_FOLDER}/two.py`, 9),
+  ]), { envPassthrough: Object.keys(values) });
+  assert.deepEqual(report.signals.map((signal) => [signal.path, signal.line, signal.claim]), Array.from({ length: 5 }, () => [null, null, 'F401: `os` imported but unused']));
+  assert.ok(!JSON.stringify(report.signals).includes(values.S20_PROBE_FOLDER));
 });

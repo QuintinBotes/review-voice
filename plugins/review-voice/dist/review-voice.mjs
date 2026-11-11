@@ -75,11 +75,11 @@ function checkBinary(name, args) {
 }
 function checkClaude() {
   const bin = process.env["REVIEW_VOICE_CLAUDE_BIN"] || "claude";
-  const found = checkBinary(bin, ["--version"]);
+  const found2 = checkBinary(bin, ["--version"]);
   return {
     name: "claude",
-    ok: found.ok,
-    detail: found.ok ? `found (login not checked): ${found.detail}` : `${bin} not found on PATH (needed only by review and watch)`
+    ok: found2.ok,
+    detail: found2.ok ? `found (login not checked): ${found2.detail}` : `${bin} not found on PATH (needed only by review and watch)`
   };
 }
 var OPTIONAL_CHECKS = /* @__PURE__ */ new Set(["gh", "claude"]);
@@ -777,15 +777,15 @@ function patchLineFor(hunks, line3) {
 }
 function classifyAnchor(hunks, path, line3) {
   const literal = path.replace(/^\.\/+/, "");
-  const normalised = hunks.has(literal) ? literal : normalisePath(path);
-  const file2 = hunks.get(normalised);
+  const normalised2 = hunks.has(literal) ? literal : normalisePath(path);
+  const file2 = hunks.get(normalised2);
   const patchLine = patchLineFor(hunks, line3);
   if (file2 === void 0) {
-    return { path: normalised, line: line3, kind: "file-not-in-diff", ok: false, nearest: [], patchLine, beyondHunks: false };
+    return { path: normalised2, line: line3, kind: "file-not-in-diff", ok: false, nearest: [], patchLine, beyondHunks: false };
   }
   const kind = file2.added.has(line3) ? "added" : file2.deletionSites.has(line3) ? "deletion-site" : file2.context.has(line3) ? "context" : "outside-hunk";
   return {
-    path: normalised,
+    path: normalised2,
     line: line3,
     kind,
     ok: kind === "added" || kind === "deletion-site",
@@ -1278,7 +1278,7 @@ function globToRegExp(glob) {
 }
 function governsCount(globs, changedPaths) {
   if (globs.length === 0 || changedPaths.length === 0) return 0;
-  const normalised = changedPaths.map((path) => path.split("\\").join("/"));
+  const normalised2 = changedPaths.map((path) => path.split("\\").join("/"));
   const compiled = globs.flatMap((glob) => {
     try {
       const exact = globToRegExp(glob);
@@ -1287,11 +1287,11 @@ function governsCount(globs, changedPaths) {
       return [];
     }
   });
-  return normalised.filter((path) => compiled.some((pattern) => pattern.test(path))).length;
+  return normalised2.filter((path) => compiled.some((pattern) => pattern.test(path))).length;
 }
 function governsAny(globs, changedPaths) {
   if (globs.length === 0 || changedPaths.length === 0) return false;
-  const normalised = changedPaths.map((path) => path.split("\\").join("/"));
+  const normalised2 = changedPaths.map((path) => path.split("\\").join("/"));
   return globs.some((glob) => {
     let pattern;
     try {
@@ -1300,7 +1300,7 @@ function governsAny(globs, changedPaths) {
       return false;
     }
     const loose = glob.includes("/") ? null : globToRegExp(`**/${glob}`);
-    return normalised.some((path) => pattern.test(path) || loose !== null && loose.test(path));
+    return normalised2.some((path) => pattern.test(path) || loose !== null && loose.test(path));
   });
 }
 function pointerTargets(content) {
@@ -2412,19 +2412,19 @@ var Alias = class extends NodeBase {
       if (ctx)
         ctx.aliasResolveCache = nodes;
     }
-    let found = void 0;
+    let found2 = void 0;
     for (const node of nodes) {
       if (node === this)
         break;
       if (node.anchor === this.source)
-        found = node;
+        found2 = node;
     }
-    if (found && ctx) {
+    if (found2 && ctx) {
       const { anchors, doc: doc2, maxAliasCount } = ctx;
-      let data = anchors.get(found);
+      let data = anchors.get(found2);
       if (!data) {
-        toJS(found, null, ctx);
-        data = anchors.get(found);
+        toJS(found2, null, ctx);
+        data = anchors.get(found2);
       }
       if (data?.res === void 0) {
         const msg = "This should not happen: Alias anchor was not resolved?";
@@ -2433,14 +2433,14 @@ var Alias = class extends NodeBase {
       if (maxAliasCount >= 0) {
         data.count += 1;
         if (data.aliasCount === 0)
-          data.aliasCount = getAliasCount(doc2, found, anchors);
+          data.aliasCount = getAliasCount(doc2, found2, anchors);
         if (data.count * data.aliasCount > maxAliasCount) {
           const msg = "Excessive alias count indicates a resource exhaustion attack";
           throw new ReferenceError(msg);
         }
       }
     }
-    return found;
+    return found2;
   }
   toJSON(_arg, ctx) {
     if (!ctx)
@@ -5127,7 +5127,7 @@ function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIn
   let tag = null;
   let newlineAfterProp = null;
   let comma = null;
-  let found = null;
+  let found2 = null;
   let start = null;
   for (const token of tokens) {
     if (reqSpace) {
@@ -5164,7 +5164,7 @@ function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIn
         if (atNewline) {
           if (comment)
             comment += token.source;
-          else if (!found || indicator !== "seq-item-ind")
+          else if (!found2 || indicator !== "seq-item-ind")
             spaceBefore = true;
         } else
           commentSep += token.source;
@@ -5198,9 +5198,9 @@ function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIn
       case indicator:
         if (anchor || tag)
           onError(token, "BAD_PROP_ORDER", `Anchors and tags must be after the ${token.source} indicator`);
-        if (found)
+        if (found2)
           onError(token, "UNEXPECTED_TOKEN", `Unexpected ${token.source} in ${flow ?? "collection"}`);
-        found = token;
+        found2 = token;
         atNewline = indicator === "seq-item-ind" || indicator === "explicit-key-ind";
         hasSpace = false;
         break;
@@ -5229,7 +5229,7 @@ function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIn
     onError(tab, "TAB_AS_INDENT", "Tabs are not allowed as indentation");
   return {
     comma,
-    found,
+    found: found2,
     spaceBefore,
     comment,
     hasNewline,
@@ -8252,8 +8252,8 @@ var ALIASES = {
   logic: "correctness"
 };
 function canonicalCategory(category) {
-  const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
-  return LEGACY_BY_CATEGORY[normalised] !== void 0 ? normalised : ALIASES[normalised] ?? normalised;
+  const normalised2 = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return LEGACY_BY_CATEGORY[normalised2] !== void 0 ? normalised2 : ALIASES[normalised2] ?? normalised2;
 }
 var MAX_TIER_MOVEMENT = 1;
 function boundToRequest(derived, requested, reach, reason2) {
@@ -8301,7 +8301,7 @@ function deriveSeverity(category, requested, reach = null) {
       reason: "no category was supplied, so the middle tier is used rather than a guess"
     };
   }
-  const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const normalised2 = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
   const resolved = canonicalCategory(category);
   const legacy = LEGACY_BY_CATEGORY[resolved];
   if (legacy === void 0) {
@@ -8325,7 +8325,7 @@ function deriveSeverity(category, requested, reach = null) {
       severity: legacy,
       requested,
       reach: reach ?? null,
-      reason: resolved === normalised ? `${resolved} carries ${legacy}` : `${category} read as ${resolved}, which carries ${legacy}`
+      reason: resolved === normalised2 ? `${resolved} carries ${legacy}` : `${category} read as ${resolved}, which carries ${legacy}`
     };
   }
   const tiers = BY_CATEGORY_AND_REACH[resolved];
@@ -8339,7 +8339,7 @@ function deriveSeverity(category, requested, reach = null) {
     };
   }
   const varies = new Set(Object.values(tiers ?? {})).size > 1;
-  const describe = resolved === normalised ? `${resolved} at ${resolvedReach} reach carries ${severity}` : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`;
+  const describe = resolved === normalised2 ? `${resolved} at ${resolvedReach} reach carries ${severity}` : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`;
   if (!varies) {
     return { severity, requested, reach: reach ?? null, reason: describe };
   }
@@ -9256,8 +9256,8 @@ var GLOBAL_SCOPE = { type: "global", key: "owner" };
 function commonDirectory(paths) {
   let common = null;
   for (const path of paths) {
-    const normalised = posix2.normalize(path.split("\\").join("/"));
-    const segments = normalised.split("/").filter((part) => part.length > 0 && part !== ".");
+    const normalised2 = posix2.normalize(path.split("\\").join("/"));
+    const segments = normalised2.split("/").filter((part) => part.length > 0 && part !== ".");
     const directories = segments[0] === ".." ? [] : segments.slice(0, -1);
     if (common === null) {
       common = directories;
@@ -10230,12 +10230,12 @@ function kindsIn(text4, language3) {
   return kinds;
 }
 function findTypeEscapes(diff, paths) {
-  const found = [];
+  const found2 = [];
   for (const hunk of countHunks(diff, new Set(paths))) {
     const language3 = LANGUAGES2[extname(hunk.path).toLowerCase()];
     if (language3 === void 0) continue;
     for (const { line: line3, text: text4 } of hunk.added) {
-      for (const kind of kindsIn(text4, language3)) found.push({ path: hunk.path, line: line3, kind });
+      for (const kind of kindsIn(text4, language3)) found2.push({ path: hunk.path, line: line3, kind });
     }
   }
   const byPathLineKind = (a, b) => {
@@ -10243,9 +10243,9 @@ function findTypeEscapes(diff, paths) {
     if (a.line !== b.line) return a.line - b.line;
     return a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0;
   };
-  found.sort(byPathLineKind);
+  found2.sort(byPathLineKind);
   const perFile = /* @__PURE__ */ new Map();
-  return found.filter((escape) => {
+  return found2.filter((escape) => {
     const seen = perFile.get(escape.path) ?? 0;
     perFile.set(escape.path, seen + 1);
     return seen < MAX_PER_FILE;
@@ -10428,7 +10428,7 @@ function findRemovedControls(diff, paths, deletedFiles = []) {
     return true;
   };
   const netted = (text4) => spend(added, collapse(text4));
-  const found = [];
+  const found2 = [];
   const byPath = /* @__PURE__ */ new Map();
   const entriesOf = (path) => {
     const entries = byPath.get(path) ?? [];
@@ -10465,7 +10465,7 @@ function findRemovedControls(diff, paths, deletedFiles = []) {
   }
   for (const entries of byPath.values()) {
     entries.sort((a, b) => a.line - b.line);
-    found.push(...entries.slice(0, MAX_PER_FILE2));
+    found2.push(...entries.slice(0, MAX_PER_FILE2));
   }
   for (const file2 of deletedFiles) {
     const lang = LANGUAGES3[extname2(file2.path).toLowerCase()];
@@ -10478,12 +10478,12 @@ function findRemovedControls(diff, paths, deletedFiles = []) {
       if (kept >= MAX_PER_FILE2) continue;
       for (const kind of kindsIn2(text4, lang, allowlisted)) {
         if (kept >= MAX_PER_FILE2) break;
-        found.push({ path: file2.path, line: 1, kind, text: text4.trim().slice(0, MAX_TEXT), deletedFile: true });
+        found2.push({ path: file2.path, line: 1, kind, text: text4.trim().slice(0, MAX_TEXT), deletedFile: true });
         kept += 1;
       }
     }
   }
-  return found.sort((a, b) => a.path === b.path ? a.line - b.line : a.path < b.path ? -1 : 1);
+  return found2.sort((a, b) => a.path === b.path ? a.line - b.line : a.path < b.path ? -1 : 1);
 }
 
 // plugins/review-voice/src/diff/risk-markers.ts
@@ -10600,22 +10600,22 @@ function kindsIn3(text4, lang, urls) {
   return [...kinds];
 }
 function findRiskMarkers(diff, paths) {
-  const found = [];
+  const found2 = [];
   for (const hunk of countHunks(diff, new Set(paths))) {
     const lang = LANGUAGES4[extname3(hunk.path).toLowerCase()];
     if (lang === void 0) continue;
     const urls = /^urls?$/i.test(basename2(hunk.path, extname3(hunk.path)));
     for (const { line: line3, text: text4 } of hunk.added) {
-      for (const kind of kindsIn3(text4, lang, urls)) found.push({ path: hunk.path, line: line3, kind });
+      for (const kind of kindsIn3(text4, lang, urls)) found2.push({ path: hunk.path, line: line3, kind });
     }
   }
-  found.sort((a, b) => {
+  found2.sort((a, b) => {
     if (a.path !== b.path) return a.path < b.path ? -1 : 1;
     if (a.line !== b.line) return a.line - b.line;
     return a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0;
   });
   const perFile = /* @__PURE__ */ new Map();
-  return found.filter((marker) => {
+  return found2.filter((marker) => {
     const seen = perFile.get(marker.path) ?? 0;
     perFile.set(marker.path, seen + 1);
     return seen < MAX_PER_FILE3;
@@ -12018,8 +12018,8 @@ function hash(value) {
   return createHash2("sha256").update(value).digest("hex").slice(0, 32);
 }
 function isPlaceholder(value) {
-  const normalised = value.toLowerCase().replace(/[<>{}[\]]/g, "");
-  if (PLACEHOLDERS.has(normalised)) return true;
+  const normalised2 = value.toLowerCase().replace(/[<>{}[\]]/g, "");
+  if (PLACEHOLDERS.has(normalised2)) return true;
   return value.length >= 4 && value === value.charAt(0).repeat(value.length);
 }
 function redact(input) {
@@ -12125,9 +12125,68 @@ function indexed(value, index) {
 }
 var MAX_SARIF_MESSAGE_POINTS = 500;
 var MAX_SARIF_RULE_POINTS = 200;
-var MAX_REDACTED_POINTS = 4096;
-function redactBounded(text4) {
-  return redact([...text4.slice(0, 2 * MAX_REDACTED_POINTS)].slice(0, MAX_REDACTED_POINTS).join("")).text;
+var MAX_COMPOSED_UNITS = 16 * 1024 * 1024;
+var COMPOSED_PER_UNIT = 8;
+function cut(text4, points) {
+  return [...text4.slice(0, 2 * points)].slice(0, points).join("");
+}
+function memo(fn) {
+  const done = /* @__PURE__ */ new Map();
+  return (text4) => {
+    if (!done.has(text4)) done.set(text4, fn(text4));
+    return done.get(text4);
+  };
+}
+var MARKER = /\[(?:REDACTED|redacted):\w*\]/g;
+function found(text4, needle, from) {
+  if (needle === "") return from;
+  const borders = new Int32Array(needle.length + 1);
+  borders[0] = -1;
+  for (let index = 0, border = -1; index < needle.length; ) {
+    while (border >= 0 && needle.charCodeAt(index) !== needle.charCodeAt(border)) border = borders[border];
+    index += 1;
+    border += 1;
+    borders[index] = border;
+  }
+  for (let index = from, matched = 0; index < text4.length; index += 1) {
+    while (matched >= 0 && text4.charCodeAt(index) !== needle.charCodeAt(matched)) matched = borders[matched];
+    matched += 1;
+    if (matched === needle.length) return index + 1 - matched;
+  }
+  return -1;
+}
+function replaced(text4, version) {
+  if (version === text4) return [];
+  const spans = [];
+  let end = 0;
+  let read = 0;
+  let marker = "";
+  for (const next of [...version.matchAll(MARKER), void 0]) {
+    const kept = version.slice(read, next?.index);
+    const start = next === void 0 ? Math.max(end, text4.length - kept.length) : read === 0 ? 0 : found(text4, kept, end);
+    const fits = start !== -1 && (read > 0 || start === 0) && text4.startsWith(kept, start);
+    if (read > 0 || !fits) spans.push({ start: end, end: fits ? start : text4.length, marker });
+    if (!fits || next === void 0) break;
+    end = start + kept.length;
+    marker = next[0];
+    read = next.index + marker.length;
+  }
+  return spans;
+}
+function cleaner(mask = (text4) => text4) {
+  return (text4) => {
+    const masked = mask(text4);
+    const redacted = redact(text4).text;
+    if (masked === text4) return redacted;
+    if (redacted === text4) return masked;
+    let cleaned = "";
+    let copied = 0;
+    for (const part of [...replaced(text4, masked), ...replaced(text4, redacted)].sort((a, b) => a.start - b.start)) {
+      if (part.start >= copied) cleaned += text4.slice(copied, part.start) + part.marker;
+      copied = Math.max(copied, part.end);
+    }
+    return cleaned + text4.slice(copied);
+  };
 }
 function sarifDocument(output) {
   const start = output.indexOf("{");
@@ -12152,25 +12211,89 @@ function isSarif(output) {
   const text4 = output.replace(/\\u00([0-7][0-9a-f])/gi, (_escape, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
   return SARIF_SCHEMA.test(text4) || SARIF_VERSION.test(text4) && SARIF_RUNS.test(text4);
 }
-function sarifPath(uri, root) {
+function sarifPath(uri, root, changes) {
   let path = uri;
   if (/^[a-z][a-z0-9+.-]*:/i.test(uri)) {
     const url = URL.canParse(uri) ? new URL(uri) : void 0;
     if (url?.protocol !== "file:" || url.host !== "") return null;
     path = url.pathname;
   }
-  try {
-    path = decodeURIComponent(path);
-  } catch {
-  }
-  path = posix3.normalize(path);
+  const plain = decoded(path);
+  if ([...new Set(path === uri ? [uri, plain] : [uri, decoded(uri), path, plain])].some(changes)) return void 0;
+  path = normalised(plain);
   if (root === void 0) return path;
   const relative6 = posix3.relative(root, posix3.resolve(root, path));
   return relative6 === "" || relative6 === ".." || relative6.startsWith("../") ? null : relative6;
 }
-function sarifSignals(output, tool, root, mask = (text4) => text4) {
+function normalised(path) {
+  const absolute = path.startsWith("/");
+  const kept = [];
+  for (const segment of path.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment !== "..") kept.push(segment);
+    else if (kept.length > 0 && kept.at(-1) !== "..") kept.pop();
+    else if (!absolute) kept.push("..");
+  }
+  const joined = kept.join("/");
+  const slash = path.endsWith("/") ? "/" : "";
+  if (absolute) return joined === "" ? "/" : `/${joined}${slash}`;
+  return `${joined === "" ? "." : joined}${slash}`;
+}
+function decoded(text4) {
+  return text4.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+    const bytes = Buffer.from(run.replaceAll("%", ""), "hex");
+    const utf8 = bytes.toString("utf8");
+    return Buffer.from(utf8, "utf8").equals(bytes) ? utf8 : run.replace(/%[0-7][0-9a-f]/gi, (escape) => String.fromCharCode(Number.parseInt(escape.slice(1), 16)));
+  });
+}
+function sarifSignals(output, tool, root, cleaned = cleaner()) {
   const signals = [];
   const seen = /* @__PURE__ */ new Set();
+  const sanitisedId = memo((ruleId) => cut(cleaned(cleaned(ruleId).replace(/[\s\p{Cc}\p{Cf}]+/gu, " ").trim()), MAX_SARIF_RULE_POINTS).trimEnd());
+  const sanitisedMessage = (text4, first = cleaned(text4)) => {
+    const spaced = first.replace(/\s+/g, " ").trim();
+    return cut(spaced === first ? first : cleaned(spaced), MAX_SARIF_MESSAGE_POINTS).trimEnd();
+  };
+  const described = memo((text4) => sanitisedMessage(text4));
+  const numbers = /* @__PURE__ */ new Map([[null, 0]]);
+  let dropped = 0;
+  const placeOf = memo((uri) => {
+    const path = sarifPath(uri, root, (text4) => cleaned(text4) !== text4);
+    if (path === void 0) return { path: null, place: dropped -= 1 };
+    if (!numbers.has(path)) numbers.set(path, numbers.size);
+    return { path, place: numbers.get(path) };
+  });
+  let room = Math.min(MAX_COMPOSED_UNITS, COMPOSED_PER_UNIT * output.length);
+  const composed = (parts, length, values) => {
+    if (length > room) return void 0;
+    room -= length;
+    let text4 = "";
+    for (const [index, part] of parts.entries()) {
+      if (index % 2 === 0) text4 += part;
+      else if (part === "{{" || part === "}}") text4 += part.charAt(0);
+      else {
+        const value = Array.isArray(values) ? values[Number(part.slice(1, -1))] : void 0;
+        text4 += typeof value === "string" ? value : part;
+      }
+      if (text4.length - length > room) return void 0;
+    }
+    const first = cleaned(text4);
+    room -= Math.max(0, text4.length - length) + Math.max(0, first.length - text4.length);
+    return sanitisedMessage(text4, first);
+  };
+  const strings = /* @__PURE__ */ new Map();
+  const composedFrom = (entry, values) => {
+    const template = str(entry.text);
+    if (template === void 0) return void 0;
+    let known = strings.get(entry);
+    if (known === void 0) {
+      known = { parts: template.split(/(\{\{|\}\}|\{\d+\})/), messages: /* @__PURE__ */ new Map() };
+      strings.set(entry, known);
+    }
+    const key2 = Array.isArray(values) ? JSON.stringify(values.map(str)) : "";
+    if (!known.messages.has(key2)) known.messages.set(key2, composed(known.parts, template.length, values));
+    return known.messages.get(key2);
+  };
   for (const run of sarifRuns(output) ?? []) {
     const driver = run.tool?.driver;
     const driverName = (str(driver?.name) ?? "").toLowerCase();
@@ -12190,7 +12313,7 @@ function sarifSignals(output, tool, root, mask = (text4) => text4) {
     }
     for (const result of list(run.results)) {
       if (result.kind !== void 0 && result.kind !== "fail") continue;
-      if (list(result.suppressions).some((entry) => entry.status === void 0 || entry.status === "accepted")) continue;
+      if (list(result.suppressions).some((entry2) => entry2.status === void 0 || entry2.status === "accepted")) continue;
       const reference = result.rule?.toolComponent;
       const componentIndex = reference?.index;
       const guid = str(reference?.guid);
@@ -12198,21 +12321,25 @@ function sarifSignals(output, tool, root, mask = (text4) => text4) {
       const referenced = indexed(component?.rules, typeof result.ruleIndex === "number" ? result.ruleIndex : result.rule?.index);
       const ruleId = str(result.ruleId) ?? str(result.rule?.id) ?? str(referenced?.id);
       if (ruleId === void 0) continue;
-      const spaced = redactBounded(mask(ruleId)).replace(/[\s\p{Cc}\p{Cf}]+/gu, " ").trim();
-      const id = [...redactBounded(spaced)].slice(0, MAX_SARIF_RULE_POINTS).join("").trimEnd();
+      const id = sanitisedId(ruleId);
       if (id === "") continue;
       const rule = referenced ?? idsOf.get(component)?.get(ruleId) ?? byId.get(ruleId);
       const level = str(result.level) ?? str(rule?.defaultConfiguration?.level) ?? "warning";
       if (level !== "error" && level !== "warning") continue;
-      const text4 = str(result.message?.text) ?? str(rule?.shortDescription?.text);
-      const message = text4 === void 0 ? void 0 : [...redactBounded(mask(text4).replace(/\s+/g, " ").trim())].slice(0, MAX_SARIF_MESSAGE_POINTS).join("").trimEnd();
+      const messageId = result.message?.id;
+      const messageStrings = rule?.messageStrings;
+      const entry = typeof messageId === "string" && typeof messageStrings === "object" && messageStrings !== null && Object.hasOwn(messageStrings, messageId) ? messageStrings[messageId] : void 0;
+      const text4 = str(result.message?.text);
+      const description = str(rule?.shortDescription?.text);
+      const message = text4 !== void 0 ? sanitisedMessage(text4) : (typeof entry === "object" && entry !== null ? composedFrom(entry, result.message?.arguments) : void 0) ?? (description === void 0 ? void 0 : described(description));
       const location = list(result.locations)[0]?.physicalLocation;
-      const uri = str(location?.artifactLocation?.uri);
-      const path = uri === void 0 ? null : sarifPath(uri, root);
+      const artifact = location?.artifactLocation;
+      const uri = str(artifact?.uri === void 0 ? indexed(run.artifacts, artifact?.index)?.location?.uri : artifact.uri);
+      const { path, place } = uri === void 0 ? { path: null, place: 0 } : placeOf(uri);
       const startLine = location?.region?.startLine;
       const line3 = path !== null && typeof startLine === "number" && Number.isInteger(startLine) && startLine > 0 ? startLine : null;
       const claim = message === void 0 || message === "" ? id : `${id}: ${message}`;
-      const key2 = `${path}\0${line3}\0${claim}`;
+      const key2 = `${place}\0${line3}\0${claim}`;
       if (seen.has(key2)) continue;
       seen.add(key2);
       signals.push(signal(tool, kind, path, line3, claim, message === void 0 || message === "" ? id : message, level === "error" ? 0.95 : 0.8));
@@ -12220,9 +12347,23 @@ function sarifSignals(output, tool, root, mask = (text4) => text4) {
   }
   return signals;
 }
-var TSC = /^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.*)$/;
-var PYTHON3 = /^(.+?):(\d+)(?::(\d+))?:\s+(error|warning|note|[A-Z]\d+)\s*:?\s*(.*)$/;
-var DOTNET = /^\s*(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+([A-Z]+\d+):\s+(.*?)(?:\s+\[.*\])?$/;
+var TSC = /^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.*)$/d;
+var PYTHON3 = /^(.+?):(\d+)(?::(\d+))?:\s+(error|warning|note|[A-Z]\d+)\s*:?\s*(.*)$/d;
+var DOTNET = /^\s*(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+([A-Z]+\d+):\s+(.*?)(?:\s+\[(?!REDACTED:|redacted:).*\])?$/d;
+var ESLINT = /^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$/d;
+function reads(pattern, claim, clean2 = cleaner()) {
+  return (match) => {
+    const cleaned = clean2(match[0]);
+    const again = cleaned === match[0] ? match : pattern.exec(cleaned);
+    return { claim: again === null ? cleaned.trim() : claim(again), holds: cleaned.startsWith(match[0].slice(0, match.indices?.[2]?.[1])) };
+  };
+}
+function positioned(tool, kind, read) {
+  return (match) => {
+    const { claim, holds } = read(match);
+    return signal(tool, kind, holds ? match[1] : null, holds ? Number(match[2]) : null, claim, match[0]);
+  };
+}
 var ADAPTERS = [
   {
     // First, because the per-tool adapters match on command text and a `ruff`
@@ -12244,28 +12385,32 @@ var ADAPTERS = [
   {
     name: "typescript",
     matches: (command, output) => /tsc|typecheck|tsgo/i.test(command) || TSC.test(output.split("\n")[0] ?? ""),
-    parse: (output, tool) => output.split("\n").map((line3) => TSC.exec(line3)).filter((match) => match !== null).filter((match) => match[4] === "error").map(
-      (match) => signal(tool, "type_error", match[1], Number(match[2]), `${match[5]}: ${match[6]}`, match[0])
-    )
+    parse: (output, tool, _root, clean2) => {
+      const toSignal = positioned(tool, "type_error", reads(TSC, (match) => `${match[5]}: ${match[6]}`, clean2));
+      return output.split("\n").map((line3) => TSC.exec(line3)).filter((match) => match !== null).filter((match) => match[4] === "error").map(toSignal);
+    }
   },
   {
     name: "dotnet",
     matches: (command) => /dotnet|msbuild|csc\b/i.test(command),
-    parse: (output, tool) => output.split("\n").map((line3) => DOTNET.exec(line3)).filter((match) => match !== null).filter((match) => match[4] === "error").map(
-      (match) => signal(tool, "compile_error", match[1], Number(match[2]), `${match[5]}: ${match[6]}`, match[0])
-    ).filter((current, index, all) => all.findIndex((other) => other.claim === current.claim && other.path === current.path && other.line === current.line) === index)
+    parse: (output, tool, _root, clean2) => {
+      const toSignal = positioned(tool, "compile_error", reads(DOTNET, (match) => `${match[5]}: ${match[6]}`, clean2));
+      return output.split("\n").map((line3) => DOTNET.exec(line3)).filter((match) => match !== null).filter((match) => match[4] === "error").map((match) => ({ match, kept: toSignal(match) })).filter((current, index, all) => all.findIndex((other) => other.kept.claim === current.kept.claim && other.match[1] === current.match[1] && other.match[2] === current.match[2]) === index).map(({ kept }) => kept);
+    }
   },
   {
     name: "python",
     matches: (command) => /mypy|ruff|flake8|pylint|pytest/i.test(command),
-    parse: (output, tool) => output.split("\n").map((line3) => PYTHON3.exec(line3)).filter((match) => match !== null).filter((match) => match[4] !== "note").map(
-      (match) => signal(tool, "lint_or_type_error", match[1], Number(match[2]), `${match[4]}: ${match[5]}`, match[0])
-    )
+    parse: (output, tool, _root, clean2) => {
+      const toSignal = positioned(tool, "lint_or_type_error", reads(PYTHON3, (match) => `${match[4]}: ${match[5]}`, clean2));
+      return output.split("\n").map((line3) => PYTHON3.exec(line3)).filter((match) => match !== null).filter((match) => match[4] !== "note").map(toSignal);
+    }
   },
   {
     name: "eslint",
     matches: (command) => /eslint|biome|oxlint/i.test(command),
-    parse: (output, tool) => {
+    parse: (output, tool, _root, clean2) => {
+      const read = reads(ESLINT, (match) => `${match[5]}: ${match[4]}`, clean2);
       const signals = [];
       let file2 = null;
       for (const line3 of output.split("\n")) {
@@ -12273,33 +12418,42 @@ var ADAPTERS = [
           file2 = line3.trim();
           continue;
         }
-        const match = /^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$/.exec(line3);
+        const match = ESLINT.exec(line3);
         if (match !== null && match[3] === "error") {
-          signals.push(signal(tool, "lint_error", file2, Number(match[1]), `${match[5]}: ${match[4]}`, line3));
+          const { claim, holds } = read(match);
+          signals.push(signal(tool, "lint_error", file2, holds ? Number(match[1]) : null, claim, line3));
         }
       }
       return signals;
     }
   }
 ];
-function parseOutput(name, command, output, root, mask) {
+function parseOutput(name, command, output, root, clean2) {
   const haystack = `${name} ${command}`;
   const adapter = ADAPTERS.find((candidate) => candidate.matches(haystack, output));
   if (adapter === void 0) return { signals: [] };
   const version = adapter.version?.(output);
-  return { signals: adapter.parse(output, name, root, mask), ...version === void 0 ? {} : { version } };
+  return { signals: adapter.parse(output, name, root, clean2), ...version === void 0 ? {} : { version } };
 }
 
 // plugins/review-voice/src/evidence/run.ts
 var DEFAULT_TIMEOUT_SECONDS = 120;
 var MAX_VERSION_POINTS = 80;
+var MAX_SIGNAL_TEXT_POINTS = 4096;
 var SHELL_UNAVAILABLE_EXIT_CODES = [126, 127];
 var BASE_ENVIRONMENT = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CI", "TERM"];
 var MIN_MASKED_LENGTH = 8;
 function maskPassthrough(text4, source, passthrough) {
+  const names = /* @__PURE__ */ new Map();
+  for (const name of passthrough) {
+    const value = source[name];
+    if (typeof value !== "string") continue;
+    for (const form of [value, ...value.split("\n").map((line3) => line3.trim())]) {
+      if (form.length >= MIN_MASKED_LENGTH && !names.has(form)) names.set(form, name);
+    }
+  }
   let masked = text4;
-  const values = passthrough.map((name) => [name, source[name]]).filter((entry) => typeof entry[1] === "string" && entry[1].length >= MIN_MASKED_LENGTH).sort((a, b) => b[1].length - a[1].length);
-  for (const [name, value] of values) masked = masked.split(value).join(`[redacted:${name}]`);
+  for (const [value, name] of [...names].sort((a, b) => b[0].length - a[0].length)) masked = masked.split(value).join(`[redacted:${name}]`);
   return masked;
 }
 function maskPassthroughDeep(value, source, passthrough) {
@@ -12328,9 +12482,20 @@ function notRunReport(names, skipped) {
   };
 }
 function sanitisedVersion(stdout, clean2) {
-  const firstLine3 = clean2(stdout).split("\n")[0] ?? "";
-  const stripped = clean2(firstLine3.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "")).trim();
-  const capped = [...stripped].slice(0, MAX_VERSION_POINTS).join("").trim();
+  const whole = clean2(stdout);
+  const end = whole.indexOf("\n");
+  const stripped = clean2((end === -1 ? whole : whole.slice(0, end)).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ""));
+  const spaced = `${stripped}${end === -1 ? "" : whole.slice(end)}`.replace(/\s+/g, " ");
+  const first = stripped.replace(/\s+/g, " ").length;
+  let line3 = "";
+  let copied = 0;
+  for (const part of replaced(spaced, clean2(spaced))) {
+    if (part.start >= first) break;
+    line3 += spaced.slice(copied, part.start) + part.marker;
+    copied = part.end;
+  }
+  line3 += spaced.slice(copied, first);
+  const capped = cut(line3.trim(), MAX_VERSION_POINTS).trim();
   return capped === "" ? void 0 : capped;
 }
 async function collectEvidence(commands, options) {
@@ -12372,16 +12537,18 @@ async function collectEvidence(commands, options) {
       continue;
     }
     const mask = (text4) => maskPassthrough(text4, process.env, options.envPassthrough ?? []);
-    const clean2 = (text4) => redactBounded(mask(text4));
+    const clean2 = cleaner(mask);
     const output = `${result.stdout ?? ""}
 ${result.stderr ?? ""}`;
     const configuredVersion = command.version === void 0 ? void 0 : await readVersion(spawn3, command.version, options.cwd, timeoutMs, env, clean2);
-    const parsed2 = parseOutput(command.name, command.run, output, options.cwd, mask);
+    const parsed2 = parseOutput(command.name, command.run, output, options.cwd, clean2);
+    const keeps = memo((path) => clean2(path) === path);
+    const cleanCut = (text4) => cut(clean2(text4), MAX_SIGNAL_TEXT_POINTS);
     const signals = parsed2.signals.map((signal2) => ({
       ...signal2,
-      ...signal2.path !== null && clean2(signal2.path) !== signal2.path ? { path: null, line: null } : {},
-      claim: clean2(signal2.claim),
-      evidence: signal2.evidence.map(clean2)
+      ...signal2.path !== null && !keeps(signal2.path) ? { path: null, line: null } : {},
+      claim: cleanCut(signal2.claim),
+      evidence: signal2.evidence.map(cleanCut)
     }));
     const version = configuredVersion ?? (parsed2.version === void 0 ? void 0 : sanitisedVersion(parsed2.version, clean2));
     outcomes.push({
@@ -12654,8 +12821,8 @@ function linuxSetup(layout) {
   };
   const covers = [];
   for (const path of [...layout.hiddenDirs, ...layout.hiddenFiles].sort((a, b) => a.length - b.length)) {
-    const found = kind(path);
-    if (found !== null && !covers.some((cover) => cover.dir && inside(path, cover.path))) covers.push({ path, dir: found === "dir" });
+    const found2 = kind(path);
+    if (found2 !== null && !covers.some((cover) => cover.dir && inside(path, cover.path))) covers.push({ path, dir: found2 === "dir" });
   }
   const lines2 = [
     "set -e",
@@ -15365,7 +15532,7 @@ function patchPath(hint) {
 }
 var TOOL_TEXT_CAP = 160;
 var MAX_CONVENTION_QUOTES = 2;
-function cut(text4, max) {
+function cut2(text4, max) {
   const points = [...text4];
   return points.length > max ? `${points.slice(0, max - 1).join("")}\u2026` : text4;
 }
@@ -15379,7 +15546,7 @@ function toolSignalFor(finding, signals) {
     (text4) => text4 !== void 0 && !MACHINE_PATH.test(flatten(text4, Number.POSITIVE_INFINITY))
   );
   if (shown === void 0) return void 0;
-  return { tool: signal2.tool, line: finding.line, text: cut(redactedAsPosted(shown), TOOL_TEXT_CAP) };
+  return { tool: signal2.tool, line: finding.line, text: cut2(redactedAsPosted(shown), TOOL_TEXT_CAP) };
 }
 var redactedAsPosted = (text4) => redact(flatten(redact(text4).text, Number.POSITIVE_INFINITY)).text;
 var squashed = (text4) => text4.replace(/\s+/g, " ").trim();
@@ -15396,17 +15563,17 @@ function documentNamed(text4, documents) {
 }
 function conventionQuotesFor(evidence, documents) {
   if (!Array.isArray(evidence) || documents.length === 0) return void 0;
-  const found = [];
+  const found2 = [];
   for (const entry of evidence) {
-    if (found.length >= MAX_CONVENTION_QUOTES) break;
+    if (found2.length >= MAX_CONVENTION_QUOTES) break;
     if (typeof entry !== "string") continue;
     const document = documentNamed(entry, documents);
     if (document === void 0) continue;
     const content = squashed(document.content).toLowerCase();
     const quote2 = [...entry.matchAll(QUOTED)].map((match) => squashed(match[1] ?? "")).find((segment) => segment.split(" ").length >= 4 && content.includes(segment.toLowerCase()));
-    if (quote2 !== void 0) found.push({ path: document.path, quote: redactedAsPosted(quote2) });
+    if (quote2 !== void 0) found2.push({ path: document.path, quote: redactedAsPosted(quote2) });
   }
-  return found.length === 0 ? void 0 : found;
+  return found2.length === 0 ? void 0 : found2;
 }
 function assignIds(output, hints, facts = {}) {
   const taken = /* @__PURE__ */ new Set();
@@ -15903,13 +16070,13 @@ function suggestionApplied(reviewed, current, patch) {
   const start = patch.start_line - 1;
   const original = unixLines(patch.original);
   const replacement = unixLines(patch.replacement);
-  const replaced = replacement.split("\n");
+  const replaced2 = replacement.split("\n");
   if (original === replacement || before.join("\n") === after.join("\n")) return false;
   if (after.slice(start, patch.end_line).join("\n") === original) return false;
   if (before.slice(start, patch.end_line).join("\n") !== original) return false;
-  if (after.slice(start, start + replaced.length).join("\n") !== replacement) return false;
+  if (after.slice(start, start + replaced2.length).join("\n") !== replacement) return false;
   if (before.slice(0, start).join("\n") !== after.slice(0, start).join("\n")) return false;
-  return after[start + replaced.length] === before[patch.end_line];
+  return after[start + replaced2.length] === before[patch.end_line];
 }
 function unixLines(text4) {
   return text4.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3).join("\n");
@@ -16817,8 +16984,8 @@ function refusal(head, reason2) {
 }
 var MAX_PRIOR_DEPTH = 8;
 function pullRequestComplexity(run, loadRun) {
-  let found = run.complexity;
-  if (found?.level === "high") return found;
+  let found2 = run.complexity;
+  if (found2?.level === "high") return found2;
   const seen = /* @__PURE__ */ new Set([run.reviewRunId]);
   let current = run;
   for (let depth = 0; depth < MAX_PRIOR_DEPTH; depth += 1) {
@@ -16829,10 +16996,10 @@ function pullRequestComplexity(run, loadRun) {
     const prior = loadRun(priorId);
     if (prior === null) break;
     if (prior.complexity?.level === "high") return prior.complexity;
-    found = found ?? prior.complexity;
+    found2 = found2 ?? prior.complexity;
     current = prior;
   }
-  return found;
+  return found2;
 }
 var MAX_REVIEWS2 = 300;
 async function standingOwnerReview(client, repository, pullNumber, owner) {
@@ -22174,7 +22341,7 @@ function boundLists(value, limit = TEXT_CAP2) {
   if (Array.isArray(value)) return value.map((entry) => boundLists(entry, limit));
   if (value === null || typeof value !== "object") return value;
   const out = {};
-  let cut2 = false;
+  let cut3 = false;
   for (const [key2, item] of Object.entries(value)) {
     if (key2 === "precedentIds") {
       continue;
@@ -22182,17 +22349,17 @@ function boundLists(value, limit = TEXT_CAP2) {
     if (Array.isArray(item) && item.length > LIST_CAP && item.every((entry) => typeof entry === "string")) {
       out[key2] = item.slice(0, LIST_CAP);
       out[`${key2}Total`] = item.length;
-      cut2 = true;
+      cut3 = true;
     } else if (key2 === "excerpt" && typeof item === "string" && item.length > EXCERPT_CAP) {
       out[key2] = `${item.slice(0, EXCERPT_CAP)}...`;
     } else {
       const childLimit = key2 === "claim" || key2 === "failureMode" ? CLAIM_CAP : TEXT_CAP2;
       const bounded = boundLists(item, childLimit);
-      if (JSON.stringify(bounded) !== JSON.stringify(item)) cut2 = cut2 || containsCut(item, bounded);
+      if (JSON.stringify(bounded) !== JSON.stringify(item)) cut3 = cut3 || containsCut(item, bounded);
       out[key2] = bounded;
     }
   }
-  if (cut2) out["truncated"] = true;
+  if (cut3) out["truncated"] = true;
   return out;
 }
 function containsCut(before, after) {
@@ -23448,20 +23615,20 @@ function purgeCommand(argv) {
   const db = openDatabase();
   try {
     const preview = previewPurge(db, scope);
-    let found = null;
+    let found2 = null;
     try {
-      found = directories ? previewRunDirectories(dataDirectory(), cutoff) : null;
-      const kept = found !== null && runsBefore === null ? previewRunDirectories(dataDirectory(), null).count - found.count : 0;
+      found2 = directories ? previewRunDirectories(dataDirectory(), cutoff) : null;
+      const kept = found2 !== null && runsBefore === null ? previewRunDirectories(dataDirectory(), null).count - found2.count : 0;
       const report = (listed, refreshed = 0) => ({
         count: listed.count,
         paths: listed.paths,
         kept: kept + refreshed
       });
       if (!confirm) {
-        console.log(JSON.stringify({ wouldRemove: found === null ? preview : { ...preview, runDirectories: report(found) }, confirmed: false }, null, 2));
+        console.log(JSON.stringify({ wouldRemove: found2 === null ? preview : { ...preview, runDirectories: report(found2) }, confirmed: false }, null, 2));
         return 0;
       }
-      const gone = found === null ? null : removeRunDirectories(dataDirectory(), cutoff, found.paths);
+      const gone = found2 === null ? null : removeRunDirectories(dataDirectory(), cutoff, found2.paths);
       const removed = executePurge(db, scope, gone?.count);
       console.log(JSON.stringify({ removed: gone === null ? removed : { ...removed, runDirectories: report(gone, gone.refreshed) }, confirmed: true }, null, 2));
       return 0;
@@ -24432,8 +24599,8 @@ function headerPath3(raw) {
   if (path === "/dev/null") return null;
   return path.startsWith("a/") || path.startsWith("b/") ? path.slice(2) : path;
 }
-function parsePatchFiles(normalised) {
-  const lines2 = normalised.split("\n");
+function parsePatchFiles(normalised2) {
+  const lines2 = normalised2.split("\n");
   const files2 = [];
   let current = null;
   let index = 0;
@@ -24586,11 +24753,11 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
   if (existsSync13(targetDir) && readdirSync5(targetDir).length > 0) {
     throw new Error(`${label2}: target directory ${targetDir} is not empty`);
   }
-  let normalised;
+  let normalised2;
   let files2;
   try {
-    normalised = normalisePatch(readFileSync20(patchPath2, "utf8"));
-    files2 = parsePatchFiles(normalised);
+    normalised2 = normalisePatch(readFileSync20(patchPath2, "utf8"));
+    files2 = parsePatchFiles(normalised2);
   } catch (error) {
     throw new Error(`${label2}: ${error.message}`);
   }
@@ -24640,7 +24807,7 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
   const scratch = mkdtempSync2(join21(tmpdir(), "rv-fixture-patch-"));
   try {
     const copy = join21(scratch, "normalised.patch");
-    writeFileSync6(copy, normalised);
+    writeFileSync6(copy, normalised2);
     try {
       git3(targetDir, label2, ["apply", "--whitespace=nowarn", copy]);
     } catch (error) {
@@ -24682,7 +24849,7 @@ function readExpectation(cls, name, caseText) {
     block.push(line4);
   }
   const inExpect = (key2) => {
-    const match = block.map((line4) => new RegExp(`^  ${key2}:\\s*(\\S.*?)\\s*$`).exec(line4)).find((found) => found !== null && found !== void 0);
+    const match = block.map((line4) => new RegExp(`^  ${key2}:\\s*(\\S.*?)\\s*$`).exec(line4)).find((found2) => found2 !== null && found2 !== void 0);
     return match === void 0 || match === null ? null : scalar(match[1]);
   };
   const top = (key2) => {
@@ -24953,12 +25120,12 @@ async function recallCommand(argv, runInProcess2) {
   const classText = flag(argv, "--class");
   const classes = [];
   for (const name of classText === null ? RECALL_CLASSES : classText.split(",")) {
-    const found = RECALL_CLASSES.find((known2) => known2 === name);
-    if (found === void 0) {
+    const found2 = RECALL_CLASSES.find((known2) => known2 === name);
+    if (found2 === void 0) {
       console.error(`--class takes ${RECALL_CLASSES.join(", ")} (comma separated); ${name} is not scored.`);
       return 2;
     }
-    if (!classes.includes(found)) classes.push(found);
+    if (!classes.includes(found2)) classes.push(found2);
   }
   const runner = flag(argv, "--runner") ?? "claude";
   if (runner !== "claude" && runner !== "fake") {
@@ -25515,22 +25682,22 @@ function absenceScope(text4, repository = null) {
   return "bounded";
 }
 function namedSymbols(text4) {
-  const found = /* @__PURE__ */ new Set();
+  const found2 = /* @__PURE__ */ new Set();
   for (const match of text4.matchAll(/`([^`]+)`/g)) {
     const token = (match[1] ?? "").trim();
-    if (token.length >= 4 && !/\s/.test(token) && !token.startsWith("-")) found.add(token);
+    if (token.length >= 4 && !/\s/.test(token) && !token.startsWith("-")) found2.add(token);
   }
   for (const match of text4.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
-    if (match[1] !== void 0) found.add(match[1]);
+    if (match[1] !== void 0) found2.add(match[1]);
   }
   for (const match of text4.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
-    if (match[1] !== void 0) found.add(match[1]);
+    if (match[1] !== void 0) found2.add(match[1]);
   }
-  for (const token of [...found]) {
+  for (const token of [...found2]) {
     const base = token.split("/").pop();
-    if (base !== void 0 && base !== token && base.length >= 4 && !base.startsWith("-")) found.add(base);
+    if (base !== void 0 && base !== token && base.length >= 4 && !base.startsWith("-")) found2.add(base);
   }
-  return [...found];
+  return [...found2];
 }
 var gitGrep = (symbol, cwd, ref) => {
   const args = ref === null ? ["grep", "--fixed-strings", "--quiet", "-e", symbol] : ["grep", "--fixed-strings", "--quiet", "-e", symbol, ref];
@@ -25710,7 +25877,7 @@ function checkAbsenceClaim(text4, cwd, ref = null, search = gitGrep, repository 
   const symbols = stated.filter((symbol) => !isPath(symbol) || tied.size === 0 || tied.has(symbol));
   if (symbols.length === 0) return null;
   const searchedRef = ref ?? "working tree";
-  const found = [];
+  const found2 = [];
   const checked = [];
   let paths = null;
   for (const symbol of symbols.slice(0, 12)) {
@@ -25720,21 +25887,21 @@ function checkAbsenceClaim(text4, cwd, ref = null, search = gitGrep, repository 
         paths ??= trackedPaths(cwd, ref);
         const path = symbol.replace(/^\.?\//, "").replace(/\/$/, "");
         const exists = path.includes("/") ? paths.some((tracked) => tracked === path || tracked.startsWith(`${path}/`)) : paths.some((tracked) => tracked === path || tracked.endsWith(`/${path}`));
-        if (exists) found.push(symbol);
+        if (exists) found2.push(symbol);
       } else if (search(symbol, cwd, ref)) {
-        found.push(symbol);
+        found2.push(symbol);
       }
     } catch {
       return { found: [], checked, inconclusive: true, searchedRef };
     }
   }
-  if (found.length === 0) {
+  if (found2.length === 0) {
     const accessor = checked.find(generatedAccessor);
     const sources = accessor === void 0 ? resources(cwd) : [];
     if (accessor !== void 0 || sources.length > 0) {
       const why = accessor !== void 0 ? `\`${accessor}\` is shaped like a generated resource accessor` : `the repository tracks resource sources (${sources.slice(0, 3).join(", ")}${sources.length > 3 ? ", ..." : ""})`;
       return {
-        found,
+        found: found2,
         checked,
         inconclusive: true,
         searchedRef,
@@ -25742,7 +25909,7 @@ function checkAbsenceClaim(text4, cwd, ref = null, search = gitGrep, repository 
       };
     }
   }
-  return { found, checked, inconclusive: false, searchedRef };
+  return { found: found2, checked, inconclusive: false, searchedRef };
 }
 
 // plugins/review-voice/src/diff/declarations.ts
@@ -25875,7 +26042,7 @@ function hunkHeader2(line3) {
   return { oldLine, newLine, remainingOld, remainingNew };
 }
 function declarationsFromDiff(diff) {
-  const found = [];
+  const found2 = [];
   let path = null;
   let active = null;
   const finishWhenCounted = () => {
@@ -25887,7 +26054,7 @@ function declarationsFromDiff(diff) {
       if (line3 === "\\ No newline at end of file") continue;
       if (line3.startsWith("+")) {
         const name = declarationName(line3.slice(1));
-        if (path !== null && name !== null) found.push({ path, name, line: active.newLine, added: true });
+        if (path !== null && name !== null) found2.push({ path, name, line: active.newLine, added: true });
         active.newLine += 1;
         active.remainingNew -= 1;
         finishWhenCounted();
@@ -25895,7 +26062,7 @@ function declarationsFromDiff(diff) {
       }
       if (line3.startsWith("-")) {
         const name = declarationName(line3.slice(1));
-        if (path !== null && name !== null) found.push({ path, name, line: active.oldLine, added: false });
+        if (path !== null && name !== null) found2.push({ path, name, line: active.oldLine, added: false });
         active.oldLine += 1;
         active.remainingOld -= 1;
         finishWhenCounted();
@@ -25922,13 +26089,13 @@ function declarationsFromDiff(diff) {
     const header = hunkHeader2(line3);
     if (header !== null) active = header;
   }
-  return found;
+  return found2;
 }
 
 // plugins/review-voice/src/scoring/reach.ts
 function symbolsFromHunks(diff, changedPath) {
   const wanted = changedPath === null ? null : normalisePath3(changedPath);
-  const found = /* @__PURE__ */ new Set();
+  const found2 = /* @__PURE__ */ new Set();
   let inFile = false;
   for (const raw of diff.split(/\r?\n/)) {
     if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
@@ -25944,10 +26111,10 @@ function symbolsFromHunks(diff, changedPath) {
     for (const m of text4.matchAll(
       /\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,}|[A-Z][A-Z0-9]+_[A-Z0-9_]+)\b/g
     )) {
-      if (m[1] !== void 0) found.add(m[1]);
+      if (m[1] !== void 0) found2.add(m[1]);
     }
   }
-  return [...found];
+  return [...found2];
 }
 var REPOSITORY_WIDE_TOOLCHAIN_PATHS = [
   /(?:^|\/)(?:eslint\.config\.[^/]+|\.eslintrc(?:\.[^/]+)?|biome\.json|\.stylelintrc(?:\.[^/]+)?|\.prettierrc(?:\.[^/]+)?)$/i,
@@ -26005,12 +26172,12 @@ function isImportOnlyChange(diff, changedPath) {
 }
 function withinSubtree(path, changedDirectory) {
   if (changedDirectory === "") return false;
-  const normalised = normalisePath3(path);
-  return normalised === changedDirectory || normalised.startsWith(`${changedDirectory}/`);
+  const normalised2 = normalisePath3(path);
+  return normalised2 === changedDirectory || normalised2.startsWith(`${changedDirectory}/`);
 }
 function isRepositoryWideToolchainPath(path) {
-  const normalised = normalisePath3(path);
-  return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
+  const normalised2 = normalisePath3(path);
+  return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised2));
 }
 function computeReach(text4, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
   const searchedRef = ref ?? "working tree";
@@ -26047,13 +26214,13 @@ function computeReach(text4, changedPath, cwd, ref = null, search = gitGrepPaths
   if (diff !== null && isImportOnlyChange(diff, changedPath)) return result(null, false);
   for (const symbol of symbols) {
     searched.push(symbol);
-    let found;
+    let found2;
     try {
-      found = search(symbol, cwd, ref);
+      found2 = search(symbol, cwd, ref);
     } catch {
       return result(null, true);
     }
-    const code2 = found.filter(isCode);
+    const code2 = found2.filter(isCode);
     if (source !== "diff" && !code2.some((path) => normalisePath3(path) === normalisedChangedPath)) {
       ignored.push(symbol);
       continue;
@@ -26062,7 +26229,7 @@ function computeReach(text4, changedPath, cwd, ref = null, search = gitGrepPaths
       ignored.push(symbol);
       continue;
     }
-    for (const path of found) hits.add(path);
+    for (const path of found2) hits.add(path);
   }
   if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
   let counted = [...hits].filter(isCode);
@@ -26183,10 +26350,10 @@ function pathsWithHunks2(diff) {
   let hasHunkLine = false;
   const keepCurrent = () => {
     if (path === null || !hasHunkLine) return;
-    const normalised = normalisePath4(path);
-    if (seen.has(normalised)) return;
-    seen.add(normalised);
-    paths.push(normalised);
+    const normalised2 = normalisePath4(path);
+    if (seen.has(normalised2)) return;
+    seen.add(normalised2);
+    paths.push(normalised2);
   };
   for (const raw of diff.split(/\r?\n/)) {
     if (raw.startsWith("diff --git ")) {
@@ -26227,14 +26394,14 @@ function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declara
       declared.push(...declarations.map(timeBudgetDeclaration));
       return { file: file2(true, "time-budget"), references };
     }
-    let found;
+    let found2;
     try {
-      found = search(symbol, cwd, ref, remaining());
+      found2 = search(symbol, cwd, ref, remaining());
     } catch {
       incomplete = true;
       break;
     }
-    const code2 = new Set(found.filter(isCode).map(normalisePath4));
+    const code2 = new Set(found2.filter(isCode).map(normalisePath4));
     if (directoryCount2(code2) > NON_DISCRIMINATING_DIRECTORIES) {
       symbols.push({ symbol, common: true });
       continue;
@@ -26623,7 +26790,7 @@ function ineligibleReason(input) {
 // plugins/review-voice/src/corpus/dedup.ts
 import { createHash as createHash6 } from "node:crypto";
 function contentKey(parts) {
-  const normalised = parts.body.replace(/\s+/g, " ").trim().toLowerCase();
+  const normalised2 = parts.body.replace(/\s+/g, " ").trim().toLowerCase();
   const SEPARATOR = String.fromCharCode(31);
   return createHash6("sha256").update(
     [
@@ -26631,7 +26798,7 @@ function contentKey(parts) {
       parts.reviewerLogin.toLowerCase(),
       parts.filePath ?? "",
       String(parts.lineStart ?? ""),
-      normalised
+      normalised2
     ].join(SEPARATOR)
   ).digest("hex").slice(0, 32);
 }
@@ -27453,7 +27620,7 @@ function decisiveEvidence(raw) {
   }).slice(0, MAX_DECISIVE_EVIDENCE).map((entry) => ({ path: entry.path, line: entry.line, why: entry.why }));
 }
 function jsonCandidates(text4) {
-  const found = [];
+  const found2 = [];
   let depth = 0;
   let start = -1;
   let inString = false;
@@ -27473,14 +27640,14 @@ function jsonCandidates(text4) {
     } else if (ch === "}") {
       depth -= 1;
       if (depth === 0 && start !== -1) {
-        found.push(text4.slice(start, i + 1));
+        found2.push(text4.slice(start, i + 1));
         start = -1;
       } else if (depth < 0) {
         depth = 0;
       }
     }
   }
-  return found;
+  return found2;
 }
 var VERDICTS2 = ["confirmed", "rejected", "uncertain"];
 function parseVerdict(stdout) {
@@ -28595,15 +28762,15 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
     const parsed2 = listIn(JSON.parse(readFileSync30(candidatesFile, "utf8")), ["candidates"]);
     if (parsed2 === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidates = parsed2.list;
-    const normalised = candidates.map((raw, index) => normaliseCandidate(raw, index));
-    assertUniqueCandidateIds(normalised);
-    const misplaced = normalised.filter((c) => !candidateAnchor(hunks, c).ok);
+    const normalised2 = candidates.map((raw, index) => normaliseCandidate(raw, index));
+    assertUniqueCandidateIds(normalised2);
+    const misplaced = normalised2.filter((c) => !candidateAnchor(hunks, c).ok);
     if (misplaced.length > 0) {
       throw new Error(
         `interdiff candidate(s) not on a changed line of ${join25(dir, "diff.patch")}: ${misplaced.map((c) => c.candidateId).join(", ")}`
       );
     }
-    candidates = candidates.map((raw, index) => withId(raw, normalised[index].candidateId));
+    candidates = candidates.map((raw, index) => withId(raw, normalised2[index].candidateId));
     const parsedVerification = listIn(JSON.parse(readFileSync30(verificationFile, "utf8")), VERDICT_KEYS);
     verification2 = parsedVerification?.list ?? [];
     if (parsedVerification === null && candidates.length > 0) throw new Error(`${verificationFile} contains no verifications`);
@@ -28917,9 +29084,9 @@ function deletedFileCheck(argv) {
     if (anchor.ok || anchor.kind !== "file-not-in-diff") return false;
     const path = candidate.path.replace(/^\.\/+/, "");
     if (path === "" || path.startsWith("/") || path.split(/[\\/]/).includes("..") || !isReviewable(path, false)) return false;
-    const found = deletions();
-    if (found === null || !found.paths.has(path)) return false;
-    const count3 = baseLines(found.from, path);
+    const found2 = deletions();
+    if (found2 === null || !found2.paths.has(path)) return false;
+    const count3 = baseLines(found2.from, path);
     return count3 !== null && Number.isInteger(candidate.line) && candidate.line >= 1 && candidate.line <= count3;
   };
 }
@@ -29529,14 +29696,14 @@ function namesHeldPath(candidate, entry) {
 }
 function matchHeld(candidate, held) {
   const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
-  let found = null;
+  let found2 = null;
   for (const entry of held) {
     if (entry.path !== candidate.path || Math.abs(entry.line - candidate.line) > 2) continue;
     const drop = entry.verdict !== "below-gate" && entry.text !== void 0 && overlap(mine, significantWords(entry.text)) >= DUPLICATE_OVERLAP;
     if (drop) return { entry, drop };
-    found ??= { entry, drop };
+    found2 ??= { entry, drop };
   }
-  if (found !== null) return found;
+  if (found2 !== null) return found2;
   let best = null;
   for (const entry of held) {
     if (entry.text === void 0 || !namesHeldPath(candidate, entry)) continue;

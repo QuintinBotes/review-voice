@@ -18,9 +18,9 @@ export interface Adapter {
   matches: (haystack: string, output: string) => boolean;
   /**
    * `root` is the directory the command ran in, for an adapter whose tool prints absolute paths.
-   * `mask` is the issue 279 mask, for an adapter that changes the tool's text before returning it.
+   * `clean` masks and redacts (issue 279), for an adapter that reads or changes the tool's text before returning it.
    */
-  parse: (output: string, tool: string, root?: string, mask?: (text: string) => string) => EvidenceSignal[];
+  parse: (output: string, tool: string, root?: string, clean?: (text: string) => string) => EvidenceSignal[];
   /** The producing tool's name and version when the output itself states them. */
   version?: (output: string) => string | undefined;
 }
@@ -62,6 +62,7 @@ interface SarifRule {
   id?: unknown;
   shortDescription?: { text?: unknown };
   defaultConfiguration?: { level?: unknown };
+  messageStrings?: unknown;
 }
 interface SarifResult {
   ruleId?: unknown;
@@ -69,7 +70,7 @@ interface SarifResult {
   rule?: { id?: unknown; index?: unknown; toolComponent?: { index?: unknown; guid?: unknown } | null };
   level?: unknown;
   kind?: unknown;
-  message?: { text?: unknown };
+  message?: { text?: unknown; id?: unknown; arguments?: unknown };
   locations?: unknown;
   suppressions?: unknown;
 }
@@ -82,6 +83,7 @@ interface SarifRun {
     driver?: SarifComponent & { name?: unknown; version?: unknown; semanticVersion?: unknown };
     extensions?: unknown;
   };
+  artifacts?: unknown;
   results?: unknown;
 }
 
@@ -95,18 +97,118 @@ function indexed<T>(value: unknown, index: unknown): T | undefined {
 }
 const MAX_SARIF_MESSAGE_POINTS = 500;
 const MAX_SARIF_RULE_POINTS = 200;
-/**
- * Far above every later cut and a PEM-encoded 4096-bit key, so a secret a
- * later cut would split is still redacted whole, while one secret pattern,
- * which backtracks quadratically over a long run of URL-scheme characters,
- * stays fast on output a pull request controls.
- */
-const MAX_REDACTED_POINTS = 4096;
+/** As many UTF-16 units as one stream of a command's output can hold in bytes (`spawnInGroup`). */
+const MAX_COMPOSED_UNITS = 16 * 1024 * 1024;
+/** How many times its own length an output may compose from referenced messages. */
+const COMPOSED_PER_UNIT = 8;
 
-/** The text cut to MAX_REDACTED_POINTS code points, then redacted. */
-export function redactBounded(text: string): string {
+/**
+ * The first `points` code points of `text`, so a surrogate pair is never
+ * split. Text that may hold a secret is cut only once masked and redacted
+ * whole, since a secret the cut splits no longer matches its pattern.
+ */
+export function cut(text: string, points: number): string {
   // Cut by UTF-16 unit first so a long output is never spread whole; the points kept fit in twice as many units.
-  return redact([...text.slice(0, 2 * MAX_REDACTED_POINTS)].slice(0, MAX_REDACTED_POINTS).join('')).text;
+  return [...text.slice(0, 2 * points)].slice(0, points).join('');
+}
+
+/**
+ * `fn` computed once for each distinct text, since many results can share one
+ * rule or file, whose text would otherwise be redacted whole for each.
+ * shortcut: V8 hashes a string past 16383 characters by its length alone, so some thousand distinct texts that long and of one length, which only a document near the output cap can hold, are each compared with the others and take seconds; key them by a digest if that is ever seen.
+ */
+export function memo<T>(fn: (text: string) => T): (text: string) => T {
+  const done = new Map<string, T>();
+  return (text) => {
+    if (!done.has(text)) done.set(text, fn(text));
+    return done.get(text) as T;
+  };
+}
+
+/** What masking or redaction leaves where it replaced text. */
+const MARKER = /\[(?:REDACTED|redacted):\w*\]/g;
+
+/** A part of a text that cleaning replaced, and the marker that stands for it. */
+export interface Replaced {
+  start: number;
+  end: number;
+  marker: string;
+}
+
+/**
+ * Where `needle` first starts in `text` at or after `from`, or -1, in linear
+ * time (Knuth, Morris and Pratt), since `indexOf` compares a repetitive needle
+ * again at each position and the text is the pull request's to shape.
+ */
+function found(text: string, needle: string, from: number): number {
+  if (needle === '') return from;
+  // Entry i is the length of the longest start of the needle that also ends its first i characters.
+  const borders = new Int32Array(needle.length + 1);
+  borders[0] = -1;
+  for (let index = 0, border = -1; index < needle.length; ) {
+    while (border >= 0 && needle.charCodeAt(index) !== needle.charCodeAt(border)) border = borders[border]!;
+    index += 1;
+    border += 1;
+    borders[index] = border;
+  }
+  for (let index = from, matched = 0; index < text.length; index += 1) {
+    while (matched >= 0 && text.charCodeAt(index) !== needle.charCodeAt(matched)) matched = borders[matched]!;
+    matched += 1;
+    if (matched === needle.length) return index + 1 - matched;
+  }
+  return -1;
+}
+
+/**
+ * The parts of `text` that `version` replaced with a marker, where `version`
+ * is the text as masking or redaction left it. What the version keeps between
+ * two markers is placed where it first fits, which need not be where it
+ * stood. Any placement that accounts for the version replaces all the version
+ * did not keep, and that is what a caller relies on. A version that is not the
+ * text with parts replaced, which neither makes, loses the rest of the text.
+ */
+export function replaced(text: string, version: string): Replaced[] {
+  if (version === text) return [];
+  const spans: Replaced[] = [];
+  let end = 0;
+  let read = 0;
+  let marker = '';
+  for (const next of [...version.matchAll(MARKER), undefined]) {
+    const kept = version.slice(read, next?.index);
+    // The first stretch kept starts the text and the last ends it; one between them is searched for.
+    const start = next === undefined ? Math.max(end, text.length - kept.length) : read === 0 ? 0 : found(text, kept, end);
+    const fits = start !== -1 && (read > 0 || start === 0) && text.startsWith(kept, start);
+    if (read > 0 || !fits) spans.push({ start: end, end: fits ? start : text.length, marker });
+    if (!fits || next === undefined) break;
+    end = start + kept.length;
+    marker = next[0];
+    read = next.index + marker.length;
+  }
+  return spans;
+}
+
+/**
+ * The text with every part replaced that masking or redaction replaces in it
+ * as printed (issue 279). One after the other loses a secret either way. A
+ * mask takes the scheme or keyword a pattern needs, so the password beside
+ * it stays, and a redaction splits a listed value, so the rest of it stays.
+ * Parts that overlap become one, under the marker of the one that starts first.
+ */
+export function cleaner(mask: (text: string) => string = (text) => text): (text: string) => string {
+  return (text) => {
+    const masked = mask(text);
+    const redacted = redact(text).text;
+    if (masked === text) return redacted;
+    if (redacted === text) return masked;
+    let cleaned = '';
+    let copied = 0;
+    // The sort is stable, so of two parts starting together the mask names the value.
+    for (const part of [...replaced(text, masked), ...replaced(text, redacted)].sort((a, b) => a.start - b.start)) {
+      if (part.start >= copied) cleaned += text.slice(copied, part.start) + part.marker;
+      copied = Math.max(copied, part.end);
+    }
+    return cleaned + text.slice(copied);
+  };
 }
 
 /**
@@ -157,29 +259,149 @@ function isSarif(output: string): boolean {
  * unresolved; ruff emits absolute `file:///` URIs, made relative under `root`.
  * The analyst reads the file a signal names, so under a root a path that
  * escapes it, or a URI naming another scheme or host, names no path at all.
+ * A URI names none either when masking or redaction would change any form the
+ * path is built from, which are the URI and the pathname URL parsing leaves
+ * of it (dropping a query and a fragment, stripping tabs and newlines and
+ * turning a backslash into a slash), each as printed and decoded. They are
+ * checked before normalising, which can split what a mask or a pattern finds.
+ * Such a URI gives `undefined`, not `null`: its file is one the tool named, so
+ * its results are not those of another file, which results with no path are.
  */
-function sarifPath(uri: string, root: string | undefined): string | null {
+function sarifPath(uri: string, root: string | undefined, changes: (text: string) => boolean): string | null | undefined {
   let path = uri;
   if (/^[a-z][a-z0-9+.-]*:/i.test(uri)) {
     const url = URL.canParse(uri) ? new URL(uri) : undefined;
     if (url?.protocol !== 'file:' || url.host !== '') return null;
     path = url.pathname;
   }
-  try {
-    path = decodeURIComponent(path);
-  } catch {
-    // A malformed escape is left as printed; the analyst can still read it.
-  }
+  const plain = decoded(path);
+  // A relative uri is its own pathname, so it is decoded and checked once.
+  if ([...new Set(path === uri ? [uri, plain] : [uri, decoded(uri), path, plain])].some(changes)) return undefined;
   // Normalised after decoding, so an encoded dot segment is resolved, not kept.
-  path = posix.normalize(path);
+  path = normalised(plain);
   if (root === undefined) return path;
   const relative = posix.relative(root, posix.resolve(root, path));
   return relative === '' || relative === '..' || relative.startsWith('../') ? null : relative;
 }
 
-function sarifSignals(output: string, tool: string, root: string | undefined, mask = (text: string): string => text): EvidenceSignal[] {
+/**
+ * What `posix.normalize` returns, in one pass over the segments, since that
+ * takes quadratic time on a run of dot-dot segments and a uri can be as long
+ * as the output.
+ */
+function normalised(path: string): string {
+  const absolute = path.startsWith('/');
+  const kept: string[] = [];
+  for (const segment of path.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment !== '..') kept.push(segment);
+    else if (kept.length > 0 && kept.at(-1) !== '..') kept.pop();
+    else if (!absolute) kept.push('..');
+  }
+  const joined = kept.join('/');
+  const slash = path.endsWith('/') ? '/' : '';
+  if (absolute) return joined === '' ? '/' : `/${joined}${slash}`;
+  return `${joined === '' ? '.' : joined}${slash}`;
+}
+
+/**
+ * Each run of escapes decoded on its own, and in a run that is not UTF-8 each
+ * ASCII escape, so one malformed escape leaves the rest decoded rather than
+ * keeping what they spell from the check. What is left stays as printed,
+ * which the analyst can still read.
+ */
+function decoded(text: string): string {
+  return text.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+    // Bytes that are UTF-8 are the ones their text encodes back to. Not decodeURIComponent, whose throw for each run that is not UTF-8 took seconds over a uri of many.
+    const bytes = Buffer.from(run.replaceAll('%', ''), 'hex');
+    const utf8 = bytes.toString('utf8');
+    return Buffer.from(utf8, 'utf8').equals(bytes) ? utf8 : run.replace(/%[0-7][0-9a-f]/gi, (escape) => String.fromCharCode(Number.parseInt(escape.slice(1), 16)));
+  });
+}
+
+function sarifSignals(output: string, tool: string, root: string | undefined, cleaned = cleaner()): EvidenceSignal[] {
   const signals: EvidenceSignal[] = [];
   const seen = new Set<string>();
+  // The id joins the claim, which becomes S08's one-line held reason, so a
+  // run of whitespace, control or format characters becomes one space and
+  // the id is capped. A rule author's id can carry a secret as a message
+  // can, so it is masked and redacted whole before the cut, since a value
+  // changed or cut no longer matches; on both sides of the spacing, since a
+  // control character can sit inside a quoted value or stand where a
+  // header's space goes. Once for each distinct id, since many results name
+  // one rule.
+  const sanitisedId = memo((ruleId) => cut(cleaned(cleaned(ruleId).replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim()), MAX_SARIF_RULE_POINTS).trimEnd());
+  // A rule message may interpolate the matched text, which for a secrets
+  // rule is the secret, so the tool's words are masked and redacted before
+  // anything keeps them: whole and before the cut, since a value changed or
+  // cut no longer matches, and on both sides of the collapsing, since a tool
+  // can wrap a value across lines; text the collapsing leaves as it was is
+  // not cleaned twice. Trimmed after the cut, so claim and evidence carry
+  // one message.
+  const sanitisedMessage = (text: string, first = cleaned(text)): string => {
+    const spaced = first.replace(/\s+/g, ' ').trim();
+    return cut(spaced === first ? first : cleaned(spaced), MAX_SARIF_MESSAGE_POINTS).trimEnd();
+  };
+  // Once for each rule description and each uri, which many results share.
+  const described = memo((text) => sanitisedMessage(text));
+  // The key that tells repeated results apart holds a place's number, not its
+  // path, since results that share an artifact share a path of any length,
+  // and a set of long keys of one length compares each with the others in full.
+  // Results with no path share a place, as the same result repeated does. A
+  // uri dropped for what it carries is a place of its own, since dropping the
+  // paths of results in different files must not make them one result.
+  const numbers = new Map<string | null, number>([[null, 0]]);
+  let dropped = 0;
+  const placeOf = memo((uri): { path: string | null; place: number } => {
+    const path = sarifPath(uri, root, (text) => cleaned(text) !== text);
+    if (path === undefined) return { path: null, place: (dropped -= 1) };
+    if (!numbers.has(path)) numbers.set(path, numbers.size);
+    return { path, place: numbers.get(path) as number };
+  });
+  // A referenced message is composed and cleaned whole, once for each message
+  // string and the arguments given it, since results often share both. What
+  // one output composes is held to a few times its own length, and to the
+  // most one stream of a command's output can hold, so referenced messages
+  // cost about what inline ones in an output of that length do, and a short
+  // document cannot repeat a placeholder into a long one; a reference past
+  // that falls back as one that does not resolve. What redaction adds to a
+  // message counts too, since the longer text is then cleaned again.
+  // shortcut: a document whose distinct referenced messages compose to more than eight times its length loses the later ones to the rule description; raise the factor if a real tool writes one.
+  let room = Math.min(MAX_COMPOSED_UNITS, COMPOSED_PER_UNIT * output.length);
+  const composed = (parts: string[], length: number, values: unknown): string | undefined => {
+    if (length > room) return undefined;
+    // Charged before it is joined, since joining it is work even when its text does not fit.
+    room -= length;
+    let text = '';
+    for (const [index, part] of parts.entries()) {
+      if (index % 2 === 0) text += part;
+      else if (part === '{{' || part === '}}') text += part.charAt(0);
+      else {
+        const value: unknown = Array.isArray(values) ? values[Number(part.slice(1, -1))] : undefined;
+        text += typeof value === 'string' ? value : part;
+      }
+      if (text.length - length > room) return undefined;
+    }
+    const first = cleaned(text);
+    room -= Math.max(0, text.length - length) + Math.max(0, first.length - text.length);
+    return sanitisedMessage(text, first);
+  };
+  // By the message string object, not its text, so a long template is neither hashed nor compared.
+  const strings = new Map<object, { parts: string[]; messages: Map<string, string | undefined> }>();
+  const composedFrom = (entry: { text?: unknown }, values: unknown): string | undefined => {
+    const template = str(entry.text);
+    if (template === undefined) return undefined;
+    let known = strings.get(entry);
+    if (known === undefined) {
+      // {n} takes the nth argument when it is a string; {{ and }} are literal braces (3.11.5).
+      known = { parts: template.split(/(\{\{|\}\}|\{\d+\})/), messages: new Map() };
+      strings.set(entry, known);
+    }
+    // Keyed by the arguments that are strings, the only ones a placeholder takes, so one nested however deep is not walked.
+    const key = Array.isArray(values) ? JSON.stringify(values.map(str)) : '';
+    if (!known.messages.has(key)) known.messages.set(key, composed(known.parts, template.length, values));
+    return known.messages.get(key);
+  };
   for (const run of sarifRuns(output) ?? []) {
     const driver = run.tool?.driver;
     const driverName = (str(driver?.name) ?? '').toLowerCase();
@@ -219,15 +441,8 @@ function sarifSignals(output: string, tool: string, root: string | undefined, ma
       const referenced = indexed<SarifRule>(component?.rules, typeof result.ruleIndex === 'number' ? result.ruleIndex : result.rule?.index);
       const ruleId = str(result.ruleId) ?? str(result.rule?.id) ?? str(referenced?.id);
       if (ruleId === undefined) continue;
-      // The id joins the claim, which becomes S08's one-line held reason, so a
-      // run of whitespace, control or format characters becomes one space and
-      // the id is capped. A rule author's id can carry a secret as a message
-      // can, so it is masked and redacted before the cut, since a value changed
-      // or cut no longer matches; redacted on both sides of the spacing, since a
-      // control character can sit inside a quoted value or stand where a
-      // header's space goes. The raw id still finds the rule.
-      const spaced = redactBounded(mask(ruleId)).replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim();
-      const id = [...redactBounded(spaced)].slice(0, MAX_SARIF_RULE_POINTS).join('').trimEnd();
+      // The raw id still finds the rule.
+      const id = sanitisedId(ruleId);
       if (id === '') continue;
       // An id the reference gives is looked up in the component it names, then anywhere.
       const rule = referenced ?? idsOf.get(component)?.get(ruleId) ?? byId.get(ruleId);
@@ -237,22 +452,29 @@ function sarifSignals(output: string, tool: string, root: string | undefined, ma
       // analyst must still read, not a finding.
       const level = str(result.level) ?? str(rule?.defaultConfiguration?.level) ?? 'warning';
       if (level !== 'error' && level !== 'warning') continue;
-      // A rule message may interpolate the matched text, which for a secrets
-      // rule is the secret, so the tool's words are redacted before anything
-      // keeps them. A passed-through value is masked first and a token
-      // redacted before the cut, since a value changed or cut no longer
-      // matches; trimmed after it, so claim and evidence carry one message.
-      const text = str(result.message?.text) ?? str(rule?.shortDescription?.text);
-      const message = text === undefined ? undefined : [...redactBounded(mask(text).replace(/\s+/g, ' ').trim())].slice(0, MAX_SARIF_MESSAGE_POINTS).join('').trimEnd();
-      const location = list<{ physicalLocation?: { artifactLocation?: { uri?: unknown }; region?: { startLine?: unknown } } }>(result.locations)[0]?.physicalLocation;
-      const uri = str(location?.artifactLocation?.uri);
-      const path = uri === undefined ? null : sarifPath(uri, root);
+      // The message is the result's text, else the rule's message string its
+      // id names, filled with its arguments (3.11), else the rule description.
+      const messageId = result.message?.id;
+      const messageStrings = rule?.messageStrings;
+      const entry: unknown = typeof messageId === 'string' && typeof messageStrings === 'object' && messageStrings !== null && Object.hasOwn(messageStrings, messageId)
+        ? (messageStrings as Record<string, unknown>)[messageId]
+        : undefined;
+      const text = str(result.message?.text);
+      const description = str(rule?.shortDescription?.text);
+      const message = text !== undefined
+        ? sanitisedMessage(text)
+        : (typeof entry === 'object' && entry !== null ? composedFrom(entry, result.message?.arguments) : undefined) ?? (description === undefined ? undefined : described(description));
+      const location = list<{ physicalLocation?: { artifactLocation?: { uri?: unknown; index?: unknown }; region?: { startLine?: unknown } } }>(result.locations)[0]?.physicalLocation;
+      const artifact = location?.artifactLocation;
+      // A location may give only the index of the run's artifact that names the file (3.4.5).
+      const uri = str(artifact?.uri === undefined ? indexed<{ location?: { uri?: unknown } }>(run.artifacts, artifact?.index)?.location?.uri : artifact.uri);
+      const { path, place } = uri === undefined ? { path: null, place: 0 } : placeOf(uri);
       const startLine = location?.region?.startLine;
       // A line means nothing without the file it is in.
       const line = path !== null && typeof startLine === 'number' && Number.isInteger(startLine) && startLine > 0 ? startLine : null;
       const claim = message === undefined || message === '' ? id : `${id}: ${message}`;
       // The same result can be repeated across runs, or within one; it is kept once.
-      const key = `${path}\0${line}\0${claim}`;
+      const key = `${place}\0${line}\0${claim}`;
       if (seen.has(key)) continue;
       seen.add(key);
       // Nothing decides on a signal's confidence today, so the number is informative only.
@@ -263,13 +485,48 @@ function sarifSignals(output: string, tool: string, root: string | undefined, ma
 }
 
 /** `src/a.ts(12,3): error TS2345: Argument of type ...` and the eslint-ish variant. */
-const TSC = /^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.*)$/;
+const TSC = /^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.*)$/d;
 
 /** `a.py:12: error: Incompatible types` (mypy) and `a.py:12:3: F401 ...` (ruff). */
-const PYTHON = /^(.+?):(\d+)(?::(\d+))?:\s+(error|warning|note|[A-Z]\d+)\s*:?\s*(.*)$/;
+const PYTHON = /^(.+?):(\d+)(?::(\d+))?:\s+(error|warning|note|[A-Z]\d+)\s*:?\s*(.*)$/d;
 
-/** `Program.cs(12,3): error CS1002: ; expected [/path/proj.csproj]` */
-const DOTNET = /^\s*(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+([A-Z]+\d+):\s+(.*?)(?:\s+\[.*\])?$/;
+/**
+ * `Program.cs(12,3): error CS1002: ; expected [/path/proj.csproj]`. A mask or
+ * redaction marker is bracketed as the project suffix is, and a claim is read
+ * from the line once cleaned, so the suffix is a bracket that opens no marker.
+ */
+const DOTNET = /^\s*(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+([A-Z]+\d+):\s+(.*?)(?:\s+\[(?!REDACTED:|redacted:).*\])?$/d;
+
+/** `  12:3  error  'x' is defined but never used  no-unused-vars`, under a line naming the file. */
+const ESLINT = /^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$/d;
+
+/**
+ * A text adapter's claim, and whether its position holds, read from its line
+ * once masked and redacted. The claim joins the line's parts in another order
+ * or with another separator, which can split a secret so that cleaning the
+ * claim finds nothing. A cleaned line that no longer parses is the claim as
+ * it reads. The position is the pattern's first two groups, and it holds only
+ * when cleaning leaves the line as printed up to the end of the second, since
+ * a secret or a listed value can run from the path into the line number or
+ * the text after it, and the path alone then shows nothing to drop it for.
+ * `match` is the pattern's match of the whole line; a line that cleaning
+ * leaves as printed is not matched again, which would double a slow pattern.
+ */
+function reads(pattern: RegExp, claim: (match: RegExpExecArray) => string, clean = cleaner()): (match: RegExpExecArray) => { claim: string; holds: boolean } {
+  return (match) => {
+    const cleaned = clean(match[0]);
+    const again = cleaned === match[0] ? match : pattern.exec(cleaned);
+    return { claim: again === null ? cleaned.trim() : claim(again), holds: cleaned.startsWith(match[0].slice(0, match.indices?.[2]?.[1])) };
+  };
+}
+
+/** The signal of a line that starts with a path and a line number, which go together when the position does not hold. */
+function positioned(tool: string, kind: string, read: ReturnType<typeof reads>): (match: RegExpExecArray) => EvidenceSignal {
+  return (match) => {
+    const { claim, holds } = read(match);
+    return signal(tool, kind, holds ? match[1]! : null, holds ? Number(match[2]) : null, claim, match[0]);
+  };
+}
 
 export const ADAPTERS: Adapter[] = [
   {
@@ -292,48 +549,50 @@ export const ADAPTERS: Adapter[] = [
   {
     name: 'typescript',
     matches: (command, output) => /tsc|typecheck|tsgo/i.test(command) || TSC.test(output.split('\n')[0] ?? ''),
-    parse: (output, tool) =>
-      output
+    parse: (output, tool, _root, clean) => {
+      const toSignal = positioned(tool, 'type_error', reads(TSC, (match) => `${match[5]}: ${match[6]}`, clean));
+      return output
         .split('\n')
         .map((line) => TSC.exec(line))
         .filter((match): match is RegExpExecArray => match !== null)
         .filter((match) => match[4] === 'error')
-        .map((match) =>
-          signal(tool, 'type_error', match[1]!, Number(match[2]), `${match[5]}: ${match[6]}`, match[0]),
-        ),
+        .map(toSignal);
+    },
   },
   {
     name: 'dotnet',
     matches: (command) => /dotnet|msbuild|csc\b/i.test(command),
-    parse: (output, tool) =>
-      output
+    parse: (output, tool, _root, clean) => {
+      const toSignal = positioned(tool, 'compile_error', reads(DOTNET, (match) => `${match[5]}: ${match[6]}`, clean));
+      return output
         .split('\n')
         .map((line) => DOTNET.exec(line))
         .filter((match): match is RegExpExecArray => match !== null)
         .filter((match) => match[4] === 'error')
-        .map((match) =>
-          signal(tool, 'compile_error', match[1]!, Number(match[2]), `${match[5]}: ${match[6]}`, match[0]),
-        )
-        // MSBuild repeats a diagnostic once per target that saw it.
-        .filter((current, index, all) => all.findIndex((other) => other.claim === current.claim && other.path === current.path && other.line === current.line) === index),
+        .map((match) => ({ match, kept: toSignal(match) }))
+        // MSBuild repeats a diagnostic once per target that saw it. The position is compared as printed, since two that lost theirs are not one repeated.
+        .filter((current, index, all) => all.findIndex((other) => other.kept.claim === current.kept.claim && other.match[1] === current.match[1] && other.match[2] === current.match[2]) === index)
+        .map(({ kept }) => kept);
+    },
   },
   {
     name: 'python',
     matches: (command) => /mypy|ruff|flake8|pylint|pytest/i.test(command),
-    parse: (output, tool) =>
-      output
+    parse: (output, tool, _root, clean) => {
+      const toSignal = positioned(tool, 'lint_or_type_error', reads(PYTHON, (match) => `${match[4]}: ${match[5]}`, clean));
+      return output
         .split('\n')
         .map((line) => PYTHON.exec(line))
         .filter((match): match is RegExpExecArray => match !== null)
         .filter((match) => match[4] !== 'note')
-        .map((match) =>
-          signal(tool, 'lint_or_type_error', match[1]!, Number(match[2]), `${match[4]}: ${match[5]}`, match[0]),
-        ),
+        .map(toSignal);
+    },
   },
   {
     name: 'eslint',
     matches: (command) => /eslint|biome|oxlint/i.test(command),
-    parse: (output, tool) => {
+    parse: (output, tool, _root, clean) => {
+      const read = reads(ESLINT, (match) => `${match[5]}: ${match[4]}`, clean);
       const signals: EvidenceSignal[] = [];
       let file: string | null = null;
       for (const line of output.split('\n')) {
@@ -342,9 +601,11 @@ export const ADAPTERS: Adapter[] = [
           file = line.trim();
           continue;
         }
-        const match = /^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$/.exec(line);
+        const match = ESLINT.exec(line);
         if (match !== null && match[3] === 'error') {
-          signals.push(signal(tool, 'lint_error', file, Number(match[1]), `${match[5]}: ${match[4]}`, line));
+          // The position here is the line and column; the file was printed on a line of its own.
+          const { claim, holds } = read(match);
+          signals.push(signal(tool, 'lint_error', file, holds ? Number(match[1]) : null, claim, line));
         }
       }
       return signals;
@@ -361,11 +622,11 @@ export function parseOutput(
   command: string,
   output: string,
   root?: string,
-  mask?: (text: string) => string,
+  clean?: (text: string) => string,
 ): { signals: EvidenceSignal[]; version?: string } {
   const haystack = `${name} ${command}`;
   const adapter = ADAPTERS.find((candidate) => candidate.matches(haystack, output));
   if (adapter === undefined) return { signals: [] };
   const version = adapter.version?.(output);
-  return { signals: adapter.parse(output, name, root, mask), ...(version === undefined ? {} : { version }) };
+  return { signals: adapter.parse(output, name, root, clean), ...(version === undefined ? {} : { version }) };
 }

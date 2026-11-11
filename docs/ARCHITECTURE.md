@@ -589,15 +589,57 @@ reach a text adapter, which may make a false lead of one of its lines. That is
 the accepted risk, and it is not a leak, because every adapter's claim and
 evidence are masked and redacted where signals enter the report
 (`collectEvidence`), and a path that masking or redaction would change is
-dropped with its line, since a rewritten path would name another file. Text is
-cut to 4096 code points before it is redacted, far above the later cuts,
-because one secret pattern backtracks quadratically over a long run of
-characters and the output is the pull request's to shape. Each
+dropped with its line, since a rewritten path would name another file.
+Masking and redaction are each worked out on the text as printed, and what
+either would replace is replaced. One applied after the other loses a secret
+either way, because a mask takes the scheme or keyword a pattern needs, and a
+redaction splits a listed value. A text
+adapter reads its claim from its line once masked and redacted, because the
+claim joins the line's parts in another order, which can split a secret. It
+keeps the path and line only when cleaning leaves the line as printed up to
+its line number, since a value or a key block can run from the path into what
+follows, where the path alone shows nothing. A
+line that cleaning leaves as printed is not matched a second time. A marker is
+bracketed as the project MSBuild prints at the end of a line is, so the .NET
+adapter takes as the project only a bracket that opens no marker.
+Every cut comes after the whole text is masked and redacted, so a secret that
+crosses a cut is still recognised and no part of it is kept. A SARIF message
+is cleaned on both sides of the collapsing of its whitespace, as a rule id is
+on both sides of its spacing, since a tool can wrap a value across lines.
+That is safe only while every redaction pattern runs in linear time, since
+the output is the pull request's to shape. A claim and each evidence line are
+then cut at 4096 code points, and a path is never cut. A rule id, a rule
+description, an artifact's uri, a file's path and a referenced message with
+its arguments are each cleaned once, however many results share them. Each
 unsuppressed `fail` result at `error` or `warning` becomes a signal carrying
 the rule id, redacted, held to one line and cut at 200 code points, and the tool's own
-message, redacted and cut at 500 code points, its path (percent-decoded, `file://` removed, normalised and made relative to the directory
+message, redacted and cut at 500 code points. The message is `message.text`,
+else the `messageStrings` entry of the rule that `message.id` names, with each
+`{n}` filled from `message.arguments` and `{{` and `}}` read as braces (SARIF
+3.11), else the rule's short description. The message strings are those of
+the rule the result references, by index or guid before id. A referenced
+message is composed and cleaned whole, and what one output composes is held
+to eight times its own length and to 16 MiB, the most one stream of a
+command's output can hold, counting the longer of each template and its text
+and what redaction adds to it, since the longer text is cleaned again.
+Referenced messages then cost about what inline ones in an output of that
+length do, and a short document cannot repeat a placeholder into a long
+message. A reference past that falls back to
+the description, as one that does not resolve. Only the arguments that are
+strings are read, so one nested however deep costs nothing. The path is
+`artifactLocation.uri`, or the uri of `run.artifacts[index]` when a location
+gives only an index (SARIF 3.4.5), handled alike. It is dropped with its line
+when masking or redaction would change the uri, or the pathname URL parsing
+leaves of a `file://` uri, as printed or percent-decoded. They are checked
+before the path is normalised, since normalising can split what a mask or a
+pattern looks for. Results whose uris are dropped this way stay apart by uri,
+since they are in different files, and are not one result repeated. A run of
+escapes is decoded without a call that throws when it is not UTF-8, so a uri
+of stray escapes costs what one of valid escapes does. Otherwise the path is percent-decoded, loses `file://`, and is normalised and made relative to the directory
 the command ran in, or dropped with its line when it lies outside that
-directory or names another scheme or host) and start line, with a `kind` led by the producer's name
+directory or names another scheme or host. It is normalised in one pass over
+its segments, since a uri can be as long as the output and may be all dot-dot
+segments. With the path come the start line and a `kind` led by the producer's name
 (`secret`, `vulnerability`, `sast_finding`, `lint_error` or
 `static_finding`). Warnings are kept here, unlike the text adapters, because
 most semgrep rules and trivy's MEDIUM arrive as warnings and a signal is a
@@ -609,7 +651,9 @@ cached run directory. The driver's name and version are recorded as the
 check's `version`, unless a configured `version` command recorded one, and a
 version from either is masked and redacted before and after its invisible
 characters are stripped, since stripping one can join a secret, and before it
-is cut. A scanner run over a vendored tree
+is cut. Its first line is cleaned once more with the lines after it, their
+white space collapsed, so a value a tool wrapped at the end of that line goes
+whole. A scanner run over a vendored tree
 floods the analyst with leads; scoping it is the configuration's job.
 
 A configured command, its `version` command and the second-pass verification
@@ -622,7 +666,7 @@ tree runs the author's code, and that code has no claim on `GITHUB_TOKEN`,
 `GH_TOKEN`, `ANTHROPIC_API_KEY` or a `REVIEW_VOICE_*` setting, so none of them
 is passed unless a list names it. The lists come from the same configuration as
 the commands, the base commit's for a pull request, so a pull request cannot
-widen what its own checks receive. A passed-through value of eight characters or more that a command prints, in a diagnostic, a version line or a verifier's reason, is replaced by `[redacted:NAME]` before the report is stored or handed to the agents. This is environment scrubbing, not filesystem isolation. The command still
+widen what its own checks receive. A passed-through value of eight characters or more that a command prints, in a diagnostic, a version line or a verifier's reason, is replaced by `[redacted:NAME]` before the report is stored or handed to the agents. The value is matched as listed and as each of its lines reads once trimmed, since a text adapter reads output by line and trims it. This is environment scrubbing, not filesystem isolation. The command still
 runs as the reviewer, so one that runs the author's code can still read any
 file the reviewer can, including credential files under `HOME` such as a
 registry's `.npmrc` or the GitHub CLI's hosts file. For that the defences are
