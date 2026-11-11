@@ -675,9 +675,9 @@ function hunkHeader(line3) {
   if (match === null) return null;
   const oldCount = match[1] === void 0 ? 1 : Number(match[1]);
   const start = Number(match[2]);
-  const count3 = match[3] === void 0 ? 1 : Number(match[3]);
-  if (!Number.isSafeInteger(oldCount) || !Number.isSafeInteger(start) || !Number.isSafeInteger(count3) || oldCount < 0 || start < 0 || count3 < 0) return null;
-  return { oldCount, start, count: count3 };
+  const count4 = match[3] === void 0 ? 1 : Number(match[3]);
+  if (!Number.isSafeInteger(oldCount) || !Number.isSafeInteger(start) || !Number.isSafeInteger(count4) || oldCount < 0 || start < 0 || count4 < 0) return null;
+  return { oldCount, start, count: count4 };
 }
 function settleDeletion(hunk, nextRightLine) {
   if (!hunk.deleting) return;
@@ -822,15 +822,15 @@ function suggestedPatchMismatch(hunks, path, patch) {
   const literal = path.replace(/^\.\/+/, "");
   const file2 = hunks.get(literal) ?? hunks.get(normalisePath(path));
   if (file2 === void 0) return `suggested_patch is on ${path}, which has no added lines in the diff`;
-  const text4 = [];
+  const text5 = [];
   for (let line3 = patch.start_line; line3 <= patch.end_line; line3 += 1) {
     const added = file2.addedText.get(line3);
     if (added === void 0) {
       return `suggested_patch covers ${path}:${line3}, which is not an added line; a suggestion replaces only lines this change added`;
     }
-    text4.push(added);
+    text5.push(added);
   }
-  if (text4.join("\n") !== patch.original) {
+  if (text5.join("\n") !== patch.original) {
     return `suggested_patch original is not the text the diff adds at ${path}:${patch.start_line}-${patch.end_line}; copy those lines exactly`;
   }
   return null;
@@ -1390,21 +1390,21 @@ var HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/;
 var DECLARATION = /^[A-Za-z_$]/;
 var STATEMENT = /^(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|when)\b/;
 var MAX_SCOPE_LENGTH = 80;
-function count(text4, pattern) {
-  return text4.match(pattern)?.length ?? 0;
+function count(text5, pattern) {
+  return text5.match(pattern)?.length ?? 0;
 }
-function decisionPointsIn(text4) {
-  const trimmed = text4.trim();
+function decisionPointsIn(text5) {
+  const trimmed = text5.trim();
   if (trimmed.length === 0 || COMMENT_START.test(trimmed)) return 0;
   return count(trimmed, KEYWORDS) + count(trimmed, /&&/g) + count(trimmed, /\|\|/g) + count(trimmed, TERNARY);
 }
-function declarationIn(text4) {
-  return DECLARATION.test(text4) && !STATEMENT.test(text4) ? text4.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
+function declarationIn(text5) {
+  return DECLARATION.test(text5) && !STATEMENT.test(text5) ? text5.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
 }
 function headerPath2(raw) {
-  const text4 = raw.replace(/\t.*$/, "");
-  if (text4 === "/dev/null") return null;
-  const unquoted = unquoteGitPath(text4);
+  const text5 = raw.replace(/\t.*$/, "");
+  if (text5 === "/dev/null") return null;
+  const unquoted = unquoteGitPath(text5);
   return unquoted.startsWith("b/") ? unquoted.slice(2) : unquoted;
 }
 function countHunks(diff, wanted) {
@@ -1416,8 +1416,8 @@ function countHunks(diff, wanted) {
   let remainingOld = 0;
   let remainingNew = 0;
   let newLine = 0;
-  const record3 = (hunk, text4, removed) => {
-    const decisionPoints = decisionPointsIn(text4);
+  const record3 = (hunk, text5, removed) => {
+    const decisionPoints = decisionPointsIn(text5);
     if (decisionPoints === 0) return;
     if (!removed) hunk.decisionPoints += decisionPoints;
     hunk.branches.push({ scope, line: newLine, decisionPoints, removed });
@@ -1431,31 +1431,31 @@ function countHunks(diff, wanted) {
   for (const raw of diff.split("\n")) {
     const line3 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     if (current !== null && (remainingOld > 0 || remainingNew > 0)) {
-      const text4 = line3.slice(1);
+      const text5 = line3.slice(1);
       if (line3.startsWith("+")) {
-        if (declarationIn(text4) !== null) {
+        if (declarationIn(text5) !== null) {
           if (!replacing) scope = null;
           replacing = false;
         }
-        record3(current, text4, false);
-        current.added.push({ line: newLine, text: text4 });
+        record3(current, text5, false);
+        current.added.push({ line: newLine, text: text5 });
         remainingNew -= 1;
         newLine += 1;
         continue;
       }
       if (line3.startsWith("-")) {
-        const declaration = declarationIn(text4);
+        const declaration = declarationIn(text5);
         if (declaration !== null) {
           scope = declaration;
           replacing = true;
         }
-        record3(current, text4, true);
-        current.removed.push({ line: newLine, text: text4, scope });
+        record3(current, text5, true);
+        current.removed.push({ line: newLine, text: text5, scope });
         remainingOld -= 1;
         continue;
       }
       if (line3.startsWith(" ") || line3 === "") {
-        scope = declarationIn(text4) ?? scope;
+        scope = declarationIn(text5) ?? scope;
         replacing = false;
         remainingOld -= 1;
         remainingNew -= 1;
@@ -1673,7 +1673,7 @@ function applyStructureHumanReviewCap(assessment, signals, partial) {
   if (reasons.length === assessment.reasons.length) return assessment;
   return { ...assessment, level: "high", reasons };
 }
-var plural = (count3, noun) => `${count3} ${noun}${count3 === 1 ? "" : "s"}`;
+var plural = (count4, noun) => `${count4} ${noun}${count4 === 1 ? "" : "s"}`;
 function notCounted(excluded) {
   const parts = [];
   if (excluded.generatedFiles > 0) {
@@ -1703,15 +1703,15 @@ function parseExcluded(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const e = value;
   const read = (key2) => {
-    const count3 = e[key2];
-    if (count3 === void 0) return 0;
-    return isCount(count3) ? count3 : null;
+    const count4 = e[key2];
+    if (count4 === void 0) return 0;
+    return isCount(count4) ? count4 : null;
   };
   const parsed2 = { ...NOTHING_EXCLUDED };
   for (const key2 of Object.keys(NOTHING_EXCLUDED)) {
-    const count3 = read(key2);
-    if (count3 === null) return null;
-    parsed2[key2] = count3;
+    const count4 = read(key2);
+    if (count4 === null) return null;
+    parsed2[key2] = count4;
   }
   return parsed2;
 }
@@ -2415,8 +2415,8 @@ var NodeBase = class {
     };
     const res = toJS(this, "", ctx);
     if (typeof onAnchor === "function")
-      for (const { count: count3, res: res2 } of ctx.anchors.values())
-        onAnchor(res2, count3);
+      for (const { count: count4, res: res2 } of ctx.anchors.values())
+        onAnchor(res2, count4);
     return typeof reviver === "function" ? applyReviver(reviver, { "": res }, "", res) : res;
   }
 };
@@ -2513,13 +2513,13 @@ function getAliasCount(doc, node, anchors) {
     const anchor = anchors && source && anchors.get(source);
     return anchor ? anchor.count * anchor.aliasCount : 0;
   } else if (isCollection(node)) {
-    let count3 = 0;
+    let count4 = 0;
     for (const item of node.items) {
       const c = getAliasCount(doc, item, anchors);
-      if (c > count3)
-        count3 = c;
+      if (c > count4)
+        count4 = c;
     }
-    return count3;
+    return count4;
   } else if (isPair(node)) {
     const kc = getAliasCount(doc, node.key, anchors);
     const vc = getAliasCount(doc, node.value, anchors);
@@ -2759,14 +2759,14 @@ var lineComment = (str, indent, comment) => str.endsWith("\n") ? indentComment(c
 var FOLD_FLOW = "flow";
 var FOLD_BLOCK = "block";
 var FOLD_QUOTED = "quoted";
-function foldFlowLines(text4, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
+function foldFlowLines(text5, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
   if (!lineWidth || lineWidth < 0)
-    return text4;
+    return text5;
   if (lineWidth < minContentWidth)
     minContentWidth = 0;
   const endStep = Math.max(1 + minContentWidth, 1 + lineWidth - indent.length);
-  if (text4.length <= endStep)
-    return text4;
+  if (text5.length <= endStep)
+    return text5;
   const folds = [];
   const escapedFolds = {};
   let end = lineWidth - indent.length;
@@ -2783,14 +2783,14 @@ function foldFlowLines(text4, indent, mode = "flow", { indentAtStart, lineWidth 
   let escStart = -1;
   let escEnd = -1;
   if (mode === FOLD_BLOCK) {
-    i = consumeMoreIndentedLines(text4, i, indent.length);
+    i = consumeMoreIndentedLines(text5, i, indent.length);
     if (i !== -1)
       end = i + endStep;
   }
-  for (let ch; ch = text4[i += 1]; ) {
+  for (let ch; ch = text5[i += 1]; ) {
     if (mode === FOLD_QUOTED && ch === "\\") {
       escStart = i;
-      switch (text4[i + 1]) {
+      switch (text5[i + 1]) {
         case "x":
           i += 3;
           break;
@@ -2807,12 +2807,12 @@ function foldFlowLines(text4, indent, mode = "flow", { indentAtStart, lineWidth 
     }
     if (ch === "\n") {
       if (mode === FOLD_BLOCK)
-        i = consumeMoreIndentedLines(text4, i, indent.length);
+        i = consumeMoreIndentedLines(text5, i, indent.length);
       end = i + indent.length + endStep;
       split = void 0;
     } else {
       if (ch === " " && prev && prev !== " " && prev !== "\n" && prev !== "	") {
-        const next = text4[i + 1];
+        const next = text5[i + 1];
         if (next && next !== " " && next !== "\n" && next !== "	")
           split = i;
       }
@@ -2824,12 +2824,12 @@ function foldFlowLines(text4, indent, mode = "flow", { indentAtStart, lineWidth 
         } else if (mode === FOLD_QUOTED) {
           while (prev === " " || prev === "	") {
             prev = ch;
-            ch = text4[i += 1];
+            ch = text5[i += 1];
             overflow = true;
           }
           const j = i > escEnd + 1 ? i - 2 : escStart - 1;
           if (escapedFolds[j])
-            return text4;
+            return text5;
           folds.push(j);
           escapedFolds[j] = true;
           end = j + endStep;
@@ -2844,39 +2844,39 @@ function foldFlowLines(text4, indent, mode = "flow", { indentAtStart, lineWidth 
   if (overflow && onOverflow)
     onOverflow();
   if (folds.length === 0)
-    return text4;
+    return text5;
   if (onFold)
     onFold();
-  let res = text4.slice(0, folds[0]);
+  let res = text5.slice(0, folds[0]);
   for (let i2 = 0; i2 < folds.length; ++i2) {
     const fold = folds[i2];
-    const end2 = folds[i2 + 1] || text4.length;
+    const end2 = folds[i2 + 1] || text5.length;
     if (fold === 0)
       res = `
-${indent}${text4.slice(0, end2)}`;
+${indent}${text5.slice(0, end2)}`;
     else {
       if (mode === FOLD_QUOTED && escapedFolds[fold])
-        res += `${text4[fold]}\\`;
+        res += `${text5[fold]}\\`;
       res += `
-${indent}${text4.slice(fold + 1, end2)}`;
+${indent}${text5.slice(fold + 1, end2)}`;
     }
   }
   return res;
 }
-function consumeMoreIndentedLines(text4, i, indent) {
+function consumeMoreIndentedLines(text5, i, indent) {
   let end = i;
   let start = i + 1;
-  let ch = text4[start];
+  let ch = text5[start];
   while (ch === " " || ch === "	") {
     if (i < start + indent) {
-      ch = text4[++i];
+      ch = text5[++i];
     } else {
       do {
-        ch = text4[++i];
+        ch = text5[++i];
       } while (ch && ch !== "\n");
       end = i;
       start = i + 1;
-      ch = text4[start];
+      ch = text5[start];
     }
   }
   return end;
@@ -4544,7 +4544,7 @@ function parseSexagesimal(str, asBigInt) {
   const sign = str[0];
   const parts = sign === "-" || sign === "+" ? str.substring(1) : str;
   const num = (n) => asBigInt ? BigInt(n) : Number(n);
-  const res = parts.replace(/_/g, "").split(":").reduce((res2, p) => res2 * num(60) + num(p), num(0));
+  const res = parts.replace(/_/g, "").split(":").reduce((res2, p2) => res2 * num(60) + num(p2), num(0));
   return sign === "-" ? num(-1) * res : res;
 }
 function stringifySexagesimal(node) {
@@ -5068,8 +5068,8 @@ var Document = class _Document {
     };
     const res = toJS(this.contents, jsonArg ?? "", ctx);
     if (typeof onAnchor === "function")
-      for (const { count: count3, res: res2 } of ctx.anchors.values())
-        onAnchor(res2, count3);
+      for (const { count: count4, res: res2 } of ctx.anchors.values())
+        onAnchor(res2, count4);
     return typeof reviver === "function" ? applyReviver(reviver, { "": res }, "", res) : res;
   }
   /**
@@ -5140,12 +5140,12 @@ var prettifyError = (src, lc) => (error) => {
     lineStr = prev + lineStr;
   }
   if (/[^ ]/.test(lineStr)) {
-    let count3 = 1;
+    let count4 = 1;
     const end = error.linePos[1];
     if (end?.line === line3 && end.col > col) {
-      count3 = Math.max(1, Math.min(end.col - col, 80 - ci));
+      count4 = Math.max(1, Math.min(end.col - col, 80 - ci));
     }
-    const pointer2 = " ".repeat(ci) + "^".repeat(count3);
+    const pointer2 = " ".repeat(ci) + "^".repeat(count4);
     error.message += `:
 
 ${lineStr}
@@ -8457,11 +8457,11 @@ function eligibleLanes(lanes2, files2, diffText, options = {}) {
     const signals = lane.when.signals;
     if (signals !== void 0) {
       const where = paths === void 0 ? "" : ` in ${paths.join(", ")}`;
-      const fired = signals.map((signal2) => ({ signal: signal2, count: signalCount(options.structure, signal2, paths) })).filter(({ count: count3 }) => count3 > 0);
+      const fired = signals.map((signal2) => ({ signal: signal2, count: signalCount(options.structure, signal2, paths) })).filter(({ count: count4 }) => count4 > 0);
       const set2 = lane.when.minChangedSourceLines;
       const met = set2 !== void 0 && lines2 >= set2;
       const held = [
-        ...fired.map(({ signal: signal2, count: count3 }) => `${signal2}: ${count3} entr${count3 === 1 ? "y" : "ies"}${where}`),
+        ...fired.map(({ signal: signal2, count: count4 }) => `${signal2}: ${count4} entr${count4 === 1 ? "y" : "ies"}${where}`),
         ...met ? [`${measured}, at least ${set2}`] : []
       ];
       if (held.length > 0) return { lane, eligible: true, reason: held.join("; ") };
@@ -8545,9 +8545,9 @@ function blockingContext(entries) {
 }
 var REASON_CAP = 200;
 function withVerifierReason(base, reason2) {
-  const text4 = reason2?.replace(/\s+/g, " ").trim() ?? "";
-  if (text4.length === 0) return base;
-  const bounded = text4.length > REASON_CAP ? `${text4.slice(0, REASON_CAP - 1)}\u2026` : text4;
+  const text5 = reason2?.replace(/\s+/g, " ").trim() ?? "";
+  if (text5.length === 0) return base;
+  const bounded = text5.length > REASON_CAP ? `${text5.slice(0, REASON_CAP - 1)}\u2026` : text5;
   return `${base}; the verifier said: "${bounded}"`;
 }
 var TIER_ORDER = ["nit", "minor", "important", "blocking"];
@@ -8584,9 +8584,9 @@ function matchingSuppression(suppressions, candidate) {
 }
 var INTERROGATIVE_SENTENCE = /^(?:is|are|does|do|did|should|could|can|was|were|why|what|how|whether)\b/i;
 function isInterrogativeClaim(claim) {
-  const text4 = claim.trim();
-  if (text4.endsWith("?")) return true;
-  return text4.split(/(?<=[.?!])\s+/u).some((sentence) => sentence.trim().endsWith("?") && INTERROGATIVE_SENTENCE.test(sentence.trim()));
+  const text5 = claim.trim();
+  if (text5.endsWith("?")) return true;
+  return text5.split(/(?<=[.?!])\s+/u).some((sentence) => sentence.trim().endsWith("?") && INTERROGATIVE_SENTENCE.test(sentence.trim()));
 }
 function boundSeverityByEvidence(derived, candidate, verification2) {
   if (BOUNDARY_CATEGORIES.has(candidate.category) && verification2?.impactClass === "no-exposure") {
@@ -8801,7 +8801,7 @@ function possiblyRepeatsDescription(candidate, thread) {
 }
 function overlappingExcerpt(mine, body) {
   const sentences = body.split(/(?<=[.!?])\s+|\n+/u).map((sentence) => sentence.trim()).filter((sentence) => sentence.length > 0);
-  const ranked = sentences.map((text4, index) => ({ text: text4, index, shared: [...significantWords(text4)].filter((word) => mine.has(word)).length })).filter((sentence) => sentence.shared > 0).sort((a, b) => b.shared - a.shared || a.index - b.index);
+  const ranked = sentences.map((text5, index) => ({ text: text5, index, shared: [...significantWords(text5)].filter((word) => mine.has(word)).length })).filter((sentence) => sentence.shared > 0).sort((a, b) => b.shared - a.shared || a.index - b.index);
   const [best, ...rest] = ranked;
   if (best === void 0) return clip(body.trim());
   const chosen = [best];
@@ -8814,8 +8814,8 @@ function overlappingExcerpt(mine, body) {
   if (chosen.length === 1) return clip(best.text);
   return chosen.sort((a, b) => a.index - b.index).map((sentence) => sentence.text).join(" ");
 }
-function clip(text4) {
-  return text4.length <= DESCRIPTION_EXCERPT_CHARS ? text4 : `${text4.slice(0, DESCRIPTION_EXCERPT_CHARS - 1)}\u2026`;
+function clip(text5) {
+  return text5.length <= DESCRIPTION_EXCERPT_CHARS ? text5 : `${text5.slice(0, DESCRIPTION_EXCERPT_CHARS - 1)}\u2026`;
 }
 var MalformedCandidate = class extends Error {
 };
@@ -8833,10 +8833,10 @@ function suggestedPatchProblem(value) {
   }
   if (end - start > MAX_PATCH_LINES - 1) return `covers more than ${MAX_PATCH_LINES} lines`;
   for (const key2 of ["original", "replacement"]) {
-    const text4 = patch[key2];
-    if (typeof text4 !== "string") return `${key2} must be a string`;
-    if (text4.length > MAX_PATCH_TEXT) return `${key2} is longer than ${MAX_PATCH_TEXT} characters`;
-    if (/^[ \t]*```/m.test(text4)) return `${key2} has a line starting with three backticks, which would close the suggestion block`;
+    const text5 = patch[key2];
+    if (typeof text5 !== "string") return `${key2} must be a string`;
+    if (text5.length > MAX_PATCH_TEXT) return `${key2} is longer than ${MAX_PATCH_TEXT} characters`;
+    if (/^[ \t]*```/m.test(text5)) return `${key2} has a line starting with three backticks, which would close the suggestion block`;
   }
   return null;
 }
@@ -8969,8 +8969,8 @@ function followUpOf(candidate, verification2, thread, owner) {
   return onThread ? { ...prior, remaining: partly.remaining, addressed: partly.addressed } : null;
 }
 var WORDS = /[^\p{L}\p{N}]+/u;
-function significantWords(text4) {
-  return new Set(text4.toLowerCase().split(WORDS).filter((word) => word.length > 3));
+function significantWords(text5) {
+  return new Set(text5.toLowerCase().split(WORDS).filter((word) => word.length > 3));
 }
 function overlap(mine, theirs) {
   if (mine.size === 0) return 0;
@@ -8998,7 +8998,7 @@ function isAnchored(precedent) {
 var NEUTRAL_ALIGNMENT = 0.5;
 function alignmentFrom(precedents) {
   if (precedents.length === 0) return NEUTRAL_ALIGNMENT;
-  const total = precedents.reduce((sum, p) => sum + p.weight * (p.matchStrength ?? 1), 0);
+  const total = precedents.reduce((sum, p2) => sum + p2.weight * (p2.matchStrength ?? 1), 0);
   return 1 / (1 + Math.exp(-total));
 }
 function anchoredAlignmentFrom(precedents) {
@@ -9044,10 +9044,10 @@ function novelty(candidate, kept, precedents) {
 var MAX_DIRECTION_LENGTH = 120;
 function isBareDirection(direction) {
   if (direction === null) return false;
-  const text4 = direction.trim();
-  if (text4.length === 0 || text4.length > MAX_DIRECTION_LENGTH) return false;
-  if (/[\r\n`]/.test(text4)) return false;
-  return !/[.!?]\s+\S/.test(text4);
+  const text5 = direction.trim();
+  if (text5.length === 0 || text5.length > MAX_DIRECTION_LENGTH) return false;
+  if (/[\r\n`]/.test(text5)) return false;
+  return !/[.!?]\s+\S/.test(text5);
 }
 function editorFix(fix) {
   if (fix.render === "fix") return { render: "fix", text: fix.suggested };
@@ -9156,9 +9156,9 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const unverifiableBecause = confidenceSource !== "unverifiable-cap" ? null : missingContext ? `the verifier listed required_context_missing the claim depends on: ${missing.join("; ")}` : "the analyst's evidence says the claim could not be checked, and the verifier gave no technical_confidence of its own";
   const confidenceFloor = confidenceSource === "verifier" ? thresholds.technicalConfidence : thresholds.analystOnlyConfidence;
   const alreadySaid = duplicatePrecedent(candidate, precedents);
-  const forAlignment = alreadySaid === null ? precedents : precedents.filter((p) => !sameLocation(candidate, p));
-  const ownerPrecedents = forAlignment.filter((p) => p.role === "owner");
-  const repositoryPrecedents = forAlignment.filter((p) => p.role !== "owner");
+  const forAlignment = alreadySaid === null ? precedents : precedents.filter((p2) => !sameLocation(candidate, p2));
+  const ownerPrecedents = forAlignment.filter((p2) => p2.role === "owner");
+  const repositoryPrecedents = forAlignment.filter((p2) => p2.role !== "owner");
   const ownerAlignment = alignmentFrom(ownerPrecedents);
   const repositoryAlignment = alignmentFrom(repositoryPrecedents);
   const anchoredOwnerAlignment = anchoredAlignmentFrom(ownerPrecedents);
@@ -9246,7 +9246,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     eligible: rejectedBecause === null,
     rejectedBecause,
     duplicateOfPrecedent: alreadySaid?.eventId ?? null,
-    precedentIds: precedents.map((p) => p.eventId),
+    precedentIds: precedents.map((p2) => p2.eventId),
     ...staleConsumer ? { anchor: STALE_CONSUMER, causedBy: candidate.causedBy ?? null } : {}
   };
 }
@@ -9461,7 +9461,7 @@ function suppressedRuleIds(contentYaml, rules) {
 }
 function activePolicyRows(db) {
   return db.prepare(
-    `SELECT policy_id, scope_type, scope_key, version, content_yaml FROM policies
+    `SELECT policy_id, scope_type, scope_key, version, content_yaml, approved_at FROM policies
          WHERE ((scope_type = 'global' AND scope_key = 'owner') OR scope_type = 'path') AND active = 1
          ORDER BY CASE scope_type WHEN 'global' THEN 0 ELSE 1 END, scope_key, version DESC`
   ).all().map((row) => ({
@@ -9469,8 +9469,25 @@ function activePolicyRows(db) {
     scopeType: row["scope_type"],
     scopeKey: row["scope_key"],
     version: row["version"],
-    contentYaml: row["content_yaml"]
+    contentYaml: row["content_yaml"],
+    approvedAt: typeof row["approved_at"] === "string" ? row["approved_at"] : null
   }));
+}
+function activeSuppressions(db) {
+  const out = [];
+  for (const row of activePolicyRows(db)) {
+    let doc;
+    try {
+      doc = parse(row.contentYaml);
+    } catch {
+      continue;
+    }
+    for (const suppression of readSuppressions(doc?.suppressions, row.version).suppressions) {
+      const glob = row.scopeType === "path" ? row.scopeKey : suppression.glob;
+      out.push({ ...suppression, glob, policyId: row.policyId, scopeType: row.scopeType, approvedAt: row.approvedAt });
+    }
+  }
+  return out;
 }
 function activePolicyVersions(db) {
   return activePolicyRows(db).map(({ scopeType, scopeKey, policyId, version }) => ({ scopeType, scopeKey, policyId, version }));
@@ -9977,10 +9994,10 @@ function nameGlob(glob) {
   const source = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
   return new RegExp(`^${source}$`, "i");
 }
-function matchingGate(name, text4, gates) {
+function matchingGate(name, text5, gates) {
   for (const gate of gates) {
     if (!nameGlob(gate.name).test(name)) continue;
-    if (gate.summary !== void 0 && !text4.toLowerCase().includes(gate.summary.toLowerCase())) continue;
+    if (gate.summary !== void 0 && !text5.toLowerCase().includes(gate.summary.toLowerCase())) continue;
     return gate;
   }
   return null;
@@ -9997,7 +10014,7 @@ var EXIT_CODE_NOTE = /^Process completed with exit code \d+\.?$/;
 var neutral = (annotation) => fromRunner(annotation) && EXIT_CODE_NOTE.test((annotation.message ?? "").trim());
 function infrastructureSignature(run, signatures) {
   const find = (...texts) => {
-    const haystack = texts.filter((text4) => typeof text4 === "string").join("\n").toLowerCase();
+    const haystack = texts.filter((text5) => typeof text5 === "string").join("\n").toLowerCase();
     if (haystack.length === 0) return null;
     return signatures.find((signature2) => signature2.length > 0 && haystack.includes(signature2.toLowerCase())) ?? null;
   };
@@ -10041,16 +10058,16 @@ function summariseCi(checkRuns, statuses, gates = [], reading = {}, rules = {}) 
         detail = `failure, matched "${matched}"`;
       }
     }
-    const text4 = `${run.output?.title ?? ""}
+    const text5 = `${run.output?.title ?? ""}
 ${run.output?.summary ?? ""}`;
-    entries.push({ entry: { name: run.name ?? "", source: "check-run", result, detail }, text: text4 });
+    entries.push({ entry: { name: run.name ?? "", source: "check-run", result, detail }, text: text5 });
   }
   for (const status of statuses) {
     const { result, detail } = classifyStatus(status);
     entries.push({ entry: { name: status.context ?? "", source: "status", result, detail }, text: status.description ?? "" });
   }
   const state = { state: "green", passed: 0, failed: [], rerun: [], pending: [], ignored: [], gates: [] };
-  for (const { entry, text: text4 } of entries) {
+  for (const { entry, text: text5 } of entries) {
     if (entry.result === "passed") {
       state.passed += 1;
       continue;
@@ -10059,7 +10076,7 @@ ${run.output?.summary ?? ""}`;
       state.ignored.push(entry);
       continue;
     }
-    const gate = matchingGate(entry.name, text4, gates);
+    const gate = matchingGate(entry.name, text5, gates);
     if (gate !== null) {
       state.gates.push({ ...entry, gate: gate.name });
     } else if (entry.result === "failed") {
@@ -10192,20 +10209,20 @@ var LANGUAGES2 = {
   ".py": PYTHON,
   ".pyi": PYTHON
 };
-function splitLine(text4, language3) {
-  if (language3.blockComments && text4.trimStart().startsWith("*")) return { code: "", comment: text4, raw: "" };
+function splitLine(text5, language3) {
+  if (language3.blockComments && text5.trimStart().startsWith("*")) return { code: "", comment: text5, raw: "" };
   let code3 = "";
   let raw = "";
   let comment = "";
   let quote3 = null;
-  for (let index = 0; index < text4.length; index += 1) {
-    const char = text4[index];
+  for (let index = 0; index < text5.length; index += 1) {
+    const char = text5[index];
     if (quote3 !== null) {
       if (char === "\\") {
         code3 += "  ";
-        raw += text4.slice(index, index + 2);
+        raw += text5.slice(index, index + 2);
         index += 1;
-      } else if (text4.startsWith(quote3, index)) {
+      } else if (text5.startsWith(quote3, index)) {
         code3 += quote3;
         raw += quote3;
         index += quote3.length - 1;
@@ -10215,29 +10232,29 @@ function splitLine(text4, language3) {
         raw += char;
       }
     } else if (language3.quotes.includes(char)) {
-      quote3 = language3.tripleQuotes === true && text4.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
+      quote3 = language3.tripleQuotes === true && text5.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
       code3 += quote3;
       raw += quote3;
       index += quote3.length - 1;
-    } else if (text4.startsWith(language3.lineComment, index)) {
-      comment += text4.slice(index);
+    } else if (text5.startsWith(language3.lineComment, index)) {
+      comment += text5.slice(index);
       break;
-    } else if (language3.altLineComment !== void 0 && text4.startsWith(language3.altLineComment, index) && !text4.startsWith("#[", index)) {
-      comment += text4.slice(index);
+    } else if (language3.altLineComment !== void 0 && text5.startsWith(language3.altLineComment, index) && !text5.startsWith("#[", index)) {
+      comment += text5.slice(index);
       break;
-    } else if (language3.blockComments && text4.startsWith("/*", index)) {
-      const end = text4.indexOf("*/", index + 2);
-      comment += `${text4.slice(index, end === -1 ? void 0 : end + 2)} `;
+    } else if (language3.blockComments && text5.startsWith("/*", index)) {
+      const end = text5.indexOf("*/", index + 2);
+      comment += `${text5.slice(index, end === -1 ? void 0 : end + 2)} `;
       if (end === -1) break;
       index = end + 1;
     } else if (language3.regexLiterals === true && char === "/" && opensRegex(code3)) {
-      const end = regexEnd(text4, index);
+      const end = regexEnd(text5, index);
       if (end === -1) {
         code3 += char;
         raw += char;
       } else {
         code3 += `/${" ".repeat(end - index - 1)}/`;
-        raw += text4.slice(index, end + 1);
+        raw += text5.slice(index, end + 1);
         index = end;
       }
     } else {
@@ -10252,10 +10269,10 @@ function opensRegex(before) {
   if (trimmed === "" || /[(,=:[!&|?{};+\-*%<>~^]$/.test(trimmed)) return true;
   return /(?:^|[^\w$.])(?:return|typeof|case|in|of|delete|void|throw|new|instanceof|do|else)$/.test(trimmed);
 }
-function regexEnd(text4, start) {
+function regexEnd(text5, start) {
   let inClass = false;
-  for (let index = start + 1; index < text4.length; index += 1) {
-    const char = text4[index];
+  for (let index = start + 1; index < text5.length; index += 1) {
+    const char = text5[index];
     if (char === "\\") index += 1;
     else if (inClass) inClass = char !== "]";
     else if (char === "[") inClass = true;
@@ -10263,8 +10280,8 @@ function regexEnd(text4, start) {
   }
   return -1;
 }
-function kindsIn(text4, language3) {
-  const line3 = splitLine(text4, language3);
+function kindsIn(text5, language3) {
+  const line3 = splitLine(text5, language3);
   const kinds = [];
   for (const rule of language3.rules) {
     if (rule.in === "code" && language3.skip?.test(line3.code)) continue;
@@ -10280,8 +10297,8 @@ function findTypeEscapes(diff, paths) {
   for (const hunk of countHunks(diff, new Set(paths))) {
     const language3 = LANGUAGES2[extname(hunk.path).toLowerCase()];
     if (language3 === void 0) continue;
-    for (const { line: line3, text: text4 } of hunk.added) {
-      for (const kind of kindsIn(text4, language3)) found.push({ path: hunk.path, line: line3, kind });
+    for (const { line: line3, text: text5 } of hunk.added) {
+      for (const kind of kindsIn(text5, language3)) found.push({ path: hunk.path, line: line3, kind });
     }
   }
   const byPathLineKind = (a, b) => {
@@ -10356,18 +10373,18 @@ var STATEMENT_WORD = /\b(?:if|else|elif|for|foreach|while|do|switch|case|default
 var ALLOWLIST_NAME = /allow|whitelist|permitted|roles|scopes|origins/i;
 var WHOLE_LINE = /^.*$/g;
 function isListElement(raw) {
-  let text4 = raw.trim();
-  if (text4.endsWith(",")) text4 = text4.slice(0, -1).trimEnd();
-  if (text4 === "") return false;
-  const quote3 = text4[0];
-  if ((quote3 === '"' || quote3 === "'" || quote3 === "`") && text4.length >= 2 && text4.endsWith(quote3) && !text4.slice(1, -1).includes(quote3)) {
+  let text5 = raw.trim();
+  if (text5.endsWith(",")) text5 = text5.slice(0, -1).trimEnd();
+  if (text5 === "") return false;
+  const quote3 = text5[0];
+  if ((quote3 === '"' || quote3 === "'" || quote3 === "`") && text5.length >= 2 && text5.endsWith(quote3) && !text5.slice(1, -1).includes(quote3)) {
     return true;
   }
-  if (/^[\w$.@*/-]+$/.test(text4)) return true;
-  const colon = text4.indexOf(":");
+  if (/^[\w$.@*/-]+$/.test(text5)) return true;
+  const colon = text5.indexOf(":");
   if (colon <= 0) return false;
-  const key2 = text4.slice(0, colon).trim();
-  const value = text4.slice(colon + 1).trim();
+  const key2 = text5.slice(0, colon).trim();
+  const value = text5.slice(colon + 1).trim();
   return /^["']?[\w$.-]+["']?$/.test(key2) && value !== "" && !value.includes(",");
 }
 var RULES = [
@@ -10437,9 +10454,9 @@ var LANGUAGES3 = {
   ".py": HASH,
   ".rb": HASH
 };
-var collapse = (text4) => text4.replace(/\s+/g, " ").trim();
-function kindsIn2(text4, lang, allowlisted) {
-  const line3 = splitLine(text4.slice(0, MAX_SCANNED_LINE), lang);
+var collapse = (text5) => text5.replace(/\s+/g, " ").trim();
+function kindsIn2(text5, lang, allowlisted) {
+  const line3 = splitLine(text5.slice(0, MAX_SCANNED_LINE), lang);
   const kinds = /* @__PURE__ */ new Set();
   for (const rule of lang.rules) {
     if (rule.kind === "allowlist-entry" && !allowlisted) continue;
@@ -10473,7 +10490,7 @@ function findRemovedControls(diff, paths, deletedFiles = []) {
     pool.set(key2, left - 1);
     return true;
   };
-  const netted = (text4) => spend(added, collapse(text4));
+  const netted = (text5) => spend(added, collapse(text5));
   const found = [];
   const byPath = /* @__PURE__ */ new Map();
   const entriesOf = (path) => {
@@ -10500,10 +10517,10 @@ function findRemovedControls(diff, paths, deletedFiles = []) {
     for (const removed of hunk.removed) {
       if (movedWithinFile.has(removed) || netted(removed.text)) continue;
       if (lang === void 0) continue;
-      const { line: line3, text: text4, scope } = removed;
+      const { line: line3, text: text5, scope } = removed;
       const allowlisted = named || scope !== null && ALLOWLIST_NAME.test(scope);
-      for (const kind of kindsIn2(text4, lang, allowlisted)) {
-        const entry = { path: hunk.path, line: line3, kind, text: text4.trim().slice(0, MAX_TEXT) };
+      for (const kind of kindsIn2(text5, lang, allowlisted)) {
+        const entry = { path: hunk.path, line: line3, kind, text: text5.trim().slice(0, MAX_TEXT) };
         if (emptied) entry.deletedFile = true;
         entriesOf(hunk.path).push(entry);
       }
@@ -10519,12 +10536,12 @@ function findRemovedControls(diff, paths, deletedFiles = []) {
     const allowlisted = ALLOWLIST_NAME.test(basename(file2.path));
     let kept = 0;
     for (const raw of file2.text.split("\n")) {
-      const text4 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-      if (netted(text4)) continue;
+      const text5 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+      if (netted(text5)) continue;
       if (kept >= MAX_PER_FILE2) continue;
-      for (const kind of kindsIn2(text4, lang, allowlisted)) {
+      for (const kind of kindsIn2(text5, lang, allowlisted)) {
         if (kept >= MAX_PER_FILE2) break;
-        found.push({ path: file2.path, line: 1, kind, text: text4.trim().slice(0, MAX_TEXT), deletedFile: true });
+        found.push({ path: file2.path, line: 1, kind, text: text5.trim().slice(0, MAX_TEXT), deletedFile: true });
         kept += 1;
       }
     }
@@ -10631,8 +10648,8 @@ var LANGUAGES4 = {
   ".py": PYTHON2,
   ".rb": HASH2
 };
-function kindsIn3(text4, lang, urls) {
-  const line3 = splitLine(text4.slice(0, MAX_SCANNED_LINE2), lang);
+function kindsIn3(text5, lang, urls) {
+  const line3 = splitLine(text5.slice(0, MAX_SCANNED_LINE2), lang);
   const kinds = /* @__PURE__ */ new Set();
   for (const rule of urls ? [...lang.rules, URL_RULE] : lang.rules) {
     if (kinds.has(rule.kind)) continue;
@@ -10651,8 +10668,8 @@ function findRiskMarkers(diff, paths) {
     const lang = LANGUAGES4[extname3(hunk.path).toLowerCase()];
     if (lang === void 0) continue;
     const urls = /^urls?$/i.test(basename2(hunk.path, extname3(hunk.path)));
-    for (const { line: line3, text: text4 } of hunk.added) {
-      for (const kind of kindsIn3(text4, lang, urls)) found.push({ path: hunk.path, line: line3, kind });
+    for (const { line: line3, text: text5 } of hunk.added) {
+      for (const kind of kindsIn3(text5, lang, urls)) found.push({ path: hunk.path, line: line3, kind });
     }
   }
   found.sort((a, b) => {
@@ -10935,9 +10952,9 @@ var systemGit = {
     return runGit(["diff", "--name-only", "--no-renames", "-z", since, head], cwd).split("\0").filter((path) => path.length > 0);
   },
   commitCount(since, head, cwd) {
-    const count3 = Number(runGit(["rev-list", "--count", `${since}..${head}`], cwd).trim());
-    if (!Number.isSafeInteger(count3) || count3 < 0) throw new Error("git returned an invalid commit count");
-    return count3;
+    const count4 = Number(runGit(["rev-list", "--count", `${since}..${head}`], cwd).trim());
+    if (!Number.isSafeInteger(count4) || count4 < 0) throw new Error("git returned an invalid commit count");
+    return count4;
   },
   mergeBase(left, right, cwd) {
     const base = runGit(["merge-base", left, right], cwd).trim();
@@ -11147,12 +11164,12 @@ function sectionHunks(section2) {
   const parts = section2.split(/^(?=@@ )/m);
   const header = parts[0].startsWith("@@ ") ? "" : parts.shift();
   const hunks = [];
-  for (const text4 of parts) {
-    const numbers = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(text4);
+  for (const text5 of parts) {
+    const numbers = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(text5);
     if (numbers === null) return null;
     const start = Number(numbers[1]);
-    const count3 = numbers[2] === void 0 ? 1 : Number(numbers[2]);
-    hunks.push({ text: text4, first: start, last: count3 === 0 ? start + 1 : start + count3 - 1 });
+    const count4 = numbers[2] === void 0 ? 1 : Number(numbers[2]);
+    hunks.push({ text: text5, first: start, last: count4 === 0 ? start + 1 : start + count4 - 1 });
   }
   return { header, hunks };
 }
@@ -11178,22 +11195,22 @@ function hunkChanges(hunk) {
   const changes = [];
   let change;
   let side;
-  for (const text4 of body) {
-    if (text4.startsWith("-") || text4.startsWith("+")) {
+  for (const text5 of body) {
+    if (text5.startsWith("-") || text5.startsWith("+")) {
       if (change === void 0) {
         change = { start: line3, headStart: headLine, removed: [], added: [] };
         changes.push(change);
       }
-      side = text4.startsWith("-") ? change.removed : change.added;
-      side.push(text4.slice(1));
-      if (text4.startsWith("-")) line3++;
+      side = text5.startsWith("-") ? change.removed : change.added;
+      side.push(text5.slice(1));
+      if (text5.startsWith("-")) line3++;
       else headLine++;
-    } else if (text4.startsWith("\\")) {
-      side?.push(text4);
+    } else if (text5.startsWith("\\")) {
+      side?.push(text5);
     } else {
       change = void 0;
       side = void 0;
-      if (text4.startsWith(" ")) {
+      if (text5.startsWith(" ")) {
         line3++;
         headLine++;
       }
@@ -11210,10 +11227,10 @@ function withoutInheritedRuns(hunk, isInherited) {
   let inRun = false;
   let dropping = false;
   let previousDropped = false;
-  for (const text4 of body) {
-    const edit2 = text4.startsWith("-") || text4.startsWith("+");
-    if (text4.startsWith("\\")) {
-      if (!previousDropped) kept.push(text4);
+  for (const text5 of body) {
+    const edit2 = text5.startsWith("-") || text5.startsWith("+");
+    if (text5.startsWith("\\")) {
+      if (!previousDropped) kept.push(text5);
       continue;
     }
     if (edit2 && !inRun) {
@@ -11224,15 +11241,15 @@ function withoutInheritedRuns(hunk, isInherited) {
       inRun = false;
       dropping = false;
     }
-    if (dropping && text4.startsWith("-")) {
+    if (dropping && text5.startsWith("-")) {
       previousDropped = true;
       continue;
     }
     previousDropped = false;
-    kept.push(dropping ? ` ${text4.slice(1)}` : text4);
+    kept.push(dropping ? ` ${text5.slice(1)}` : text5);
   }
-  const oldCount = kept.filter((text4) => text4.startsWith(" ") || text4.startsWith("-")).length;
-  const newCount = kept.filter((text4) => text4.startsWith(" ") || text4.startsWith("+")).length;
+  const oldCount = kept.filter((text5) => text5.startsWith(" ") || text5.startsWith("-")).length;
+  const newCount = kept.filter((text5) => text5.startsWith(" ") || text5.startsWith("+")).length;
   return [`@@ -${parsed2[1]},${oldCount} +${parsed2[2]},${newCount} @@${parsed2[3]}`, ...kept].join("\n");
 }
 function withoutBaseChanges(delta, base, baseDelta) {
@@ -11491,8 +11508,8 @@ function followLine(previousHead, head, path, line3, cwd) {
   );
   return remapLine(oldSideHunks(patch), line3);
 }
-function rewriteAnchor(text4, path, oldLine, line3) {
-  return text4.replace(`\`${path}:${oldLine}\``, `\`${path}:${line3}\``);
+function rewriteAnchor(text5, path, oldLine, line3) {
+  return text5.replace(`\`${path}:${oldLine}\``, `\`${path}:${line3}\``);
 }
 function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */ new Map(), noLongerChanged = /* @__PURE__ */ new Set()) {
   for (const ref of [previousHead, head]) {
@@ -11546,8 +11563,8 @@ function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */
   const output = findings.length === settled.length ? DEFAULT_LIMITS.noFindingsResponse : carried.map((c) => c.text).join("\n\n");
   return { carried, notCarried, heldBack, settled, output };
 }
-function findingBody(text4) {
-  const joined2 = text4.replace(/\s+/g, " ").trim();
+function findingBody(text5) {
+  const joined2 = text5.replace(/\s+/g, " ").trim();
   const match = /^\[[a-z_]+\]\s+`[^`]+:\d+`\s*(.*)$/i.exec(joined2);
   return match === null ? joined2 : match[1] ?? "";
 }
@@ -11577,10 +11594,10 @@ function changedFiles(previousHead, head, cwd) {
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-function namesFile2(text4, path) {
-  if (text4.includes(path)) return true;
+function namesFile2(text5, path) {
+  if (text5.includes(path)) return true;
   const name = path.split("/").pop() ?? path;
-  return new RegExp(`(^|[^\\w./-])${escapeRegExp(name)}($|[^\\w-])`).test(text4);
+  return new RegExp(`(^|[^\\w./-])${escapeRegExp(name)}($|[^\\w-])`).test(text5);
 }
 function carryCandidates(candidates, previousHead, head, hunks, cwd) {
   for (const ref of [previousHead, head]) {
@@ -11602,7 +11619,7 @@ function carryCandidates(candidates, previousHead, head, hunks, cwd) {
       refuse(`the file of its cause, ${cause.path}, changed between the two heads`);
       continue;
     }
-    const named = [...changed].find((path) => (candidate.texts ?? []).some((text4) => namesFile2(text4, path)));
+    const named = [...changed].find((path) => (candidate.texts ?? []).some((text5) => namesFile2(text5, path)));
     if (named !== void 0) {
       refuse(`its claim, evidence or verification names ${named}, which changed between the two heads`);
       continue;
@@ -11765,28 +11782,28 @@ function isPlaceholder(value) {
 }
 function redact(input) {
   const counts = {};
-  let text4 = input;
+  let text5 = input;
   for (const { label: label2, pattern, group = 0 } of SECRET_PATTERNS) {
     pattern.lastIndex = 0;
     let redacted = "";
     let copied = 0;
-    for (const match of text4.matchAll(pattern)) {
+    for (const match of text5.matchAll(pattern)) {
       const captured = match[group];
       if (captured === void 0 || captured.length === 0) continue;
       if (isPlaceholder(captured)) continue;
       const span = match.indices?.[group];
       if (span === void 0) throw new Error(`the ${label2} pattern lacks the d flag`);
       counts[label2] = (counts[label2] ?? 0) + 1;
-      redacted += `${text4.slice(copied, span[0])}[REDACTED:${label2}]`;
+      redacted += `${text5.slice(copied, span[0])}[REDACTED:${label2}]`;
       copied = span[1];
     }
-    text4 = redacted + text4.slice(copied);
+    text5 = redacted + text5.slice(copied);
   }
   return {
-    text: text4,
+    text: text5,
     counts,
     sourceHash: hash(input),
-    redactedHash: hash(text4),
+    redactedHash: hash(text5),
     version: REDACTION_VERSION
   };
 }
@@ -11807,10 +11824,10 @@ var TEXT_CAP = 160;
 var MAX_QUOTES = 2;
 var MACHINE_PATH = /(?<![\w.~-])[\\/][^\s\\/'"]+[\\/]|(?<![\w.-])(?:~|\.\.)[\\/]|(?<!\w)[A-Za-z]:[\\/]/u;
 var isRecord2 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-function flatten(text4, max) {
-  return safeCheckName(text4.replace(new RegExp("\\p{Cf}", "gu"), ""), max);
+function flatten(text5, max) {
+  return safeCheckName(text5.replace(new RegExp("\\p{Cf}", "gu"), ""), max);
 }
-var code = (text4) => `\`${text4}\``;
+var code = (text5) => `\`${text5}\``;
 function repositoryRelative(reference) {
   const path = reference.replace(/:\d+(?:-\d+)?$/, "");
   return !path.startsWith("~") && !/[\s:]/.test(path) && path.split(/[\\/]/).every((part) => part !== "" && part !== "..");
@@ -11837,9 +11854,9 @@ function evidenceBlock(finding, backing, policy) {
   const signal2 = finding?.toolSignal;
   if (isRecord2(signal2) && typeof signal2["tool"] === "string" && typeof signal2["text"] === "string") {
     const tool = flatten(signal2["tool"]);
-    const text4 = flatten(signal2["text"], TEXT_CAP);
-    if (tool !== "" && text4 !== "" && !MACHINE_PATH.test(tool) && !MACHINE_PATH.test(text4)) {
-      lines2.push(`Static check ${code(tool)} also flagged this line: ${code(text4)}`);
+    const text5 = flatten(signal2["text"], TEXT_CAP);
+    if (tool !== "" && text5 !== "" && !MACHINE_PATH.test(tool) && !MACHINE_PATH.test(text5)) {
+      lines2.push(`Static check ${code(tool)} also flagged this line: ${code(text5)}`);
     }
   }
   const quotesOwner = finding?.conventionQuotesCandidate;
@@ -11993,7 +12010,7 @@ function storedFamilies(raw, reviewRunId) {
 }
 function describeProvenance(provenance) {
   if (provenance === null) return "Provenance not recorded";
-  const policy = provenance.policyVersions.length === 0 ? "none" : provenance.policyVersions.map((p) => `${p.scopeType}/${p.scopeKey} v${p.version}`).join(", ");
+  const policy = provenance.policyVersions.length === 0 ? "none" : provenance.policyVersions.map((p2) => `${p2.scopeType}/${p2.scopeKey} v${p2.version}`).join(", ");
   return `Provenance ${describeOrigin(provenance)}, plugin ${provenance.pluginVersion}, claude ${provenance.claudeVersion ?? "unknown"}, mode ${provenance.mode ?? "unknown"}, policy ${policy}`;
 }
 function describeOrigin(provenance) {
@@ -12007,9 +12024,9 @@ function storedPolicyVersions(db, runId) {
     if (!Array.isArray(parsed2)) return null;
     const versions = [];
     for (const entry of parsed2) {
-      const p = typeof entry === "object" && entry !== null ? entry : {};
-      if (typeof p["scopeType"] !== "string" || typeof p["scopeKey"] !== "string" || typeof p["policyId"] !== "string" || typeof p["version"] !== "number") return null;
-      versions.push({ scopeType: p["scopeType"], scopeKey: p["scopeKey"], policyId: p["policyId"], version: p["version"] });
+      const p2 = typeof entry === "object" && entry !== null ? entry : {};
+      if (typeof p2["scopeType"] !== "string" || typeof p2["scopeKey"] !== "string" || typeof p2["policyId"] !== "string" || typeof p2["version"] !== "number") return null;
+      versions.push({ scopeType: p2["scopeType"], scopeKey: p2["scopeKey"], policyId: p2["policyId"], version: p2["version"] });
     }
     return versions;
   } catch {
@@ -12042,11 +12059,11 @@ function storedProvenance(raw, reviewRunId) {
   }
   const policyVersions = [];
   for (const entry of policies) {
-    const p = typeof entry === "object" && entry !== null ? entry : {};
-    if (typeof p["scopeType"] !== "string" || typeof p["scopeKey"] !== "string" || typeof p["policyId"] !== "string" || typeof p["version"] !== "number") {
+    const p2 = typeof entry === "object" && entry !== null ? entry : {};
+    if (typeof p2["scopeType"] !== "string" || typeof p2["scopeKey"] !== "string" || typeof p2["policyId"] !== "string" || typeof p2["version"] !== "number") {
       return malformed();
     }
-    policyVersions.push({ scopeType: p["scopeType"], scopeKey: p["scopeKey"], policyId: p["policyId"], version: p["version"] });
+    policyVersions.push({ scopeType: p2["scopeType"], scopeKey: p2["scopeKey"], policyId: p2["policyId"], version: p2["version"] });
   }
   return {
     origin,
@@ -12242,9 +12259,9 @@ function recordedStructure(raw) {
 function storedStructure(raw) {
   const value = asRecord(raw);
   if (value === null || !Array.isArray(value["files"]) || !Number.isInteger(value["unmeasured"])) return null;
-  const counts = (table, order) => {
-    const record3 = asRecord(table);
-    return record3 !== null && Object.entries(record3).every(([kind, count3]) => Object.hasOwn(order, kind) && Number.isInteger(count3)) ? record3 : null;
+  const counts = (table2, order) => {
+    const record3 = asRecord(table2);
+    return record3 !== null && Object.entries(record3).every(([kind, count4]) => Object.hasOwn(order, kind) && Number.isInteger(count4)) ? record3 : null;
   };
   const files2 = [];
   for (const entry of value["files"]) {
@@ -12269,8 +12286,8 @@ function storedStructure(raw) {
 }
 function describeStructure(structure) {
   if (structure === null) return "Structure not recorded";
-  const count3 = structure.files.length;
-  return `Structure ${count3} file${count3 === 1 ? "" : "s"} with a signal, ${structure.unmeasured} unmeasured`;
+  const count4 = structure.files.length;
+  return `Structure ${count4} file${count4 === 1 ? "" : "s"} with a signal, ${structure.unmeasured} unmeasured`;
 }
 var basename3 = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
 function attribute(finding, hints, taken) {
@@ -12301,9 +12318,9 @@ function patchPath(hint) {
 }
 var TOOL_TEXT_CAP = 160;
 var MAX_CONVENTION_QUOTES = 2;
-function cut(text4, max) {
-  const points = [...text4];
-  return points.length > max ? `${points.slice(0, max - 1).join("")}\u2026` : text4;
+function cut(text5, max) {
+  const points = [...text5];
+  return points.length > max ? `${points.slice(0, max - 1).join("")}\u2026` : text5;
 }
 var plainPath = (path) => posix3.normalize(path.split("\\").join("/")).replace(/^\.\//, "");
 function toolSignalFor(finding, signals) {
@@ -12312,23 +12329,23 @@ function toolSignalFor(finding, signals) {
   if (signal2 === void 0) return void 0;
   if (MACHINE_PATH.test(flatten(signal2.tool, Number.POSITIVE_INFINITY))) return void 0;
   const shown = [signal2.evidence[0], signal2.claim].find(
-    (text4) => text4 !== void 0 && !MACHINE_PATH.test(flatten(text4, Number.POSITIVE_INFINITY))
+    (text5) => text5 !== void 0 && !MACHINE_PATH.test(flatten(text5, Number.POSITIVE_INFINITY))
   );
   if (shown === void 0) return void 0;
   return { tool: signal2.tool, line: finding.line, text: cut(redactedAsPosted(shown), TOOL_TEXT_CAP) };
 }
-var redactedAsPosted = (text4) => redact(flatten(redact(text4).text, Number.POSITIVE_INFINITY)).text;
-var squashed = (text4) => text4.replace(/\s+/g, " ").trim();
+var redactedAsPosted = (text5) => redact(flatten(redact(text5).text, Number.POSITIVE_INFINITY)).text;
+var squashed = (text5) => text5.replace(/\s+/g, " ").trim();
 var QUOTED = /["\u201c]([^"\u201c\u201d]+)["\u201d]/g;
-function namesWhole(text4, name) {
+function namesWhole(text5, name) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\w./\\\\-])(?:\\./)?${escaped}(?![\\w/\\\\-]|\\.\\w)`).test(text4);
+  return new RegExp(`(?<![\\w./\\\\-])(?:\\./)?${escaped}(?![\\w/\\\\-]|\\.\\w)`).test(text5);
 }
-function documentNamed(text4, documents) {
-  const exact = documents.filter((doc) => doc.path !== "" && namesWhole(text4, doc.path)).sort((a, b) => b.path.length - a.path.length)[0];
+function documentNamed(text5, documents) {
+  const exact = documents.filter((doc) => doc.path !== "" && namesWhole(text5, doc.path)).sort((a, b) => b.path.length - a.path.length)[0];
   if (exact !== void 0) return exact;
   const base = (path) => path.split("/").pop() ?? path;
-  return documents.find((doc) => namesWhole(text4, base(doc.path)) && documents.filter((other) => base(other.path) === base(doc.path)).length === 1);
+  return documents.find((doc) => namesWhole(text5, base(doc.path)) && documents.filter((other) => base(other.path) === base(doc.path)).length === 1);
 }
 function conventionQuotesFor(evidence, documents) {
   if (!Array.isArray(evidence) || documents.length === 0) return void 0;
@@ -13294,44 +13311,44 @@ function decide(input) {
   }
   return done({ event: input.mapped, action: "post", reasons, exitCode: 0, cappedByCi: false }, annotations);
 }
-function plural2(count3, word) {
-  return `${count3} ${word}${count3 === 1 ? "" : "s"}`;
+function plural2(count4, word) {
+  return `${count4} ${word}${count4 === 1 ? "" : "s"}`;
 }
 function summaryLine(event, posted, cappedBy) {
-  const count3 = posted.length;
+  const count4 = posted.length;
   const highest = [...posted].map((finding) => finding.severity).sort((a, b) => RANK[a] - RANK[b])[0];
   if (cappedBy === "ci") {
-    return count3 === 0 ? "No problems found, but not approving while CI is red." : `${plural2(count3, "nit")}; not approving while CI is red.`;
+    return count4 === 0 ? "No problems found, but not approving while CI is red." : `${plural2(count4, "nit")}; not approving while CI is red.`;
   }
   if (cappedBy === "held") {
-    return count3 === 0 ? "Not approving yet." : `${plural2(count3, "nit")}; not approving yet.`;
+    return count4 === 0 ? "Not approving yet." : `${plural2(count4, "nit")}; not approving yet.`;
   }
   if (cappedBy === "complexity" || cappedBy === "policy") {
-    return count3 === 0 ? "No problems found." : `${plural2(count3, "nit")}.`;
+    return count4 === 0 ? "No problems found." : `${plural2(count4, "nit")}.`;
   }
   if (event === "APPROVE") {
-    return count3 === 0 ? "No problems found." : `Approved, with ${plural2(count3, "nit")}.`;
+    return count4 === 0 ? "No problems found." : `Approved, with ${plural2(count4, "nit")}.`;
   }
   if (event === "REQUEST_CHANGES") {
-    return `Changes requested: ${plural2(count3, "comment")}, the highest ${highest}.`;
+    return `Changes requested: ${plural2(count4, "comment")}, the highest ${highest}.`;
   }
-  return `${plural2(count3, "comment")}, the highest ${highest}.`;
+  return `${plural2(count4, "comment")}, the highest ${highest}.`;
 }
 function wouldHaveSummary(planned) {
   const posted = [...planned.inline, ...planned.unanchored];
-  const count3 = posted.length;
+  const count4 = posted.length;
   const highest = posted.map((finding) => finding.severity).sort((a, b) => RANK[a] - RANK[b])[0];
   if (planned.mapped === "APPROVE") {
-    return count3 === 0 ? "Would have approved: no problems found." : `Would have approved, with ${plural2(count3, "nit")}.`;
+    return count4 === 0 ? "Would have approved: no problems found." : `Would have approved, with ${plural2(count4, "nit")}.`;
   }
   if (planned.mapped === "REQUEST_CHANGES") {
-    return `Would have requested changes: ${plural2(count3, "comment")}, the highest ${highest}.`;
+    return `Would have requested changes: ${plural2(count4, "comment")}, the highest ${highest}.`;
   }
   if (planned.heldBackApproval) {
-    const nits = count3 === 0 ? "" : `, with ${plural2(count3, "nit")}`;
+    const nits = count4 === 0 ? "" : `, with ${plural2(count4, "nit")}`;
     return `Would have commented: a finding above a nit was held back, unverified or below the posting tier${nits}.`;
   }
-  return `Would have commented: ${plural2(count3, "comment")}, the highest ${highest}.`;
+  return `Would have commented: ${plural2(count4, "comment")}, the highest ${highest}.`;
 }
 function suggestionBlock(replacement) {
   return replacement === "" ? "```suggestion\n```" : `\`\`\`suggestion
@@ -13486,7 +13503,7 @@ function readingGuide(run) {
   if (structure === null) {
     lines2.push("Structure not recorded.");
   } else {
-    const sum = (counts) => Object.values(counts).reduce((total, count3) => total + (count3 ?? 0), 0);
+    const sum = (counts) => Object.values(counts).reduce((total, count4) => total + (count4 ?? 0), 0);
     const kinds = (counts, order) => Object.keys(counts).filter((kind) => (counts[kind] ?? 0) > 0).sort((a, b) => (order[a] ?? 0) - (order[b] ?? 0)).join(", ");
     const files2 = [...structure.files].filter((file2) => repositoryPath(file2.path)).sort(
       (a, b) => sum(b.removedControls) - sum(a.removedControls) || sum(b.riskMarkers) - sum(a.riskMarkers) || Number(b.sizeCrossing !== null) - Number(a.sizeCrossing !== null) || b.branchGrowth - a.branchGrowth || b.typeEscapes - a.typeEscapes || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
@@ -13593,8 +13610,8 @@ function defaultWatchConfig() {
   return { workspace: null, intervalMs: 2 * 36e5, post: false, maxAttemptsPerHead: 2, reviewTimeoutMs: 45 * 6e4, runRepositoryCommands: false, lockPort: null };
 }
 var UNIT_MS = { s: 1e3, m: 6e4, h: 36e5, d: 864e5 };
-function parseDuration(text4) {
-  const match = /^(\d+)([smhd])$/.exec(text4.trim());
+function parseDuration(text5) {
+  const match = /^(\d+)([smhd])$/.exec(text5.trim());
   if (match === null || Number(match[1]) === 0) return null;
   return Number(match[1]) * UNIT_MS[match[2]];
 }
@@ -13698,9 +13715,9 @@ function applyRetention(dataDir, db, config2, now = /* @__PURE__ */ new Date()) 
   return { runDirectories, auditEvents };
 }
 function retentionLine(result) {
-  const { count: count3 } = result.runDirectories;
-  if (count3 === 0 && result.auditEvents === 0) return null;
-  return `removed ${count3} run director${count3 === 1 ? "y" : "ies"}, ${result.auditEvents} audit event${result.auditEvents === 1 ? "" : "s"}`;
+  const { count: count4 } = result.runDirectories;
+  if (count4 === 0 && result.auditEvents === 0) return null;
+  return `removed ${count4} run director${count4 === 1 ? "y" : "ies"}, ${result.auditEvents} audit event${result.auditEvents === 1 ? "" : "s"}`;
 }
 
 // plugins/review-voice/src/evidence/reproduce.ts
@@ -13829,8 +13846,8 @@ var MAX_VERSION_POINTS = 80;
 var SHELL_UNAVAILABLE_EXIT_CODES = [126, 127];
 var BASE_ENVIRONMENT = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CI", "TERM"];
 var MIN_MASKED_LENGTH = 8;
-function maskPassthrough(text4, source, passthrough) {
-  let masked = text4;
+function maskPassthrough(text5, source, passthrough) {
+  let masked = text5;
   const values = passthrough.map((name) => [name, source[name]]).filter((entry) => typeof entry[1] === "string" && entry[1].length >= MIN_MASKED_LENGTH).sort((a, b) => b[1].length - a[1].length);
   for (const [name, value] of values) masked = masked.split(value).join(`[redacted:${name}]`);
   return masked;
@@ -13904,7 +13921,7 @@ async function collectEvidence(commands, options) {
       didNotRun.push(command.name);
       continue;
     }
-    const mask = (text4) => maskPassthrough(text4, process.env, options.envPassthrough ?? []);
+    const mask = (text5) => maskPassthrough(text5, process.env, options.envPassthrough ?? []);
     const output = `${result.stdout ?? ""}
 ${result.stderr ?? ""}`;
     const version = command.version === void 0 ? void 0 : await readVersion(spawn3, command.version, options.cwd, timeoutMs, env, mask);
@@ -14050,8 +14067,8 @@ var CREDENTIAL_DIRS = [".ssh", ".gnupg", ".aws", ".config/gh", "Library/Keychain
 var CREDENTIAL_FILES = [".netrc", ".npmrc", ".git-credentials"];
 var SAFE_ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 var SAFE_PATH = /^[A-Za-z0-9._/-]+$/;
-var shellQuote = (text4) => `'${text4.replaceAll("'", `'\\''`)}'`;
-var sbString = (text4) => `"${text4.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+var shellQuote = (text5) => `'${text5.replaceAll("'", `'\\''`)}'`;
+var sbString = (text5) => `"${text5.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 var inside = (path, parent) => path === parent || path.startsWith(parent.endsWith("/") ? parent : `${parent}/`);
 var unique = (paths) => [...new Set(paths)];
 function realOf(path) {
@@ -14274,7 +14291,7 @@ var contentOf = (path) => {
     return null;
   }
 };
-var firstLine2 = (text4) => text4.split("\n").map((line3) => line3.trim()).find((line3) => /[\p{L}\p{N}]/u.test(line3)) ?? "";
+var firstLine2 = (text5) => text5.split("\n").map((line3) => line3.trim()).find((line3) => /[\p{L}\p{N}]/u.test(line3)) ?? "";
 async function probeSandbox(ctx, given) {
   const platform = ctx.platform ?? process.platform;
   if (platform === "darwin") return { platform, mechanism: "none", probe: DARWIN_OFF };
@@ -14408,18 +14425,18 @@ function removePlaces(dir) {
     console.error(`reproduce: could not remove ${frozen}: ${firstLine2(error.message)}`);
   }
 }
-function reachedMarker(text4, candidateId) {
+function reachedMarker(text5, candidateId) {
   const marker = `RV_REPRO_REACHED ${candidateId}`;
-  return text4.split("\n").some((line3) => line3.replace(/^[#\s]*/, "").replace(/\r$/, "") === marker);
+  return text5.split("\n").some((line3) => line3.replace(/^[#\s]*/, "").replace(/\r$/, "") === marker);
 }
-function recorded(text4) {
-  const clean2 = Buffer.from(redact(text4).text, "utf8");
+function recorded(text5) {
+  const clean2 = Buffer.from(redact(text5).text, "utf8");
   if (clean2.length <= OUTPUT_CAP_BYTES) return clean2.toString("utf8");
   let end = OUTPUT_CAP_BYTES;
   while (end > 0 && ((clean2[end] ?? 0) & 192) === 128) end -= 1;
   return clean2.subarray(0, end).toString("utf8");
 }
-function stateOf(result, reached, text4, timeoutSeconds, cpuSeconds) {
+function stateOf(result, reached, text5, timeoutSeconds, cpuSeconds) {
   if (result.error !== void 0) {
     const code3 = result.error.code;
     if (code3 === "ETIMEDOUT") return { kind: "not-run", reason: `timed out after ${timeoutSeconds}s` };
@@ -14430,7 +14447,7 @@ function stateOf(result, reached, text4, timeoutSeconds, cpuSeconds) {
   if (SHELL_UNAVAILABLE_EXIT_CODES.includes(result.status)) return { kind: "not-run", reason: `not found or not executable (exit ${result.status})` };
   if (result.status === 0) return { kind: "passed" };
   if (result.status === 137 || result.status === 152) return { kind: "not-run", reason: `may have been stopped by a resource limit (exit ${result.status})` };
-  if (/^\s*signal: '(SIGXCPU|SIGKILL)'\s*$/m.test(text4)) return { kind: "not-run", reason: `may have been stopped at the ${cpuSeconds}s CPU limit` };
+  if (/^\s*signal: '(SIGXCPU|SIGKILL)'\s*$/m.test(text5)) return { kind: "not-run", reason: `may have been stopped at the ${cpuSeconds}s CPU limit` };
   if (!reached) return { kind: "not-run", reason: `exited ${result.status} before reaching its assertion` };
   return { kind: "failed", code: result.status };
 }
@@ -14460,12 +14477,12 @@ async function runReproduction(record3, content, runner, layout, ctx) {
     const started = Date.now();
     const result = await spawnConfined(layout, ctx, command, runner.timeoutSeconds * 1e3);
     const durationMs = Date.now() - started;
-    const text4 = `${result.stdout}${result.stdout === "" || result.stdout.endsWith("\n") ? "" : "\n"}${result.stderr}`;
-    const reached = reachedMarker(text4, record3.candidateId);
-    record3.runs.push({ exitCode: result.status, durationMs, reached, output: recorded(text4) });
+    const text5 = `${result.stdout}${result.stdout === "" || result.stdout.endsWith("\n") ? "" : "\n"}${result.stderr}`;
+    const reached = reachedMarker(text5, record3.candidateId);
+    record3.runs.push({ exitCode: result.status, durationMs, reached, output: recorded(text5) });
     const modified = changedSince();
     if (modified !== null) return end("did-not-run", modified);
-    const state = stateOf(result, reached, text4, runner.timeoutSeconds, ctx.config.cpuSeconds);
+    const state = stateOf(result, reached, text5, runner.timeoutSeconds, ctx.config.cpuSeconds);
     if (state.kind === "not-run") return end("did-not-run", state.reason);
     if (state.kind === "passed") return end("did-not-fail", attempt === 1 ? "run 1 exited 0" : `flaky: run 1 exited ${firstCode}, run 2 exited 0`);
     firstCode = state.code;
@@ -14479,7 +14496,7 @@ async function reproduce(verification2, candidates, ctx) {
   const reproductions = [];
   const seen = /* @__PURE__ */ new Set();
   let sandbox = null;
-  const text4 = (value) => typeof value === "string" ? value : "";
+  const text5 = (value) => typeof value === "string" ? value : "";
   for (const entry of list2.filter(isRecord3)) {
     const repro = entry["reproduction"];
     const id = entry["candidate_id"] ?? entry["candidateId"];
@@ -14488,12 +14505,12 @@ async function reproduce(verification2, candidates, ctx) {
     const line3 = candidate?.["line"];
     const record3 = {
       candidateId: id,
-      path: text4(candidate?.["path"]),
+      path: text5(candidate?.["path"]),
       line: typeof line3 === "number" ? line3 : 0,
-      runner: text4(repro["runner"]),
-      file: text4(repro["path"]),
+      runner: text5(repro["runner"]),
+      file: text5(repro["path"]),
       copy: "",
-      expected: text4(repro["expected"]),
+      expected: text5(repro["expected"]),
       outcome: "did-not-run",
       runs: []
     };
@@ -15291,11 +15308,11 @@ function readRetention(block, result) {
   read("runs_days", "runsDays");
   read("audit_days", "auditDays");
 }
-function contentHash(text4) {
-  return createHash4("sha256").update(text4).digest("hex").slice(0, 16);
+function contentHash(text5) {
+  return createHash4("sha256").update(text5).digest("hex").slice(0, 16);
 }
-function layerFromPolicyFile(text4, source, fallbackKey) {
-  const doc = asRecord2(parse(text4));
+function layerFromPolicyFile(text5, source, fallbackKey) {
+  const doc = asRecord2(parse(text5));
   if (doc === null) return null;
   const scope = asRecord2(doc["scope"]);
   const type = typeof scope?.["type"] === "string" ? scope["type"] : "repository";
@@ -15631,10 +15648,10 @@ function loadConfig(repositoryRoot2, baselinePath, path, db, source) {
   const policyPath = join8(repositoryRoot2, ".review-voice", "policy.yaml");
   if (existsSync4(policyPath)) {
     try {
-      const text4 = readFileSync5(policyPath, "utf8");
-      const layer = layerFromPolicyFile(text4, ".review-voice/policy.yaml", repositoryRoot2);
+      const text5 = readFileSync5(policyPath, "utf8");
+      const layer = layerFromPolicyFile(text5, ".review-voice/policy.yaml", repositoryRoot2);
       if (layer !== null) {
-        result.unapproved.push({ source: ".review-voice/policy.yaml", contentHash: contentHash(text4) });
+        result.unapproved.push({ source: ".review-voice/policy.yaml", contentHash: contentHash(text5) });
       }
     } catch (error) {
       result.warnings.push(`.review-voice/policy.yaml could not be parsed: ${String(error)}`);
@@ -16127,13 +16144,13 @@ var MAX_LINKED_ISSUES = 5;
 var MAX_ISSUE_BODY = 1e4;
 var cappedBody = (body) => {
   if (body.length <= MAX_ISSUE_BODY) return body;
-  const cut2 = body.slice(0, MAX_ISSUE_BODY);
-  const paragraph = cut2.lastIndexOf("\n\n");
-  if (paragraph !== -1) return cut2.slice(0, paragraph);
-  const line3 = cut2.lastIndexOf("\n");
-  if (line3 !== -1) return cut2.slice(0, line3);
-  const sentence = [...cut2.matchAll(/[.!?](?=\s)/gu)].at(-1);
-  return sentence === void 0 ? "" : cut2.slice(0, sentence.index + 1);
+  const cut3 = body.slice(0, MAX_ISSUE_BODY);
+  const paragraph = cut3.lastIndexOf("\n\n");
+  if (paragraph !== -1) return cut3.slice(0, paragraph);
+  const line3 = cut3.lastIndexOf("\n");
+  if (line3 !== -1) return cut3.slice(0, line3);
+  const sentence = [...cut3.matchAll(/[.!?](?=\s)/gu)].at(-1);
+  return sentence === void 0 ? "" : cut3.slice(0, sentence.index + 1);
 };
 var CLOSING_REFERENCE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)|([\w.-]+\/[\w.-]+)#(\d+)|#(\d+))\b/giu;
 function closingReferences(description, repository) {
@@ -16141,10 +16158,10 @@ function closingReferences(description, repository) {
   const beyond = [];
   const skipped = [];
   for (const match of description.matchAll(CLOSING_REFERENCE)) {
-    const [, text4, urlRepository, urlNumber, shortRepository, shortNumber, bareNumber] = match;
+    const [, text5, urlRepository, urlNumber, shortRepository, shortNumber, bareNumber] = match;
     const named = urlRepository ?? shortRepository;
     if (named !== void 0 && named.toLowerCase() !== repository.toLowerCase()) {
-      skipped.push(text4);
+      skipped.push(text5);
       continue;
     }
     const number = Number(urlNumber ?? shortNumber ?? bareNumber);
@@ -16171,7 +16188,7 @@ async function readThread(options) {
   const linkedIssues = [];
   if (options.linkedIssues === true) {
     const references = closingReferences(description?.body ?? "", options.repository);
-    for (const text4 of references.skipped) warnings.push(`Skipped ${text4}: a linked issue outside ${options.repository} is not read.`);
+    for (const text5 of references.skipped) warnings.push(`Skipped ${text5}: a linked issue outside ${options.repository} is not read.`);
     if (references.beyond.length > 0) {
       warnings.push(`Read the first ${MAX_LINKED_ISSUES} linked issues; not read: ${references.beyond.map((n) => `#${n}`).join(", ")}.`);
     }
@@ -16343,10 +16360,10 @@ async function fileAtRef(client, repository, path, ref) {
     return null;
   }
 }
-function linesAt(text4, start, count3) {
-  const lines2 = text4.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
-  if (start < 1 || start - 1 + count3 > lines2.length) return null;
-  return lines2.slice(start - 1, start - 1 + count3).join("\n");
+function linesAt(text5, start, count4) {
+  const lines2 = text5.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
+  if (start < 1 || start - 1 + count4 > lines2.length) return null;
+  return lines2.slice(start - 1, start - 1 + count4).join("\n");
 }
 function suggestionApplied(reviewed, current, patch) {
   const before = reviewed.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
@@ -16362,8 +16379,8 @@ function suggestionApplied(reviewed, current, patch) {
   if (before.slice(0, start).join("\n") !== after.slice(0, start).join("\n")) return false;
   return after[start + replaced.length] === before[patch.end_line];
 }
-function unixLines(text4) {
-  return text4.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3).join("\n");
+function unixLines(text5) {
+  return text5.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3).join("\n");
 }
 
 // plugins/review-voice/src/store/outcomes.ts
@@ -16497,12 +16514,12 @@ async function checkOutcomes(options) {
     }
     try {
       const context2 = await readPull(options.client, repository, pullNumber, result.warnings);
-      const cut2 = context2.replies.length >= READ_LIMIT;
-      if (cut2 && options.pullNumber !== void 0) result.warnings.push(`${repository}#${pullNumber}: only the first ${READ_LIMIT} inline comments were read, so no reply is offered on it`);
+      const cut3 = context2.replies.length >= READ_LIMIT;
+      if (cut3 && options.pullNumber !== void 0) result.warnings.push(`${repository}#${pullNumber}: only the first ${READ_LIMIT} inline comments were read, so no reply is offered on it`);
       for (const run of runs) {
         const followed = await followRun(options, context2, run, viewerLogin);
         result.outcomes.push(...followed.outcomes);
-        if (!cut2) result.questions.push(...followed.questions);
+        if (!cut3) result.questions.push(...followed.questions);
       }
     } catch (error) {
       result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
@@ -16793,18 +16810,14 @@ function evidenceBlockGroups(db) {
   }
   return groups;
 }
-function postedBreakdown(db) {
-  const rows = db.prepare("SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes").all();
+function findingPlacer(db) {
   const findings = /* @__PURE__ */ new Map();
-  const groups = { severity: /* @__PURE__ */ new Map(), lane: /* @__PURE__ */ new Map(), rule: /* @__PURE__ */ new Map() };
-  const blockGroups = evidenceBlockGroups(db);
-  const byBlock = { with: [], without: [], unknown: [] };
-  for (const row of rows) {
-    let known = findings.get(row.review_run_id);
+  return (runId, findingId) => {
+    let known = findings.get(runId);
     if (known === void 0) {
       known = /* @__PURE__ */ new Map();
-      findings.set(row.review_run_id, known);
-      const stored = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(row.review_run_id);
+      findings.set(runId, known);
+      const stored = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(runId);
       try {
         const parsed2 = JSON.parse(stored?.output_json ?? "{}");
         for (const finding of parsed2.findings ?? []) {
@@ -16818,26 +16831,73 @@ function postedBreakdown(db) {
       } catch {
       }
     }
-    const info = known.get(row.finding_id) ?? { severity: "unknown", lane: "diff", rule: "unknown" };
+    return known.get(findingId) ?? { severity: "unknown", lane: "diff", rule: "unknown" };
+  };
+}
+var collect = (map2, statsOf2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list2]) => [key2, statsOf2(list2)]));
+function postedBreakdown(db, { since } = {}) {
+  const rows = since === void 0 ? db.prepare("SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes").all() : db.prepare(
+    `SELECT o.review_run_id AS review_run_id, o.finding_id AS finding_id, o.outcome AS outcome, o.strength AS strength
+             FROM finding_outcomes o JOIN review_runs r ON r.review_run_id = o.review_run_id WHERE r.created_at >= ?`
+  ).all(since);
+  const place = findingPlacer(db);
+  const groups = { severity: /* @__PURE__ */ new Map(), lane: /* @__PURE__ */ new Map(), rule: /* @__PURE__ */ new Map() };
+  const blockGroups = evidenceBlockGroups(db);
+  const byBlock = { with: [], without: [], unknown: [] };
+  for (const row of rows) {
+    const info = place(row.review_run_id, row.finding_id);
     groups.severity.set(info.severity, [...groups.severity.get(info.severity) ?? [], row]);
     groups.lane.set(info.lane, [...groups.lane.get(info.lane) ?? [], row]);
     groups.rule.set(info.rule, [...groups.rule.get(info.rule) ?? [], row]);
     byBlock[blockGroups.get(row.review_run_id) ?? "unknown"].push(row);
   }
-  const collect = (map2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list2]) => [key2, statsOf(list2)]));
   return {
-    bySeverity: collect(groups.severity),
-    byLane: collect(groups.lane),
-    byRule: collect(groups.rule),
+    bySeverity: collect(groups.severity, statsOf),
+    byLane: collect(groups.lane, statsOf),
+    byRule: collect(groups.rule, statsOf),
     byEvidenceBlock: { with: statsOf(byBlock.with), without: statsOf(byBlock.without), unknown: statsOf(byBlock.unknown) }
   };
 }
+function precisionOf(rows) {
+  const kept = rows.filter((row) => row.action !== "dismiss").length;
+  const dismissed = rows.length - kept;
+  return { kept, dismissed, precision: rows.length === 0 ? null : kept / rows.length };
+}
+function precisionBreakdown(db, { since } = {}) {
+  const labels = `f.action IN ('keep', 'rewrite', 'dismiss')`;
+  const rows = since === void 0 ? db.prepare(`SELECT review_run_id, finding_id, action FROM feedback f WHERE ${labels}`).all() : db.prepare(
+    `SELECT f.review_run_id AS review_run_id, f.finding_id AS finding_id, f.action AS action
+             FROM feedback f JOIN review_runs r ON r.review_run_id = f.review_run_id WHERE ${labels} AND r.created_at >= ?`
+  ).all(since);
+  const place = findingPlacer(db);
+  const byLane = /* @__PURE__ */ new Map();
+  const byRule = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const info = place(row.review_run_id, row.finding_id);
+    byLane.set(info.lane, [...byLane.get(info.lane) ?? [], row]);
+    byRule.set(info.rule, [...byRule.get(info.rule) ?? [], row]);
+  }
+  return { byLane: collect(byLane, precisionOf), byRule: collect(byRule, precisionOf) };
+}
 
 // plugins/review-voice/src/evaluate/metrics.ts
-function percentile(values, p) {
+function formatMetricValue(metric) {
+  if (metric.value === null) return "no data";
+  return Number.isInteger(metric.value) && metric.name.endsWith("_tracked") ? String(metric.value) : metric.value.toFixed(2);
+}
+function metricMark(metric) {
+  if (metric.meets === null || metric.target === "no target") return "-";
+  if (metric.meets) return "ok";
+  return metric.kind === "goal" ? "over" : "FAIL";
+}
+function metricTarget(metric) {
+  if (metric.target === "no target") return "reported, not scored";
+  return `${metric.kind === "goal" ? "goal" : "target"} ${metric.target}`;
+}
+function percentile(values, p2) {
   if (values.length === 0) return null;
   const sorted = [...values].sort((a, b) => a - b);
-  const index = Math.min(sorted.length - 1, Math.floor(p / 100 * sorted.length));
+  const index = Math.min(sorted.length - 1, Math.floor(p2 / 100 * sorted.length));
   return sorted[index] ?? null;
 }
 function median(values) {
@@ -16849,9 +16909,9 @@ var DISMISSED_RATE_WARNING_MIN_STRONG = 10;
 function dismissedRateWarning(input) {
   const { dismissed, strong, windowDays } = input;
   if (strong < DISMISSED_RATE_WARNING_MIN_STRONG) return null;
-  const rate = dismissed / strong;
-  if (!(rate > DISMISSED_RATE_WARNING_THRESHOLD)) return null;
-  return `Warning: ${dismissed} of ${strong} posted findings in the last ${windowDays} days were dismissed (${(rate * 100).toFixed(0)}%); run \`review-voice explain\` on the dismissed ones and consider /review-voice:feedback.`;
+  const rate2 = dismissed / strong;
+  if (!(rate2 > DISMISSED_RATE_WARNING_THRESHOLD)) return null;
+  return `Warning: ${dismissed} of ${strong} posted findings in the last ${windowDays} days were dismissed (${(rate2 * 100).toFixed(0)}%); run \`review-voice explain\` on the dismissed ones and consider /review-voice:feedback.`;
 }
 function windowStart(days, now = () => /* @__PURE__ */ new Date()) {
   return new Date(now().getTime() - days * 864e5).toISOString();
@@ -16979,7 +17039,7 @@ function byFamily(db) {
       }
     }
   }
-  const rate = (count3, over) => over === 0 ? null : count3 / over;
+  const rate2 = (count4, over) => over === 0 ? null : count4 / over;
   const listed = [...FAMILIES, "unknown"].filter((name) => second.has(name) || challenge2.has(name));
   return {
     families: Object.fromEntries(
@@ -16989,11 +17049,11 @@ function byFamily(db) {
         const figures = {
           second_pass: pass === void 0 ? null : {
             ...pass,
-            drop_rate: rate(pass.dropped, pass.verdicts),
-            downgrade_rate: rate(pass.downgraded, pass.verdicts),
-            tie_break_rate: rate(pass.tie_breaks, pass.verdicts)
+            drop_rate: rate2(pass.dropped, pass.verdicts),
+            downgrade_rate: rate2(pass.downgraded, pass.verdicts),
+            tie_break_rate: rate2(pass.tie_breaks, pass.verdicts)
           },
-          challenge: judged === void 0 ? null : { ...judged, hold_rate: rate(judged.held, judged.judged) }
+          challenge: judged === void 0 ? null : { ...judged, hold_rate: rate2(judged.held, judged.judged) }
         };
         return [name, figures];
       })
@@ -17015,6 +17075,71 @@ function describeByFamily(figures) {
       return `  ${name.padEnd(8)}${second}; ${challenged}`;
     })
   ];
+}
+function ruleEffectiveness(db) {
+  const byRule = /* @__PURE__ */ new Map();
+  for (const suppression of activeSuppressions(db)) {
+    byRule.set(suppression.ruleId, [...byRule.get(suppression.ruleId) ?? [], suppression]);
+  }
+  return [...byRule.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([ruleId, list2]) => {
+    const suppressions = list2.map((s) => ({ glob: s.glob, policy_version: s.policyVersion }));
+    const approvedAt = list2.map((s) => s.approvedAt).filter((at2) => at2 !== null).sort()[0] ?? null;
+    if (approvedAt === null) {
+      return {
+        rule_id: ruleId,
+        suppressions,
+        approved_at: null,
+        held: null,
+        runs: null,
+        posted: null,
+        feedback: null,
+        basis: `no approval time recorded for policy version ${list2[0]?.policyVersion ?? "unknown"}; nothing counted`
+      };
+    }
+    const rows = db.prepare("SELECT output_json FROM review_runs WHERE created_at >= ?").all(approvedAt);
+    let held = 0;
+    let runs = 0;
+    for (const row of rows) {
+      let scores;
+      try {
+        scores = JSON.parse(row.output_json)?.scores;
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(scores)) continue;
+      runs += 1;
+      held += scores.filter((entry) => entry?.rejectedBecause === `${POLICY_SUPPRESSED_PREFIX}${ruleId}`).length;
+    }
+    const posted = postedBreakdown(db, { since: approvedAt }).byRule;
+    const feedback = precisionBreakdown(db, { since: approvedAt }).byRule;
+    const postedStats2 = Object.hasOwn(posted, ruleId) ? posted[ruleId] ?? null : null;
+    return {
+      rule_id: ruleId,
+      suppressions,
+      approved_at: approvedAt,
+      // A count over no run is no data, not zero.
+      held: runs === 0 ? null : held,
+      runs,
+      // Weak outcomes alone measure nothing, and their fixed and dismissed would read as measured zeros.
+      posted: postedStats2 !== null && postedStats2.fixed + postedStats2.dismissed > 0 ? postedStats2 : null,
+      feedback: Object.hasOwn(feedback, ruleId) ? feedback[ruleId] ?? null : null,
+      basis: runs === 0 ? `no run recorded since ${approvedAt}` : `${held} held in ${runs} run(s) since ${approvedAt}; posted outcomes count strong ones only`
+    };
+  });
+}
+function evaluationReport(db, metrics, options = {}) {
+  const { bySeverity, byLane, byRule, byEvidenceBlock } = postedBreakdown(db);
+  const precision = precisionBreakdown(db);
+  return {
+    generated_at: (options.now ?? (() => /* @__PURE__ */ new Date()))().toISOString(),
+    window_days: options.windowDays ?? DEFAULT_WINDOW_DAYS,
+    metrics,
+    posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule, by_evidence_block: byEvidenceBlock },
+    precision_breakdown: { by_lane: precision.byLane, by_rule: precision.byRule },
+    stage_seconds: stageSeconds(db),
+    rule_effectiveness: ruleEffectiveness(db),
+    by_family: byFamily(db)
+  };
 }
 function reproductionCounts(db) {
   const rows = db.prepare("SELECT output_json FROM review_runs").all();
@@ -17387,8 +17512,8 @@ function evaluatePostingGate(db, configEnabled) {
 
 // plugins/review-voice/src/publish/post.ts
 var SHA2 = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-function normalise(text4) {
-  return text4.replace(/\r\n/g, "\n").trim();
+function normalise(text5) {
+  return text5.replace(/\r\n/g, "\n").trim();
 }
 function subjectId(repository, pullNumber) {
   return `${repository.toLowerCase()}#${pullNumber}`;
@@ -17610,12 +17735,12 @@ async function checkedSuggestions(options, run, planned, head) {
       file2 = fileAtRef(options.client, options.repository, path, head);
       files2.set(path, file2);
     }
-    const text4 = await file2;
-    if (text4 === null) {
+    const text5 = await file2;
+    if (text5 === null) {
       withhold("the file could not be read at the head");
       continue;
     }
-    if (linesAt(text4, patch.start_line, patch.end_line - patch.start_line + 1) !== unixLines(patch.original)) {
+    if (linesAt(text5, patch.start_line, patch.end_line - patch.start_line + 1) !== unixLines(patch.original)) {
       withhold("the lines at the head are not the patch original");
       continue;
     }
@@ -17767,11 +17892,11 @@ async function raisedByOthers(options, run, findings) {
   const { comments } = await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client });
   const mine = new Set(comments.filter((c) => c.author.toLowerCase() === me && c.id !== void 0).map((c) => c.id));
   const started = Date.parse(run.createdAt);
-  const squash = (text4) => text4.toLowerCase().replace(/\s+/g, " ").trim();
+  const squash = (text5) => text5.toLowerCase().replace(/\s+/g, " ").trim();
   const ownTexts = comments.filter((c) => c.author.toLowerCase() === me).map((c) => squash(c.body));
   const thread = comments.filter((comment) => comment.author.toLowerCase() !== me).map((comment) => ({ ...comment, body: comment.body.split("\n").filter((line3) => !/^\s*>/.test(line3)).join("\n") })).filter((comment) => {
-    const text4 = squash(comment.body);
-    return text4 !== "" && !(text4.length >= PASTED_TEXT_MIN && ownTexts.some((own) => own.includes(text4)));
+    const text5 = squash(comment.body);
+    return text5 !== "" && !(text5.length >= PASTED_TEXT_MIN && ownTexts.some((own) => own.includes(text5)));
   }).filter((comment) => comment.createdAt === void 0 || !(Date.parse(comment.createdAt) <= started)).filter((comment) => comment.inReplyTo === void 0 || !mine.has(comment.inReplyTo)).flatMap((comment) => citedLocations([comment]).map((located) => ({ comment: located, url: comment.url ?? null })));
   if (thread.length === 0) return [];
   const candidates = recordedCandidates(options.db, run.reviewRunId);
@@ -18057,7 +18182,7 @@ function isHeldQueueEntry(value) {
   return typeof entry["path"] === "string" && Number.isInteger(entry["line"]) && typeof entry["verdict"] === "string" && typeof entry["reason"] === "string" && optional("severity") && optional("candidateId") && optional("promote");
 }
 var PROMOTE_NOTE = "A promoted finding still has to pass the challenge. Continue from step 4b of commands/review.md, with scores.promoted.json in place of scores.json.";
-var code2 = (text4, max) => `\`${safeCheckName(text4, max) || "none"}\``;
+var code2 = (text5, max) => `\`${safeCheckName(text5, max) || "none"}\``;
 function heldQueueLines(entries, runId) {
   if (entries.length === 0) return [];
   return [
@@ -18108,7 +18233,7 @@ var answer = (dataDir) => `review-voice-watch ${process.pid} ${dataDir}
 function probe(port) {
   return new Promise((resolve14) => {
     const socket = connect({ host: "127.0.0.1", port });
-    let text4 = "";
+    let text5 = "";
     const done = (pid) => {
       clearTimeout(timer);
       socket.destroy();
@@ -18118,9 +18243,9 @@ function probe(port) {
     socket.setEncoding("utf8");
     socket.on("connect", () => socket.write("review-voice-watch?\n"));
     socket.on("data", (chunk) => {
-      text4 += chunk;
-      if (!text4.includes("\n")) return;
-      const match = /^review-voice-watch (\d+) /.exec(text4);
+      text5 += chunk;
+      if (!text5.includes("\n")) return;
+      const match = /^review-voice-watch (\d+) /.exec(text5);
       done(match === null ? null : Number(match[1]));
     });
     socket.on("error", () => done(null));
@@ -18243,7 +18368,7 @@ function reviewSpawnOptions(dataDir, config2) {
   return { configPath: join11(dataDir, CONFIG_COPY), configSource: config2?.source };
 }
 function writeCopy(source, copy) {
-  const text4 = readFileSync7(source);
+  const text5 = readFileSync7(source);
   const temp = `${copy}.tmp-${process.pid}`;
   try {
     unlinkSync4(temp);
@@ -18251,7 +18376,7 @@ function writeCopy(source, copy) {
   }
   const fd = openSync(temp, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | (constants2.O_NOFOLLOW ?? 0), 384);
   try {
-    writeSync(fd, text4);
+    writeSync(fd, text5);
     fsyncSync(fd);
   } catch (error) {
     closeSync(fd);
@@ -18413,7 +18538,7 @@ async function runPass(options, json2) {
       if (held.length > 0) deps.err(held.join("\n"));
       if (swept !== null) deps.err(swept);
     } else {
-      const totals = [...counts].map(([status, count3]) => `${count3} ${status}`).join(", ");
+      const totals = [...counts].map(([status, count4]) => `${count4} ${status}`).join(", ");
       lines2.push(
         `${queue.entries.length} entr${queue.entries.length === 1 ? "y" : "ies"}${totals === "" ? "" : `: ${totals}`}; ${queue.notReached.length} not reached; outcomes followed on ${followed} pull request(s)`
       );
@@ -18569,7 +18694,7 @@ function reviewResult(exitCode, stdout, stderr) {
   }
   const verdict2 = typeof doc["verdict"] === "object" && doc["verdict"] !== null ? doc["verdict"] : {};
   const event = EVENTS.find((candidate) => candidate === verdict2["event"]) ?? null;
-  const text4 = (value) => typeof value === "string" && value.length > 0 ? value : null;
+  const text5 = (value) => typeof value === "string" && value.length > 0 ? value : null;
   const lastLine = stderr.trim().split("\n").at(-1)?.trim() ?? "";
   const detail = exitCode === 0 ? null : [EXIT_DETAIL[exitCode] ?? `review exited ${exitCode}`, lastLine].filter((part) => part.length > 0).join(": ").slice(0, 300);
   const carried = doc["carried"] === true || verdict2["action"] === "carry";
@@ -18578,9 +18703,9 @@ function reviewResult(exitCode, stdout, stderr) {
   const heldQueue2 = Array.isArray(doc["heldQueue"]) ? doc["heldQueue"].filter(isHeldQueueEntry) : [];
   return {
     exitCode,
-    runId: text4(doc["runId"]),
+    runId: text5(doc["runId"]),
     event,
-    reviewUrl: text4(doc["reviewUrl"]),
+    reviewUrl: text5(doc["reviewUrl"]),
     detail,
     carried,
     ...failureMode === null ? {} : { failureMode },
@@ -19270,14 +19395,18 @@ var COMMAND_HELP = {
       "  Report the evaluation metrics against their targets.",
       "",
       "Flags:",
-      "  --json                 Emit the metrics as JSON, with posted-finding outcomes by severity and lane",
+      "  --json                 Emit the report as JSON, with posted-finding outcomes by severity, lane and rule,",
+      "                         owner precision by lane and rule, and each active suppression since its approval",
+      "  --html                 Emit the same report as an HTML fragment a job summary renders (exclusive with --json)",
+      "  --out <path>           With --html, write a complete static page to the file, or evaluation.html in the directory",
       "  --recall <results.json>  Also report the fixture recall figures from a file `review-voice recall` wrote",
       "  --since <Nd>           Window in days for posted_fixed_rate_recent and posted_dismissed_rate_recent (default 30d)",
       "Reads: nothing on stdin; the local store, and the results file with --recall.",
       "Writes: text (or JSON) on stdout; --json also carries stage_seconds, the median and p95 seconds per stage,",
       "  and by_family, which gives per model family the second pass's verdicts, drop, downgrade and tie-break",
       "  rates and the challenge's judged, held and hold rate, plus runs_without_families. The text prints it as a",
-      "  by family block.",
+      "  by family block. --html writes the fragment to stdout, or with --out the page file and nothing on stdout.",
+      "  Nothing is posted.",
       "Exit codes: 0 ok, 2 bad invocation."
     )
   },
@@ -20064,8 +20193,8 @@ function agentFile(name) {
 function readAgentTools(name) {
   return parseAgentTools(readFileSync8(agentFile(name), "utf8"), `${name}.md`);
 }
-function parseAgentTools(text4, label2) {
-  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text4)?.[1];
+function parseAgentTools(text5, label2) {
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text5)?.[1];
   if (frontmatter === void 0) throw new AgentSpecError(`${label2} has no frontmatter`);
   const line3 = /^tools:[ \t]*(.*)$((?:\r?\n[ \t]*-[^\n]*)*)/m.exec(frontmatter);
   if (line3 === null) throw new AgentSpecError(`${label2} declares no tools: line`);
@@ -20179,8 +20308,8 @@ function claudeArguments(spec, addDirs, env) {
     "json"
   ];
 }
-function firstChars(text4) {
-  return text4.trim().slice(0, ERROR_CHARS);
+function firstChars(text5) {
+  return text5.trim().slice(0, ERROR_CHARS);
 }
 function interpretEnvelope(stdout, stderr, code3) {
   let envelope = null;
@@ -20318,14 +20447,14 @@ function decisiveEvidence(raw) {
     return typeof e["path"] === "string" && e["path"].length > 0 && Number.isInteger(e["line"]) && e["line"] > 0 && typeof e["why"] === "string" && e["why"].trim().length > 0;
   }).slice(0, MAX_DECISIVE_EVIDENCE).map((entry) => ({ path: entry.path, line: entry.line, why: entry.why }));
 }
-function jsonCandidates(text4) {
+function jsonCandidates(text5) {
   const found = [];
   let depth = 0;
   let start = -1;
   let inString = false;
   let escaped = false;
-  for (let i = 0; i < text4.length; i += 1) {
-    const ch = text4[i];
+  for (let i = 0; i < text5.length; i += 1) {
+    const ch = text5[i];
     if (inString) {
       if (escaped) escaped = false;
       else if (ch === "\\") escaped = true;
@@ -20339,7 +20468,7 @@ function jsonCandidates(text4) {
     } else if (ch === "}") {
       depth -= 1;
       if (depth === 0 && start !== -1) {
-        found.push(text4.slice(start, i + 1));
+        found.push(text5.slice(start, i + 1));
         start = -1;
       } else if (depth < 0) {
         depth = 0;
@@ -20511,8 +20640,8 @@ function expandCommand(command, values) {
   const tokens = { "{schema}": values.schema, "{output}": values.output, "{cwd}": values.cwd };
   return command.map((argument) => Object.hasOwn(tokens, argument) ? tokens[argument] : argument);
 }
-function lastJsonObject(text4) {
-  for (const candidate of jsonCandidates(text4).reverse()) {
+function lastJsonObject(text5) {
+  for (const candidate of jsonCandidates(text5).reverse()) {
     try {
       const parsed2 = JSON.parse(candidate);
       if (parsed2 !== null && typeof parsed2 === "object" && !Array.isArray(parsed2)) return parsed2;
@@ -21083,7 +21212,7 @@ var COMMENT_LINE = /^ {0,3}<!--(?:(?!--!?>).)*--!?>\s*$/u;
 var COMMENT_OPEN = /^ {0,3}<!--(?!-?>)(?:(?!--!?>).)*$/u;
 var COMMENT_CLOSE = /^(?:(?!--!?>).)*--!?>\s*$/u;
 var BOLD_LABEL = /^\*\*([^*]*[^*\s.!?])\*\*$/u;
-var collapse2 = (text4) => text4.replace(/\s+/gu, " ").trim();
+var collapse2 = (text5) => text5.replace(/\s+/gu, " ").trim();
 var isBoldLabel = (line3) => !LIST_OR_HEADING.test(line3) && BOLD_LABEL.test(collapse2(line3));
 function lineKinds(lines2) {
   const fenced = /* @__PURE__ */ new Set();
@@ -21112,7 +21241,7 @@ function lineKinds(lines2) {
   return { fenced, comments };
 }
 function sentencesOf(description) {
-  let text4 = "";
+  let text5 = "";
   const starts = /* @__PURE__ */ new Set([0]);
   const ends = /* @__PURE__ */ new Set();
   let blank = false;
@@ -21133,51 +21262,51 @@ function sentencesOf(description) {
       blank = true;
       continue;
     }
-    if (text4 !== "") {
+    if (text5 !== "") {
       if (blank || marked || previousHeading) {
-        ends.add(text4.length);
-        starts.add(text4.length + 1);
+        ends.add(text5.length);
+        starts.add(text5.length + 1);
       }
-      text4 += " ";
+      text5 += " ";
     }
     const label2 = LEAD_LABEL.exec(content);
     if (label2 !== null && !QUALIFYING_LABEL.test(label2[0])) {
-      ends.add(text4.length + label2[0].length);
-      starts.add(text4.length + label2[0].length + 1);
+      ends.add(text5.length + label2[0].length);
+      starts.add(text5.length + label2[0].length + 1);
     }
     const heading = HEADING.test(line3);
     if (heading) {
       if (open !== null && open.from !== -1) sections2.push({ ...open, to: contentEnd });
       open = { heading: content, from: -1, to: -1 };
     } else if (open !== null && open.from === -1) {
-      open.from = text4.length;
+      open.from = text5.length;
     }
     if (heading) headings.add(content);
     const next = () => lines2.slice(index + 1).find((after, at2) => after.trim() !== "" && !comments.has(index + 1 + at2)) ?? "";
-    const paragraph = blank || text4 === "" || comments.has(index - 1) || fenced.has(index - 1);
+    const paragraph = blank || text5 === "" || comments.has(index - 1) || fenced.has(index - 1);
     const bold = !heading && open === null && !fenced.has(index) && !comments.has(index) && paragraph && isBoldLabel(line3) && !isBoldLabel(next());
     if (heading && !comments.has(index) || bold) {
       if (answer2 !== null && answer2.from !== -1) answers.push({ ...answer2, to: answerEnd });
       answer2 = { heading: bold ? BOLD_LABEL.exec(content)?.[1] ?? content : content, from: -1, to: -1 };
     } else if (answer2 !== null && !comments.has(index)) {
-      if (answer2.from === -1) answer2.from = text4.length;
-      answerEnd = text4.length + content.length;
+      if (answer2.from === -1) answer2.from = text5.length;
+      answerEnd = text5.length + content.length;
     }
-    text4 += content;
-    contentEnd = text4.length;
+    text5 += content;
+    contentEnd = text5.length;
     blank = false;
     previousHeading = heading;
   }
   if (open !== null && open.from !== -1) sections2.push({ ...open, to: contentEnd });
   if (answer2 !== null && answer2.from !== -1) answers.push({ ...answer2, to: answerEnd });
-  ends.add(text4.length);
-  for (const match of text4.matchAll(/[.!?](?= |$)/gu)) {
+  ends.add(text5.length);
+  for (const match of text5.matchAll(/[.!?](?= |$)/gu)) {
     ends.add(match.index);
     ends.add(match.index + 1);
     starts.add(match.index + 2);
   }
   const whole = answers.filter(({ from, to }) => starts.has(from) && ends.has(to));
-  return { text: text4, starts, ends, sections: sections2, answers: whole, headings };
+  return { text: text5, starts, ends, sections: sections2, answers: whole, headings };
 }
 function statesSomething(wanted, sentences) {
   return LEAD_LABEL.exec(wanted)?.[0] !== wanted && !sentences.headings.has(wanted);
@@ -21904,7 +22033,7 @@ var FAMILY_PATTERNS = [
   ["codex", /\b(?:codex|chatgpt|openai)\b/i],
   ["gemini", /\b(?:gemini|jules)\b/i]
 ];
-var familyIn = (text4) => FAMILY_PATTERNS.find(([, pattern]) => pattern.test(text4))?.[0] ?? null;
+var familyIn = (text5) => FAMILY_PATTERNS.find(([, pattern]) => pattern.test(text5))?.[0] ?? null;
 function detectAuthorship(input) {
   const evidence = [];
   let family = null;
@@ -22149,15 +22278,15 @@ var idOf3 = (entry) => String(entry["candidate_id"] ?? entry["candidateId"] ?? "
 var readJson = (path) => JSON.parse(readFileSync13(path, "utf8"));
 var writeJson = (path, value) => writeFileSync6(path, `${JSON.stringify(value, null, 2)}
 `);
-var parsed = (text4) => {
+var parsed = (text5) => {
   try {
-    const value = JSON.parse(text4);
+    const value = JSON.parse(text5);
     return isRecord5(value) ? value : {};
   } catch {
     return {};
   }
 };
-var firstLines = (text4) => text4.trim().split("\n").slice(0, 5).join(" ");
+var firstLines = (text5) => text5.trim().split("\n").slice(0, 5).join(" ");
 var noCommands = (run) => (run.deps.env ?? process.env)["REVIEW_VOICE_NO_COMMANDS"] === "1";
 var elapsed2 = (started) => Math.round((performance.now() - started) / 10) / 100;
 function at(run, name) {
@@ -22662,7 +22791,7 @@ async function verify(run) {
     }
   }
 }
-var firstOutputLine = (text4) => text4.split("\n").map((line3) => line3.trim()).find((line3) => line3 !== "") ?? "";
+var firstOutputLine = (text5) => text5.split("\n").map((line3) => line3.trim()).find((line3) => line3 !== "") ?? "";
 function applyReproductions(survivors, report) {
   const records = isRecord5(report) ? list(report["reproductions"]) : [];
   const held = [];
@@ -22955,11 +23084,11 @@ async function edit(run) {
     const retrieved = parsed((await cli(run, ["retrieve", "--text", String(eligible[0]["claim"] ?? "")])).stdout);
     const voice = retrieved["baseline"] === true ? retrieved["voice"] ?? null : null;
     const result = await agent(run, "editor", "concise-editor", run.plan.stages.edit.model ?? "sonnet", SCHEMAS.editor, editorPrompt(eligible, voice), async (output) => {
-      const text4 = isRecord5(output) && typeof output["text"] === "string" ? output["text"] : "";
-      const checked = await cli(run, validate, text4);
+      const text5 = isRecord5(output) && typeof output["text"] === "string" ? output["text"] : "";
+      const checked = await cli(run, validate, text5);
       if (checked.code === 0) return null;
       return `Previous output:
-${text4}
+${text5}
 
 Violations:
 ${checked.stderr.trim()}`;
@@ -23496,7 +23625,7 @@ function boundLists(value, limit = TEXT_CAP2) {
   if (Array.isArray(value)) return value.map((entry) => boundLists(entry, limit));
   if (value === null || typeof value !== "object") return value;
   const out = {};
-  let cut2 = false;
+  let cut3 = false;
   for (const [key2, item] of Object.entries(value)) {
     if (key2 === "precedentIds") {
       continue;
@@ -23504,17 +23633,17 @@ function boundLists(value, limit = TEXT_CAP2) {
     if (Array.isArray(item) && item.length > LIST_CAP && item.every((entry) => typeof entry === "string")) {
       out[key2] = item.slice(0, LIST_CAP);
       out[`${key2}Total`] = item.length;
-      cut2 = true;
+      cut3 = true;
     } else if (key2 === "excerpt" && typeof item === "string" && item.length > EXCERPT_CAP) {
       out[key2] = `${item.slice(0, EXCERPT_CAP)}...`;
     } else {
       const childLimit = key2 === "claim" || key2 === "failureMode" ? CLAIM_CAP : TEXT_CAP2;
       const bounded = boundLists(item, childLimit);
-      if (JSON.stringify(bounded) !== JSON.stringify(item)) cut2 = cut2 || containsCut(item, bounded);
+      if (JSON.stringify(bounded) !== JSON.stringify(item)) cut3 = cut3 || containsCut(item, bounded);
       out[key2] = bounded;
     }
   }
-  if (cut2) out["truncated"] = true;
+  if (cut3) out["truncated"] = true;
   return out;
 }
 function containsCut(before, after) {
@@ -23593,8 +23722,8 @@ function reproductionShapeProblem(value) {
   const extra = Object.keys(fields).find((key2) => !Object.hasOwn(REPRODUCTION_FIELDS, key2));
   if (extra !== void 0) return `reproduction.${extra} is not a field; use runner, path, content and expected`;
   for (const [key2, most] of Object.entries(REPRODUCTION_FIELDS)) {
-    const text4 = fields[key2];
-    if (typeof text4 !== "string" || text4.length === 0 || text4.length > most) {
+    const text5 = fields[key2];
+    if (typeof text5 !== "string" || text5.length === 0 || text5.length > most) {
       return `reproduction.${key2} must be a string of ${most === Infinity ? "at least 1 character" : `1 to ${most} characters`}`;
     }
   }
@@ -23947,8 +24076,8 @@ function eventWeight(parts) {
 }
 
 // plugins/review-voice/src/retrieval/retrieve.ts
-function toMatchQuery(text4) {
-  const terms = text4.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((term) => term.length > 2 && !STOPWORDS.has(term));
+function toMatchQuery(text5) {
+  const terms = text5.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((term) => term.length > 2 && !STOPWORDS.has(term));
   const unique2 = [...new Set(terms)].slice(0, 24);
   return unique2.map((term) => `"${term}"`).join(" OR ");
 }
@@ -24066,13 +24195,13 @@ function retrievePrecedents(db, query) {
       polarity: weight < 0 ? "negative" : "positive"
     };
   });
-  const best = Math.max(...scored.map((p) => p.relevance), 1);
+  const best = Math.max(...scored.map((p2) => p2.relevance), 1);
   for (const precedent of scored) {
     precedent.matchStrength = Math.max(0, Math.min(1, precedent.relevance / best));
   }
   const rank2 = (a, b) => Math.abs(b.weight) * b.matchStrength - Math.abs(a.weight) * a.matchStrength;
-  const positive = scored.filter((p) => p.weight > 0).sort(rank2).slice(0, query.maxPositive);
-  const negative = scored.filter((p) => p.weight < 0).sort(rank2).slice(0, query.maxNegative);
+  const positive = scored.filter((p2) => p2.weight > 0).sort(rank2).slice(0, query.maxPositive);
+  const negative = scored.filter((p2) => p2.weight < 0).sort(rank2).slice(0, query.maxNegative);
   return [...negative, ...positive];
 }
 
@@ -24094,15 +24223,15 @@ function baselineVoice() {
 
 // plugins/review-voice/src/cli/retrieve.ts
 function retrieveCommand(argv) {
-  const text4 = flag(argv, "--text");
-  if (text4 === null) {
+  const text5 = flag(argv, "--text");
+  if (text5 === null) {
     console.error('retrieve needs --text "<claim and failure mode>".');
     return 2;
   }
   const db = openDatabase();
   try {
     const precedents = retrievePrecedents(db, {
-      text: text4,
+      text: text5,
       repository: flag(argv, "--repository") ?? void 0,
       filePath: flag(argv, "--path") ?? void 0,
       language: flag(argv, "--language") ?? void 0,
@@ -24277,7 +24406,7 @@ function resolvePolicy(layers) {
     resolved.suppressions.push(...layer.suppressions ?? []);
     resolved.requiredChecks.push(...layer.requiredChecks ?? []);
     for (const priority of layer.priorities ?? []) {
-      const existing = resolved.priorities.findIndex((p) => p.category === priority.category);
+      const existing = resolved.priorities.findIndex((p2) => p2.category === priority.category);
       if (existing === -1) resolved.priorities.push(priority);
       else resolved.priorities[existing] = priority;
     }
@@ -24411,8 +24540,8 @@ function checkSeverityAgainstScores(output, scores) {
 // plugins/review-voice/src/contract/backing-check.ts
 var ABSOLUTES = ["every", "everyone", "everything", "everywhere", "always", "never", "all"];
 var WORD = /[a-z]+/g;
-function wordsOf(text4) {
-  const prose = text4.replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ");
+function wordsOf(text5) {
+  const prose = text5.replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ");
   return new Set(prose.toLowerCase().match(WORD) ?? []);
 }
 function backingText(entry) {
@@ -24858,6 +24987,115 @@ function policyCommand(argv) {
   }
 }
 
+// plugins/review-voice/src/cli/evaluate.ts
+import { writeFileSync as writeFileSync8 } from "node:fs";
+
+// plugins/review-voice/src/evaluate/report.ts
+var CUT_AT = 120;
+function escapeHtml(text5) {
+  return text5.replace(/[\r\n]+/g, " ").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function cut2(text5) {
+  const points = [...text5];
+  return points.length > CUT_AT ? `${points.slice(0, CUT_AT).join("")}...` : text5;
+}
+var text4 = (value) => escapeHtml(cut2(value));
+var count2 = (value) => value === null ? "no data" : String(value);
+var rate = (value) => value === null ? "no data" : value.toFixed(2);
+var p = (body) => `<p>${escapeHtml(body)}</p>
+`;
+var h3 = (title) => `<h3>${text4(title)}</h3>
+`;
+function table(headers, rows) {
+  const cells = (tag, values) => values.map((value) => `<${tag}>${text4(value)}</${tag}>`).join("");
+  return `<table><thead><tr>${cells("th", headers)}</tr></thead>
+<tbody>
+${rows.map((row) => `<tr>${cells("td", row)}</tr>
+`).join("")}</tbody></table>
+`;
+}
+var tableOrNone = (reason2, headers, rows) => rows.length === 0 ? p(`no data; ${reason2}`) : table(headers, rows);
+var METRIC_HEADERS = ["metric", "value", "mark", "target", "basis"];
+var metricRows = (metrics) => metrics.map((metric) => [metric.name, formatMetricValue(metric), metricMark(metric), metricTarget(metric), metric.basis]);
+var POSTED_HEADERS = ["tracked", "fixed", "dismissed", "fixed rate", "dismissed rate"];
+var postedRow = (key2, stats) => [key2, count2(stats.tracked), count2(stats.fixed), count2(stats.dismissed), rate(stats.fixedRate), rate(stats.dismissedRate)];
+var postedTable = (key2, group) => tableOrNone("no posted finding has a recorded outcome", [key2, ...POSTED_HEADERS], Object.entries(group).map(([name, stats]) => postedRow(name, stats)));
+var labelTable = (key2, group) => tableOrNone(
+  "no finding has been labelled",
+  [key2, "kept", "dismissed", "precision"],
+  Object.entries(group).map(([name, s]) => [name, count2(s.kept), count2(s.dismissed), rate(s.precision)])
+);
+function renderEvaluationHtml(report) {
+  const { metrics, posted_breakdown: posted, precision_breakdown: precision } = report;
+  const noMetric = "no metric of this kind";
+  const gates = metrics.filter((m) => m.kind === "gate" && m.target !== "no target");
+  const goals = metrics.filter((m) => m.kind === "goal" && m.target !== "no target");
+  const reported = metrics.filter((m) => m.target === "no target");
+  const blocks = posted.by_evidence_block;
+  const anyPosted = Object.keys(posted.by_severity).length + Object.keys(posted.by_lane).length + Object.keys(posted.by_rule).length > 0 || blocks.with.tracked + blocks.without.tracked + blocks.unknown.tracked > 0;
+  const anyLabel = Object.keys(precision.by_lane).length + Object.keys(precision.by_rule).length > 0;
+  return [
+    `<h2>Review Voice evaluation</h2>
+`,
+    p(
+      `Generated at ${report.generated_at}; the recent posted rates cover the last ${report.window_days} days. A figure with no data prints no data, never zero. A gate is a contract; a goal and a reported figure are never failed.`
+    ),
+    h3("Gates"),
+    tableOrNone(noMetric, METRIC_HEADERS, metricRows(gates)),
+    h3("Goals"),
+    tableOrNone(noMetric, METRIC_HEADERS, metricRows(goals)),
+    h3("Reported, not scored"),
+    tableOrNone(noMetric, METRIC_HEADERS, metricRows(reported)),
+    h3("Seconds by stage"),
+    tableOrNone(
+      "no run has recorded stage timings",
+      ["stage", "median", "p95", "runs"],
+      Object.entries(report.stage_seconds).map(([stage, s]) => [stage, rate(s.median), rate(s.p95), count2(s.runs)])
+    ),
+    h3("Posted findings"),
+    anyPosted ? p("Rates count strong outcomes only; a weak outcome is tracked and not counted.") + postedTable("severity", posted.by_severity) + postedTable("lane", posted.by_lane) + postedTable("rule", posted.by_rule) + table(["evidence block", ...POSTED_HEADERS], ["with", "without", "unknown"].map((key2) => postedRow(key2, blocks[key2]))) : p("no data; no posted finding has a recorded outcome"),
+    h3("Owner labels"),
+    anyLabel ? p("Unlabelled findings are excluded; silence is never a label.") + labelTable("lane", precision.by_lane) + labelTable("rule", precision.by_rule) : p("no data; no finding has been labelled"),
+    h3("Suppressions since approval"),
+    tableOrNone(
+      "no approved suppression is active",
+      ["rule", "scopes", "approved", "held", "runs", "posted fixed", "posted dismissed", "labelled kept", "labelled dismissed", "basis"],
+      report.rule_effectiveness.map((entry) => [
+        entry.rule_id,
+        entry.suppressions.map((s) => `${s.glob ?? "everywhere"}${s.policy_version === null ? "" : ` (v${s.policy_version})`}`).join(", "),
+        entry.approved_at ?? "no data",
+        count2(entry.held),
+        count2(entry.runs),
+        entry.posted === null ? "no data" : count2(entry.posted.fixed),
+        entry.posted === null ? "no data" : count2(entry.posted.dismissed),
+        entry.feedback === null ? "no data" : count2(entry.feedback.kept),
+        entry.feedback === null ? "no data" : count2(entry.feedback.dismissed),
+        entry.basis
+      ])
+    )
+  ].join("");
+}
+function htmlDocument(fragment, title) {
+  return [
+    "<!doctype html>",
+    '<html lang="en">',
+    "<head>",
+    '<meta charset="utf-8">',
+    `<title>${escapeHtml(title)}</title>`,
+    "<style>",
+    "table { border-collapse: collapse; margin: 0 0 1em; }",
+    "th, td { border: 1px solid #999; padding: 2px 8px; text-align: left; vertical-align: top; }",
+    "code { font-family: monospace; }",
+    "</style>",
+    "</head>",
+    "<body>",
+    fragment.trimEnd(),
+    "</body>",
+    "</html>",
+    ""
+  ].join("\n");
+}
+
 // plugins/review-voice/src/evaluate/recall-results.ts
 import { readFileSync as readFileSync18 } from "node:fs";
 var RECALL_CLASSES = ["positive", "negative", "no-findings"];
@@ -24921,12 +25159,12 @@ function summariseResults(results) {
 var isRecord6 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var isFigure = (value) => value === null || typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 function recordProblem(entry) {
-  const count3 = (key2) => entry[key2] === void 0 || entry[key2] === null || Number.isInteger(entry[key2]) && entry[key2] >= 0 ? null : `${key2} is not a whole number`;
+  const count4 = (key2) => entry[key2] === void 0 || entry[key2] === null || Number.isInteger(entry[key2]) && entry[key2] >= 0 ? null : `${key2} is not a whole number`;
   if (entry["skipped"] !== void 0) {
     const carried = ["hit", "silent", "lineDelta", "findings", "exitCode", "error"].filter((key2) => entry[key2] !== void 0);
     return carried.length === 0 ? null : `a skipped fixture carries no result, but this one has ${carried.join(", ")}`;
   }
-  const badCount = count3("findings") ?? count3("lineDelta");
+  const badCount = count4("findings") ?? count4("lineDelta");
   if (badCount !== null) return badCount;
   if (entry["exitCode"] !== 0 || entry["error"] !== void 0) {
     return (entry["hit"] ?? null) === null && (entry["silent"] ?? null) === null ? null : "a failed run scores nothing, but this one has a hit or silent value";
@@ -24944,15 +25182,15 @@ function recordProblem(entry) {
   return null;
 }
 function readRecallResults(path) {
-  let text4;
+  let text5;
   try {
-    text4 = readFileSync18(path, "utf8");
+    text5 = readFileSync18(path, "utf8");
   } catch (error) {
     throw new Error(`Cannot read the recall results ${path}: ${error.code === "ENOENT" ? "no such file" : error.message}`);
   }
   let document;
   try {
-    document = JSON.parse(text4);
+    document = JSON.parse(text5);
   } catch (error) {
     throw new Error(`The recall results ${path} are not valid JSON: ${error.message}`);
   }
@@ -25038,33 +25276,50 @@ function evaluateCommand(argv) {
     }
     windowDays = Number(match[1]);
   }
+  const json2 = argv.includes("--json");
+  const html = argv.includes("--html");
+  const out = flag(argv, "--out");
+  if (json2 && html) {
+    console.error("--json and --html are exclusive.");
+    return 2;
+  }
+  if (argv.includes("--out") && !html) {
+    console.error("--out needs --html.");
+    return 2;
+  }
+  if (argv.includes("--out") && out === null) {
+    console.error("--out needs a path.");
+    return 2;
+  }
   const db = openDatabase();
   try {
     const metrics = [...computeMetrics(db, { windowDays }), ...recallMetrics(recall)];
-    if (argv.includes("--json")) {
-      const { bySeverity, byLane, byRule, byEvidenceBlock } = postedBreakdown(db);
-      console.log(
-        JSON.stringify(
-          {
-            metrics,
-            posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule, by_evidence_block: byEvidenceBlock },
-            stage_seconds: stageSeconds(db),
-            by_family: byFamily(db)
-          },
-          null,
-          2
-        )
-      );
-    } else {
-      for (const metric of metrics) {
-        const value = metric.value === null ? "no data" : Number.isInteger(metric.value) && metric.name.endsWith("_tracked") ? String(metric.value) : metric.value.toFixed(2);
-        const mark = metric.meets === null || metric.target === "no target" ? "  -" : metric.meets ? "  ok" : metric.kind === "goal" ? "over" : "FAIL";
-        const target = metric.target === "no target" ? "reported, not scored" : metric.kind === "goal" ? `goal ${metric.target}` : `target ${metric.target}`;
-        console.log(`${mark}  ${metric.name.padEnd(32)} ${value.padStart(8)}  ${target}`);
-        console.log(`      ${metric.basis}`);
+    if (json2 || html) {
+      const report = evaluationReport(db, metrics, { windowDays });
+      if (json2) {
+        console.log(JSON.stringify(report, null, 2));
+        return 0;
       }
-      for (const line3 of describeByFamily(byFamily(db))) console.log(line3);
+      const fragment = renderEvaluationHtml(report);
+      if (out === null) {
+        process.stdout.write(fragment);
+        return 0;
+      }
+      try {
+        writeFileSync8(resolveOutPath(out, "evaluation.html"), htmlDocument(fragment, "Review Voice evaluation"), "utf8");
+      } catch (error) {
+        console.error(`Cannot write ${out}: expected a file path or a directory; ${error instanceof Error ? error.message : String(error)}`);
+        return 2;
+      }
+      return 0;
     }
+    for (const metric of metrics) {
+      const mark = metricMark(metric);
+      const column = mark === "-" ? "  -" : mark === "ok" ? "  ok" : mark;
+      console.log(`${column}  ${metric.name.padEnd(32)} ${formatMetricValue(metric).padStart(8)}  ${metricTarget(metric)}`);
+      console.log(`      ${metric.basis}`);
+    }
+    for (const line3 of describeByFamily(byFamily(db))) console.log(line3);
     return 0;
   } finally {
     db.close();
@@ -25189,7 +25444,7 @@ function truncationMarker(bytes, included) {
 [Truncated by Review Voice: ${included} of ${bytes} bytes shown. The rest of this document was not read.]
 `;
 }
-function sections(text4) {
+function sections(text5) {
   const out = [];
   let heading = "";
   let buffer = [];
@@ -25198,7 +25453,7 @@ function sections(text4) {
       out.push({ heading, body: buffer.join("\n") });
     }
   };
-  for (const line3 of text4.split(/\r?\n/)) {
+  for (const line3 of text5.split(/\r?\n/)) {
     if (/^#{1,3} /.test(line3)) {
       flush();
       heading = line3;
@@ -25223,8 +25478,8 @@ function changeVocabulary(changedPaths) {
   }
   return words;
 }
-function relevantSections(text4, changedPaths, budget) {
-  const parts = sections(text4);
+function relevantSections(text5, changedPaths, budget) {
+  const parts = sections(text5);
   if (parts.length < 2 || changedPaths.length === 0) return null;
   const vocabulary = changeVocabulary(changedPaths);
   if (vocabulary.size === 0) return null;
@@ -25281,17 +25536,17 @@ function readBounded(tree, path, changedPaths = []) {
   const buffer = Buffer.from(raw, "utf8");
   let end = Math.min(budget, buffer.length);
   const decoder = new TextDecoder("utf8", { fatal: true });
-  let text4 = "";
+  let text5 = "";
   for (; end > 0; end -= 1) {
     try {
-      text4 = decoder.decode(buffer.subarray(0, end));
+      text5 = decoder.decode(buffer.subarray(0, end));
       break;
     } catch {
     }
   }
-  const lastBreak = text4.lastIndexOf("\n");
-  if (lastBreak > 0) text4 = text4.slice(0, lastBreak);
-  const content = `${text4}${truncationMarker(bytes, Buffer.byteLength(text4, "utf8"))}`;
+  const lastBreak = text5.lastIndexOf("\n");
+  if (lastBreak > 0) text5 = text5.slice(0, lastBreak);
+  const content = `${text5}${truncationMarker(bytes, Buffer.byteLength(text5, "utf8"))}`;
   return {
     content,
     bytes,
@@ -25646,7 +25901,7 @@ function checkIntentCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/recall.ts
-import { writeFileSync as writeFileSync9, mkdirSync as mkdirSync10, statSync as statSync8, lstatSync as lstatSync5, renameSync as renameSync3, rmSync as rmSync9, existsSync as existsSync17 } from "node:fs";
+import { writeFileSync as writeFileSync10, mkdirSync as mkdirSync10, statSync as statSync8, lstatSync as lstatSync5, renameSync as renameSync3, rmSync as rmSync9, existsSync as existsSync17 } from "node:fs";
 import { dirname as dirname16, isAbsolute as isAbsolute5, relative as relative4, resolve as resolve9, sep as sep5 } from "node:path";
 
 // plugins/review-voice/src/evaluate/recall.ts
@@ -25665,7 +25920,7 @@ import {
   readdirSync as readdirSync5,
   readFileSync as readFileSync22,
   rmSync as rmSync7,
-  writeFileSync as writeFileSync8
+  writeFileSync as writeFileSync9
 } from "node:fs";
 import { tmpdir as tmpdir3 } from "node:os";
 import { basename as basename6, dirname as dirname15, join as join23, relative as relative3, resolve as resolve7, sep as sep4 } from "node:path";
@@ -25688,8 +25943,8 @@ function withoutCarriageReturn(line3) {
 function isBlank(line3) {
   return withoutCarriageReturn(line3) === "";
 }
-function normalisePatch(text4) {
-  const lines2 = text4.split("\n");
+function normalisePatch(text5) {
+  const lines2 = text5.split("\n");
   if (lines2[lines2.length - 1] === "") lines2.pop();
   const out = [];
   let index = 0;
@@ -25823,7 +26078,7 @@ function writeInside(root, path, content, label2) {
     throw new Error(`${label2}: ${JSON.stringify(path)} resolves outside the repository`);
   }
   mkdirSync8(dirname15(target), { recursive: true });
-  writeFileSync8(target, content);
+  writeFileSync9(target, content);
 }
 function reconstruct(files2, label2) {
   const images = /* @__PURE__ */ new Map();
@@ -25849,14 +26104,14 @@ function reconstruct(files2, label2) {
           continue;
         }
         aboveIsOld = true;
-        const text4 = body.slice(1);
+        const text5 = body.slice(1);
         const known = image.lines.get(lineNumber);
-        if (known !== void 0 && known !== text4) {
+        if (known !== void 0 && known !== text5) {
           throw new Error(
-            `${label2}: ${path} line ${lineNumber} is ${JSON.stringify(known)} in one hunk and ${JSON.stringify(text4)} in another, so the patch context does not match a single pre-image`
+            `${label2}: ${path} line ${lineNumber} is ${JSON.stringify(known)} in one hunk and ${JSON.stringify(text5)} in another, so the patch context does not match a single pre-image`
           );
         }
-        image.lines.set(lineNumber, text4);
+        image.lines.set(lineNumber, text5);
         lastOld = lineNumber;
         lineNumber += 1;
       }
@@ -25938,10 +26193,10 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
     const given = supplied.get(path);
     if (given !== void 0) {
       const actual = given.split("\n");
-      for (const [number, text5] of image.lines) {
-        if (actual[number - 1] !== text5) {
+      for (const [number, text6] of image.lines) {
+        if (actual[number - 1] !== text6) {
           throw new Error(
-            `${label2}: patch context for ${path} line ${number} is ${JSON.stringify(text5)} but context/${path} has ${JSON.stringify(actual[number - 1] ?? null)}`
+            `${label2}: patch context for ${path} line ${number} is ${JSON.stringify(text6)} but context/${path} has ${JSON.stringify(actual[number - 1] ?? null)}`
           );
         }
       }
@@ -25951,10 +26206,10 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
     const filler = fillerFor(path);
     const content = [];
     for (let number = 1; number <= last; number += 1) content.push(image.lines.get(number) ?? filler);
-    const text4 = content.length === 0 ? "" : content.join("\n") + (image.noFinalNewline ? "" : "\n");
-    writeInside(targetDir, path, text4, label2);
+    const text5 = content.length === 0 ? "" : content.join("\n") + (image.noFinalNewline ? "" : "\n");
+    writeInside(targetDir, path, text5, label2);
   }
-  for (const [path, text4] of supplied) writeInside(targetDir, path, text4, label2);
+  for (const [path, text5] of supplied) writeInside(targetDir, path, text5, label2);
   const configPath = join23(fixtureDir, "config.yaml");
   let config2 = DEFAULT_CONFIG;
   if (existsSync15(configPath)) {
@@ -25969,7 +26224,7 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
   const scratch = mkdtempSync4(join23(tmpdir3(), "rv-fixture-patch-"));
   try {
     const copy = join23(scratch, "normalised.patch");
-    writeFileSync8(copy, normalised);
+    writeFileSync9(copy, normalised);
     try {
       git3(targetDir, label2, ["apply", "--whitespace=nowarn", copy]);
     } catch (error) {
@@ -25997,10 +26252,10 @@ var CANNED_OUTPUT = /^[a-z][a-z0-9-]*\.\d+\.json$/;
 var RecallUsageError = class extends Error {
 };
 function scalar(raw) {
-  const text4 = raw.trim();
-  const quoted = /^(["'])(.*)\1$/.exec(text4);
+  const text5 = raw.trim();
+  const quoted = /^(["'])(.*)\1$/.exec(text5);
   if (quoted !== null) return quoted[2];
-  return text4.replace(/\s+#.*$/, "");
+  return text5.replace(/\s+#.*$/, "");
 }
 function readExpectation(cls, name, caseText) {
   const lines2 = caseText.split("\n");
@@ -26062,14 +26317,14 @@ function selectFixtures(options) {
 var json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 function shimFiles(repoDir, base, head, paths) {
   return paths.map((path) => {
-    const text4 = execFileSync15("git", ["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", path], {
+    const text5 = execFileSync15("git", ["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", path], {
       cwd: repoDir,
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024
     });
-    const at2 = text4.indexOf("\n@@");
-    const header = at2 === -1 ? text4 : text4.slice(0, at2);
-    const patch = at2 === -1 ? void 0 : text4.slice(at2 + 1);
+    const at2 = text5.indexOf("\n@@");
+    const header = at2 === -1 ? text5 : text5.slice(0, at2);
+    const patch = at2 === -1 ? void 0 : text5.slice(at2 + 1);
     const body = (patch ?? "").split("\n");
     const additions = body.filter((line3) => line3.startsWith("+")).length;
     const deletions = body.filter((line3) => line3.startsWith("-")).length;
@@ -26342,7 +26597,7 @@ async function recallCommand(argv, runInProcess2) {
   }
   const staging = `${out}.${process.pid}.tmp`;
   rmSync9(staging, { force: true });
-  writeFileSync9(staging, `${JSON.stringify(run.results, null, 2)}
+  writeFileSync10(staging, `${JSON.stringify(run.results, null, 2)}
 `, { flag: "wx" });
   renameSync3(staging, out);
   const { summary } = run.results;
@@ -26363,7 +26618,7 @@ import { dirname as dirname17, join as join26, resolve as resolve10 } from "node
 
 // plugins/review-voice/src/evaluate/benchmark.ts
 import { execFileSync as execFileSync16 } from "node:child_process";
-import { lstatSync as lstatSync6, mkdirSync as mkdirSync11, mkdtempSync as mkdtempSync6, readFileSync as readFileSync24, rmSync as rmSync10, writeFileSync as writeFileSync10 } from "node:fs";
+import { lstatSync as lstatSync6, mkdirSync as mkdirSync11, mkdtempSync as mkdtempSync6, readFileSync as readFileSync24, rmSync as rmSync10, writeFileSync as writeFileSync11 } from "node:fs";
 import { tmpdir as tmpdir5 } from "node:os";
 import { join as join25 } from "node:path";
 var BENCHMARK_SET = "qodo-pr-review-bench";
@@ -26371,9 +26626,9 @@ var SET_LICENCE_SOURCE = "dataset card";
 var BenchmarkShapeError = class extends Error {
 };
 var PULL_TAIL = /([^/\s]+)\/pull\/(\d+)\/?$/;
-function readSet(text4) {
+function readSet(text5) {
   const items = [];
-  for (const [index, row] of text4.split("\n").entries()) {
+  for (const [index, row] of text5.split("\n").entries()) {
     if (row.trim() === "") continue;
     const where = `item ${items.length} (line ${index + 1})`;
     let parsed2 = null;
@@ -26409,11 +26664,11 @@ function readSet(text4) {
 var LICENCE_ID = /^[A-Za-z0-9.+-]+$/;
 var NOT_A_LICENCE = /* @__PURE__ */ new Set(["noassertion", "none", "unknown", "other", "unlicensed"]);
 function isKnownLicence(value) {
-  let text4 = value.trim();
-  const wrapped = /^\((.*)\)$/.exec(text4);
-  if (wrapped !== null) text4 = wrapped[1].trim();
-  if (text4 === "") return false;
-  return text4.split(/\s+(?:AND|OR|WITH)\s+/).every((part) => LICENCE_ID.test(part) && !NOT_A_LICENCE.has(part.toLowerCase()));
+  let text5 = value.trim();
+  const wrapped = /^\((.*)\)$/.exec(text5);
+  if (wrapped !== null) text5 = wrapped[1].trim();
+  if (text5 === "") return false;
+  return text5.split(/\s+(?:AND|OR|WITH)\s+/).every((part) => LICENCE_ID.test(part) && !NOT_A_LICENCE.has(part.toLowerCase()));
 }
 function slugOf(id) {
   return id.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
@@ -26437,7 +26692,7 @@ function probeBuild(scratch, slug, diff) {
   const repo = join25(scratch, "repo");
   try {
     mkdirSync11(fixture, { recursive: true });
-    writeFileSync10(join25(fixture, "diff.patch"), diff);
+    writeFileSync11(join25(fixture, "diff.patch"), diff);
     const { base, head, files: files2 } = materializeFixture(fixture, repo, { name: slug });
     const git6 = (args) => execFileSync16("git", args, { cwd: repo, env: gitEnvironment2(), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
     const hunks = parseHunks(git6(["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", ...files2]));
@@ -26585,9 +26840,9 @@ function importBenchmark(options) {
         };
         const dir = join25(options.out, entry.fixture);
         mkdirSync11(dir, { recursive: true });
-        writeFileSync10(join25(dir, "diff.patch"), diff);
-        if (description !== null) writeFileSync10(join25(dir, "pr-body.md"), description);
-        writeFileSync10(join25(dir, "case.yaml"), caseYaml(entry, options, isIdentifier(issue.note) ? issue.note : null));
+        writeFileSync11(join25(dir, "diff.patch"), diff);
+        if (description !== null) writeFileSync11(join25(dir, "pr-body.md"), description);
+        writeFileSync11(join25(dir, "case.yaml"), caseYaml(entry, options, isIdentifier(issue.note) ? issue.note : null));
         manifest.items.push(entry);
         manifest.counts.fixtures += 1;
       }
@@ -26596,7 +26851,7 @@ function importBenchmark(options) {
     rmSync10(scratch, { recursive: true, force: true });
   }
   mkdirSync11(options.out, { recursive: true });
-  writeFileSync10(join25(options.out, "import.json"), `${JSON.stringify(manifest, null, 2)}
+  writeFileSync11(join25(options.out, "import.json"), `${JSON.stringify(manifest, null, 2)}
 `);
   return manifest;
 }
@@ -26855,7 +27110,7 @@ function worktreeCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/diff.ts
-import { readFileSync as readFileSync26, writeFileSync as writeFileSync11, mkdirSync as mkdirSync13 } from "node:fs";
+import { readFileSync as readFileSync26, writeFileSync as writeFileSync12, mkdirSync as mkdirSync13 } from "node:fs";
 import { join as join28 } from "node:path";
 
 // plugins/review-voice/src/diff/prior.ts
@@ -27125,8 +27380,8 @@ function emitDiff(acquired, outDir) {
     mkdirSync13(outDir, { recursive: true });
     const patchPath2 = join28(outDir, "diff.patch");
     const metaPath = join28(outDir, "files.json");
-    writeFileSync11(patchPath2, result.diff);
-    writeFileSync11(metaPath, JSON.stringify({ ...result, diff: void 0 }, null, 2));
+    writeFileSync12(patchPath2, result.diff);
+    writeFileSync12(metaPath, JSON.stringify({ ...result, diff: void 0 }, null, 2));
     console.log(
       JSON.stringify(
         { patch: patchPath2, files: metaPath, diffBytes: result.diff.length, summary: diffSummary(result) },
@@ -27186,7 +27441,7 @@ function readFilesAndDiff(filesPath, diffPath) {
 }
 
 // plugins/review-voice/src/cli/thread.ts
-import { writeFileSync as writeFileSync12 } from "node:fs";
+import { writeFileSync as writeFileSync13 } from "node:fs";
 async function threadCommand(argv) {
   const pullNumber = Number(flag(argv, "--pr"));
   if (!Number.isInteger(pullNumber) || pullNumber < 1) {
@@ -27208,7 +27463,7 @@ async function threadCommand(argv) {
   }
   try {
     const path = resolveOutPath(out, "thread.json");
-    writeFileSync12(path, JSON.stringify(result, null, 2), "utf8");
+    writeFileSync13(path, JSON.stringify(result, null, 2), "utf8");
     console.log(
       JSON.stringify(
         {
@@ -27232,7 +27487,7 @@ async function threadCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/symbols.ts
-import { readFileSync as readFileSync27, writeFileSync as writeFileSync13 } from "node:fs";
+import { readFileSync as readFileSync27, writeFileSync as writeFileSync14 } from "node:fs";
 
 // plugins/review-voice/src/scoring/existence.ts
 import { execFileSync as execFileSync20 } from "node:child_process";
@@ -27246,9 +27501,9 @@ var ASSERTS_ABSENCE = [
 ];
 var DETERMINER = /^(?:the|this|that|these|those|our|your|their|its|his|her|my|a|an)\s+/i;
 function withoutDeterminer(complement) {
-  let text4 = complement.trim().replace(/[`'"]/g, "");
-  for (let i = 0; i < 3; i += 1) text4 = text4.replace(DETERMINER, "");
-  return text4.trim();
+  let text5 = complement.trim().replace(/[`'"]/g, "");
+  for (let i = 0; i < 3; i += 1) text5 = text5.replace(DETERMINER, "");
+  return text5.trim();
 }
 var GENERIC_REPOSITORY = /^(?:entire\s+|whole\s+)?(?:mono)?(?:repo|repository|code\s?base|project|tree)\b/i;
 var NAMED_UNIT = /^(?:the\s+)?(?:@[\w.-]+\/[\w.-]+|[a-z0-9]+(?:-[a-z0-9]+)+)\s*$/i;
@@ -27265,12 +27520,12 @@ function namesThisRepository(complement, repository) {
   );
 }
 var PROPERTY_NOT_PLACE = /\b(?:ex|im)ported\b|\bnot\s+(?:public|exposed|re-?exported)\b/i;
-function absenceScope(text4, repository = null) {
-  if (PROPERTY_NOT_PLACE.test(text4)) return "bounded";
-  if (/\b(?:anywhere|nowhere)\b/i.test(text4)) return "repository";
-  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text4);
+function absenceScope(text5, repository = null) {
+  if (PROPERTY_NOT_PLACE.test(text5)) return "bounded";
+  if (/\b(?:anywhere|nowhere)\b/i.test(text5)) return "repository";
+  const assertion = ABSENCE_WITH_COMPLEMENT.exec(text5);
   if (assertion === null) return "repository";
-  const after = text4.slice(assertion.index + assertion[0].length);
+  const after = text5.slice(assertion.index + assertion[0].length);
   const locative = LOCATIVE.exec(after);
   if (locative === null) return "repository";
   const complement = (locative[1] ?? "").trim();
@@ -27282,16 +27537,16 @@ function absenceScope(text4, repository = null) {
   }
   return "bounded";
 }
-function namedSymbols(text4) {
+function namedSymbols(text5) {
   const found = /* @__PURE__ */ new Set();
-  for (const match of text4.matchAll(/`([^`]+)`/g)) {
+  for (const match of text5.matchAll(/`([^`]+)`/g)) {
     const token = (match[1] ?? "").trim();
     if (token.length >= 4 && !/\s/.test(token) && !token.startsWith("-")) found.add(token);
   }
-  for (const match of text4.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
+  for (const match of text5.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
     if (match[1] !== void 0) found.add(match[1]);
   }
-  for (const match of text4.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
+  for (const match of text5.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
     if (match[1] !== void 0) found.add(match[1]);
   }
   for (const token of [...found]) {
@@ -27350,12 +27605,12 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
     for (const record3 of output.split("\n")) {
       const [rawPath = "", number = "", ...rest] = record3.split("\0");
       const line3 = Number(number);
-      const text4 = rest.join("\0");
+      const text5 = rest.join("\0");
       if (!Number.isSafeInteger(line3) || line3 < 1) continue;
       lines2.push({
         path: prefix !== "" && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath,
         line: line3,
-        text: text4
+        text: text5
       });
     }
     return lines2;
@@ -27413,28 +27668,28 @@ var LOOSE_ABSENCE = [
   /\b(?:does|do|did)\s*(?:not|n't)\s+exist|\bmissing\b|\babsent\b|\b(?:deleted|removed)\b|\bnot\s+(?:found|present)\b/i
 ];
 var CLAUSE_BREAK = /[.;!?](?=\s|$)|\b(?:which|that|who|but|whereas|while)\b/gi;
-function tiedToAbsence(text4, symbols) {
-  const strict = tiedBy(ASSERTS_ABSENCE, text4, symbols);
-  return strict.size > 0 ? strict : tiedBy(LOOSE_ABSENCE, text4, symbols);
+function tiedToAbsence(text5, symbols) {
+  const strict = tiedBy(ASSERTS_ABSENCE, text5, symbols);
+  return strict.size > 0 ? strict : tiedBy(LOOSE_ABSENCE, text5, symbols);
 }
-function tiedBy(phrases, text4, symbols) {
-  const masked = text4.replace(/`[^`]*`/g, (span) => `\`${"x".repeat(span.length - 2)}\``);
+function tiedBy(phrases, text5, symbols) {
+  const masked = text5.replace(/`[^`]*`/g, (span) => `\`${"x".repeat(span.length - 2)}\``);
   const starts = [0];
   for (const match of masked.matchAll(CLAUSE_BREAK)) {
     starts.push(match[0].length === 1 ? match.index + 1 : match.index);
   }
-  starts.push(text4.length);
+  starts.push(text5.length);
   const occurrences = symbols.flatMap((symbol) => {
     const at2 = [];
-    for (let index = text4.indexOf(symbol); index !== -1; index = text4.indexOf(symbol, index + 1)) {
-      if (text4[index - 1] !== "/") at2.push({ symbol, index });
+    for (let index = text5.indexOf(symbol); index !== -1; index = text5.indexOf(symbol, index + 1)) {
+      if (text5[index - 1] !== "/") at2.push({ symbol, index });
     }
     return at2;
   });
   const tied = /* @__PURE__ */ new Set();
   for (let i = 0; i + 1 < starts.length; i += 1) {
     const start = starts[i] ?? 0;
-    const end = starts[i + 1] ?? text4.length;
+    const end = starts[i + 1] ?? text5.length;
     const clause = masked.slice(start, end);
     if (!phrases.some((phrase) => phrase.test(clause))) continue;
     const inClause = occurrences.filter(({ index }) => index >= start && index < end);
@@ -27455,10 +27710,10 @@ function tiedBy(phrases, text4, symbols) {
 function generatedAccessor(symbol) {
   return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
 }
-function checkAbsenceClaim(text4, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources, trackedPaths = gitTrackedPaths) {
+function checkAbsenceClaim(text5, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources, trackedPaths = gitTrackedPaths) {
   const searchedRefLabel = ref ?? "working tree";
-  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text4))) return null;
-  const scope = absenceScope(text4, repository);
+  if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text5))) return null;
+  const scope = absenceScope(text5, repository);
   if (scope === "bounded") return null;
   if (scope === "elsewhere") {
     return {
@@ -27471,10 +27726,10 @@ function checkAbsenceClaim(text4, cwd, ref = null, search = gitGrep, repository 
       searchedRef: searchedRefLabel
     };
   }
-  const stated = namedSymbols(text4).filter(
-    (symbol) => text4.split(symbol).slice(0, -1).some((before) => !before.endsWith("/"))
+  const stated = namedSymbols(text5).filter(
+    (symbol) => text5.split(symbol).slice(0, -1).some((before) => !before.endsWith("/"))
   );
-  const tied = tiedToAbsence(text4, stated);
+  const tied = tiedToAbsence(text5, stated);
   const symbols = stated.filter((symbol) => !isPath(symbol) || tied.size === 0 || tied.has(symbol));
   if (symbols.length === 0) return null;
   const searchedRef = ref ?? "working tree";
@@ -27593,7 +27848,7 @@ var STOP_TOKENS = /* @__PURE__ */ new Set([
   "helper",
   "helpers"
 ]);
-function declarationName(text4) {
+function declarationName(text5) {
   for (const pattern of [
     TS_FUNCTION,
     VARIABLE_FUNCTION,
@@ -27603,10 +27858,10 @@ function declarationName(text4) {
     MODIFIED_METHOD,
     KOTLIN_FUNCTION
   ]) {
-    const match = pattern.exec(text4);
+    const match = pattern.exec(text5);
     if (match?.[1] !== void 0) return match[1];
   }
-  const method = CLASS_METHOD.exec(text4);
+  const method = CLASS_METHOD.exec(text5);
   const name = method?.[1];
   if (name === void 0 || STATEMENT_KEYWORDS.has(name.toLowerCase())) return null;
   return name;
@@ -27708,8 +27963,8 @@ function symbolsFromHunks(diff, changedPath) {
     if (!inFile) continue;
     if (raw.startsWith("--- ")) continue;
     if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
-    const text4 = raw.slice(1);
-    for (const m of text4.matchAll(
+    const text5 = raw.slice(1);
+    for (const m of text5.matchAll(
       /\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,}|[A-Z][A-Z0-9]+_[A-Z0-9_]+)\b/g
     )) {
       if (m[1] !== void 0) found.add(m[1]);
@@ -27764,9 +28019,9 @@ function isImportOnlyChange(diff, changedPath) {
     }
     if (!inFile || raw.startsWith("--- ")) continue;
     if (!raw.startsWith("+") && !raw.startsWith("-")) continue;
-    const text4 = raw.slice(1).trim();
-    if (text4 === "") continue;
-    if (!IMPORT_LINE.some((pattern) => pattern.test(text4))) return false;
+    const text5 = raw.slice(1).trim();
+    if (text5 === "") continue;
+    if (!IMPORT_LINE.some((pattern) => pattern.test(text5))) return false;
     imports += 1;
   }
   return imports > 0;
@@ -27780,12 +28035,12 @@ function isRepositoryWideToolchainPath(path) {
   const normalised = normalisePath3(path);
   return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
 }
-function computeReach(text4, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
+function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
   const searchedRef = ref ?? "working tree";
   const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
   const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
   const source = ownHunks.length > 0 ? "hunks" : anyHunks.length > 0 ? "diff" : "claim";
-  const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text4)).slice(0, 12);
+  const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text5)).slice(0, 12);
   const searched = [];
   const ignored = [];
   const hits = /* @__PURE__ */ new Set();
@@ -28172,7 +28427,7 @@ function symbolsCommand(argv) {
   }
   try {
     const path = resolveOutPath(out, "symbols.json");
-    writeFileSync13(path, JSON.stringify(result, null, 2), "utf8");
+    writeFileSync14(path, JSON.stringify(result, null, 2), "utf8");
     console.log(
       JSON.stringify(
         {
@@ -28598,22 +28853,22 @@ function selectEvents(events, options) {
   for (const event of sorted) {
     if (event.role === "owner") continue;
     if (selected.length >= options.target) break;
-    const count3 = perRepository[event.repository] ?? 0;
-    if (count3 >= cap) {
+    const count4 = perRepository[event.repository] ?? 0;
+    if (count4 >= cap) {
       deferred.push(event);
       continue;
     }
-    perRepository[event.repository] = count3 + 1;
+    perRepository[event.repository] = count4 + 1;
     selected.push(event);
   }
   const hardCap = Math.max(cap, Math.floor(options.target * Math.min(1, options.maxRepositoryShare * 1.5)));
   const overRepresented = /* @__PURE__ */ new Set();
   for (const event of deferred) {
     if (selected.length >= options.target) break;
-    const count3 = perRepository[event.repository] ?? 0;
-    if (count3 >= hardCap) continue;
-    if (count3 >= cap) overRepresented.add(event.repository);
-    perRepository[event.repository] = count3 + 1;
+    const count4 = perRepository[event.repository] ?? 0;
+    if (count4 >= hardCap) continue;
+    if (count4 >= cap) overRepresented.add(event.repository);
+    perRepository[event.repository] = count4 + 1;
     selected.push(event);
   }
   const shortfall = Math.max(0, options.target - selected.length);
@@ -28752,8 +29007,8 @@ function storeEvents(db, events) {
   }
   const redactionTotals = {};
   for (const event of events) {
-    for (const [label2, count3] of Object.entries(event.redactionCounts)) {
-      redactionTotals[label2] = (redactionTotals[label2] ?? 0) + count3;
+    for (const [label2, count4] of Object.entries(event.redactionCounts)) {
+      redactionTotals[label2] = (redactionTotals[label2] ?? 0) + count4;
     }
   }
   recordAudit(db, "corpus_ingested", null, {
@@ -28792,10 +29047,10 @@ function corpusCoverage(db, options = {}) {
   }
   const share = options.maxRepositoryShare;
   if (share !== void 0 && total > 0) {
-    for (const [repository, count3] of Object.entries(byRepository)) {
-      if (count3 / total > share) {
+    for (const [repository, count4] of Object.entries(byRepository)) {
+      if (count4 / total > share) {
         warnings.push(
-          `${repository} is ${Math.round(count3 / total * 100)}% of the corpus, above the configured ${Math.round(share * 100)}% share. Policy compiled from it will mostly describe that repository.`
+          `${repository} is ${Math.round(count4 / total * 100)}% of the corpus, above the configured ${Math.round(share * 100)}% share. Policy compiled from it will mostly describe that repository.`
         );
       }
     }
@@ -29063,9 +29318,9 @@ async function outcomesCommand(argv) {
       console.log(`${o.repository}#${o.pullNumber} ${o.findingId} ${o.path}:${o.line} ${o.outcome} (${o.strength}): ${o.evidence}`);
     }
     for (const question of result.questions) console.log(pendingQuestionLine(question));
-    const count3 = (name) => result.outcomes.filter((o) => o.outcome === name).length;
+    const count4 = (name) => result.outcomes.filter((o) => o.outcome === name).length;
     console.log(
-      `${result.outcomes.length} finding(s) tracked: ${count3("fixed")} fixed, ${count3("dismissed")} dismissed, ${count3("resolved")} resolved, ${count3("outdated")} outdated, ${count3("open")} open, ${count3("unknown")} unknown`
+      `${result.outcomes.length} finding(s) tracked: ${count4("fixed")} fixed, ${count4("dismissed")} dismissed, ${count4("resolved")} resolved, ${count4("outdated")} outdated, ${count4("open")} open, ${count4("unknown")} unknown`
     );
     return 0;
   } finally {
@@ -29084,8 +29339,8 @@ function safeReference(raw) {
   if (!path.split(/[\\/]/).every((part) => part !== "" && part !== "." && part !== "..")) return null;
   return reference;
 }
-function obeys(text4) {
-  return text4.length <= REPLY_MAX_LENGTH && findForbiddenPhrases(text4, DEFAULT_LIMITS.forbiddenPhrases).length === 0 && classifyReply(text4) === "other";
+function obeys(text5) {
+  return text5.length <= REPLY_MAX_LENGTH && findForbiddenPhrases(text5, DEFAULT_LIMITS.forbiddenPhrases).length === 0 && classifyReply(text5) === "other";
 }
 function joined(references) {
   const code3 = references.map((reference) => `\`${reference}\``);
@@ -29556,7 +29811,7 @@ function reconcileCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/challenge.ts
-import { readFileSync as readFileSync32, writeFileSync as writeFileSync14 } from "node:fs";
+import { readFileSync as readFileSync32, writeFileSync as writeFileSync15 } from "node:fs";
 function challengeCommand(argv) {
   const scoresFile = flag(argv, "--scores");
   const candidatesFile = flag(argv, "--candidates");
@@ -29635,7 +29890,7 @@ function challengeCommand(argv) {
     process.stdout.write(body);
   } else {
     try {
-      writeFileSync14(outFile, body);
+      writeFileSync15(outFile, body);
     } catch (error) {
       console.error(`Cannot write ${outFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -29647,7 +29902,7 @@ function challengeCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/reanchor.ts
-import { readFileSync as readFileSync33, writeFileSync as writeFileSync15, renameSync as renameSync5, rmSync as rmSync13 } from "node:fs";
+import { readFileSync as readFileSync33, writeFileSync as writeFileSync16, renameSync as renameSync5, rmSync as rmSync13 } from "node:fs";
 function reanchorCommand(argv) {
   const candidateId = flag(argv, "--candidate");
   const line3 = Number(flag(argv, "--line"));
@@ -29694,11 +29949,11 @@ function reanchorCommand(argv) {
   try {
     if (candidatesFile !== null) {
       staged.push([`${candidatesFile}.reanchor-${process.pid}`, candidatesFile]);
-      writeFileSync15(staged[staged.length - 1][0], `${JSON.stringify(candidates, null, 2)}
+      writeFileSync16(staged[staged.length - 1][0], `${JSON.stringify(candidates, null, 2)}
 `);
     }
     staged.push([`${scoresFile}.reanchor-${process.pid}`, scoresFile]);
-    writeFileSync15(staged[staged.length - 1][0], `${JSON.stringify(result.updated, null, 2)}
+    writeFileSync16(staged[staged.length - 1][0], `${JSON.stringify(result.updated, null, 2)}
 `);
     for (const [temporary, target] of staged) renameSync5(temporary, target);
   } catch (error) {
@@ -29783,7 +30038,7 @@ async function agentCommand(argv) {
 var SHALLOW_MIN_DIFF_LINES = 150;
 var SHALLOW_LINES_PER_CALL = 40;
 var SHALLOW_MIN_FILES_READ_SHARE = 0.5;
-var count2 = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : void 0;
+var count3 = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : void 0;
 function changedLineCount(diff) {
   let lines2 = 0;
   for (const raw of diff.split(/\r?\n/)) {
@@ -29828,10 +30083,10 @@ function cleanStages(stages, diff) {
   const diffLines = diff === null ? void 0 : changedLineCount(diff);
   const diffFiles = diff === null ? void 0 : [...parseHunks(diff).values()].filter((file2) => file2.ranges.length > 0).length;
   return stages.map((stage) => {
-    const toolCalls = count2(stage.toolCalls);
-    const tokens = count2(stage.tokens);
-    const filesRead = count2(stage.filesRead);
-    const costUsd = count2(stage.costUsd);
+    const toolCalls = count3(stage.toolCalls);
+    const tokens = count3(stage.tokens);
+    const filesRead = count3(stage.filesRead);
+    const costUsd = count3(stage.costUsd);
     const modelName = (value) => typeof value === "string" && /^[\w.:\[\]-]{1,100}$/.test(value);
     const model = modelName(stage.model) ? stage.model : void 0;
     const models = Array.isArray(stage.models) ? stage.models.filter(modelName).slice(0, 200) : [];
@@ -29961,7 +30216,7 @@ function explainCommand(argv) {
       if (score2?.novelty !== void 0) {
         console.log(`  novelty           ${score2.novelty.toFixed(2)}`);
       }
-      const precedentIds = score2?.precedentIds ?? (score2?.precedents ?? []).flatMap((p) => typeof p.eventId === "string" ? [p.eventId] : []);
+      const precedentIds = score2?.precedentIds ?? (score2?.precedents ?? []).flatMap((p2) => typeof p2.eventId === "string" ? [p2.eventId] : []);
       if (precedentIds.length > 0) {
         console.log(`  precedents        ${precedentIds.join(", ")}`);
       }
@@ -30149,15 +30404,15 @@ function statusCommand() {
 }
 
 // plugins/review-voice/src/cli/carry.ts
-import { readFileSync as readFileSync35, writeFileSync as writeFileSync16, mkdirSync as mkdirSync14 } from "node:fs";
+import { readFileSync as readFileSync35, writeFileSync as writeFileSync17, mkdirSync as mkdirSync14 } from "node:fs";
 import { dirname as dirname19, join as join29 } from "node:path";
 
 // plugins/review-voice/src/diff/held.ts
 var QUOTE_LIMIT = 200;
-function parseThreadFile(text4, file2, run) {
+function parseThreadFile(text5, file2, run) {
   let parsed2;
   try {
-    const raw = JSON.parse(text4);
+    const raw = JSON.parse(text5);
     if (typeof raw !== "object" || raw === null || Array.isArray(raw) || !Array.isArray(raw["comments"])) {
       throw new Error("expected the thread.json that `RV thread` wrote");
     }
@@ -30191,8 +30446,8 @@ function postedReviewIds(db, runId) {
   }
   return reviewIds;
 }
-function quote2(text4) {
-  const flat = text4.replace(/\s+/g, " ").trim();
+function quote2(text5) {
+  const flat = text5.replace(/\s+/g, " ").trim();
   return `"${flat.length > QUOTE_LIMIT ? `${flat.slice(0, QUOTE_LIMIT)}...` : flat}"`;
 }
 function postedComment2(finding, thread, run, reviewIds) {
@@ -30270,13 +30525,13 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   }
   let hold;
   if (threadFile !== null) {
-    let text4;
+    let text5;
     try {
-      text4 = readFileSync35(threadFile, "utf8");
+      text5 = readFileSync35(threadFile, "utf8");
     } catch (error) {
       throw new CarryError(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    const thread = parseThreadFile(text4, threadFile, detail);
+    const thread = parseThreadFile(text5, threadFile, detail);
     hold = heldBackFindings(detail.findings, thread, detail, postedReviewIds(db, runId));
   }
   let noLongerChanged = /* @__PURE__ */ new Set();
@@ -30566,19 +30821,19 @@ function carryCandidatesCommand(argv) {
   };
   try {
     mkdirSync14(outDir, { recursive: true });
-    writeFileSync16(
+    writeFileSync17(
       join29(outDir, "candidates.json"),
       `${JSON.stringify(candidatesIn.rebuild([...carriedCandidates, ...interdiffCandidates]), null, 2)}
 `
     );
-    writeFileSync16(
+    writeFileSync17(
       join29(outDir, "verification.json"),
       `${JSON.stringify(verificationIn.rebuild([...carriedVerification, ...interdiffVerification]), null, 2)}
 `
     );
-    if (heldIn !== null) writeFileSync16(join29(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
+    if (heldIn !== null) writeFileSync17(join29(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
 `);
-    writeFileSync16(join29(outDir, "carry.json"), `${JSON.stringify(record3, null, 2)}
+    writeFileSync17(join29(outDir, "carry.json"), `${JSON.stringify(record3, null, 2)}
 `);
   } catch (error) {
     console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
@@ -30711,14 +30966,14 @@ function deletedFileCheck(argv) {
   const lines2 = /* @__PURE__ */ new Map();
   const baseLines = (from, path) => {
     if (lines2.has(path)) return lines2.get(path);
-    let count3 = null;
+    let count4 = null;
     try {
-      const text4 = git6(["show", `${from}:${path}`]);
-      count3 = text4.endsWith("\n") ? text4.split("\n").length - 1 : text4.split("\n").length;
+      const text5 = git6(["show", `${from}:${path}`]);
+      count4 = text5.endsWith("\n") ? text5.split("\n").length - 1 : text5.split("\n").length;
     } catch {
     }
-    lines2.set(path, count3);
-    return count3;
+    lines2.set(path, count4);
+    return count4;
   };
   return (candidate, anchor) => {
     if (anchor.ok || anchor.kind !== "file-not-in-diff") return false;
@@ -30726,8 +30981,8 @@ function deletedFileCheck(argv) {
     if (path === "" || path.startsWith("/") || path.split(/[\\/]/).includes("..") || !isReviewable(path, false)) return false;
     const found = deletions();
     if (found === null || !found.paths.has(path)) return false;
-    const count3 = baseLines(found.from, path);
-    return count3 !== null && Number.isInteger(candidate.line) && candidate.line >= 1 && candidate.line <= count3;
+    const count4 = baseLines(found.from, path);
+    return count4 !== null && Number.isInteger(candidate.line) && candidate.line >= 1 && candidate.line <= count4;
   };
 }
 var OWNER_OVERRIDE_SEVERITIES = ["blocking", "important", "minor", "nit"];
@@ -31186,7 +31441,7 @@ function scoreCommand(argv) {
       return sa - sb || fa - fb;
     });
     const finals = results.map((r) => r.finalScore).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
-    const at2 = (p) => finals.length === 0 ? null : finals[Math.min(finals.length - 1, Math.floor(p * finals.length))];
+    const at2 = (p2) => finals.length === 0 ? null : finals[Math.min(finals.length - 1, Math.floor(p2 * finals.length))];
     console.log(
       JSON.stringify(
         {
@@ -31331,7 +31586,7 @@ function namesHeldPath(candidate, entry) {
   const base = entry.path.slice(entry.path.lastIndexOf("/") + 1);
   const names = base.includes(".") && base.length >= 6 ? [entry.path, base] : [entry.path];
   return [candidate.claim, candidate.failureMode, ...candidate.evidence].some(
-    (text4) => typeof text4 === "string" && names.some((name) => text4.includes(name))
+    (text5) => typeof text5 === "string" && names.some((name) => text5.includes(name))
   );
 }
 function matchHeld(candidate, held) {
@@ -31383,22 +31638,22 @@ function readSignals(file2, root) {
 var TOOL_RESTATEMENT_OVERLAP = 0.6;
 function matchSignal(candidate, signals) {
   if (isSuppressionExempt(candidate.category)) return null;
-  const text4 = `${candidate.claim} ${candidate.failureMode}`;
-  const mine = significantWords(text4);
+  const text5 = `${candidate.claim} ${candidate.failureMode}`;
+  const mine = significantWords(text5);
   const path = posix5.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
   for (const signal2 of signals) {
     if (signal2.path !== path || signal2.line === null || Math.abs(signal2.line - candidate.line) > 2) continue;
     const message = `${signal2.claim} ${signal2.evidence.join(" ")}`;
     const diagnostic = message.replace(/\bDid you mean\b[\s\S]*$/i, "");
     const named = [...diagnostic.matchAll(/['"`]([^'"`\s]+)['"`]/g)].map((match) => match[1]);
-    if (named.some((name) => !mentions(text4, name))) continue;
+    if (named.some((name) => !mentions(text5, name))) continue;
     if (overlap(mine, significantWords(message)) >= TOOL_RESTATEMENT_OVERLAP) return signal2;
   }
   return null;
 }
-function mentions(text4, name) {
+function mentions(text5, name) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(^|[^\\w$-])${escaped}(?![\\w$-])`).test(text4);
+  return new RegExp(`(^|[^\\w$-])${escaped}(?![\\w$-])`).test(text5);
 }
 function markSiblings(kept) {
   const facts = kept.map((entry) => ({
@@ -32306,8 +32561,8 @@ ${topLevelHelp()}`);
         client: (allowlist) => new GitHubClient({ allowlist, allowGlobs: true }),
         openDb: () => openDatabase(),
         now: /* @__PURE__ */ new Date(),
-        out: (text4) => console.log(text4),
-        err: (text4) => console.error(text4)
+        out: (text5) => console.log(text5),
+        err: (text5) => console.error(text5)
       });
     case "watch": {
       let root = null;
@@ -32336,8 +32591,8 @@ ${topLevelHelp()}`);
         prepareClone: gitPrepareClone(),
         now: () => /* @__PURE__ */ new Date(),
         sleep: (ms) => new Promise((resolve14) => setTimeout(resolve14, ms)),
-        out: (text4) => console.log(text4),
-        err: (text4) => console.error(text4)
+        out: (text5) => console.log(text5),
+        err: (text5) => console.error(text5)
       });
     }
     case "calibrate":
