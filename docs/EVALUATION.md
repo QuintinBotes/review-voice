@@ -69,8 +69,21 @@ Each figure below is reported and never a gate. A figure with no data prints
 | Posted replies, replied fixed rate | How many findings got this tool's one reply, and what became of them; see below |
 
 `RV evaluate --json` also carries a top-level `stage_seconds` map of stage name
-to `{ median, p95, runs }`, beside `metrics` and `posted_breakdown`. It is not a
-metric, because its value is a map, and the text output does not print it.
+to `{ median, p95, runs, unmeasured }`, beside `metrics` and `posted_breakdown`.
+It is not a metric, because its value is a map, and the text output does not
+print it.
+
+A stage may be recorded without its seconds, because a coordinator that hands
+a stage to a subagent does not see how long it took (`record --stages` needs
+only a `name`). Such a stage is no data, never a zero. `runs` counts the runs
+that measured the stage and `median` and `p95` are over those alone;
+`unmeasured` counts the runs that recorded it without seconds, and a run that
+names the stage twice and timed it once is one of them. A stage no run measured
+has `null` for both figures, and the rendered report prints `no data` for them
+beside the `unmeasured` count. A run with any unmeasured stage is likewise left
+out of the median and 95th percentile review seconds, whose basis then says how
+many runs were excluded, as a run with an uncosted stage is left out of the
+cost.
 
 The whole JSON document is one object, `EvaluationReport`, built by one
 function so the JSON and the rendered report (see "The rendered report") cannot

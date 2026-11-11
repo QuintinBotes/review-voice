@@ -970,14 +970,23 @@ stray directory and another project's notes took the reviewed count from 11 to
   review silently reads the whole pull request again.
 
   `--stages` takes `[{"name","seconds","toolCalls","filesRead","tokens"}]`, one
-  entry per agent stage you ran. Write what you observed; omit a field you do
-  not know rather than estimating it. `record` refuses an entry without `name`
-  and a numeric `seconds`, and stores an entry with a field it does not know
-  without that field, naming what it dropped. `toolCalls` and `filesRead` for the
+  entry per agent stage you ran. Only `name` is required. Give a number only
+  when it was measured, by you or reported by the stage itself, and leave the
+  field out otherwise; never estimate one. A stage you handed to a subagent
+  comes back as its answer, without its time, tool calls, files read or tokens,
+  so its entry is often the name alone, and that is the right record. A figure
+  left out is stored as not measured, and `explain` shows it so. `evaluate`
+  reads only `seconds`, and counts a stage recorded without it as unmeasured
+  instead of counting a guess. `record` refuses an entry without `name`, or
+  with a figure that is present and is not a number of zero or more, and stores
+  an entry with a field it does not know without that field, naming what it
+  dropped. `toolCalls` and `filesRead` for the
   `analyst` are how `explain` shows what it actually read, and `record` prints
   a `warnings` entry when a run with no findings came from a very shallow
   analyst pass for the size of the diff, or one that read under half of the
-  changed files. Show that warning to the person, and
+  changed files. When the `analyst` entry has no `filesRead`, `record` raises
+  no files warning and says on stderr that the read could not be judged, which
+  is not a pass. Show that warning to the person, and
   never post it or put it in the review. A review measured once took about twenty-five
   minutes against a sweep that runs every ten, and whether that holds is a
   distribution nobody has yet.
