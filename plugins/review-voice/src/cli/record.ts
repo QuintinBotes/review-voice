@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { pluginVersion } from '../version.ts';
 import { validateOutput } from '../contract/validate.ts';
+import { parseFinding, splitFindings } from '../contract/parse.ts';
 import { DEFAULT_LIMITS } from '../contract/limits.ts';
 import { parseComplexity, type ComplexityAssessment } from '../diff/complexity.ts';
 import { parseVerifiedSimplification, type VerifiedSimplification } from '../simplification.ts';
@@ -23,6 +24,7 @@ import {
   runDetail,
   heldProblem,
   challengeNotRun,
+  heldBelowConfidenceGate,
   type CarryMarker,
   CarryMismatch,
   type CandidateHint,
@@ -498,6 +500,8 @@ export function recordCommand(argv: string[]): number {
     // run approve (docs/adr/0024). One on a file the pull request no longer
     // changes is settled like its findings. The manifest's file list says so
     // for every scope; the two scope lists say so for a manifest without one.
+    // A finding held below the confidence gate travels the same way: the
+    // verifier confirmed it and nothing since has judged it (docs/adr/0016).
     const left = new Set(
       (scope?.kind === 'unchanged' || scope?.kind === 'interdiff' ? [...(scope.noLongerChanged ?? []), ...(scope.absorbedByBase ?? [])] : []).map(plainPath),
     );
@@ -508,7 +512,7 @@ export function recordCommand(argv: string[]): number {
     const renamed = patchRenames(diff);
     const unjudged = (prior: HeldFinding[] | undefined): HeldFinding[] =>
       (prior ?? [])
-        .filter(challengeNotRun)
+        .filter((entry) => challengeNotRun(entry) || heldBelowConfidenceGate(entry))
         .map((entry) => {
           const to = renamed.get(plainPath(entry.path));
           return to === undefined ? entry : { ...entry, path: to };
@@ -562,10 +566,21 @@ export function recordCommand(argv: string[]): number {
     // from them, and nothing challenges a finding that is not raised again. A
     // full review inherits nothing, since it reads the whole pull request.
     if (carriedFrom === null && (scope?.kind === 'incremental' || scope?.kind === 'interdiff') && scope.priorRunId !== null) {
-      const place = (entry: HeldFinding): string => `${plainPath(entry.path)}:${entry.line}`;
+      const place = (entry: { path: string; line: number }): string => `${plainPath(entry.path)}:${entry.line}`;
       // The same finding held again by this run is recorded once.
       const own = new Set(held.filter(challengeNotRun).map(place));
-      held = [...held, ...unjudged(runDetail(db, scope.priorRunId)?.held).filter((entry) => !own.has(place(entry)))];
+      // A below-gate hold was judged once, so any account this run gives of its
+      // place replaces it: a hold of any kind, or a finding in the review text.
+      const judged = new Set([
+        ...held.map(place),
+        ...splitFindings(output)
+          .map((block) => parseFinding(block.raw, block.startLine))
+          .flatMap((finding) => (finding.path === null || finding.line === null ? [] : [place({ path: finding.path, line: finding.line })])),
+      ]);
+      held = [
+        ...held,
+        ...unjudged(runDetail(db, scope.priorRunId)?.held).filter((entry) => !(challengeNotRun(entry) ? own : judged).has(place(entry))),
+      ];
     }
 
     const carryFile = flag(argv, '--carry');

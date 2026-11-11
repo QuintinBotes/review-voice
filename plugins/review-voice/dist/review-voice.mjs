@@ -11969,6 +11969,9 @@ var HELD_VERDICTS = [
 function challengeNotRun(entry) {
   return typeof entry.reason === "string" && entry.reason.startsWith("challenger not run:");
 }
+function heldBelowConfidenceGate(entry) {
+  return entry.verdict === "below-gate" && typeof entry.reason === "string" && entry.reason.startsWith("below the confidence gate") && (entry.severity === "blocking" || entry.severity === "important" || entry.severity === "minor");
+}
 function heldProblem(entry) {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return "not an object";
   const e = entry;
@@ -13085,6 +13088,7 @@ function planFindings(output, run, loadRun, minPostedTier = "nit") {
     if (anchorable && result.fixVerified !== void 0) fixVerified.set(finding, result.fixVerified);
     if (anchorable && result.score !== null) backing.set(finding, { score: result.score, stored: result.stored, runId: result.runId });
   }
+  for (const entry of run.held) if (heldBelowConfidenceGate(entry)) heldSeverities.push(entry.severity);
   const posted = [...inline, ...unanchored].map((finding) => finding.severity);
   let mapped = eventFor(posted);
   const challengeMissing = run.held.some(challengeNotRun);
@@ -13192,7 +13196,7 @@ function decide(input) {
     carriedReviewUrl: null
   });
   if (input.heldBackApproval === true) {
-    reasons.push("a finding above a nit was held back, unverified or below the posting tier, so this comments rather than approves");
+    reasons.push("a finding above a nit was held back, unverified, below the posting tier or below the confidence gate, so this comments rather than approves");
   }
   if (input.headMoved) {
     return done({
@@ -13382,7 +13386,7 @@ function wouldHaveSummary(planned) {
   }
   if (planned.heldBackApproval) {
     const nits = count4 === 0 ? "" : `, with ${plural2(count4, "nit")}`;
-    return `Would have commented: a finding above a nit was held back, unverified or below the posting tier${nits}.`;
+    return `Would have commented: a finding above a nit was held back, unverified, below the posting tier or below the confidence gate${nits}.`;
   }
   return `Would have commented: ${plural2(count4, "comment")}, the highest ${highest}.`;
 }
@@ -19592,6 +19596,10 @@ var COMMAND_HELP = {
     body: lines(
       "review-voice verdict --pr <number> --head <sha> [flags]",
       "  Compute the review event under the head and CI guards. Reads only.",
+      "  A held finding above a nit keeps an approval at COMMENT when it is unverified, below the",
+      '  posting tier, or held by the run as below-gate with the reason "below the confidence gate"',
+      '  (blocking, important or minor; docs/adr/0016). A hold "below the score gate" never does,',
+      `  since that score is the owner's preference. "reasons" names the cause and is never posted.`,
       "",
       "Flags:",
       "  --pr <number>          Pull request number (required)",
@@ -19798,7 +19806,11 @@ var COMMAND_HELP = {
       "                         diff spells them, so ./src/app.ts is src/app.ts. A hold on a file that --diff-file",
       "                         renames moves to the new name, and one this run holds again at the same path and",
       "                         line is recorded once. A full scope inherits nothing, so a full review",
-      "                         (review --full) is what re-checks such a finding once the runner works",
+      "                         (review --full) is what re-checks such a finding once the runner works.",
+      "                         A below-gate hold of a blocking, important or minor finding whose reason is",
+      '                         "below the confidence gate" is kept by the same rules (docs/adr/0016), and also',
+      "                         ends once the owner declines it or this run holds or raises a finding at the",
+      "                         same path and line. A nit or a question held that way is not kept",
       "  --candidates <path>    Scored candidates, so findings carry their category",
       "  --scores <path>        Score breakdowns, so explain can show its working",
       "  --verdicts <path>      Verification verdicts, including findings that were dropped",
@@ -20132,7 +20144,11 @@ var COMMAND_HELP = {
       "  configured runners.<family> runner. A skipped second pass leaves the findings unchanged; a",
       "  configured challenger that cannot run holds the challenged findings. No incremental or interdiff",
       "  review releases such a hold, whether or not it read the file, until the pull request no longer",
-      "  changes that file. A full review (--full) re-checks the finding once the runner works. In thorough mode, with a",
+      "  changes that file. A full review (--full) re-checks the finding once the runner works. A blocking,",
+      "  important or minor finding that the verifier confirmed under the confidence gate is held as",
+      "  below-gate, keeps the review from approving and is kept the same way, until a full review, the",
+      "  file leaving the pull request or `decline` ends it; a nit or a question held that way does",
+      "  neither (docs/adr/0016). In thorough mode, with a",
       "  reproduction block in the configuration, the verifier writes a reproduction for each blocking or",
       "  important finding and `reproduce` runs it (Linux only); one that does not fail holds its finding",
       "  as reproduction-did-not-fail, unless its category is one no suppression may reach (docs/adr/0032).",
@@ -32354,7 +32370,7 @@ function recordCommand(argv) {
     );
     const stillChanged = (path) => !left.has(path) && (pullFiles.size === 0 || pullFiles.has(path));
     const renamed = patchRenames(diff);
-    const unjudged = (prior) => (prior ?? []).filter(challengeNotRun).map((entry) => {
+    const unjudged = (prior) => (prior ?? []).filter((entry) => challengeNotRun(entry) || heldBelowConfidenceGate(entry)).map((entry) => {
       const to = renamed.get(plainPath2(entry.path));
       return to === void 0 ? entry : { ...entry, path: to };
     }).filter((entry) => stillChanged(plainPath2(entry.path)));
@@ -32389,7 +32405,14 @@ function recordCommand(argv) {
     if (carriedFrom === null && (scope?.kind === "incremental" || scope?.kind === "interdiff") && scope.priorRunId !== null) {
       const place = (entry) => `${plainPath2(entry.path)}:${entry.line}`;
       const own = new Set(held.filter(challengeNotRun).map(place));
-      held = [...held, ...unjudged(runDetail(db, scope.priorRunId)?.held).filter((entry) => !own.has(place(entry)))];
+      const judged = /* @__PURE__ */ new Set([
+        ...held.map(place),
+        ...splitFindings(output).map((block) => parseFinding(block.raw, block.startLine)).flatMap((finding) => finding.path === null || finding.line === null ? [] : [place({ path: finding.path, line: finding.line })])
+      ]);
+      held = [
+        ...held,
+        ...unjudged(runDetail(db, scope.priorRunId)?.held).filter((entry) => !(challengeNotRun(entry) ? own : judged).has(place(entry)))
+      ];
     }
     const carryFile = flag(argv, "--carry");
     if (carryFile !== null) {
