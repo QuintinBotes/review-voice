@@ -1017,12 +1017,16 @@ stray directory and another project's notes took the reviewed count from 11 to
   `repeat`, which would read as closed.
 
   Pass every candidate that was held back rather than reported with
-  `--held <file>` (an array of `{path, line, verdict, source, reason, text}`, verdict
+  `--held <file>` (an array of `{path, line, verdict, source, reason, text, severity}`, verdict
   one of `partly`, `refuted`, `unverified`, `repeat`, `below-gate`,
   `policy-suppressed`, `restates-tool`, `challenge-partly`, `challenge-refuted`; a path in neither `--files` nor `--candidates` is warned about on stderr and still recorded): the
   `droppedAsRepeat` from step 2 as `repeat`, each `droppedAsTool` entry as
   `restates-tool` with the fields from step 2, any cross-check result of PARTLY or
-  REFUTED, each `belowGate` entry from step 4 as `below-gate`, each
+  REFUTED, each `belowGate` entry from step 4 as `below-gate` with its
+  `severity` and the reason `below the confidence gate` or `below the score
+  gate` after its `gate` (a blocking, important or minor finding held by the
+  confidence gate keeps the review from approving, and `verdict` reads exactly
+  that reason and severity, docs/adr/0016), each
   `suppressed` entry from step 4 as `policy-suppressed` with a reason naming
   its rule id and policy version, each
   `unverified` entry from step 4 as `unverified`, and every `challengeHeld[]`

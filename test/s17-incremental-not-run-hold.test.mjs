@@ -284,3 +284,11 @@ test('S17: a rename is read from a patch header only, quoted or not, never from 
   ].join('\n');
   assert.deepEqual([...patchRenames(patch)], [['old.ts', 'new.ts'], ['caf\u00e9.ts', 'th\u00e9.ts']]);
 });
+
+test('S17: a manifest whose file list is empty ends an inherited hold, and a manifest with no file list keeps it', (t) => {
+  // Every change of the pull request was taken back, so its list is there and names nothing.
+  const emptied = chain(t, [hold('a.ts', 20, 'cand_001')], [[incremental([]), []]]);
+  assert.deepEqual([emptied.results[0].held, emptied.results[0].mapped], [[], 'APPROVE']);
+  const unlisted = chain(t, [hold('a.ts', 20, 'cand_001')], [[incremental(['b.ts']), null]]);
+  assert.deepEqual([unlisted.results[0].held, unlisted.results[0].mapped], [['a.ts:20'], 'COMMENT']);
+});

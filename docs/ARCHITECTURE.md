@@ -1244,8 +1244,9 @@ marked unreadable by the loader, the plan carries the reason as
 `families.notRun`, and the driver holds the same way with that reason. An
 unreadable `runners.use.challenge` or `use` holds every challenged finding,
 and an unreadable `runners.use.agent_authored_challenge` holds the findings of
-a change an agent of the base family wrote. `planFindings` then keeps the event at COMMENT at most, the one
-held finding that changes it. The hold outlives every review
+a change an agent of the base family wrote. `planFindings` then keeps the event at COMMENT at most. Of the run's
+held entries only this one and a finding held below the confidence gate
+change it. The hold outlives every review
 narrower than the pull request. A carry to an unchanged scope keeps it, and
 `record` gives an incremental or interdiff review the holds of the prior run
 its scope links, whether or not that review read the hold's file. Such a
@@ -1253,7 +1254,8 @@ review saw only its own hunks, which may be far from the held line, and the
 driver challenges only a finding raised again, so a clean review of a later
 commit cannot approve. Either drops a hold on a file the pull request no
 longer changes, which the file list in `files.json` says (a renamed file
-counts under both names), as do `scope.noLongerChanged` and
+counts under both names, and a list that is present and empty names no file,
+so it ends every such hold), as do `scope.noLongerChanged` and
 `scope.absorbedByBase`. A hold on a file the patch itself renames moves to
 the new name, so a file renamed a second time is not read as one that left
 the pull request, and a finding held again at the same path and line is
@@ -1261,8 +1263,15 @@ recorded once. `record` compares paths as the diff spells them, so a hold
 written as `./src/app.ts` is one on `src/app.ts`. Otherwise only a full
 review (`review --full`) ends the hold. It reads the whole pull request and
 inherits nothing, and the finding, raised again, is verified and challenged
-again, so a full review is what re-checks it once the runner works. With
-`verdict.scope_block_models: true` the scope
+again, so a full review is what re-checks it once the runner works. A finding
+held below the confidence gate (ADR 0016, amended) travels by the same code
+and the same rules, and also ends when the owner declines it. An inherited
+hold of either kind is replaced only by a hold of the narrowed review at the
+same path and line that itself keeps a review from approving, which is the
+one entry per place above. A finding in its review text there, or a claim it
+holds there as `unverified`, `refuted` or `partly`, ends nothing, since that
+is another claim and not a judgement of the held one.
+With `verdict.scope_block_models: true` the scope
 block's origin sentence names a challenge family other than Claude and its
 trailer carries `families`.
 
@@ -1504,7 +1513,16 @@ its path, line and derived severity came from the verifier and cleared every
 gate, matched one to one. The rest are held back and listed in the preview. An
 unverified finding above a nit still keeps an approval at COMMENT, because
 approving past a concern nobody checked is the false approval this design
-exists to prevent.
+exists to prevent. A finding the run holds below the confidence gate counts
+the same way (ADR 0016, amended). The verifier confirmed it under its own
+floor, so it never reaches the review text, and `planFindings` reads it from
+the run's held entries through `heldBelowConfidenceGate`, which accepts a
+`below-gate` entry whose reason is `below the confidence gate` and whose
+severity is blocking, important or minor. A hold `below the score gate` never
+counts, since the final score carries the owner's precedent and a preference
+must not block an approval, and neither does a nit or a question. The local
+reason names the cause, and the posted body says only that this is not an
+approval yet.
 
 **CI and the other caps** are applied by `decide()` in a fixed order: a moved
 head refuses (exit 3); a standing owner approval on an unchanged scope is

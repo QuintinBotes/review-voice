@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { SEVERITIES, type Severity } from '../contract/limits.ts';
-import { challengeNotRun, REMOVED_CONTROL_ORDER, repositoryPath, RISK_MARKER_ORDER, type RunDetail, type StoredFinding } from '../store/runs.ts';
+import { challengeNotRun, heldBelowConfidenceGate, REMOVED_CONTROL_ORDER, repositoryPath, RISK_MARKER_ORDER, type RunDetail, type StoredFinding } from '../store/runs.ts';
 import type { ReviewComment, ReviewEvent, ReviewPayload } from '../github/writer.ts';
 import type { CiEntry, CiState } from './ci.ts';
 import { renderSimplification, type VerifiedSimplification } from '../simplification.ts';
@@ -252,8 +252,8 @@ export interface PlannedFindings {
   mapped: ReviewEvent;
   /**
    * True when a held finding kept an approval at COMMENT: one above a nit that
-   * is unverified or below the posting tier, or any hold for a configured
-   * challenger that did not run.
+   * is unverified, below the posting tier or below the confidence gate, or any
+   * hold for a configured challenger that did not run.
    */
   heldBackApproval: boolean;
   /** Inline findings whose backing score verified the repair, so a suggestion may render on them. */
@@ -284,6 +284,8 @@ export interface EvidenceBacking {
  * approving, since approving past a concern nobody has checked is the false
  * APPROVE this design exists to prevent. A verified finding below the posting
  * tier is withheld the same way, and counts the same way against an approval.
+ * So does one the run holds below the confidence gate, which never reaches
+ * the review text (docs/adr/0016, amended).
  */
 export function planFindings(output: string, run: RunDetail, loadRun: RunLoader, minPostedTier: PostedTier = 'nit'): PlannedFindings {
   const inline: ReviewFinding[] = [];
@@ -343,10 +345,14 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader,
     if (anchorable && result.score !== null) backing.set(finding, { score: result.score, stored: result.stored, runId: result.runId });
   }
 
+  // Confirmed by the verifier, so held more quietly than a concern nobody
+  // checked unless it is counted here (#337).
+  for (const entry of run.held) if (heldBelowConfidenceGate(entry)) heldSeverities.push(entry.severity as Severity);
+
   const posted = [...inline, ...unanchored].map((finding) => finding.severity as Severity);
   let mapped = eventFor(posted);
   // A challenge the configuration asked for and did not get is a missing gate,
-  // so its hold is the one held finding that keeps a review from approving
+  // so its hold keeps a review from approving whatever its severity
   // (docs/adr/0024, amended); otherwise a runner that cannot run would pass.
   const challengeMissing = run.held.some(challengeNotRun);
   const heldBackApproval = mapped === 'APPROVE' && (eventFor(heldSeverities) !== 'APPROVE' || challengeMissing);
@@ -626,7 +632,7 @@ export function decide(input: {
     carriedReviewUrl: null,
   });
   if (input.heldBackApproval === true) {
-    reasons.push('a finding above a nit was held back, unverified or below the posting tier, so this comments rather than approves');
+    reasons.push('a finding above a nit was held back, unverified, below the posting tier or below the confidence gate, so this comments rather than approves');
   }
   if (input.headMoved) {
     return done({
@@ -868,7 +874,7 @@ export function wouldHaveSummary(planned: PlannedFindings): string {
   }
   if (planned.heldBackApproval) {
     const nits = count === 0 ? '' : `, with ${plural(count, 'nit')}`;
-    return `Would have commented: a finding above a nit was held back, unverified or below the posting tier${nits}.`;
+    return `Would have commented: a finding above a nit was held back, unverified, below the posting tier or below the confidence gate${nits}.`;
   }
   return `Would have commented: ${plural(count, 'comment')}, the highest ${highest}.`;
 }

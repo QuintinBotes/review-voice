@@ -449,7 +449,7 @@ test('S17 AC-12: a second pass with a family puts families in the trailer while 
   assert.deepEqual(trailer(output.payload.body).families, { secondPass: 'codex', challenge: 'claude' });
 });
 
-test('S17: a finding held because its challenger did not run keeps the review from approving; no other hold does', async (t) => {
+test('S17: a finding held because its challenger did not run keeps the review from approving; a challenger that failed and a refuted finding do not', async (t) => {
   const { db } = fixture(t);
   const notRun = { ...held('challenge-partly'), source: 'challenge', severity: 'minor', reason: 'challenger not run: runners.codex is not configured' };
   const capped = record(db, { held: [notRun] }).reviewRunId;

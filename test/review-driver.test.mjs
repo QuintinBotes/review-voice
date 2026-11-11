@@ -19,7 +19,7 @@ import { RUNNER_PREAMBLE, schemaForRunner, schemasDir } from '../plugins/review-
 import { COMMAND_RUNNER_PREAMBLE } from '../plugins/review-voice/src/agents/runner.ts';
 import { GitHubClient } from '../plugins/review-voice/src/github/client.ts';
 import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
-import { runDetail } from '../plugins/review-voice/src/store/runs.ts';
+import { declineHeld, runDetail } from '../plugins/review-voice/src/store/runs.ts';
 import { pluginVersion } from '../plugins/review-voice/src/version.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -1886,7 +1886,7 @@ test('S17 AC-10: a Claude challenger that fails twice keeps its reason and its e
   const { report } = await review(t, repo, fakeDir, fakeGitHub(repo));
   assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
   assert.deepEqual(challengeHeld(report), [['challenge-partly', 'challenger failed: the call failed: claude exited with code 1']]);
-  assert.equal(report.verdict.event, 'APPROVE', 'a held finding does not change the event (docs/adr/0024)');
+  assert.equal(report.verdict.event, 'APPROVE', 'a challenger that failed is not a hold that changes the event (docs/adr/0024)');
 });
 
 test('S17 AC-10: a change Claude co-authored is challenged on the configured alternative family', async (t) => {
@@ -2234,4 +2234,115 @@ test('S22: inside GitHub Actions the held queue names the candidate, never a com
   assert.equal(entry.candidateId, 'cand_001');
   assert.equal(entry.promote, null);
   assert.ok(!JSON.stringify(report.heldQueue).includes(report.runDir));
+});
+
+// ---------------------------------------------------------------- issue 337: a verified finding under the confidence gate caps an approval, and its hold outlives a narrowed review
+
+const UNDER_GATE_RUN = { 'diff-analyst': [{ candidates: [CANDIDATE] }], 'evidence-verifier': [{ verifications: [{ ...VERIFIED, technical_confidence: 0.78 }] }] };
+const UNDER_GATE = ['src/app.ts', 3, 'below-gate', 'below the confidence gate'];
+const gateHeld = (data, report) => storedRun(data, report.runId).held.map((entry) => [entry.path, entry.line, entry.verdict, entry.reason]);
+const namesGate = (report) => report.verdict.reasons.some((reason) => reason.includes('below the confidence gate'));
+/** A commit that touches only the README, so the next review is narrowed to it and never reads src/app.ts. */
+const changeReadme = (repo, text) =>
+  advance(repo, (git, dir) => {
+    writeFileSync(join(dir, 'README.md'), `# Api\n\n${text}\n`);
+    git('commit', '-q', '-am', 'docs');
+  });
+
+/** A pull request whose first, full review verifies its one minor finding at 0.78, under the 0.8 gate, and so holds it. */
+async function underGateReview(t) {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const github = fakeGitHub(repo);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-shared-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const first = fakes(t, UNDER_GATE_RUN);
+  const one = await reviewIn(repo, first, github, data);
+  assert.equal(one.exitCode, 0, `${one.error} ${JSON.stringify(one.notes)}`);
+  assert.deepEqual(one.findings, [], 'the finding never reaches the review text');
+  assert.equal(readFileSync(join(one.runDir, 'review.txt'), 'utf8'), `${NO_FINDINGS}\n`);
+  assert.deepEqual(callsOf(first, 'challenger'), [], 'a finding under the gate is not challenged');
+  assert.deepEqual(gateHeld(data, one), [UNDER_GATE]);
+  const next = (options = {}, fakeDir = fakes(t, NO_FINDING_RUN)) => reviewIn(repo, fakeDir, github, data, options);
+  return { repo, data, one, next };
+}
+
+test('issue 337: a verified minor finding held under the confidence gate comments, and the posted body names nothing of it', async (t) => {
+  const { one } = await underGateReview(t);
+  assert.equal(one.verdict.event, 'COMMENT', 'the verifier confirmed a concern above a nit, so the review cannot approve');
+  assert.ok(namesGate(one), JSON.stringify(one.verdict.reasons));
+  assert.equal(one.verdict.payload.body, 'Not approving yet.');
+  assert.deepEqual(one.verdict.payload.comments, []);
+  const posted = JSON.stringify(one.verdict.payload);
+  for (const part of ['src/app.ts', 'app.ts', CANDIDATE.claim, 'qty', 'confidence gate']) assert.ok(!posted.includes(part), `the posted review must not carry ${part}`);
+});
+
+test('issue 337: an incremental review of another file keeps the hold and comments, and a later full review that raises nothing approves', async (t) => {
+  const { repo, data, one, next } = await underGateReview(t);
+  changeReadme(repo, 'Sums prices and quantities.');
+  const two = await next();
+  assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
+  const stored = storedRun(data, two.runId);
+  assert.notEqual(stored.scope.kind, 'full', JSON.stringify(stored.scope));
+  assert.deepEqual(stored.scope.files, ['README.md']);
+  assert.equal(stored.scope.priorRunId, one.runId, 'the prior-run link is recorded');
+  assert.deepEqual(gateHeld(data, two), [UNDER_GATE], 'the hold outlives a review that did not cover its file');
+  assert.equal(two.verdict.event, 'COMMENT');
+  assert.ok(namesGate(two), JSON.stringify(two.verdict.reasons));
+
+  const three = await next({ full: true });
+  assert.equal(three.exitCode, 0, `${three.error} ${JSON.stringify(three.notes)}`);
+  assert.equal(storedRun(data, three.runId).scope.kind, 'full');
+  assert.deepEqual(gateHeld(data, three), [], 'a full review inherits nothing and judged again');
+  assert.equal(three.verdict.event, 'APPROVE');
+});
+
+test('issue 337: once the owner declines the held finding, the next narrowed review approves', async (t) => {
+  const { repo, data, one, next } = await underGateReview(t);
+  const db = openDatabase(join(data, 'review-voice.db'));
+  try {
+    assert.deepEqual(declineHeld(db, one.runId, { path: 'src/app.ts', line: 3 }, 'not worth raising'), { ok: true, declined: 1 });
+  } finally {
+    db.close();
+  }
+  changeReadme(repo, 'Sums prices and quantities.');
+  const two = await next();
+  assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
+  assert.notEqual(storedRun(data, two.runId).scope.kind, 'full');
+  assert.deepEqual(gateHeld(data, two), []);
+  assert.equal(two.verdict.event, 'APPROVE');
+});
+
+test('issue 337: the hold ends once the pull request no longer changes the held file', async (t) => {
+  const { repo, data, next } = await underGateReview(t);
+  // The pull request takes its change to src/app.ts back and edits the README instead.
+  advance(repo, (git, dir) => {
+    writeFileSync(join(dir, 'src/app.ts'), APP_BASE);
+    writeFileSync(join(dir, 'README.md'), '# Api\n\nSums prices, for now.\n');
+    git('commit', '-q', '-am', 'take the quantity back');
+  });
+  assert.deepEqual(repo.files.map((file) => file.filename), ['README.md']);
+  const two = await next();
+  assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
+  assert.notEqual(storedRun(data, two.runId).scope.kind, 'full', 'the review is narrowed, so only the file leaving ends the hold');
+  assert.deepEqual(gateHeld(data, two), []);
+  assert.equal(two.verdict.event, 'APPROVE');
+});
+
+test('issue 337: an unchanged-scope carry keeps the hold, so the carried review cannot approve', async (t) => {
+  const { repo, data, next } = await underGateReview(t);
+  // The base branch moves on and is merged in: a new head with the same own diff.
+  const git = (...args) => execFileSync('git', args, { cwd: repo.dir, encoding: 'utf8' });
+  writeFileSync(join(repo.dir, 'README.md'), '# Api\n\nSums prices, now documented.\n');
+  git('commit', '-q', '-am', 'docs on main');
+  repo.base = git('rev-parse', 'HEAD').trim();
+  git('checkout', '-q', 'feature');
+  git('merge', '-q', '--no-edit', 'main');
+  repo.head = git('rev-parse', 'HEAD').trim();
+  git('checkout', '-q', 'main');
+
+  const two = await next({}, fakes(t, {}));
+  assert.equal(two.exitCode, 0, `${two.error} ${JSON.stringify(two.notes)}`);
+  assert.equal(two.carried, true);
+  assert.deepEqual(gateHeld(data, two), [UNDER_GATE], 'the hold travels with the carry');
+  assert.equal(two.verdict.event, 'COMMENT');
 });

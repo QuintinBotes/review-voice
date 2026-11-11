@@ -89,3 +89,71 @@ review comment ends up retracted.
 **List capped claims in `belowGate`.** `belowGate` means verified and stopped
 only by preference; these were not verified, and the owner should be able to
 tell the two apart.
+
+## Amendment - 2026-11-11
+
+A finding held under the confidence floor counts against an approval (#337).
+The decision above lists such a finding in `belowGate` with `gate: confidence`
+and the review driver holds it as `below-gate` with the reason `below the
+confidence gate`. It never reaches the review text, so the posting plan never
+counted it, and a review could approve past a concern the verifier had
+confirmed while an unverified one kept the same review at COMMENT. Measured on
+the recall fixtures, an authorization finding verified at 0.78, with a derived
+tier of blocking, was held under the 0.8 floor and the review approved with no
+reason recorded.
+
+**The rule.** A held entry of the run counts exactly as an unverified finding
+above a nit does when its verdict is `below-gate`, its reason says the
+confidence gate stopped it, and its severity is `blocking`, `important` or
+`minor`. An approval becomes COMMENT. COMMENT and REQUEST_CHANGES are
+unchanged, so a held finding still never requests changes. Nothing new is
+posted and no finding becomes more likely to post. A `nit` does not count, and
+neither does a `question`, since a question under its gate is one the verifier
+judged more likely moot. One predicate, `heldBelowConfidenceGate` beside
+`challengeNotRun` in `src/store/runs.ts`, states the rule for the posting plan
+and for `record`.
+
+**A hold by the final-score gate never caps.** An entry whose reason is `below
+the score gate` was stopped by the final score, which carries the owner's own
+precedent. That is preference, and a preference must never block an approval.
+The alternative above, which reads `belowGate` as stopped only by preference,
+now holds for the score gate alone.
+
+**The reason stays local.** `decide()` and the would-have summary name the
+cause beside the others, saying that a finding above a nit was held back,
+unverified, below the posting tier or below the confidence gate. The posted
+body says what it says for an unverified hold, that this is not an approval
+yet, and names no path, line or claim of the held finding
+([0012](0012-complex-changes-need-human-approval.md)). The scope block counts
+it under `below the gate`, as it already did.
+
+**What ends the hold.** The hold outlives every review narrower than the pull
+request, under the rules a hold for a challenger that did not run follows
+([0024](0024-an-independent-challenge-gates-every-posted-finding.md)). A carry
+to an unchanged scope keeps it, and an incremental or interdiff review
+inherits it from the prior run its scope links, following a file the patch
+renames. It ends when one of these is true.
+
+- The pull request no longer changes the file. A manifest whose file list is
+  present and empty says that of every file. A manifest with no file list
+  leaves it to the two scope lists.
+- A review that is not narrowed runs. It inherits nothing, reads the whole
+  pull request and judges again.
+- The owner declines the held finding with `decline`, which sets the entry's
+  verdict to `owner-declined` in that run.
+- The narrowed review itself holds the same path and line again with a hold
+  that keeps a review from approving, which is one under the confidence gate
+  above a nit or one for a challenger that did not run. That entry stands and
+  the place is recorded once.
+
+Nothing else the narrowed review says about the place ends the hold. A finding
+in its review text there, of any severity, is another claim and not a
+judgement of the held one, and so is an entry it holds there as `unverified`,
+`refuted` or `partly`. Were any of these to end the hold, an unrelated nit or
+a refuted claim on the same line would let the review approve past a blocking
+finding the verifier confirmed. The same one rule covers an inherited hold for
+a challenger that did not run.
+
+The owner can still post the finding with `score --promote`, as before.
+
+This changes a default. Some reviews that approved before now comment.

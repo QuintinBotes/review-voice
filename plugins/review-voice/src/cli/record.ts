@@ -23,6 +23,7 @@ import {
   runDetail,
   heldProblem,
   challengeNotRun,
+  heldBelowConfidenceGate,
   type CarryMarker,
   CarryMismatch,
   type CandidateHint,
@@ -206,10 +207,14 @@ export function recordCommand(argv: string[]): number {
   const knownPaths = new Set<string>();
   // The pull request's own file list, a rename under both names; empty when the manifest carries none.
   const pullFiles = new Set<string>();
+  // An empty list is still a list, one that says every change of the pull request was taken back.
+  let pullFilesListed = false;
   if (filesFile !== null) {
     try {
       const manifest = JSON.parse(readFileSync(filesFile, 'utf8')) as Record<string, unknown>;
       if (Array.isArray(manifest.files)) {
+        // A list with an entry that names no file cannot say a file left, so it releases no hold.
+        pullFilesListed = manifest.files.every((file) => typeof file?.path === 'string');
         for (const file of manifest.files) {
           if (typeof file?.path !== 'string') continue;
           knownPaths.add(file.path);
@@ -498,17 +503,19 @@ export function recordCommand(argv: string[]): number {
     // run approve (docs/adr/0024). One on a file the pull request no longer
     // changes is settled like its findings. The manifest's file list says so
     // for every scope; the two scope lists say so for a manifest without one.
+    // A finding held below the confidence gate travels the same way: the
+    // verifier confirmed it and nothing since has judged it (docs/adr/0016).
     const left = new Set(
       (scope?.kind === 'unchanged' || scope?.kind === 'interdiff' ? [...(scope.noLongerChanged ?? []), ...(scope.absorbedByBase ?? [])] : []).map(plainPath),
     );
-    const stillChanged = (path: string): boolean => !left.has(path) && (pullFiles.size === 0 || pullFiles.has(path));
+    const stillChanged = (path: string): boolean => !left.has(path) && (!pullFilesListed || pullFiles.has(path));
     // A file this review's patch renames takes its hold to the new name. Under
     // the old one, which the pull request's file list never held when the file
     // was renamed before, the hold would read as one on a file that left.
     const renamed = patchRenames(diff);
     const unjudged = (prior: HeldFinding[] | undefined): HeldFinding[] =>
       (prior ?? [])
-        .filter(challengeNotRun)
+        .filter((entry) => challengeNotRun(entry) || heldBelowConfidenceGate(entry))
         .map((entry) => {
           const to = renamed.get(plainPath(entry.path));
           return to === undefined ? entry : { ...entry, path: to };
@@ -562,9 +569,12 @@ export function recordCommand(argv: string[]): number {
     // from them, and nothing challenges a finding that is not raised again. A
     // full review inherits nothing, since it reads the whole pull request.
     if (carriedFrom === null && (scope?.kind === 'incremental' || scope?.kind === 'interdiff') && scope.priorRunId !== null) {
-      const place = (entry: HeldFinding): string => `${plainPath(entry.path)}:${entry.line}`;
-      // The same finding held again by this run is recorded once.
-      const own = new Set(held.filter(challengeNotRun).map(place));
+      const place = (entry: { path: string; line: number }): string => `${plainPath(entry.path)}:${entry.line}`;
+      // The same place held again by this run is recorded once, and only when
+      // this run's entry itself keeps the review from approving. A refuted or
+      // unverified claim there, or a finding in the review text, would
+      // otherwise release a hold nothing judged.
+      const own = new Set(held.filter((entry) => challengeNotRun(entry) || heldBelowConfidenceGate(entry)).map(place));
       held = [...held, ...unjudged(runDetail(db, scope.priorRunId)?.held).filter((entry) => !own.has(place(entry)))];
     }
 
