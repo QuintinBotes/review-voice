@@ -51,6 +51,12 @@ applying a normalised copy of `diff.patch`, with hunk headers recounted and
 unmarked body lines read as context. A patch that plain `git apply` rejects
 therefore still works, and the fixture file itself is never changed.
 
+An external benchmark set (`review-voice import-benchmark`) is imported outside
+the repository, into a directory no git working tree contains, and is never
+placed under `fixtures/`. Its items are real pull requests under their own
+licences, and only the run's own figures are published (`docs/EVALUATION.md`,
+"External benchmark").
+
 ## Reproductions
 
 The `reproduced-off-by-one` and `reproduction-passes-held` positives carry a

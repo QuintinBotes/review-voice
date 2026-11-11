@@ -88,3 +88,28 @@ restricted mode costs nothing.
 **Allow git through a narrower rule or a hook.** Rejected. Prefix rules cannot
 exclude an option placed later in the command, and the hook did not run in
 restricted mode. Removing the shell removes the whole class.
+
+## Amendment - 2026-11-09
+
+The runner seam gains a second backend (S17). `AgentSpec.runner` names a
+configured `RunnerSpec`, an external family with its argv and a label; absent,
+the Claude backend runs as before. With it, `runAgent` hands the same prompt to
+`src/agents/command-cli.ts`, which spawns the configured argv under the same
+watchdog, process group, timeout, output cap and signal ownership as the Claude
+backend, so `stopAll` kills either; writes the prepared schema to a temporary
+file for `{schema}`; and reads the last top-level JSON object from the
+`{output}` file when the command names one, else from stdout. The agent file's
+body travels on stdin ahead of `COMMAND_RUNNER_PREAMBLE` and the prompt,
+because an external CLI has no system-prompt flag the runner can rely on. The
+preamble states the confinement the configured sandbox flags enforce: the
+`Read`, `Grep`, `Glob` narrowing applies to the Claude backend alone, and the
+runner cannot narrow an external CLI's tools. `REVIEW_VOICE_FAKE_AGENTS` still
+wins, and the fake records `runner: { family, label }`; under
+`REVIEW_VOICE_NO_COMMANDS=1` a spec with a runner fails rather than runs. No
+cost or token count is reported for such a call, because none was. Every
+recorded run now carries which family ran its second pass and its challenge,
+beside the provenance as a `families` key in `provenance_json`. `record`
+prints it as a top-level `families` key, and `explain` and the driver report
+print it as a `Families` line. The runners
+themselves are configured under `runners:`, read only from the operator's own
+configuration, as the amendment of the same date to ADR 0003 decides.

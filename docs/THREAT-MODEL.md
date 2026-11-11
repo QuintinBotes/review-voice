@@ -143,6 +143,23 @@ is hostile, and the script is the payload.
 Detection suggests; configuration enables. Never both
 ([adr/0003](adr/0003-static-analysis-adapters.md)).
 
+**A configured runner is the same route.** `runners.<family>.command` runs an
+external agent CLI (`codex`, `gemini`) in the pull request's head worktree, as
+the second pass or the challenger. It is gated as a configured command (ADR
+0003, amended 2026-11-09): nothing runs until the operator writes it down, and
+only in their own configuration (`--config`, an absolute `REVIEW_VOICE_CONFIG`
+or the Action's `config` input), never the base commit's; under
+`REVIEW_VOICE_NO_COMMANDS=1` it is refused. A refused challenger holds the
+challenged findings; a refused second pass is skipped and the findings go on
+unchanged, as with a shell verification command, so the second pass is no
+fail-closed gate.
+The command is an argv list run without a shell, with the minimal environment
+of issue 279 plus the names its block lists. Its sandbox is the external CLI's
+own, chosen by the flags the operator names and not narrowed by Review Voice,
+so an external agent may run repository code or reach the network whenever
+those flags allow it. The operator checks the flags against the installed
+version; `doctor` only reports whether the binaries exist.
+
 **A second route, and an honest limit.** The adapter gate covers the path this
 plugin drives. It does not cover an agent with a shell. Every agent declares
 the narrowest grant it can work with - the two that read code hold

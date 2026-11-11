@@ -1,8 +1,8 @@
-import { closeSync, constants, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs';
-import { join } from 'node:path';
+import { closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import type { GitHubClient } from '../github/client.ts';
 import type { ReviewWriter } from '../github/writer.ts';
-import type { LoadedConfig } from '../policy/load.ts';
+import { configFileSource, type ConfigSourceKind, type LoadedConfig } from '../policy/load.ts';
 import { computeVerdict, postReview, type VerdictOptions } from '../publish/post.ts';
 import { buildQueue, type QueueEntry } from '../queue/queue.ts';
 import type { QueueConfig, QueueSource } from '../queue/config.ts';
@@ -14,7 +14,7 @@ import { applyRetention, DEFAULT_RETENTION, retentionLine } from '../store/reten
 import { isFailure, recentlySentPulls, saveWatchHead, type HeadStatus, type WatchHead } from '../store/watch.ts';
 import { parseDuration } from './config.ts';
 import { acquireLock, lockPort } from './lock.ts';
-import type { ReviewPullRequest } from './review.ts';
+import type { ReviewPullRequest, SpawnOptions } from './review.ts';
 import { cloneDir, type PrepareClone } from './workspace.ts';
 
 type WatchSettings = Pick<
@@ -25,7 +25,7 @@ type WatchSettings = Pick<
   Partial<Pick<LoadedConfig, 'retention'>>;
 
 export interface WatchCommandDeps {
-  /** The config file watch was started with; null outside a repository. */
+  /** The config file watch was started with (`watchConfigSource`); null when there is none. */
   configSource: string | null;
   /** Reads one config file. */
   loadSettings: (path: string) => WatchSettings;
@@ -45,6 +45,32 @@ export interface WatchCommandDeps {
 
 /** The copy of the config each pass and its reviews read, so an edit or branch switch mid-pass changes nothing. */
 export const CONFIG_COPY = 'watch-config.yaml';
+
+/**
+ * The file watch reads, copies and hands its reviews, with its source (owner
+ * decision 1): its own --config is the operator's choice, and otherwise
+ * `configFileSource` decides, so a checkout's file never names a runner.
+ * A string is the usage error; null is no file at all (outside a repository,
+ * with no --config).
+ */
+export function watchConfigSource(argv: string[], root: string | null): { path: string; source: ConfigSourceKind } | string | null {
+  if (argv.includes('--config')) {
+    const named = argv[argv.indexOf('--config') + 1];
+    if (named === undefined || named.startsWith('--')) return '--config needs a value.';
+    const path = resolve(named);
+    return existsSync(path) ? { path, source: 'flag' } : `--config ${named} does not exist.`;
+  }
+  return root === null ? null : configFileSource(root);
+}
+
+/**
+ * How watch spawns its reviews: each reads the copy a pass took, with the
+ * source of the file it was copied from beside it, so a review honours
+ * `runners:` only when the operator chose that file (owner decision 1).
+ */
+export function reviewSpawnOptions(dataDir: string, config: { source: ConfigSourceKind } | null): SpawnOptions {
+  return { configPath: join(dataDir, CONFIG_COPY), configSource: config?.source };
+}
 
 /** A row to write, or null when the head moved and the next pass retries it. */
 type Outcome = { row: Omit<WatchHead, 'attempts' | 'updatedAt'> } | { row: null; detail: string };
@@ -89,7 +115,7 @@ const OUTCOME_DAYS = 7;
 const OUTCOME_PULLS = 20;
 
 /**
- * `review-voice watch [--once] [--interval <dur>] [--post] [--mode M] [--max N] [--json]`.
+ * `review-voice watch [--once] [--interval <dur>] [--post] [--mode M] [--max N] [--config <path>] [--json]`.
  * One watcher per data directory. Exit 0, 1 when an entry of a `--once` pass
  * failed, 2 on a bad invocation or when another watcher holds the lock.
  */

@@ -1,5 +1,6 @@
 import type { StageTiming } from './runs.ts';
 import { parseHunks } from '../diff/hunks.ts';
+import { FAMILIES } from '../agents/types.ts';
 
 /**
  * How much the analyst actually read, and whether a clean result came from a
@@ -46,6 +47,7 @@ const STAGE_FIELDS: Record<keyof StageTiming, true> = {
   model: true,
   models: true,
   costUsd: true,
+  family: true,
 };
 
 /**
@@ -92,11 +94,14 @@ export function cleanStages(stages: StageTiming[], diff: string | null): StageTi
     const modelName = (value: unknown): value is string => typeof value === 'string' && /^[\w.:\[\]-]{1,100}$/.test(value);
     const model = modelName(stage.model) ? stage.model : undefined;
     const models = Array.isArray(stage.models) ? stage.models.filter(modelName).slice(0, 200) : [];
+    // A family outside the closed enum is dropped, not stored.
+    const family = (FAMILIES as readonly unknown[]).includes(stage.family) ? stage.family : undefined;
     return {
       name: stage.name,
       seconds: stage.seconds,
       ...(model === undefined ? {} : { model }),
       ...(models.length === 0 ? {} : { models }),
+      ...(family === undefined ? {} : { family }),
       ...(costUsd === undefined ? {} : { costUsd }),
       ...(toolCalls === undefined ? {} : { toolCalls }),
       ...(tokens === undefined ? {} : { tokens }),

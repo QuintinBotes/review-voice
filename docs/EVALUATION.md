@@ -64,6 +64,8 @@ Each figure below is reported and never a gate. A figure with no data prints
 | Challenge hold rate | Of the findings the challenger judged, the share it held; see below |
 | Reproduction hold rate | Of the reproductions that completed, the share whose finding was held; see below |
 | Posted fixed rate and dismissed rate, recent | The same strong-outcome rates over a rolling window; see below |
+| Second-pass drop, downgrade and tie-break rates, per family | Whether a second model family earns its cost; see below |
+| Challenge hold rate, per family | The challenge hold rate over the runs whose challenge ran on that family; see below |
 
 `RV evaluate --json` also carries a top-level `stage_seconds` map of stage name
 to `{ median, p95, runs }`, beside `metrics` and `posted_breakdown`. It is not a
@@ -73,8 +75,8 @@ The whole JSON document is one object, `EvaluationReport`, built by one
 function so the JSON and the rendered report (see "The rendered report") cannot
 disagree. Its keys are `generated_at`, `window_days` (the window the `_recent`
 rates use), `metrics`, `posted_breakdown` (by severity, lane, rule and
-evidence block), `precision_breakdown` (below), `stage_seconds` and
-`rule_effectiveness` (below). The text output is unchanged.
+evidence block), `precision_breakdown` (below), `stage_seconds`,
+`rule_effectiveness` (below) and `by_family` (below). The text output is unchanged.
 
 #### Precision by lane and rule
 
@@ -110,6 +112,27 @@ reactivated by `RV policy rollback` keeps its first `approved_at`, so its window
 starts at that approval and includes the time it was inactive. Nothing here
 deactivates, demotes or proposes anything; a suppression that looks wrong is
 the owner's `RV policy rollback`.
+
+#### Per model family
+
+`RV evaluate --json` carries a top-level `by_family` key
+([ADR 0034](adr/0034-a-cross-family-runner-is-configured-never-detected-into-use.md)),
+grouped by the family each run recorded for its second pass and its challenge.
+`by_family.families` maps a family to `second_pass` and `challenge`.
+`second_pass` counts, over the runs whose second pass ran on that family, the
+`verdicts`, those `dropped` and `downgraded`, the applied `tie_breaks` and the
+`runs`, with `drop_rate`, `downgrade_rate` and `tie_break_rate` each over
+`verdicts`. A second pass recorded without a family is listed as `unknown`.
+`challenge` carries the challenge hold rate's own counts (`judged`, `held`,
+`runs`, `hold_rate`) restricted to the runs whose challenge ran on that family.
+A half with no data is null and a family with neither is not listed.
+`by_family.runs_without_families` counts the runs recorded before families were
+stored, or without provenance. The text output prints a `by family` block after
+the metrics, one line per listed family, and `by family  no data` when none is.
+
+A single family's rate on a small sample is a sample. These figures say which
+family a run used and what came of it; they are not a ranking of vendors, and
+none of them is a gate.
 
 #### Cost per review
 

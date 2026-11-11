@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import { openDatabase } from '../store/db.ts';
-import { computeMetrics, DEFAULT_WINDOW_DAYS, evaluationReport, formatMetricValue, metricMark, metricTarget } from '../evaluate/metrics.ts';
+import { byFamily, computeMetrics, DEFAULT_WINDOW_DAYS, describeByFamily, evaluationReport, formatMetricValue, metricMark, metricTarget } from '../evaluate/metrics.ts';
 import { htmlDocument, renderEvaluationHtml } from '../evaluate/report.ts';
 import { readRecallResults, recallMetrics, type RecallResults } from '../evaluate/recall-results.ts';
 import { flag, resolveOutPath } from './shared.ts';
@@ -79,6 +79,7 @@ export function evaluateCommand(argv: string[]): number {
       console.log(`${column}  ${metric.name.padEnd(32)} ${formatMetricValue(metric).padStart(8)}  ${metricTarget(metric)}`);
       console.log(`      ${metric.basis}`);
     }
+    for (const line of describeByFamily(byFamily(db))) console.log(line);
     // A metric below target is information, not a command failure.
     return 0;
   } finally {
