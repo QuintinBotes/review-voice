@@ -21,8 +21,10 @@ function hash(value: string): string {
 function isPlaceholder(value: string): boolean {
   const normalised = value.toLowerCase().replace(/[<>{}[\]]/g, '');
   if (PLACEHOLDERS.has(normalised)) return true;
-  // A single repeated character is a mask, not a credential.
-  return /^(.)\1{3,}$/.test(value);
+  // A single repeated character is a mask, not a credential. Compared as a
+  // string: a backreference overflowed the stack on a few million characters,
+  // and the throw left the whole text unredacted.
+  return value.length >= 4 && value === value.charAt(0).repeat(value.length);
 }
 
 /**
@@ -38,22 +40,29 @@ export function redact(input: string): RedactionResult {
   const counts: Record<string, number> = {};
   let text = input;
 
-  for (const { label, pattern, group } of SECRET_PATTERNS) {
+  for (const { label, pattern, group = 0 } of SECRET_PATTERNS) {
     // Patterns are global and reused across calls, so lastIndex must not leak
     // between inputs.
     pattern.lastIndex = 0;
-    text = text.replace(pattern, (match, ...groups) => {
-      const captured = group === undefined || group === 0 ? match : (groups[group - 1] as string | undefined);
-      if (captured === undefined || captured.length === 0) return match;
-      if (isPlaceholder(captured)) return match;
+    let redacted = '';
+    let copied = 0;
+    for (const match of text.matchAll(pattern)) {
+      const captured = match[group];
+      if (captured === undefined || captured.length === 0) continue;
+      if (isPlaceholder(captured)) continue;
 
-      counts[label] = (counts[label] ?? 0) + 1;
-      const replacement = `[REDACTED:${label}]`;
       // Replacing only the captured group keeps the surrounding context -
       // "postgres://user:[REDACTED:DB_CREDENTIALS]@host" still reads as a
-      // comment about a connection string.
-      return group === undefined || group === 0 ? replacement : match.replace(captured, replacement);
-    });
+      // comment about a connection string. It is replaced by position, never
+      // by searching the match: in postgres://postgres:postgres@ the first
+      // "postgres" is the scheme.
+      const span = match.indices?.[group];
+      if (span === undefined) throw new Error(`the ${label} pattern lacks the d flag`);
+      counts[label] = (counts[label] ?? 0) + 1;
+      redacted += `${text.slice(copied, span[0])}[REDACTED:${label}]`;
+      copied = span[1];
+    }
+    text = redacted + text.slice(copied);
   }
 
   return {
