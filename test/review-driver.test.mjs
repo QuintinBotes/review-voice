@@ -321,8 +321,8 @@ test('(f) an unchanged scope carries the earlier run without calling an agent', 
   assert.equal(runCount(data), 2);
 });
 
-/** Like review(), but on a given data directory, so runs can follow one another. */
-async function reviewIn(repo, fakeDir, github, data, options = {}) {
+/** Like review(), but on a given data directory, so runs can follow one another. `deps` replaces or adds driver dependencies. */
+async function reviewIn(repo, fakeDir, github, data, options = {}, deps = {}) {
   const saved = { cwd: process.cwd(), env: { ...process.env } };
   process.chdir(repo.dir);
   Object.assign(process.env, { REVIEW_VOICE_DATA_DIR: data, REVIEW_VOICE_FAKE_AGENTS: fakeDir, GITHUB_TOKEN: 't' });
@@ -332,6 +332,7 @@ async function reviewIn(repo, fakeDir, github, data, options = {}) {
       {
         command: (argv, stdin) => runInProcess(argv, { stdin, fetchImpl: github }),
         client: new GitHubClient({ allowlist: [REPO], token: 't', fetchImpl: github, sleep: async () => {} }),
+        ...deps,
       },
     );
   } finally {
@@ -2140,4 +2141,84 @@ test('S17 AC-10: a hold follows a file renamed in a narrowed review that read it
   assert.match(readFileSync(join(two.runDir, 'diff.patch'), 'utf8'), /^rename to src\/main\.ts$/m, 'the review patch carries the rename');
   changeFarLine(chain.repo, 'src/main.ts', 31);
   await keepsHold(t, chain, 'src/main.ts');
+});
+
+// --- S22 part B: the held queue ---
+
+/** Sets or removes GITHUB_ACTIONS for one test: CI sets it, and inside GitHub Actions the queue names no command. */
+function githubActions(t, value) {
+  const saved = process.env.GITHUB_ACTIONS;
+  if (value === undefined) delete process.env.GITHUB_ACTIONS;
+  else process.env.GITHUB_ACTIONS = value;
+  t.after(() => {
+    if (saved === undefined) delete process.env.GITHUB_ACTIONS;
+    else process.env.GITHUB_ACTIONS = saved;
+  });
+}
+
+const HELD_QUEUE_CONFIG = { '.review-voice/config.yaml': 'verdict:\n  held_queue: true\n' };
+const BELOW_GATE_RUN = { 'diff-analyst': [{ candidates: [CANDIDATE] }], 'evidence-verifier': [{ verifications: [{ ...VERIFIED, technical_confidence: 0.7 }] }] };
+
+test('S22: every scored run leaves score-input.json, equal to what score read, and the default report has no heldQueue', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const github = fakeGitHub(repo);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-data-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const read = [];
+  const command = (argv, stdin) => {
+    if (argv[0] === 'score') read.push(stdin);
+    return runInProcess(argv, { stdin, fetchImpl: github });
+  };
+  const fakeDir = fakes(t, {
+    'diff-analyst': [{ candidates: [CANDIDATE] }],
+    'evidence-verifier': [{ verifications: [VERIFIED] }],
+    challenger: [{ verdicts: [confirmed] }],
+    'concise-editor': [{ text: '[minor] `src/app.ts:3` - The total multiplies by qty, which is undefined for items created before qty existed.' }],
+  });
+  const report = await reviewIn(repo, fakeDir, github, data, {}, { command, cli: bundle });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(read.length, 1);
+  assert.deepEqual(JSON.parse(readFileSync(join(report.runDir, 'score-input.json'), 'utf8')), JSON.parse(read[0]));
+  assert.equal('heldQueue' in report, false);
+});
+
+test('S22: under held_queue a below-gate finding carries a promote command that re-scores the run with it promoted', async (t) => {
+  githubActions(t, undefined);
+  const repo = repository(t, { 'src/app.ts': APP_HEAD }, HELD_QUEUE_CONFIG);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-data-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const report = await reviewIn(repo, fakes(t, BELOW_GATE_RUN), fakeGitHub(repo), data, {}, { cli: bundle });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(report.heldQueue.map((entry) => entry.verdict), report.held.map((entry) => entry.verdict));
+  const below = report.heldQueue.filter((entry) => entry.verdict === 'below-gate');
+  assert.equal(below.length, 1, JSON.stringify(report.heldQueue));
+  const [entry] = below;
+  assert.equal(entry.candidateId, 'cand_001');
+  // process.cwd() resolves links, as the temporary directory on macOS is one.
+  assert.ok(entry.promote.startsWith(`cd ${realpathSync(repo.dir)} && `), entry.promote);
+  assert.ok(entry.promote.endsWith(`--promote cand_001 < ${join(report.runDir, 'score-input.json')} > ${join(report.runDir, 'scores.promoted.json')}`), entry.promote);
+  assert.ok(entry.promote.includes(`REVIEW_VOICE_DATA_DIR=${data} `), entry.promote);
+
+  const run = spawnSync('sh', ['-c', entry.promote], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  const promoted = JSON.parse(readFileSync(join(report.runDir, 'scores.promoted.json'), 'utf8'));
+  assert.ok(promoted.eligible.some((candidate) => candidate.candidateId === 'cand_001'), JSON.stringify(promoted.eligible));
+  // The breakdown in `scores` records which gate the owner lifted.
+  const score = promoted.scores.find((entry) => entry.candidate_id === 'cand_001' || entry.candidateId === 'cand_001');
+  assert.equal(score.ownerPromotion.gate, 'confidence');
+  assert.ok(existsSync(join(report.runDir, 'scores.json')), 'the run\'s own scores are kept');
+});
+
+test('S22: inside GitHub Actions the held queue names the candidate, never a command with a runner path', async (t) => {
+  githubActions(t, 'true');
+  const repo = repository(t, { 'src/app.ts': APP_HEAD }, HELD_QUEUE_CONFIG);
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-data-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  // With `cli` set the driver builds a promote command, so only the GITHUB_ACTIONS gate keeps it out.
+  const report = await reviewIn(repo, fakes(t, BELOW_GATE_RUN), fakeGitHub(repo), data, {}, { cli: bundle });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  const [entry] = report.heldQueue.filter((held) => held.verdict === 'below-gate');
+  assert.equal(entry.candidateId, 'cand_001');
+  assert.equal(entry.promote, null);
+  assert.ok(!JSON.stringify(report.heldQueue).includes(report.runDir));
 });

@@ -27,6 +27,7 @@ import { gitPrepareClone } from './watch/workspace.ts';
 import { ReviewWriter, WriteViolation } from './github/writer.ts';
 import { commandHelp, topLevelHelp } from './help.ts';
 import { runReview, reportText } from './review/driver.ts';
+import { writeJobSummary } from './review/held-queue.ts';
 import {
   inProcessState,
   setInProcess,
@@ -474,8 +475,15 @@ async function reviewCommand(argv: string[]): Promise<number> {
       config: flag(argv, '--config'),
       origin: reviewOrigin,
     },
-    { command: (args, stdin) => runInProcess(args, { stdin }), client: githubClient([repository]) },
+    {
+      command: (args, stdin) => runInProcess(args, { stdin }),
+      client: githubClient([repository]),
+      // The bundle `watch` spawns too; each promote command in the held queue names it.
+      cli: fileURLToPath(import.meta.url),
+    },
   );
+  const summaryWarning = writeJobSummary(report, process.env);
+  if (summaryWarning !== null) console.error(summaryWarning);
   if (argv.includes('--json')) console.log(JSON.stringify(report, null, 2));
   else console.log(reportText(report));
   return report.exitCode;

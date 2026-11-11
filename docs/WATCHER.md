@@ -193,8 +193,11 @@ verdict:                             # ADR 0028
   ci_red: cap                        # cap | annotate
   ci_needs_rerun: hold               # hold | annotate
   never_approve: false               # true turns every APPROVE into COMMENT
+  never_approve_paths: []            # globs; a change touching one leaves approval to a person
+  only_approve_paths: []             # globs; a change outside them all leaves approval to a person
   carry_approval_on_unchanged: true
   recheck_thread_before_post: true
+  held_queue: false                  # true lists each review's held findings under its report line
 
 queue:                               # ADR 0026
   sources: [requested, assigned, follow-up, dismissed]
@@ -253,7 +256,9 @@ review-voice review --pr <n> [--repository owner/repo] [--mode M] [--post]
   verdict, posted, reviewUrl, costUsd, seconds, stages[], failure }`; `failure` is
   null unless the review could not complete, and then holds `{ code, stage,
   mode, risk, reasons, humanReviewNote, facts }` with `mode` `failed_open` or
-  `failed_closed`.
+  `failed_closed`. Under `verdict.held_queue` it also carries `heldQueue`,
+  one entry per `held` entry; inside GitHub Actions the same list is appended
+  to the job summary.
 - Exit codes follow `verdict` and `post`: 0 done, 2 refused or bad invocation,
   3 head moved, 4 waiting on CI, 6 CI needs a rerun, 7 an agent failed twice.
 
@@ -316,7 +321,15 @@ in the format `owner/repo#n: <summary> (<status> <url>)`, where `<status>` is
 one of the `HeadStatus` values: a review that reported `failure.mode` shows
 `failed-open` or `failed-closed`, and one with no report shows `failed`. All
 three count toward `watch.max_attempts_per_head`, appear in `queue --settled`
-and make `--once` exit 1. After the outcomes step the pass applies the
+and make `--once` exit 1. With `verdict.held_queue: true` in the watcher's
+config, a `review` entry whose run held findings prints them two spaces in
+under its line. They are a `Held by Review Voice (N), run <id>` line, a note
+that a promoted finding still goes through the challenge, then one line per held
+finding with its location, severity, verdict and reason in inline code, and
+for a `below-gate` or `policy-suppressed` one the `score --promote` command
+that re-scores the run from its directory (through stderr with `--json`). A
+`verdict-only` or `recheck-ci` entry prints none, since its run was listed
+when it was reviewed. The commands are printed, never run. After the outcomes step the pass applies the
 `retention` block and prints one line such as `removed 2 run directories, 15
 audit events` (through stderr with `--json`). A second watcher on
 the same data directory exits at once (a lock file). `--once` runs one pass for
@@ -378,7 +391,7 @@ of outcomes.
 
 ## Verdict policy
 
-ADR 0028 makes six verdict behaviours configurable. The defaults keep today's
+ADR 0028 makes seven verdict behaviours configurable. The defaults keep today's
 behaviour.
 
 | Situation | Default | Opt-in |
@@ -388,6 +401,7 @@ behaviour.
 | CI needs a rerun | hold every event (exit 6) | `ci_needs_rerun: annotate` posts the code verdict, body adds `Heads up: <checks> need a rerun.` |
 | APPROVE, high complexity | post COMMENT (ADR 0012) | `human_review.cap_approval: false` approves; the local note stays |
 | Any APPROVE | approve when the guards pass | `never_approve: true` posts COMMENT instead; approval is left to a person, pending CI does not make the head wait, and a head queued for a CI recheck before it was turned on is settled, not retried |
+| APPROVE, the pull request changes a guarded path | approve when the guards pass | `never_approve_paths: [<globs>]` posts COMMENT when a changed path (a rename by either name, a deleted file too) matches; `only_approve_paths: [<globs>]` when one is outside every glob. The summary ends with a fixed sentence naming the setting, the reasons name the paths, and `--recheck` refuses as under `never_approve`. Cheaper than `sensitive_paths`, which also buys a thorough review and a note. A list that does not load holds every approval |
 | Unchanged scope, owner's approval still stands | post again | `carry_approval_on_unchanged: true` records `carried` and posts nothing |
 
 `recheck_thread_before_post` re-reads the thread immediately before `post` and

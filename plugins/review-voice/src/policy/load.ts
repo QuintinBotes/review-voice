@@ -13,6 +13,7 @@ import { BUILTIN_RERUN_SIGNATURES, type CiRules, type GateCheck } from '../publi
 import { DEFAULT_HUMAN_REVIEW, type HumanReviewConfig } from '../diff/complexity.ts';
 import { DEFAULT_STRUCTURE, type StructureConfig } from '../diff/structure.ts';
 import { DEFAULT_VERDICT_POLICY, type VerdictPolicy } from '../publish/verdict.ts';
+import { globToRegExp } from '../conventions/globs.ts';
 import { CHANGE_KINDS, MODEL_KEYS, MODES, type ChangeKind, type ModelOverrides, type RequestedMode, type Tier } from '../review/plan.ts';
 import { agentExists, DIFF_LANE, LANE_SIGNALS, LANE_TIERS, type Lane, type LaneSignal } from '../review/lanes.ts';
 import { allowlistEntryProblem } from '../github/client.ts';
@@ -181,7 +182,8 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
   'ci.stuck_after_overrides[]': ['name', 'minutes'],
   verdict: [
     'ci_pending', 'ci_red', 'ci_needs_rerun', 'carry_approval_on_unchanged', 'recheck_thread_before_post', 'never_approve',
-    'scope_block', 'scope_block_models', 'evidence_block', 'evidence_block_precedents',
+    'never_approve_paths', 'only_approve_paths', 'scope_block', 'scope_block_models', 'evidence_block', 'evidence_block_precedents',
+    'held_queue',
   ],
   static_evidence: ['enabled', 'env_passthrough', 'commands'],
   'static_evidence.commands[]': ['name', 'run', 'timeout_seconds', 'version'],
@@ -712,16 +714,48 @@ function readVerdictPolicy(block: Record<string, unknown> | null, result: Loaded
     return fallback;
   };
   const policy = result.verdictPolicy;
+  // An approval rule that does not load fails closed: a typo must not widen
+  // approval, so the hold stays until the list is fixed. The warning names the
+  // key and the entry. New arrays, so the defaults are never mutated.
+  const globs = (key: 'never_approve_paths' | 'only_approve_paths', fallback: readonly string[]): string[] => {
+    const value = block[key];
+    if (value === undefined) return [...fallback];
+    const entries = Array.isArray(value) ? value : null;
+    const parses = (entry: unknown): boolean => {
+      if (typeof entry !== 'string' || entry.trim() === '') return false;
+      try {
+        globToRegExp(entry);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const bad = entries === null ? value : entries.find((entry) => !parses(entry));
+    if (entries !== null && bad === undefined) return [...entries] as string[];
+    policy.malformedApprovalPaths ??= key;
+    // A YAML alias can make the list refer to itself, which JSON.stringify cannot show.
+    let shown: string;
+    try {
+      shown = JSON.stringify(bad);
+    } catch {
+      shown = 'a value that refers to itself';
+    }
+    result.warnings.push(`verdict.${key} must be a list of globs; ${shown} is not one, so every approval is held until it is fixed.`);
+    return [...fallback];
+  };
   policy.ciPending = choice('ci_pending', ['wait', 'proceed'], DEFAULT_VERDICT_POLICY.ciPending);
   policy.ciRed = choice('ci_red', ['cap', 'annotate'], DEFAULT_VERDICT_POLICY.ciRed);
   policy.ciNeedsRerun = choice('ci_needs_rerun', ['hold', 'annotate'], DEFAULT_VERDICT_POLICY.ciNeedsRerun);
   policy.carryApprovalOnUnchanged = enabled('carry_approval_on_unchanged', DEFAULT_VERDICT_POLICY.carryApprovalOnUnchanged);
   policy.recheckThreadBeforePost = enabled('recheck_thread_before_post', DEFAULT_VERDICT_POLICY.recheckThreadBeforePost);
   policy.neverApprove = enabled('never_approve', DEFAULT_VERDICT_POLICY.neverApprove);
+  policy.neverApprovePaths = globs('never_approve_paths', DEFAULT_VERDICT_POLICY.neverApprovePaths);
+  policy.onlyApprovePaths = globs('only_approve_paths', DEFAULT_VERDICT_POLICY.onlyApprovePaths);
   policy.scopeBlock = enabled('scope_block', DEFAULT_VERDICT_POLICY.scopeBlock);
   policy.scopeBlockModels = enabled('scope_block_models', DEFAULT_VERDICT_POLICY.scopeBlockModels);
   policy.evidenceBlock = enabled('evidence_block', DEFAULT_VERDICT_POLICY.evidenceBlock);
   policy.evidenceBlockPrecedents = enabled('evidence_block_precedents', DEFAULT_VERDICT_POLICY.evidenceBlockPrecedents);
+  policy.heldQueue = enabled('held_queue', DEFAULT_VERDICT_POLICY.heldQueue);
 }
 
 const TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -1319,7 +1353,10 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     try {
       readConfigDocument(parseYaml(readFileSync(configPath, 'utf8')), repositoryRoot, result, OPERATOR_SOURCES.includes(chosen.source));
     } catch (error) {
-      result.warnings.push(`.review-voice/config.yaml could not be parsed: ${String(error)}`);
+      // A read that stops partway may have turned posting on without reaching the
+      // verdict and review rules that cap it, so a half-read document posts nothing.
+      result.postingEnabled = false;
+      result.warnings.push(`.review-voice/config.yaml could not be parsed, so posting is off until it is fixed: ${String(error)}`);
     }
   }
 

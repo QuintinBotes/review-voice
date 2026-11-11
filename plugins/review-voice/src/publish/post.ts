@@ -18,6 +18,7 @@ import {
 import { readCi, type CiRules, type CiState, type GateCheck } from './ci.ts';
 import { evaluatePostingGate, type GateResult } from './gate.ts';
 import {
+  approvalPathHold,
   buildPayload,
   ciAllowsApproval,
   ciAnnotations,
@@ -106,8 +107,9 @@ export interface VerdictOutput {
   /** The owner's approval that still stands, when the action is `carry`; nothing is posted then. */
   carriedReviewUrl: string | null;
   /**
-   * True when `never_approve` capped an approval at COMMENT, so a caller can
-   * tell a policy refusal apart from any other refusal without reading the reasons.
+   * True when `never_approve`, `never_approve_paths` or `only_approve_paths`
+   * capped an approval at COMMENT, so a caller can tell a policy refusal apart
+   * from any other refusal without reading the reasons.
    */
   cappedByPolicy: boolean;
   /** What would be sent: inline comments already posted on this head are left out. */
@@ -137,6 +139,54 @@ export async function readHead(client: GitHubClient, repository: string, pullNum
   const { data } = await client.get<{ head?: { sha?: unknown } }>(`/repos/${repository}/pulls/${pullNumber}`);
   const sha = data?.head?.sha;
   return typeof sha === 'string' ? sha.toLowerCase() : null;
+}
+
+/** GitHub's own ceiling on the files list (`GITHUB_MAX_FILES` in src/diff/pull-request.ts); a list this long may be cut. */
+const MAX_LISTED_FILES = 3000;
+
+/**
+ * Every path the pull request changes, a rename by both names and a deleted
+ * file included, because a rename out of a guarded directory touches it.
+ * These are the pull request's paths, not the review scope's: a later commit
+ * must not approve a pull request whose first commit touched a guarded path.
+ * A failed read, or a page that is not a list, throws, as `readHead` does, so
+ * nothing is posted. `untied` is true when a page is not shown to be `head`'s.
+ */
+export async function readChangedPaths(
+  client: GitHubClient,
+  repository: string,
+  pullNumber: number,
+  head: string,
+): Promise<{ paths: string[]; truncated: boolean; malformed: boolean; untied: boolean }> {
+  const listed: Record<string, unknown>[] = [];
+  let untied = false;
+  let next: string | null = `/repos/${repository}/pulls/${pullNumber}/files?per_page=100`;
+  while (next !== null && listed.length < MAX_LISTED_FILES) {
+    const page: { data: unknown; linkNext: string | null } = await client.get<unknown>(next);
+    // Not client.paginate, which reads a page that is not an array as the end
+    // of the list; an empty list here would approve.
+    if (!Array.isArray(page.data)) throw new GitHubError(`GitHub returned no file list for ${next}`, 200);
+    const entries = page.data.map((file: unknown) =>
+      typeof file === 'object' && file !== null && !Array.isArray(file) ? (file as Record<string, unknown>) : {},
+    );
+    // GitHub lists the pull request as it is when each page is read, so a
+    // force push between reads would lend this approval another commit's
+    // paths. Every entry but a deletion names the commit it shows in its
+    // contents_url (a deletion names the base), so a page is the head's only
+    // when one entry names it and none names another.
+    const refs = entries
+      .filter((file) => file['status'] !== 'removed')
+      .map((file) => (typeof file['contents_url'] === 'string' ? /[?&]ref=([^&#]*)/.exec(file['contents_url'])?.[1]?.toLowerCase() : undefined));
+    if (refs.length === 0 || refs.some((ref) => ref !== head)) untied = true;
+    listed.push(...entries);
+    next = page.linkNext;
+  }
+  // An entry that cannot be named leaves the set incomplete, and an unchecked
+  // path must hold the approval as a cut list does rather than drop out.
+  const named = (name: unknown): name is string => typeof name === 'string' && name !== '';
+  const malformed = listed.some((file) => !named(file['filename']) || (file['status'] === 'renamed' && !named(file['previous_filename'])));
+  const paths = listed.flatMap((file) => [file['filename'], file['previous_filename']].filter(named));
+  return { paths, truncated: listed.length >= MAX_LISTED_FILES, malformed, untied };
 }
 
 function refusal(head: string, reason: string): { exitCode: number; output: VerdictOutput; run: null } {
@@ -472,6 +522,23 @@ export async function computeVerdict(
   const carriedReviewUrl =
     !headMoved && policy.carryApprovalOnUnchanged ? await carriedApproval(options, run, lookupReasons) : null;
 
+  // The file list is read only when a path list is set and the answer could
+  // still change the event: a path hold only turns an APPROVE into a COMMENT,
+  // and never_approve or a carry has already settled that. Under the defaults
+  // no request is made, and a list that did not load holds without one.
+  const pathRule =
+    policy.malformedApprovalPaths !== null || policy.neverApprovePaths.length > 0 || policy.onlyApprovePaths.length > 0;
+  const mayApprove = !headMoved && planned.mapped === 'APPROVE' && !policy.neverApprove && carriedReviewUrl === null;
+  const pathHold =
+    pathRule && mayApprove
+      ? approvalPathHold(
+          policy.malformedApprovalPaths === null
+            ? await readChangedPaths(options.client, options.repository, options.pullNumber, head)
+            : { paths: [], truncated: false },
+          policy,
+        )
+      : null;
+
   const decision = decide({
     mapped: planned.mapped,
     headMoved,
@@ -483,6 +550,7 @@ export async function computeVerdict(
     needsHuman,
     uncoveredCarry: run.carry?.covered === false,
     carriedReviewUrl,
+    approvalPathHold: pathHold?.reason ?? null,
     policy,
   });
   decision.reasons.push(...lookupReasons);
@@ -511,17 +579,20 @@ export async function computeVerdict(
       bodyFindings: run.bodyFindings,
       ...(checked === null ? {} : { suggestions: checked.suggestions }),
       // One plain summary line whichever cap applies: CI first, then a held
-      // finding or an uncovered carry, then complexity. None of them names
-      // human review or the carry in the posted body.
+      // finding or an uncovered carry, then policy, then complexity. None of
+      // them names human review or the carry in the posted body. A path hold
+      // alone ends the line with its fixed sentence, which names the setting
+      // and never a path.
       cappedBy: decision.cappedByCi
         ? 'ci'
         : planned.heldBackApproval || (run.carry?.covered === false && planned.mapped === 'APPROVE')
           ? 'held'
-          : policy.neverApprove && planned.mapped === 'APPROVE'
+          : decision.cappedByPolicy
             ? 'policy'
             : needsHuman && policy.capApproval && planned.mapped === 'APPROVE'
               ? 'complexity'
               : null,
+      ...(decision.cappedByPolicy && !policy.neverApprove && pathHold !== null ? { pathHold: pathHold.posted } : {}),
     });
     // Keyed on the whole review, so the same review is refused a second time
     // even once its comments are all on the pull request. Annotations are left
