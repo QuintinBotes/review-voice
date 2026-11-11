@@ -6,6 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -61,6 +62,8 @@ const EXPECTED = {
   },
   trivy: {
     run: 'trivy fs --scanners vuln --format sarif --quiet .',
+    // The document defines its base as this directory, so it is parsed under it; with no root the path stays absolute, as ruff's does.
+    root: '/work/repo',
     count: 2,
     version: 'Trivy 0.58.0',
     first: {
@@ -140,7 +143,7 @@ test('AC-1: a document wrapped in stderr noise parses, an unparseable slice yiel
 
 test('AC-2: for every fixture the first signal matches the values worked out by hand', () => {
   for (const [tool, expected] of Object.entries(EXPECTED)) {
-    const [first] = parseOutput(tool, expected.run, fixture(tool)).signals;
+    const [first] = parseOutput(tool, expected.run, fixture(tool), expected.root).signals;
     const { kind, path, line, claim, evidence } = first;
     assert.deepEqual({ kind, path, line, claim, evidence: evidence[0] }, expected.first, tool);
   }
@@ -166,7 +169,7 @@ test('AC-2: a rule id is held to one line and capped before it joins the claim, 
     result({ ruleId: ' \n\u200b\u0000 ', locations: at('a.py', 4) }),
   ]));
   assert.deepEqual(signals.map((signal) => [signal.line, signal.claim, signal.evidence[0]]), [
-    [1, 'r [accept] forged [2K: m', 'm'],
+    [1, 'r [accept] forged: m', 'm'],
     [2, 'bare id', 'bare id'],
     [3, `${'x'.repeat(200)}: m`, 'm'],
   ]);
@@ -219,7 +222,7 @@ test('AC-2: a result with no message falls back to the rule description, then to
   ]);
 });
 
-test('AC-3: paths are decoded, lose file:// and ./, become relative under root and stay absolute without it; uriBaseId is left alone', () => {
+test('AC-3: paths are decoded, lose file:// and ./, become relative under root and stay absolute without it; a uriBaseId the run does not define is left alone', () => {
   const results = [
     result({ locations: at('file:///work/repo/src/my%20module.py', 3) }),
     result({ locations: at('./src/b.py', 4) }),
@@ -813,13 +816,13 @@ test('AC-3: a SARIF location is checked in every form its path is built from, so
   for (const leak of [password, 'IjKlMnOp', 'EfGhIj']) assert.ok(!stored.includes(leak), leak);
 });
 
-test('AC-2: a result repeated at one stored path, line and claim is kept once, however its uri is spelled or whatever line it cannot use', () => {
+test('AC-2: a result repeated at one place, line and message is kept once, however its uri is spelled or whatever line it cannot use', () => {
   const located = (uri, startLine) => [{ physicalLocation: { ...(uri === undefined ? {} : { artifactLocation: { uri } }), ...(startLine === undefined ? {} : { region: { startLine } }) } }];
   const results = [
     ...['src/a.py', './src/a.py', 'file:///work/repo/src/a.py', 'src/b/../a.py'].map((uri) => result({ locations: located(uri, 3) })),
     ...['src/my module.py', 'src/my%20module.py'].map((uri) => result({ locations: located(uri, 3) })),
     ...[undefined, 0, -1, 1.5].map((startLine) => result({ locations: located('src/c.py', startLine) })),
-    // No uri, or one outside the root, names no path, so its line goes too.
+    // No uri, or one outside the root, names no path, so its line goes too, and still tells its result from the others.
     ...[1, 2].map((startLine) => result({ locations: located(undefined, startLine) })),
     ...['../out.py', '/elsewhere/out.py'].map((uri, index) => result({ locations: located(uri, index + 4) })),
   ];
@@ -827,7 +830,7 @@ test('AC-2: a result repeated at one stored path, line and claim is kept once, h
   const twice = JSON.parse(doc(results));
   twice.runs.push({ ...twice.runs[0], results: [...results].reverse() });
   assert.deepEqual(parse(JSON.stringify(twice), '/work/repo').signals.map((signal) => [signal.path, signal.line, signal.claim]), [
-    ['src/a.py', 3, 'r: m'], ['src/my module.py', 3, 'r: m'], ['src/c.py', null, 'r: m'], [null, null, 'r: m'],
+    ['src/a.py', 3, 'r: m'], ['src/my module.py', 3, 'r: m'], ['src/c.py', null, 'r: m'], ...Array.from({ length: 4 }, () => [null, null, 'r: m']),
   ]);
 });
 
@@ -851,8 +854,7 @@ test('AC-3: a text adapter claim is read from its line once masked and redacted,
   assert.deepEqual(eslint.signals.map((signal) => [signal.line, signal.claim]), [
     [1, '[REDACTED:AUTHORIZATION_HEADER]: Authorization: Bearer'],
     [2, '="[REDACTED:SECRET_ASSIGNMENT]": api_key'],
-    // Masked, the line no longer parses, so the claim is the line as cleaned.
-    [3, '3:1  error  value [redacted:S20_PROBE_LINT]'],
+    // The third is masked before its line is taken and no longer parses, so it is no diagnostic.
     [4, 'no-kept: kept message'],
   ]);
   // The python adapter drops the colon a scheme ends with.
@@ -1318,10 +1320,12 @@ test('AC-3: a typescript, dotnet or python claim is read from its line once mask
   ]) {
     process.env.S20_PROBE_CODE = `${code}  ${tail}`;
     const report = await collected(`${head}${code}  ${tail}\n`, { command, envPassthrough: ['S20_PROBE_CODE'] });
-    // Masked, the line no longer parses, so the claim is the line as cleaned.
-    const cleaned = `${head}[redacted:S20_PROBE_CODE]`;
-    assert.deepEqual(report.signals.map((signal) => [signal.claim, signal.evidence[0]]), [[cleaned, cleaned]], command);
+    // Masked before its line is taken, the line no longer parses, so it is no diagnostic.
+    assert.deepEqual(report.signals, [], command);
     assert.ok(!JSON.stringify(report).includes(tail), command);
+    // Under a line that does parse, the masked value is in the claim whole.
+    const kept = await collected(`${head}${code} kept ${code}  ${tail}\n`, { command, envPassthrough: ['S20_PROBE_CODE'] });
+    assert.deepEqual(kept.signals.map((signal) => signal.claim), [`${code} kept [redacted:S20_PROBE_CODE]`], command);
   }
 });
 
@@ -1381,21 +1385,14 @@ test('AC-3: a text adapter keeps a path and line only when cleaning leaves its l
     // In the message alone, the value leaves the position as printed.
     `tests/test_db.py:12: error: no route to ${values.S20_PROBE_ADDR}`,
   ]));
-  assert.deepEqual(reports.at(-1), [
-    [null, null, `could not connect to ${address}: error: connection refused`],
-    [null, null, `${address}: error: connection refused`],
-    ['tests/test_db.py', 12, `error: no route to ${address}`],
-  ]);
+  // The first two are masked before their lines are taken and no longer parse, so neither is a diagnostic.
+  assert.deepEqual(reports.at(-1), [['tests/test_db.py', 12, `error: no route to ${address}`]]);
   for (const [command, code] of [['tsc --noEmit', 'TS2345'], ['dotnet build', 'CS1002']]) {
     reports.push(await located(command, [`${values.S20_PROBE_GEN},7): error ${code}: bad`, `src/kept.ts(5,1): error ${code}: bad ${values.S20_PROBE_GEN}`]));
-    assert.deepEqual(reports.at(-1), [
-      [null, null, `[redacted:S20_PROBE_GEN],7): error ${code}: bad`],
-      ['src/kept.ts', 5, `${code}: bad [redacted:S20_PROBE_GEN]`],
-    ], command);
+    assert.deepEqual(reports.at(-1), [['src/kept.ts', 5, `${code}: bad [redacted:S20_PROBE_GEN]`]], command);
   }
-  // The eslint file is a line of its own, so only the line number goes.
   reports.push(await located('eslint .', ['src/a.ts', `  ${values.S20_PROBE_PIN}:1  error  bad  no-bad`, '  3:1  error  bad  no-bad']));
-  assert.deepEqual(reports.at(-1), [['src/a.ts', null, '[redacted:S20_PROBE_PIN]:1  error  bad  no-bad'], ['src/a.ts', 3, 'no-bad: bad']]);
+  assert.deepEqual(reports.at(-1), [['src/a.ts', 3, 'no-bad: bad']]);
   // Two diagnostics that lose their paths are still two, and one MSBuild repeats is still one.
   reports.push(await located('dotnet build', [
     `src/${values.S20_PROBE_DIR}/a.cs(3,1): error CS1002: ; expected`,
@@ -1408,7 +1405,7 @@ test('AC-3: a text adapter keeps a path and line only when cleaning leaves its l
   const body = ['MIIEv', 'Synthetic', 'KeyBody', 'NotARealKey', '0123456789'].join('');
   for (const [command, between] of [['tsc --noEmit', '(1,1): error TS1: '], ['ruff check .', ':1:1: F401 '], ['dotnet build', '(1,1): error CS1: ']]) {
     reports.push(await located(command, [`${edge('BEGIN')}${body}${between}${edge('END')}`]));
-    assert.deepEqual(reports.at(-1), [[null, null, '[REDACTED:PRIVATE_KEY]']], command);
+    assert.deepEqual(reports.at(-1), [], command);
   }
   const stored = JSON.stringify(reports);
   for (const leak of ['example.com', '5432', 'srcdir', values.S20_PROBE_PIN, values.S20_PROBE_DIR, body.slice(0, 12)]) assert.ok(!stored.includes(leak), leak);
@@ -1484,4 +1481,199 @@ test('AC-2: results in different files whose paths are dropped for what the uri 
   ]), { envPassthrough: Object.keys(values) });
   assert.deepEqual(report.signals.map((signal) => [signal.path, signal.line, signal.claim]), Array.from({ length: 5 }, () => [null, null, 'F401: `os` imported but unused']));
   assert.ok(!JSON.stringify(report.signals).includes(values.S20_PROBE_FOLDER));
+});
+
+const ESC = '\u001b';
+/** Token-shaped, built at run time so no such string sits in the repository. */
+const npmToken = (body = 'aB3d') => ['np', 'm_'].join('') + body.repeat(9);
+
+test('AC-3: a token beside a terminal sequence is redacted in the claim and evidence of every text adapter, since the output is cleaned as printed before its sequences go', async () => {
+  const token = npmToken();
+  // Without the sequence the letter after it joins the token, which then ends at no word boundary.
+  const beside = `${token}${ESC}[31mZ`;
+  for (const [command, lines, path, claim] of [
+    ['tsc --noEmit', [`a.ts(1,1): error TS2345: ${beside}`], 'a.ts', 'TS2345: [REDACTED:NPM_TOKEN]Z'],
+    ['eslint .', ['src/a.ts', `  1:1  error  ${beside}  no-bad`], 'src/a.ts', 'no-bad: [REDACTED:NPM_TOKEN]Z'],
+    ['ruff check .', [`a.py:1: error: ${beside}`], 'a.py', 'error: [REDACTED:NPM_TOKEN]Z'],
+    ['dotnet build', [`Program.cs(1,1): error CS1002: ${beside}`], 'Program.cs', 'CS1002: [REDACTED:NPM_TOKEN]Z'],
+  ]) {
+    const report = await collected(lines.join('\n'), { command });
+    assert.deepEqual(report.signals.map((signal) => [signal.path, signal.line, signal.claim]), [[path, 1, claim]], command);
+    assert.match(report.signals[0].evidence[0], /\[REDACTED:NPM_TOKEN\]Z/, command);
+    const stored = JSON.stringify(report);
+    for (const leak of [token.slice(0, 12), token.slice(-12), '[31m']) assert.ok(!stored.includes(leak), `${command} ${leak}`);
+  }
+});
+
+test('AC-3: a key block a tool prints across lines is redacted whole, and a path holding a passed-through value still loses its place with its text kept', async (t) => {
+  const edge = (name) => `-----${name} ${['PRIVATE', 'KEY'].join(' ')}-----`;
+  const body = ['MIIEv', 'Synthetic', 'KeyBody', 'NotARealKey', '0123456789'].join('');
+  const block = await collected([
+    `src/a.ts(1,1): error TS1005: unexpected ${edge('BEGIN')}`,
+    `src/a.ts(2,1): error TS1005: ${body}`,
+    `src/a.ts(3,1): error TS1005: ${edge('END')} tail`,
+    'src/b.ts(4,1): error TS1005: kept',
+  ].join('\n'), { command: 'tsc --noEmit' });
+  assert.deepEqual(block.signals.map((signal) => [signal.path, signal.line, signal.claim]), [
+    ['src/a.ts', 1, 'TS1005: unexpected [REDACTED:PRIVATE_KEY] tail'],
+    ['src/b.ts', 4, 'TS1005: kept'],
+  ]);
+  assert.ok(!JSON.stringify(block).includes(body.slice(0, 12)));
+  process.env.S20_PROBE_HOME = '/synthetic/home/runner';
+  t.after(() => {
+    delete process.env.S20_PROBE_HOME;
+  });
+  const placed = await collected(`/synthetic/home/runner/app.py:3: error: bad${ESC}[0m\nsrc/kept.py:4: error: bad\n`, { command: 'ruff check .', envPassthrough: ['S20_PROBE_HOME'] });
+  assert.deepEqual(placed.signals.map((signal) => [signal.path, signal.line, signal.claim, signal.evidence[0]]), [
+    [null, null, 'error: bad', '[redacted:S20_PROBE_HOME]/app.py:3: error: bad'],
+    ['src/kept.py', 4, 'error: bad', 'src/kept.py:4: error: bad'],
+  ]);
+});
+
+test('AC-3: an eslint file line that masking leaves unreadable as one still ends the file before it, so its diagnostics lose their place and take no other', async (t) => {
+  process.env.S20_PROBE_FILE = 'src/generated/b.ts';
+  t.after(() => {
+    delete process.env.S20_PROBE_FILE;
+  });
+  const report = await collected(['src/a.ts', '  1:1  error  first  no-a', '', 'src/generated/b.ts', '  2:1  error  second  no-b'].join('\n'), { command: 'eslint .', envPassthrough: ['S20_PROBE_FILE'] });
+  assert.deepEqual(report.signals.map((signal) => [signal.path, signal.line, signal.claim]), [['src/a.ts', 1, 'no-a: first'], [null, null, 'no-b: second']]);
+});
+
+test('AC-3: a coloured rule id loses each terminal sequence whole before it is spaced, so neither a token beside one nor a parameter byte of one is stored', async () => {
+  const token = npmToken();
+  const report = await collected(doc([
+    `${ESC}[31m${token}${ESC}[0m`,
+    // A control between the escape and its bracket goes with the sequence, as does the bell that ends a string.
+    `rule${ESC}\u0007[1;31m-id`,
+    `os${ESC}]0;title\u0007c`,
+    // Outside any sequence a control or format character is still a space.
+    'lone\u0007bell\u0000nul',
+  ].map((ruleId, index) => result({ ruleId, locations: at('a.py', index + 1) }))));
+  assert.deepEqual(report.signals.map((signal) => signal.claim), ['[REDACTED:NPM_TOKEN]: m', 'rule-id: m', 'osc: m', 'lone bell nul: m']);
+  const stored = JSON.stringify(report);
+  for (const leak of [token.slice(0, 12), token.slice(-12), '31m', '[0m', 'title']) assert.ok(!stored.includes(leak), leak);
+});
+
+test('AC-3: a uri that holds a terminal sequence or an invisible character, as printed or decoded, names no path, and no adapter keeps a path that holds one', async (t) => {
+  const uris = ['src/evil%1B%5B31m.ts', `src/evil${ESC}[31m.ts`, 'src/ev\u200bil.ts', 'file:///synthetic/repository/src/evil%1b%5B31m.ts', 'src/evil%E2%80%AE.ts'];
+  for (const uri of uris) {
+    const output = doc([result({ message: { text: 'kept text' }, locations: at(uri, 3) })]);
+    const expected = [[null, null, 'r: kept text']];
+    assert.deepEqual(parse(output, '/synthetic/repository').signals.map((signal) => [signal.path, signal.line, signal.claim]), expected, JSON.stringify(uri));
+    assert.deepEqual((await collected(output)).signals.map((signal) => [signal.path, signal.line, signal.claim]), expected, JSON.stringify(uri));
+  }
+  // The path is not rewritten into the name it would read as without the sequence.
+  const text = await collected(`src/a${ESC}[31mb.ts(1,1): error TS2345: bad\nsrc/c\u0007d.ts(2,1): error TS2345: bad\nsrc/kept.ts(3,1): error TS2345: bad\n`, { command: 'tsc --noEmit' });
+  assert.deepEqual(text.signals.map((signal) => [signal.path, signal.line, signal.claim]), [[null, null, 'TS2345: bad'], [null, null, 'TS2345: bad'], ['src/kept.ts', 3, 'TS2345: bad']]);
+  // An adapter of the test, since each one shipped is handed output that holds no sequence.
+  const probe = {
+    name: 'probe',
+    matches: (haystack) => haystack.includes('s20-probe'),
+    parse: (_output, tool) => [`src/a${ESC}[31m.ts`, 'src/kept.ts'].map((path) => ({ kind: 'probe', path, line: 2, claim: 'c', evidence: ['e'], confidence: 0.9, tool })),
+  };
+  ADAPTERS.push(probe);
+  t.after(() => {
+    ADAPTERS.splice(ADAPTERS.indexOf(probe), 1);
+  });
+  assert.deepEqual((await collected('anything', { command: 's20-probe' })).signals.map((signal) => [signal.path, signal.line]), [[null, null], ['src/kept.ts', 2]]);
+});
+
+test('AC-3: an artifact location under a base the run defines is resolved against it, inline or by index, and a base that is chained, has no uri or lies outside the root names no path (SARIF 3.4.4)', async (t) => {
+  const based = (artifactLocation, originalUriBaseIds, artifacts) => JSON.stringify({
+    version: '2.1.0',
+    runs: [{ tool: { driver: { name: 'tool', version: '1.0' } }, originalUriBaseIds, artifacts, results: [result({ locations: [{ physicalLocation: { artifactLocation, region: { startLine: 4 } } }] })] }],
+  });
+  const located = (artifactLocation, originalUriBaseIds, artifacts) => parse(based(artifactLocation, originalUriBaseIds, artifacts), '/repo').signals.map((signal) => [signal.path, signal.line]);
+  const config = { uri: 'config.py', uriBaseId: 'SRC' };
+  // With or without the closing slash, and a base given relative to the root.
+  for (const uri of ['file:///repo/child/', 'file:///repo/child', 'child/', './child']) {
+    assert.deepEqual(located(config, { SRC: { uri } }), [['child/config.py', 4]], uri);
+  }
+  // With no root an absolute path stays as it is, as one a tool printed does.
+  assert.deepEqual(parse(based(config, { SRC: { uri: 'file:///repo/child/' } })).signals.map((signal) => signal.path), ['/repo/child/config.py']);
+  assert.deepEqual(located({ index: 0 }, { SRC: { uri: 'file:///repo/child/' } }, [{ location: config }]), [['child/config.py', 4]]);
+  // A uri that is absolute stands on its own, and one with dot segments is resolved under the base.
+  assert.deepEqual(located({ uri: 'file:///repo/top.py', uriBaseId: 'SRC' }, { SRC: { uri: 'file:///repo/child/' } }), [['top.py', 4]]);
+  assert.deepEqual(located({ uri: '../sibling/a%20b.py', uriBaseId: 'SRC' }, { SRC: { uri: 'file:///repo/child/' } }), [['sibling/a b.py', 4]]);
+  // An id the run does not define is the directory scanned, as before.
+  for (const bases of [undefined, {}, { OTHER: { uri: 'file:///repo/child/' } }, 'SRC']) {
+    assert.deepEqual(located(config, bases), [['config.py', 4]], JSON.stringify(bases));
+  }
+  // Chained, with a uri that is no string, or outside the root.
+  for (const bases of [
+    { SRC: { uri: 'child/', uriBaseId: 'ROOT' }, ROOT: { uri: 'file:///repo/' } },
+    { SRC: {} }, { SRC: { uri: 7 } }, { SRC: null },
+    { SRC: { uri: 'file:///elsewhere/' } }, { SRC: { uri: '../' } }, { SRC: { uri: 'https://example.com/repo/' } },
+  ]) {
+    assert.deepEqual(located(config, bases), [[null, null]], JSON.stringify(bases));
+    assert.deepEqual(located({ index: 0 }, bases, [{ location: config }]), [[null, null]], JSON.stringify(bases));
+  }
+  // The checks on a uri apply to it once resolved, so a base holding a passed-through value or a sequence gives no path.
+  process.env.S20_PROBE_BASE = 'AbCdEf' + 'GhIjKl';
+  t.after(() => {
+    delete process.env.S20_PROBE_BASE;
+  });
+  for (const uri of ['file:///synthetic/repository/AbCdEfGhIjKl/', 'file:///synthetic/repository/child%1B%5B31m/']) {
+    const report = await collected(based(config, { SRC: { uri } }), { envPassthrough: ['S20_PROBE_BASE'] });
+    assert.deepEqual(report.signals.map((signal) => [signal.path, signal.line]), [[null, null]], uri);
+    assert.ok(!JSON.stringify(report.signals).includes('AbCdEf'), uri);
+  }
+});
+
+test('AC-2: the seven fixtures give the signals they gave before a base was resolved, each under the root it was written for', () => {
+  const places = (tool, root) => parseOutput(tool, EXPECTED[tool].run, fixture(tool), root).signals.map((signal) => [signal.path, signal.line]);
+  assert.deepEqual(places('trivy', '/work/repo'), [['package-lock.json', 1], ['package-lock.json', 1]]);
+  assert.deepEqual(places('codeql', '/work/repo'), places('codeql', undefined));
+  assert.deepEqual(places('semgrep', '/work/repo'), places('semgrep', undefined));
+  assert.deepEqual(places('opengrep', '/work/repo'), places('opengrep', undefined));
+});
+
+test('AC-2: an inline message with arguments is filled as a referenced one is, with doubled braces literal, and a text with no arguments is as written (SARIF 3.11)', async () => {
+  const token = npmToken();
+  const report = await collected(doc([
+    result({ message: { text: 'Security violation: {0}', arguments: ['SQL injection'] }, locations: at('a.py', 1) }),
+    result({ message: { text: 'Security violation: {0}', arguments: ['Path traversal'] }, locations: at('a.py', 1) }),
+    // Only an argument that is a string is taken.
+    result({ message: { text: 'braces {{0}} and {0} and {1} and {2}', arguments: ['x', 7] }, locations: at('a.py', 2) }),
+    result({ message: { text: 'no arguments {0} {{ }}' }, locations: at('a.py', 3) }),
+    result({ message: { text: 'not a list {0} {{', arguments: 'x' }, locations: at('a.py', 4) }),
+    // Cleaned once composed, so a token given in two arguments is redacted whole.
+    result({ message: { text: 'key {0}{1} seen', arguments: [token.slice(0, 10), token.slice(10)] }, locations: at('a.py', 5) }),
+  ]));
+  assert.deepEqual(report.signals.map((signal) => [signal.line, signal.claim, signal.evidence[0]]), [
+    [1, 'r: Security violation: SQL injection', 'Security violation: SQL injection'],
+    [1, 'r: Security violation: Path traversal', 'Security violation: Path traversal'],
+    [2, 'r: braces {0} and x and {1} and {2}', 'braces {0} and x and {1} and {2}'],
+    [3, 'r: no arguments {0} {{ }}', 'no arguments {0} {{ }}'],
+    [4, 'r: not a list {0} {{', 'not a list {0} {{'],
+    [5, 'r: key [REDACTED:NPM_TOKEN] seen', 'key [REDACTED:NPM_TOKEN] seen'],
+  ]);
+  assert.ok(!JSON.stringify(report).includes(token.slice(10, 22)));
+});
+
+test('AC-2: results are told apart by what the tool wrote, so two that cleaning or the cut leaves alike stay two, one repeated is kept once, and nothing of what told them apart is stored', async () => {
+  const tokens = [npmToken('aB3d'), npmToken('xY7z')];
+  const head = 'x'.repeat(500);
+  const messages = [`${head} first ending`, `${head} second ending`, `leaked ${tokens[0]}`, `leaked ${tokens[1]}`];
+  const results = [
+    // Alike in their first 500 points, alike once redacted, and alike at two lines of a file whose uri is dropped.
+    ...messages.map((text) => result({ message: { text }, locations: at('a.py', 1) })),
+    ...[tokens[0], tokens[1]].map((ruleId) => result({ ruleId, locations: at('a.py', 2) })),
+    ...[1, 90].map((startLine) => result({ locations: at(`src/${tokens[0]}.py`, startLine) })),
+  ];
+  // Each again, in the same run and in another.
+  const twice = JSON.parse(doc([...results, ...results]));
+  twice.runs.push({ ...twice.runs[0], results: [...results].reverse() });
+  const report = await collected(JSON.stringify(twice));
+  assert.deepEqual(report.signals.map((signal) => [signal.path, signal.line, signal.claim]), [
+    ['a.py', 1, `r: ${head}`], ['a.py', 1, `r: ${head}`],
+    ['a.py', 1, 'r: leaked [REDACTED:NPM_TOKEN]'], ['a.py', 1, 'r: leaked [REDACTED:NPM_TOKEN]'],
+    ['a.py', 2, '[REDACTED:NPM_TOKEN]: m'], ['a.py', 2, '[REDACTED:NPM_TOKEN]: m'],
+    [null, null, 'r: m'], [null, null, 'r: m'],
+  ]);
+  const stored = JSON.stringify(report);
+  for (const text of [...messages, ...tokens, 'r', 'm']) {
+    for (const encoding of ['base64', 'base64url', 'hex']) assert.ok(!stored.includes(createHash('sha256').update(text).digest(encoding)), encoding);
+  }
+  for (const leak of ['first ending', 'second ending', tokens[0].slice(0, 12), tokens[1].slice(0, 12)]) assert.ok(!stored.includes(leak), leak);
 });

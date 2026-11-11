@@ -632,8 +632,20 @@ is a whole 2.1.0 document. A mangled document that neither test recognises can
 reach a text adapter, which may make a false lead of one of its lines. That is
 the accepted risk, and it is not a leak, because every adapter's claim and
 evidence are masked and redacted where signals enter the report
-(`collectEvidence`), and a path that masking or redaction would change is
-dropped with its line, since a rewritten path would name another file.
+(`collectEvidence`), and a path that masking, redaction or the removal of
+terminal sequences would change is dropped with its line, since a rewritten
+path would name another file.
+Text output is masked and redacted whole, as printed, before its terminal
+sequences are removed and before an adapter takes a line of it. A sequence
+beside a secret is the word boundary its pattern needs, and a key block ends
+on a later line than it starts, so cleaned by line or once the sequences are
+gone either is missed. A path the cleaning changed is not one the output as
+printed names, so it is dropped with its line and its diagnostic keeps its
+text. A line whose shape the cleaning breaks is no diagnostic. An ESLint file
+line it leaves unreadable as one still ends the file before it, so the
+diagnostics under it lose their place and take no other. A SARIF document is
+not cleaned as text, since a replacement inside a string can break it. It
+only loses its terminal sequences, and each field is cleaned once parsed.
 Masking and redaction are each worked out on the text as printed, and what
 either would replace is replaced. One applied after the other loses a secret
 either way, because a mask takes the scheme or keyword a pattern needs, and a
@@ -657,10 +669,15 @@ description, an artifact's uri, a file's path and a referenced message with
 its arguments are each cleaned once, however many results share them. Each
 unsuppressed `fail` result at `error` or `warning` becomes a signal carrying
 the rule id, redacted, held to one line and cut at 200 code points, and the tool's own
-message, redacted and cut at 500 code points. The message is `message.text`,
+message, redacted and cut at 500 code points. A rule id loses each terminal
+sequence whole before its other control and format characters become spaces,
+since a sequence spaced apart leaves its parameter bytes, and the last of
+them joins the value after it. The message is `message.text`,
 else the `messageStrings` entry of the rule that `message.id` names, with each
 `{n}` filled from `message.arguments` and `{{` and `}}` read as braces (SARIF
-3.11), else the rule's short description. The message strings are those of
+3.11), else the rule's short description. A `message.text` given with
+arguments is filled the same way, under the same bound, and stands as written
+past it. The message strings are those of
 the rule the result references, by index or guid before id. A referenced
 message is composed and cleaned whole, and what one output composes is held
 to eight times its own length and to 16 MiB, the most one stream of a
@@ -672,8 +689,16 @@ message. A reference past that falls back to
 the description, as one that does not resolve. Only the arguments that are
 strings are read, so one nested however deep costs nothing. The path is
 `artifactLocation.uri`, or the uri of `run.artifacts[index]` when a location
-gives only an index (SARIF 3.4.5), handled alike. It is dropped with its line
-when masking or redaction would change the uri, or the pathname URL parsing
+gives only an index (SARIF 3.4.5), handled alike. When the location names a
+`uriBaseId` that the run's `originalUriBaseIds` defines with a uri and no base
+of its own, the uri is read under that base and then handled as any uri, so a
+tool run in a folder of the repository does not name the file of that name at
+the root. An id the run does not define is the directory scanned, as
+`%SRCROOT%` is, and its uri is read as it stands. A base that names another
+base, or has no uri, is not followed, and its location has no path or line.
+The path is dropped with its line
+when masking, redaction or the removal of terminal sequences would change the
+uri, or the pathname URL parsing
 leaves of a `file://` uri, as printed or percent-decoded. They are checked
 before the path is normalised, since normalising can split what a mask or a
 pattern looks for. Results whose uris are dropped this way stay apart by uri,
@@ -688,7 +713,12 @@ segments. With the path come the start line and a `kind` led by the producer's n
 `static_finding`). Warnings are kept here, unlike the text adapters, because
 most semgrep rules and trivy's MEDIUM arrive as warnings and a signal is a
 lead, not a finding. `note` results, non-`fail` kinds, suppressed results and
-duplicates produce nothing. Snippets, code flows, fixes, fingerprints and
+duplicates produce nothing. A result is a duplicate when the tool wrote the
+same place, line, rule id and message as an earlier one. That is decided
+before anything is cleaned or cut, from the line the tool gave even where
+none is stored and a SHA-256 digest of the rule id and the composed message,
+so two results that redaction or the cut leaves alike stay two. Nothing of
+the digest or the text behind it is stored. Snippets, code flows, fixes, fingerprints and
 properties are never copied, because a snippet is repository content, and for
 a secrets scanner it is the secret itself, which would otherwise land in the
 cached run directory. The driver's name and version are recorded as the

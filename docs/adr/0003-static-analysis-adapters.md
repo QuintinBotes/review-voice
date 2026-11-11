@@ -152,6 +152,19 @@ value is masked in a message before the adapter collapses, redacts and cuts
 it, because a value changed or cut no longer matches, so the issue 279 mask
 holds for SARIF output as it does for text.
 
+Four rules followed from review. Text output is masked and redacted whole, as
+printed, before its terminal sequences are removed and before an adapter takes
+a line of it, because a sequence beside a secret is the word boundary its
+pattern needs and a key block spans lines. A SARIF document is not cleaned as
+text, which could break it, and its fields are cleaned once parsed. An
+artifact location that names a `uriBaseId` is read under that base when the
+run's `originalUriBaseIds` defines it with a uri and no base of its own, as it
+stands when the run does not define it, and has no path when the base is
+chained or has no uri. A `message.text` given with arguments is filled from
+them as a referenced message is. Two results are one repeated only when the
+tool wrote the same place, line, rule id and message, which is decided before
+cleaning and the cut, by a digest that is not stored.
+
 ## Amendment - 2026-11-10
 
 A configured runner, `runners.<family>.command`, is a configured command in

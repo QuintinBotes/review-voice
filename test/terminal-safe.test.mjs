@@ -679,3 +679,12 @@ test('policy show prints a proposed policy without terminal controls', async () 
     assert.ok(policy.contentYaml.includes('three four five'), shown(policy.contentYaml));
   });
 });
+
+test('a tab placed anywhere inside a sequence goes with it, which the cleaning of a SARIF rule id relies on', () => {
+  for (const sequence of [`${ESC}[1;31m`, '\u009b31m', OSC52, `${ESC}]0;title${ESC}\\`, `${ESC}(B`, `${ESC}P1$r${ESC}\\`]) {
+    for (let index = 1; index < sequence.length; index += 1) {
+      const tabbed = `${sequence.slice(0, index)}\t${sequence.slice(index)}`;
+      assert.equal(terminalSafe(`a${tabbed}b`), 'ab', JSON.stringify(tabbed));
+    }
+  }
+});

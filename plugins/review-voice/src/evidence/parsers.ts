@@ -1,4 +1,5 @@
 import { terminalSafe } from '../terminal.ts';
+import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import { redact } from '../redact/redact.ts';
 import type { EvidenceSignal } from './types.ts';
@@ -85,7 +86,14 @@ interface SarifRun {
     extensions?: unknown;
   };
   artifacts?: unknown;
+  originalUriBaseIds?: unknown;
   results?: unknown;
+}
+/** An artifact location, inline in a result or held by one of the run's artifacts. */
+interface SarifArtifactLocation {
+  uri?: unknown;
+  uriBaseId?: unknown;
+  index?: unknown;
 }
 
 const str = (value: unknown): string | undefined => (typeof value === 'string' ? value : undefined);
@@ -95,6 +103,13 @@ const list = <T>(value: unknown): T[] => (Array.isArray(value) ? (value.filter((
 function indexed<T>(value: unknown, index: unknown): T | undefined {
   const entry: unknown = Array.isArray(value) && typeof index === 'number' ? value[index] : undefined;
   return typeof entry === 'object' && entry !== null ? (entry as T) : undefined;
+}
+/** {n} takes the nth argument when it is a string; {{ and }} are literal braces (3.11.5). */
+const PLACEHOLDERS = /(\{\{|\}\}|\{\d+\})/;
+/** A result's message as stored, and the digest of it as the tool wrote it. */
+interface Told {
+  message: string;
+  digest: string;
 }
 const MAX_SARIF_MESSAGE_POINTS = 500;
 const MAX_SARIF_RULE_POINTS = 200;
@@ -128,6 +143,8 @@ export function memo<T>(fn: (text: string) => T): (text: string) => T {
 
 /** What masking or redaction leaves where it replaced text. */
 const MARKER = /\[(?:REDACTED|redacted):\w*\]/g;
+/** The same, with no place kept between tests. */
+const HOLDS_MARKER = new RegExp(MARKER.source);
 
 /** A part of a text that cleaning replaced, and the marker that stands for it. */
 export interface Replaced {
@@ -247,7 +264,7 @@ const SARIF_RUNS = /"runs"\s*:/;
  * noise around a document can defeat the slice.
  * shortcut: a mangled document that neither test recognises reaches a text adapter, which may invent a diagnostic from one of its lines (redacted where signals enter the report, so a false lead, not a leak); upgrade if a real tool's output is seen doing it.
  */
-function isSarif(output: string): boolean {
+export function isSarif(output: string): boolean {
   const document = sarifDocument(output);
   if (document !== undefined && ((document.version === '2.1.0' && 'runs' in document) || /sarif/i.test(str(document.$schema) ?? ''))) return true;
   const text = output.replace(/\\u00([0-7][0-9a-f])/gi, (_escape, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
@@ -256,15 +273,16 @@ function isSarif(output: string): boolean {
 
 /**
  * The seven tools emit paths relative to the directory they scanned, which
- * is the repository root when the command runs there, so `uriBaseId` is left
- * unresolved; ruff emits absolute `file:///` URIs, made relative under `root`.
+ * is the repository root when the command runs there; ruff emits absolute
+ * `file:///` URIs, made relative under `root`.
  * The analyst reads the file a signal names, so under a root a path that
  * escapes it, or a URI naming another scheme or host, names no path at all.
- * A URI names none either when masking or redaction would change any form the
- * path is built from, which are the URI and the pathname URL parsing leaves
- * of it (dropping a query and a fragment, stripping tabs and newlines and
- * turning a backslash into a slash), each as printed and decoded. They are
- * checked before normalising, which can split what a mask or a pattern finds.
+ * A URI names none either when masking, redaction or the removal of terminal
+ * sequences (`changes`) would change any form the path is built from, which
+ * are the URI and the pathname URL parsing leaves of it (dropping a query and
+ * a fragment, stripping tabs and newlines and turning a backslash into a
+ * slash), each as printed and decoded. They are checked before normalising,
+ * which can split what a mask or a pattern finds.
  * Such a URI gives `undefined`, not `null`: its file is one the tool named, so
  * its results are not those of another file, which results with no path are.
  */
@@ -283,6 +301,24 @@ function sarifPath(uri: string, root: string | undefined, changes: (text: string
   if (root === undefined) return path;
   const relative = posix.relative(root, posix.resolve(root, path));
   return relative === '' || relative === '..' || relative.startsWith('../') ? null : relative;
+}
+
+/**
+ * The uri of an artifact location under the base its `uriBaseId` names in the
+ * run's `originalUriBaseIds` (3.4.4, 3.14.14), so a tool run in a folder of
+ * the repository does not name a file of the same name at the root. A base
+ * that itself names a base, or whose uri is not a string, is not followed and
+ * gives `undefined`. A base is a directory with or without its closing slash,
+ * and the two are joined as written, since resolving them as URLs would
+ * normalise the uri before the forms it was printed in are checked.
+ */
+function underBase(uri: string, base: unknown): string | undefined {
+  const entry = typeof base === 'object' && base !== null ? (base as { uri?: unknown; uriBaseId?: unknown }) : undefined;
+  const baseUri = str(entry?.uri);
+  if (baseUri === undefined || entry?.uriBaseId !== undefined) return undefined;
+  // A uri with a scheme or a leading slash stands on its own.
+  if (baseUri === '' || /^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(uri)) return uri;
+  return `${baseUri}${baseUri.endsWith('/') ? '' : '/'}${uri}`;
 }
 
 /**
@@ -329,9 +365,14 @@ function sarifSignals(output: string, tool: string, root: string | undefined, cl
   // can, so it is masked and redacted whole before the cut, since a value
   // changed or cut no longer matches; on both sides of the spacing, since a
   // control character can sit inside a quoted value or stand where a
-  // header's space goes. Once for each distinct id, since many results name
-  // one rule.
-  const sanitisedId = memo((ruleId) => cut(cleaned(cleaned(ruleId).replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim()), MAX_SARIF_RULE_POINTS).trimEnd());
+  // header's space goes. A terminal sequence goes whole first, since spaced
+  // it leaves its parameter bytes, and the last of them joins the value
+  // after it. Once for each distinct id, since many results name one rule.
+  const sanitisedId = memo((ruleId) => {
+    // A tab before each control or format character that starts no sequence. A sequence takes a tab anywhere inside it, so one in a sequence goes with it, and one outside stays where its character stood and becomes the space.
+    const tabbed = cleaned(ruleId).replace(/(?![\t\n\u001b\u0090\u0098\u009b\u009d-\u009f])[\p{Cc}\p{Cf}]/gu, '\t$&');
+    return cut(cleaned(terminalSafe(tabbed).replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim()), MAX_SARIF_RULE_POINTS).trimEnd();
+  });
   // A rule message may interpolate the matched text, which for a secrets
   // rule is the secret, so the tool's words are masked and redacted before
   // anything keeps them: whole and before the cut, since a value changed or
@@ -344,8 +385,15 @@ function sarifSignals(output: string, tool: string, root: string | undefined, cl
     const spaced = terminalSafe(first).replace(/\s+/g, ' ').trim();
     return cut(spaced === first ? first : cleaned(spaced), MAX_SARIF_MESSAGE_POINTS).trimEnd();
   };
-  // Once for each rule description and each uri, which many results share.
-  const described = memo((text) => sanitisedMessage(text));
+  // What tells one result's message from another's is what the tool wrote,
+  // since cleaning and the cut make one text of two that differ past the cut
+  // or in the secret each holds. A digest stands for it, so the uncleaned
+  // text is neither kept nor compared at length.
+  const digest = (text: string): string => createHash('sha256').update(text).digest('base64');
+  const told = (text: string, first?: string): Told => ({ message: sanitisedMessage(text, first), digest: digest(text) });
+  // Once for each rule description, each rule id and each uri, which many results share.
+  const described = memo((text) => told(text));
+  const idDigest = memo(digest);
   // The key that tells repeated results apart holds a place's number, not its
   // path, since results that share an artifact share a path of any length,
   // and a set of long keys of one length compares each with the others in full.
@@ -355,11 +403,14 @@ function sarifSignals(output: string, tool: string, root: string | undefined, cl
   const numbers = new Map<string | null, number>([[null, 0]]);
   let dropped = 0;
   const placeOf = memo((uri): { path: string | null; place: number } => {
-    const path = sarifPath(uri, root, (text) => cleaned(text) !== text);
+    // A uri whose terminal sequences would go is dropped as one cleaning would change, since without them it would name another file.
+    const path = sarifPath(uri, root, (text) => cleaned(text) !== text || terminalSafe(text) !== text);
     if (path === undefined) return { path: null, place: (dropped -= 1) };
     if (!numbers.has(path)) numbers.set(path, numbers.size);
     return { path, place: numbers.get(path) as number };
   });
+  // A uri under a base that is not followed names a file that cannot be found, a place of its own as a dropped uri is.
+  const unfollowed = memo((_location): { path: null; place: number } => ({ path: null, place: (dropped -= 1) }));
   // A referenced message is composed and cleaned whole, once for each message
   // string and the arguments given it, since results often share both. What
   // one output composes is held to a few times its own length, and to the
@@ -370,7 +421,7 @@ function sarifSignals(output: string, tool: string, root: string | undefined, cl
   // message counts too, since the longer text is then cleaned again.
   // shortcut: a document whose distinct referenced messages compose to more than eight times its length loses the later ones to the rule description; raise the factor if a real tool writes one.
   let room = Math.min(MAX_COMPOSED_UNITS, COMPOSED_PER_UNIT * output.length);
-  const composed = (parts: string[], length: number, values: unknown): string | undefined => {
+  const composed = (parts: string[], length: number, values: unknown): Told | undefined => {
     if (length > room) return undefined;
     // Charged before it is joined, since joining it is work even when its text does not fit.
     room -= length;
@@ -386,17 +437,16 @@ function sarifSignals(output: string, tool: string, root: string | undefined, cl
     }
     const first = cleaned(text);
     room -= Math.max(0, text.length - length) + Math.max(0, first.length - text.length);
-    return sanitisedMessage(text, first);
+    return told(text, first);
   };
   // By the message string object, not its text, so a long template is neither hashed nor compared.
-  const strings = new Map<object, { parts: string[]; messages: Map<string, string | undefined> }>();
-  const composedFrom = (entry: { text?: unknown }, values: unknown): string | undefined => {
+  const strings = new Map<object, { parts: string[]; messages: Map<string, Told | undefined> }>();
+  const composedFrom = (entry: { text?: unknown }, values: unknown): Told | undefined => {
     const template = str(entry.text);
     if (template === undefined) return undefined;
     let known = strings.get(entry);
     if (known === undefined) {
-      // {n} takes the nth argument when it is a string; {{ and }} are literal braces (3.11.5).
-      known = { parts: template.split(/(\{\{|\}\}|\{\d+\})/), messages: new Map() };
+      known = { parts: template.split(PLACEHOLDERS), messages: new Map() };
       strings.set(entry, known);
     }
     // Keyed by the arguments that are strings, the only ones a placeholder takes, so one nested however deep is not walked.
@@ -462,21 +512,35 @@ function sarifSignals(output: string, tool: string, root: string | undefined, cl
         ? (messageStrings as Record<string, unknown>)[messageId]
         : undefined;
       const text = str(result.message?.text);
+      const values = result.message?.arguments;
       const description = str(rule?.shortDescription?.text);
-      const message = text !== undefined
-        ? sanitisedMessage(text)
-        : (typeof entry === 'object' && entry !== null ? composedFrom(entry, result.message?.arguments) : undefined) ?? (description === undefined ? undefined : described(description));
-      const location = list<{ physicalLocation?: { artifactLocation?: { uri?: unknown; index?: unknown }; region?: { startLine?: unknown } } }>(result.locations)[0]?.physicalLocation;
+      // A text given with arguments is filled as a referenced one is, each on its own since no two results share it, and stands as written when it is past the bound.
+      const said = text !== undefined
+        ? (Array.isArray(values) ? composed(text.split(PLACEHOLDERS), text.length, values) : undefined) ?? told(text)
+        : (typeof entry === 'object' && entry !== null ? composedFrom(entry, values) : undefined) ?? (description === undefined ? undefined : described(description));
+      const message = said?.message;
+      const location = list<{ physicalLocation?: { artifactLocation?: SarifArtifactLocation; region?: { startLine?: unknown } } }>(result.locations)[0]?.physicalLocation;
       const artifact = location?.artifactLocation;
       // A location may give only the index of the run's artifact that names the file (3.4.5).
-      const uri = str(artifact?.uri === undefined ? indexed<{ location?: { uri?: unknown } }>(run.artifacts, artifact?.index)?.location?.uri : artifact.uri);
-      const { path, place } = uri === undefined ? { path: null, place: 0 } : placeOf(uri);
+      const source = artifact?.uri === undefined ? indexed<{ location?: SarifArtifactLocation }>(run.artifacts, artifact?.index)?.location : artifact;
+      const uri = str(source?.uri);
+      // A base the run does not define is the directory scanned, as `%SRCROOT%` is, so its uri is read as it stands.
+      const baseId = str(source?.uriBaseId);
+      const bases = run.originalUriBaseIds;
+      const based = uri === undefined || baseId === undefined || typeof bases !== 'object' || bases === null || !Object.hasOwn(bases, baseId)
+        ? uri
+        : underBase(uri, (bases as Record<string, unknown>)[baseId]);
+      const { path, place } = uri === undefined ? { path: null, place: 0 } : based === undefined ? unfollowed(`${baseId}\0${uri}`) : placeOf(based);
       const startLine = location?.region?.startLine;
+      const given = typeof startLine === 'number' && Number.isInteger(startLine) && startLine > 0 ? startLine : null;
       // A line means nothing without the file it is in.
-      const line = path !== null && typeof startLine === 'number' && Number.isInteger(startLine) && startLine > 0 ? startLine : null;
+      const line = path === null ? null : given;
       const claim = message === undefined || message === '' ? id : `${id}: ${message}`;
-      // The same result can be repeated across runs, or within one; it is kept once.
-      const key = `${place}\0${line}\0${claim}`;
+      // The same result can be repeated across runs, or within one; it is kept
+      // once. It is the same when the tool wrote the same place, line, rule id
+      // and message, whatever cleaning then left of them and whether or not
+      // the line is stored.
+      const key = `${place}\0${given}\0${idDigest(ruleId)}\0${said?.digest ?? ''}`;
       if (seen.has(key)) continue;
       seen.add(key);
       // Nothing decides on a signal's confidence today, so the number is informative only.
@@ -598,8 +662,12 @@ export const ADAPTERS: Adapter[] = [
       const signals: EvidenceSignal[] = [];
       let file: string | null = null;
       for (const line of output.split('\n')) {
-        // eslint's stylish formatter prints the file on its own line.
-        if (/^\S.*\.(ts|tsx|js|jsx|mjs|cjs)$/.test(line.trim())) {
+        // eslint's stylish formatter prints the file on its own line. The
+        // output is cleaned before its lines are taken, so a line that starts
+        // at the margin and holds a marker may be a file's that no longer
+        // reads as one. It is taken as one, so the diagnostics under it lose
+        // their place, where they would take the file printed before it.
+        if (/^\S.*\.(ts|tsx|js|jsx|mjs|cjs)$/.test(line.trim()) || (/^\S/.test(line) && HOLDS_MARKER.test(line) && !ESLINT.test(line))) {
           file = line.trim();
           continue;
         }

@@ -1,5 +1,5 @@
 import { spawn as spawnChild } from 'node:child_process';
-import { cleaner, cut, memo, parseOutput, replaced } from './parsers.ts';
+import { cleaner, cut, isSarif, memo, parseOutput, replaced } from './parsers.ts';
 import { terminalSafe } from '../terminal.ts';
 import type { CommandOutcome, EvidenceReport } from './types.ts';
 
@@ -213,23 +213,29 @@ export async function collectEvidence(
     const clean = cleaner(mask);
     const printed = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
     // Without its terminal sequences, so none hides a diagnostic from an adapter
-    // or reaches a text adapter's signal. A SARIF message, whose controls are
-    // JSON escapes here, loses its own before it is cut.
-    const output = terminalSafe(printed);
+    // or reaches a text adapter's signal. Text is cleaned whole and as printed
+    // before they go and before an adapter takes a line of it, since a
+    // sequence beside a secret is the word boundary its pattern needs, and a
+    // key block ends on a later line than it starts. A SARIF document is not,
+    // since a replacement inside a string can break it. Its controls are JSON
+    // escapes here, and each field is cleaned, and loses its own, once parsed.
+    // The document is told by what the adapters are given, so no sequence can
+    // make a document of text that then reaches a text adapter uncleaned.
+    const safe = terminalSafe(printed);
+    const output = isSarif(safe) ? safe : terminalSafe(clean(printed));
     const configuredVersion = command.version === undefined ? undefined : await readVersion(spawn, command.version, options.cwd, timeoutMs, env, clean);
-    // Parsed from the true output, so a passed-through value cannot break a
-    // diagnostic's shape; then the text a reader sees is masked and redacted.
     // A path is a location, so it is kept as printed or dropped with its line,
     // since a rewritten path would name another file. It is dropped when
-    // masking or redaction would change it, because it then carries a secret
-    // or a value the repository listed as one. An adapter that reads a line
-    // in parts, or rewrites the tool's text, cleans it whole first.
+    // masking, redaction or the removal of terminal sequences would change it,
+    // because it then carries a secret, a value the repository listed as one,
+    // or a sequence. An adapter that reads a line in parts, or rewrites the
+    // tool's text, cleans it whole first.
     const parsed = parseOutput(command.name, command.run, output, options.cwd, clean);
     // Checked once per path, since every diagnostic in an eslint file or a SARIF artifact shares it.
     // Cleaned, two file names can read as one. So when cleaning changed the
     // output, a path keeps its place only if the output as printed names it too.
     const named = output === printed ? null : new Set(parseOutput(command.name, command.run, printed, options.cwd, clean).signals.map((signal) => signal.path));
-    const keeps = memo((path) => clean(path) === path && (named === null || named.has(path)));
+    const keeps = memo((path) => clean(path) === path && terminalSafe(path) === path && (named === null || named.has(path)));
     const cleanCut = (text: string): string => cut(clean(text), MAX_SIGNAL_TEXT_POINTS);
     const signals = parsed.signals.map((signal) => ({
       ...signal,

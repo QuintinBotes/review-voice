@@ -1943,7 +1943,7 @@ function productionChange(files2, diffText, partial, markedGenerated2 = /* @__PU
 
 // plugins/review-voice/src/policy/load.ts
 import { readFileSync as readFileSync5, existsSync as existsSync4 } from "node:fs";
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { dirname as dirname6, isAbsolute, join as join8 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
@@ -13812,6 +13812,7 @@ function removeHeadWorktree(headDir, cwd = process.cwd()) {
 import { spawn as spawnChild } from "node:child_process";
 
 // plugins/review-voice/src/evidence/parsers.ts
+import { createHash as createHash4 } from "node:crypto";
 import { posix as posix4 } from "node:path";
 function signal(tool, kind, path, line3, claim, raw, confidence = 0.95) {
   return {
@@ -13836,6 +13837,7 @@ function indexed(value, index) {
   const entry = Array.isArray(value) && typeof index === "number" ? value[index] : void 0;
   return typeof entry === "object" && entry !== null ? entry : void 0;
 }
+var PLACEHOLDERS2 = /(\{\{|\}\}|\{\d+\})/;
 var MAX_SARIF_MESSAGE_POINTS = 500;
 var MAX_SARIF_RULE_POINTS = 200;
 var MAX_COMPOSED_UNITS = 16 * 1024 * 1024;
@@ -13851,6 +13853,7 @@ function memo(fn) {
   };
 }
 var MARKER = /\[(?:REDACTED|redacted):\w*\]/g;
+var HOLDS_MARKER = new RegExp(MARKER.source);
 function found(text5, needle, from) {
   if (needle === "") return from;
   const borders = new Int32Array(needle.length + 1);
@@ -13938,6 +13941,13 @@ function sarifPath(uri, root, changes) {
   const relative6 = posix4.relative(root, posix4.resolve(root, path));
   return relative6 === "" || relative6 === ".." || relative6.startsWith("../") ? null : relative6;
 }
+function underBase(uri, base) {
+  const entry = typeof base === "object" && base !== null ? base : void 0;
+  const baseUri = str(entry?.uri);
+  if (baseUri === void 0 || entry?.uriBaseId !== void 0) return void 0;
+  if (baseUri === "" || /^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(uri)) return uri;
+  return `${baseUri}${baseUri.endsWith("/") ? "" : "/"}${uri}`;
+}
 function normalised(path) {
   const absolute = path.startsWith("/");
   const kept = [];
@@ -13962,20 +13972,27 @@ function decoded(text5) {
 function sarifSignals(output, tool, root, cleaned = cleaner()) {
   const signals = [];
   const seen = /* @__PURE__ */ new Set();
-  const sanitisedId = memo((ruleId) => cut2(cleaned(cleaned(ruleId).replace(/[\s\p{Cc}\p{Cf}]+/gu, " ").trim()), MAX_SARIF_RULE_POINTS).trimEnd());
+  const sanitisedId = memo((ruleId) => {
+    const tabbed = cleaned(ruleId).replace(/(?![\t\n\u001b\u0090\u0098\u009b\u009d-\u009f])[\p{Cc}\p{Cf}]/gu, "	$&");
+    return cut2(cleaned(terminalSafe(tabbed).replace(/[\s\p{Cc}\p{Cf}]+/gu, " ").trim()), MAX_SARIF_RULE_POINTS).trimEnd();
+  });
   const sanitisedMessage = (text5, first = cleaned(text5)) => {
     const spaced = terminalSafe(first).replace(/\s+/g, " ").trim();
     return cut2(spaced === first ? first : cleaned(spaced), MAX_SARIF_MESSAGE_POINTS).trimEnd();
   };
-  const described = memo((text5) => sanitisedMessage(text5));
+  const digest = (text5) => createHash4("sha256").update(text5).digest("base64");
+  const told = (text5, first) => ({ message: sanitisedMessage(text5, first), digest: digest(text5) });
+  const described = memo((text5) => told(text5));
+  const idDigest = memo(digest);
   const numbers = /* @__PURE__ */ new Map([[null, 0]]);
   let dropped = 0;
   const placeOf = memo((uri) => {
-    const path = sarifPath(uri, root, (text5) => cleaned(text5) !== text5);
+    const path = sarifPath(uri, root, (text5) => cleaned(text5) !== text5 || terminalSafe(text5) !== text5);
     if (path === void 0) return { path: null, place: dropped -= 1 };
     if (!numbers.has(path)) numbers.set(path, numbers.size);
     return { path, place: numbers.get(path) };
   });
+  const unfollowed = memo((_location) => ({ path: null, place: dropped -= 1 }));
   let room = Math.min(MAX_COMPOSED_UNITS, COMPOSED_PER_UNIT * output.length);
   const composed = (parts, length, values) => {
     if (length > room) return void 0;
@@ -13992,7 +14009,7 @@ function sarifSignals(output, tool, root, cleaned = cleaner()) {
     }
     const first = cleaned(text5);
     room -= Math.max(0, text5.length - length) + Math.max(0, first.length - text5.length);
-    return sanitisedMessage(text5, first);
+    return told(text5, first);
   };
   const strings = /* @__PURE__ */ new Map();
   const composedFrom = (entry, values) => {
@@ -14000,7 +14017,7 @@ function sarifSignals(output, tool, root, cleaned = cleaner()) {
     if (template === void 0) return void 0;
     let known = strings.get(entry);
     if (known === void 0) {
-      known = { parts: template.split(/(\{\{|\}\}|\{\d+\})/), messages: /* @__PURE__ */ new Map() };
+      known = { parts: template.split(PLACEHOLDERS2), messages: /* @__PURE__ */ new Map() };
       strings.set(entry, known);
     }
     const key2 = Array.isArray(values) ? JSON.stringify(values.map(str)) : "";
@@ -14043,16 +14060,23 @@ function sarifSignals(output, tool, root, cleaned = cleaner()) {
       const messageStrings = rule?.messageStrings;
       const entry = typeof messageId === "string" && typeof messageStrings === "object" && messageStrings !== null && Object.hasOwn(messageStrings, messageId) ? messageStrings[messageId] : void 0;
       const text5 = str(result.message?.text);
+      const values = result.message?.arguments;
       const description = str(rule?.shortDescription?.text);
-      const message = text5 !== void 0 ? sanitisedMessage(text5) : (typeof entry === "object" && entry !== null ? composedFrom(entry, result.message?.arguments) : void 0) ?? (description === void 0 ? void 0 : described(description));
+      const said = text5 !== void 0 ? (Array.isArray(values) ? composed(text5.split(PLACEHOLDERS2), text5.length, values) : void 0) ?? told(text5) : (typeof entry === "object" && entry !== null ? composedFrom(entry, values) : void 0) ?? (description === void 0 ? void 0 : described(description));
+      const message = said?.message;
       const location = list(result.locations)[0]?.physicalLocation;
       const artifact = location?.artifactLocation;
-      const uri = str(artifact?.uri === void 0 ? indexed(run.artifacts, artifact?.index)?.location?.uri : artifact.uri);
-      const { path, place } = uri === void 0 ? { path: null, place: 0 } : placeOf(uri);
+      const source = artifact?.uri === void 0 ? indexed(run.artifacts, artifact?.index)?.location : artifact;
+      const uri = str(source?.uri);
+      const baseId = str(source?.uriBaseId);
+      const bases = run.originalUriBaseIds;
+      const based = uri === void 0 || baseId === void 0 || typeof bases !== "object" || bases === null || !Object.hasOwn(bases, baseId) ? uri : underBase(uri, bases[baseId]);
+      const { path, place } = uri === void 0 ? { path: null, place: 0 } : based === void 0 ? unfollowed(`${baseId}\0${uri}`) : placeOf(based);
       const startLine = location?.region?.startLine;
-      const line3 = path !== null && typeof startLine === "number" && Number.isInteger(startLine) && startLine > 0 ? startLine : null;
+      const given = typeof startLine === "number" && Number.isInteger(startLine) && startLine > 0 ? startLine : null;
+      const line3 = path === null ? null : given;
       const claim = message === void 0 || message === "" ? id : `${id}: ${message}`;
-      const key2 = `${place}\0${line3}\0${claim}`;
+      const key2 = `${place}\0${given}\0${idDigest(ruleId)}\0${said?.digest ?? ""}`;
       if (seen.has(key2)) continue;
       seen.add(key2);
       signals.push(signal(tool, kind, path, line3, claim, message === void 0 || message === "" ? id : message, level === "error" ? 0.95 : 0.8));
@@ -14127,7 +14151,7 @@ var ADAPTERS = [
       const signals = [];
       let file2 = null;
       for (const line3 of output.split("\n")) {
-        if (/^\S.*\.(ts|tsx|js|jsx|mjs|cjs)$/.test(line3.trim())) {
+        if (/^\S.*\.(ts|tsx|js|jsx|mjs|cjs)$/.test(line3.trim()) || /^\S/.test(line3) && HOLDS_MARKER.test(line3) && !ESLINT.test(line3)) {
           file2 = line3.trim();
           continue;
         }
@@ -14255,11 +14279,12 @@ async function collectEvidence(commands, options) {
     const clean2 = cleaner(mask);
     const printed = `${result.stdout ?? ""}
 ${result.stderr ?? ""}`;
-    const output = terminalSafe(printed);
+    const safe = terminalSafe(printed);
+    const output = isSarif(safe) ? safe : terminalSafe(clean2(printed));
     const configuredVersion = command.version === void 0 ? void 0 : await readVersion(spawn3, command.version, options.cwd, timeoutMs, env, clean2);
     const parsed2 = parseOutput(command.name, command.run, output, options.cwd, clean2);
     const named = output === printed ? null : new Set(parseOutput(command.name, command.run, printed, options.cwd, clean2).signals.map((signal2) => signal2.path));
-    const keeps = memo((path) => clean2(path) === path && (named === null || named.has(path)));
+    const keeps = memo((path) => clean2(path) === path && terminalSafe(path) === path && (named === null || named.has(path)));
     const cleanCut = (text5) => cut2(clean2(text5), MAX_SIGNAL_TEXT_POINTS);
     const signals = parsed2.signals.map((signal2) => ({
       ...signal2,
@@ -15657,7 +15682,7 @@ function readRetention(block, result) {
   read("audit_days", "auditDays");
 }
 function contentHash(text5) {
-  return createHash4("sha256").update(text5).digest("hex").slice(0, 16);
+  return createHash5("sha256").update(text5).digest("hex").slice(0, 16);
 }
 function layerFromPolicyFile(text5, source, fallbackKey) {
   const doc = asRecord2(parse(text5));
@@ -18564,7 +18589,7 @@ ${items.join("\n")}
 }
 
 // plugins/review-voice/src/watch/lock.ts
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 import { readFileSync as readFileSync6, realpathSync as realpathSync2, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { connect, createServer as createServer2 } from "node:net";
 import { join as join9 } from "node:path";
@@ -18575,7 +18600,7 @@ function lockPort(dataDir) {
     path = realpathSync2(dataDir);
   } catch {
   }
-  return 49152 + Number(createHash5("sha256").update(path).digest().readBigUInt64BE(0) % 16000n);
+  return 49152 + Number(createHash6("sha256").update(path).digest().readBigUInt64BE(0) % 16000n);
 }
 var answer = (dataDir) => `review-voice-watch ${process.pid} ${dataDir}
 `;
@@ -26966,7 +26991,7 @@ async function recallCommand(argv, runInProcess2) {
 
 // plugins/review-voice/src/cli/import-benchmark.ts
 import { execFileSync as execFileSync17 } from "node:child_process";
-import { createHash as createHash6, randomBytes as randomBytes2 } from "node:crypto";
+import { createHash as createHash7, randomBytes as randomBytes2 } from "node:crypto";
 import { constants as constants3, copyFileSync as copyFileSync3, existsSync as existsSync18, lstatSync as lstatSync7, mkdirSync as mkdirSync12, readdirSync as readdirSync7, readFileSync as readFileSync25, renameSync as renameSync4, rmdirSync, rmSync as rmSync11, statSync as statSync9 } from "node:fs";
 import { dirname as dirname17, join as join26, resolve as resolve10 } from "node:path";
 
@@ -27373,7 +27398,7 @@ function importBenchmarkCommand(argv) {
     ({ counts } = importBenchmark({
       items,
       setVersion,
-      setSha256: createHash6("sha256").update(bytes).digest("hex"),
+      setSha256: createHash7("sha256").update(bytes).digest("hex"),
       setLicence,
       licences,
       diffs,
@@ -29013,11 +29038,11 @@ function ineligibleReason(input) {
 }
 
 // plugins/review-voice/src/corpus/dedup.ts
-import { createHash as createHash7 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 function contentKey(parts) {
   const normalised2 = parts.body.replace(/\s+/g, " ").trim().toLowerCase();
   const SEPARATOR = String.fromCharCode(31);
-  return createHash7("sha256").update(
+  return createHash8("sha256").update(
     [
       parts.repository.toLowerCase(),
       parts.reviewerLogin.toLowerCase(),
