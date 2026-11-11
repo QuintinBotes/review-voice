@@ -7,7 +7,7 @@ export interface WatchConfig {
   maxAttemptsPerHead: number;
   /** How long one `review` may run before its process group is killed. */
   reviewTimeoutMs: number;
-  /** Off: the review runs with REVIEW_VOICE_NO_COMMANDS=1, so no configured repository command runs unattended. */
+  /** Off: the review runs with REVIEW_VOICE_NO_COMMANDS=1, so no configured command (a static check, the second pass, a reproduction or a `runners.<family>` runner) runs unattended. */
   runRepositoryCommands: boolean;
   /** The 127.0.0.1 port that holds the one-watcher lock; null derives it from the data directory. */
   lockPort: number | null;

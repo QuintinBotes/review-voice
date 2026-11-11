@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { isHeldQueueEntry, type HeldQueueEntry } from '../review/held-queue.ts';
+import type { ConfigSourceKind } from '../policy/load.ts';
 import { formatDuration } from './config.ts';
 
 /** What one `review` run reported, read from its exit code and JSON. */
@@ -78,6 +79,12 @@ export function reviewResult(exitCode: number, stdout: string, stderr: string): 
 export interface SpawnOptions {
   /** The watcher's copy of its own config, passed as REVIEW_VOICE_CONFIG so the clone's config is never read. */
   configPath: string | null;
+  /**
+   * Where the file the copy was taken from came from, passed as
+   * REVIEW_VOICE_CONFIG_SOURCE beside it; a copy with no stated source is
+   * passed as `checkout`, so the review never reads its runners (owner decision 1).
+   */
+  configSource?: ConfigSourceKind | undefined;
   /** Between SIGTERM and SIGKILL; default 10 s. */
   graceMs?: number;
 }
@@ -118,7 +125,10 @@ export function spawnReview(bundle: string, options: SpawnOptions): StoppableRev
       if (post) args.push('--post', '--recheck-thread');
       if (mode !== undefined) args.push('--mode', mode);
       const env = { ...process.env };
-      if (options.configPath !== null) env['REVIEW_VOICE_CONFIG'] = options.configPath;
+      if (options.configPath !== null) {
+        env['REVIEW_VOICE_CONFIG'] = options.configPath;
+        env['REVIEW_VOICE_CONFIG_SOURCE'] = options.configSource ?? 'checkout';
+      }
       if (runRepositoryCommands) delete env['REVIEW_VOICE_NO_COMMANDS'];
       else env['REVIEW_VOICE_NO_COMMANDS'] = '1';
       const child = spawn(process.execPath, args, { cwd: clone, env, detached: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });

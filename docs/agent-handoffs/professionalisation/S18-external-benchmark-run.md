@@ -10,7 +10,8 @@ person between them. **Risk:** low for the code. Nothing on the review path
 changes, nothing is posted and the importer never touches the network. The
 run spends API credit and reads third-party code, so a person starts it, and
 no imported code or prose is committed. **Blocked on the owner:** D1 and D2
-before part A, D3 and D4 before the run (see "Decisions for the owner").
+before part A, D3 and D4 before the run (see "Decisions for the owner";
+settled 2026-11-09, recorded under "Decisions recorded").
 Baseline `11e6f69` (`main` after S03). S04 is not on this base, so its names
 come from its branch (`35b2a0a` to `1d51fe9`) and are located by function
 name; after S12, locate command handlers by name too. Verified against the
@@ -103,7 +104,8 @@ review-voice import-benchmark --from <file> --set-version <version> --set-licenc
   It must match `^[A-Za-z0-9._-]{1,64}$`, because it names a directory under
   `docs/benchmarks/`.
 - `--set-licence <spdx>` is the set's own licence, as the person read it from
-  the set's licence file (D3).
+  the set's dataset card (D3 a). The set ships no licence file, so the
+  manifest records `licenceSource: "dataset card"`.
 - `--out <dir>` is absent or an empty directory, outside any git working tree
   (below).
 - `--licences <file>` is a JSON object from a repository, spelled as the set
@@ -124,32 +126,36 @@ It exits 0 when at least one fixture was written and 1 when every item was
 refused (the manifest is still written). It exits 2 for a bad invocation,
 which is a missing required flag, an unreadable file, a document that is not
 the shape D2 recorded, a bad `--set-version`, an unknown `--set-licence`, or
-an `--out` that is not empty or is inside a git working tree.
+an `--out` that is not empty, is inside a git working tree, or cannot be
+created or written (a failed write leaves `--out` as it was; see "Nothing
+imported enters the repository").
 
 #### What the importer reads from the set
 
 `readSet(text: string): BenchmarkItem[]` is the set's adapter, the only code
 that knows the set's format. It maps the downloaded file onto the fields
-below. The right-hand column is filled in by D2, in a spec fix made after the
-download and before part A runs. Until then it says "record on download", and
-part A does not start.
+below. The right-hand column was filled in by D2 on 2026-11-09, from the
+downloaded file (see "Decisions recorded" under "Decisions for the owner"), so
+part A may start. The file is JSON Lines, one object per pull request.
 
 | Field | Meaning | When it is missing | Where the set keeps it (D2) |
 |---|---|---|---|
-| `id` | the set's own id for the pull request | exit 2, naming the item index | record on download |
-| `repository` | the upstream repository, as the set names it | exit 2 | record on download |
-| `pullRequest` | the set's reference to the pull request | recorded as null | record on download |
-| `licence` | the upstream code's SPDX id | taken from `--licences`, else `unknown-licence` | record on download |
-| `diff` | the change as a unified diff | read from `--diffs`, else `no-diff` | record on download |
-| `description` | the pull request description | no `pr-body.md` | record on download |
-| `issues` | the issues the set lists for the item | exit 2 when not a list; `no-issue` when empty | record on download |
-| `issues[].path` | the issue's file, repository-relative | `no-location` | record on download |
-| `issues[].line` | the issue's line on the new side | `no-location` | record on download |
-| `issues[].severity` | the set's own label for the issue | recorded as null | record on download |
+| `id` | the set's own id for the pull request | exit 2, naming the item index | absent; derived from the tail of `pr_url_to_review`, `<repo>/pull/<n>` lower-cased with `/` as `-` (for example `ghost-pull-1`), which is unique |
+| `repository` | the upstream repository, as the set names it | exit 2 | `repo`, one of eight upstream short names; the reviewed fork is `agentic-review-benchmarks/<repo>` |
+| `pullRequest` | the set's reference to the pull request | recorded as null | `pr_url_to_review` |
+| `licence` | the upstream code's SPDX id | taken from `--licences`, else `unknown-licence` | absent; from `--licences` keyed by `repo` |
+| `diff` | the change as a unified diff | read from `--diffs`, else `no-diff` | absent, a pull-request reference only; `--diffs <dir>` with `<slug>.patch` is required for this set |
+| `description` | the pull request description | no `pr-body.md` | absent; `<slug>.md` beside the patch in `--diffs`, when the person fetched the body; `pr-body.md` is written only then |
+| `issues` | the issues the set lists for the item | exit 2 when not a list; `no-issue` when empty | `issues` (`num_of_issues` equals its length) |
+| `issues[].path` | the issue's file, repository-relative | `no-location` | `file_path` (a string on 543 of 580 issues, `null` on 36, `""` on 1) |
+| `issues[].line` | the issue's line on the new side | `no-location` | `start_line`, a new-side line; `end_line` is also present and unused |
+| `issues[].severity` | the set's own label for the issue | recorded as null | absent, recorded as null; `rule_name` (271 of 580) is kept as `source.note` in `case.yaml`, never in the manifest |
 
 A document whose items lack `id`, `repository` or an `issues` list is not the
 shape D2 recorded. The command exits 2 naming the first missing field and its
-item index, so a wrong mapping fails loudly instead of importing nothing. The
+item index, so a wrong mapping fails loudly instead of importing nothing. For
+this set an item whose `pr_url_to_review` is missing or does not end in
+`<repo>/pull/<n>` has no `id`. The
 other fields are facts about one item or one issue, and their absence refuses
 only that item or issue. If D2 finds that the set's lines are old-side lines,
 the adapter does not translate them; it maps no `line`, and every issue is
@@ -162,7 +168,8 @@ Each item, in the set's order (after `--first`), stops at its first failure:
 1. **Id.** The slug is the id lower-cased, each run of characters outside
    `[a-z0-9]` replaced by `-`, leading and trailing `-` removed, cut to 60
    characters. An empty or repeated slug, or an id, repository or pull-request
-   reference longer than 200 characters or holding a line break, is
+   reference longer than 200 characters or holding a line break or a control
+   character (the class `unsafe-path` refuses, U+2028 and U+2029 included), is
    `bad-id`. Every string the manifest copies from the set is an identifier,
    never prose.
 2. **Licence.** The set's `licence` and the `--licences` value for the item's
@@ -179,8 +186,10 @@ Each item, in the set's order (after `--first`), stops at its first failure:
    `licenceFrom: "set"` when the set records the licence, both sources
    agreeing included, else `"owner"`.
 3. **Diff.** The set's `diff`, or else `<diffs>/<slug>.patch` when that is a
-   regular file (a link is refused), else `no-diff`. The `no-diff` detail
-   names the file the importer looked for.
+   regular file (a link is refused) that can be read, else `no-diff`; a
+   `<slug>.md` that is present but cannot be read (a link or a directory
+   included) is `no-diff` too; only an absent one means no description. The
+   `no-diff` detail names the file the importer looked for.
 4. **Build.** The diff is written as the only file of a temporary probe
    fixture and built once with `materializeFixture` into a temporary
    directory, both removed afterwards. Any error, an unsafe path included, is
@@ -194,14 +203,21 @@ set's list so that a refusal never renumbers the rest:
 
 - `no-location` when `path` is not a string or `line` is not a positive whole
   number.
-- `unsafe-path` when `path` holds a double quote, a backslash or a control
-  character. `recall` reads `case.yaml` line by line and strips one pair of
-  quotes without unescaping (`scalar` in `recall.ts`), so a path with any of
-  them would not read back as written.
-- `off-diff` when no added line or deletion site of `path` in
-  `parseHunks(normalisePatch(diff))` lies within `AGREEMENT_LINE_TOLERANCE` of
-  `line`. A finding off the diff is sent back to the analyst, so such an issue
-  cannot be hit by design. It is refused and counted, never scored as a miss,
+- `unsafe-path` when `path` holds a double quote, a backslash, a control
+  character or a Unicode line terminator (U+2028, U+2029). `recall` reads
+  `case.yaml` line by line and strips one pair of quotes without unescaping
+  (`scalar` in `recall.ts`), and its `.` never crosses a line terminator, so a
+  path with any of them would not read back as written.
+- `off-diff` when no added line or deletion site of `path` in the `parseHunks`
+  of the probe build's base-to-head diff, taken with the arguments `shimFiles`
+  in `recall.ts` uses to serve the review its patch and kept to the files the
+  review keeps (a source file, or a generated file it judges hand edited, as
+  `acquirePullRequestDiff` decides), lies within
+  `AGREEMENT_LINE_TOLERANCE` of `line`. The patch's own hunk headers are not
+  read for this, because `git apply` places a hunk by its old side, so a
+  new-side start that disagrees names lines recall never shows. A finding off
+  the diff is sent back to the analyst, so such an issue cannot be hit by
+  design. It is refused and counted, never scored as a miss,
   and the count is published so a reader can compute the stricter figure.
 
 `REFUSAL_REASONS` is the closed list of the nine codes above. The detail of
@@ -251,6 +267,7 @@ the patch with filler as for the synthetic fixtures.
   "setVersion": "v1.0",
   "setSha256": "<hex>",
   "setLicence": "MIT",
+  "licenceSource": "dataset card",
   "importedWith": "1.23.0",
   "firstItems": null,
   "items": [
@@ -269,25 +286,46 @@ the patch with filler as for the synthetic fixtures.
 
 The keys are fixed. Every key above is always present, `null` where there is
 no value, and no other key appears. `importedWith` is `pluginVersion()`.
+`licenceSource` says where the set licence was read (D3 a); for this set it is
+the constant `"dataset card"`.
 `items` counts the items considered, `issues` the issues on items that passed
 the item checks, so `fixtures + refusedIssues === issues`, `fixtures` is the
 length of `items`, and `refusedItems` and `refusedIssues` count the refused
 entries with and without an issue number. A severity label longer than 200
-characters or holding a line break is recorded as null.
+characters or holding a line break or a control character is recorded as
+null, and a `rule_name` note that fails the same test is left out of
+`case.yaml`.
 
 #### Nothing imported enters the repository
 
 The importer refuses an `--out` inside a git working tree. It runs
 `git rev-parse --is-inside-work-tree --is-inside-git-dir` in the nearest
-existing ancestor of `--out`, with every `GIT_` variable removed as
-`runRecall` removes them, and exits 2 when git prints `true` for either (git
-exits 128 outside any repository, which means outside), with a message saying that imported items are
-third-party code under their own licences and `CONTRIBUTING.md` rule 1 keeps
-real review data out of the repository. It writes nothing outside `--out`
-apart from the temporary directories it removes. `fixtures/README.md` gains
-one sentence saying an external benchmark is imported outside the repository
-(`docs/EVALUATION.md`, "External benchmark") and never placed under
-`fixtures/`.
+existing ancestor of `--out` (which must be a directory, else `--out` is a
+bad invocation; a link at `--out` is one too), with every `GIT_` variable
+removed as `runRecall` removes them, then `GIT_DISCOVERY_ACROSS_FILESYSTEM=1`
+so a volume mounted inside a working tree is still inside it, and `LC_ALL=C`
+so git's message is the English one read below. It exits 2 when git prints
+`true` for either, with a message saying
+that imported items are third-party code under their own licences and
+`CONTRIBUTING.md` rule 1 keeps real review data out of the repository. Only
+git's "not a git repository (or any of the parent directories)" (exit 128)
+means outside; any other git failure (a repository git refuses to read,
+dubious ownership, a gitfile git cannot follow, which git reports as "not a
+git repository: <gitdir>") also exits 2, quoting git, because a repository
+git cannot read is still a repository. The import is staged in a hidden
+directory created inside `--out`, so it is on `--out`'s file system and
+`--out` itself (a mount point, or the directory the caller stands in) is never
+replaced; git must also place it outside any working tree. Once every fixture
+and the manifest are written, its entries are moved up into `--out`, the
+manifest first and never over an existing file, so of two imports racing into
+one `--out` only one moves anything in. On any failure the staging directory,
+anything already moved, and `--out` and its parents when this run created
+them are removed, each only while it is empty, so `--out` is left as it was
+for a retry, another run's import in it is kept, and the command exits 2. It
+writes nothing outside `--out` apart from the temporary directories it removes.
+`fixtures/README.md` gains one sentence saying an external benchmark is
+imported outside the repository (`docs/EVALUATION.md`, "External benchmark")
+and never placed under `fixtures/`.
 
 ### The run, by a person, between part A and part B
 
@@ -295,9 +333,11 @@ Neither Orbit run can do this. It needs the downloaded file, the licence
 judgement of D3, and the API spend of D4, and the agent runner needs the
 person's own Claude Code credentials.
 
-1. Download the set D1 chose, at a tag or commit, into a directory outside
-   this repository. Record its version, read its licence file, and record what
-   D2 and D3 found in this spec, in a spec fix of its own.
+1. Download the file D2 pins, at the commit D2 records, into a directory
+   outside this repository, and check its SHA-256 against D2's. D2 and D3 are
+   already recorded under "Decisions recorded", with the set's licence read
+   from its dataset card (D3 a). A file with another SHA-256 is not the one D2
+   recorded and needs a spec fix of its own before it is imported.
 2. When the set records no licence per item, write the `--licences` map from
    each upstream project's licence file at the pull request's base. When it
    holds no diffs, write `<slug>.patch` per item from a local clone; the
@@ -430,10 +470,13 @@ file, under the `fixture_` metric names.
 
 ## Decisions for the owner
 
-There is no default for D1 or D2. Both are facts about a file nobody has
-opened, so part A does not start until a person has downloaded the set and
-recorded both here in a spec fix (GOAL.md, step on spec defects). D3 and D4
-must be settled before the run.
+There was no default for D1 or D2. Both are facts about the set's file, so
+part A could not start until a person had downloaded the set and recorded
+both here in a spec fix (GOAL.md, step on spec defects), and D3 and D4 had to
+be settled before the run. The decisions as posed are kept for the record;
+"Decisions recorded" after them holds the answers part A implements.
+
+### The decisions as posed
 
 - **D1. Which set.** The candidates are Martian's offline set (50 curated pull
   requests, MIT according to a third-party post, part of the bench cubic,
@@ -471,6 +514,54 @@ must be settled before the run.
   cover the whole set. The alternative to one run per issue is a follow-up
   spec that scores every issue of an item from one run, which changes S04's
   results file.
+
+### Decisions recorded (2026-11-09)
+
+The owner settled D1 to D4 on 2026-11-09 from the downloaded files (parsed
+with `python3 -I`) and the Hugging Face and GitHub APIs. Part A implements
+what follows; the field table above carries the mapping.
+
+- **D1, the set.** Qodo Code Review Benchmark 1.0, the Hugging Face dataset
+  `Qodo/PR-Review-Bench`. Slug `qodo-pr-review-bench` (`BENCHMARK_SET` in
+  `benchmark.ts`), so the run directory is `docs/benchmarks/qodo-pr-review-bench/`
+  and the manifest's `set` is that slug. Martian's offline set (MIT, 50 items,
+  173 comments) and Augment's golden comments (no licence file) carry prose
+  comments with severity and category only, no file and no line per issue, so
+  the "stops at D2" clause applies to them and they are not candidates.
+- **D2, the shape.** JSON Lines, one object per pull request, 100 lines, in
+  the file `git_code_review_bench_100_w_open_prs.jsonl` (544,772 bytes, SHA-256
+  `2f0448ed1f9a55bea14039961d8d9e610ee8885b37559b80f5821f3f70cfe64d`), pinned at
+  `https://huggingface.co/datasets/Qodo/PR-Review-Bench/resolve/a73957c450a70693a743260e5637fffc44625f16/git_code_review_bench_100_w_open_prs.jsonl`.
+  The version anchor is the HF commit `a73957c450a70693a743260e5637fffc44625f16`
+  (the dataset has no tags), which fits `--set-version`. A second file,
+  `rules_for_repo.jsonl`, is not read. Every row has exactly the keys `repo`,
+  `pr_url_to_review`, `issues` and `num_of_issues`; `num_of_issues` equals
+  `issues.length`; `pr_url_to_review` is unique and always
+  `https://github.com/agentic-review-benchmarks/<repo>/pull/<n>`. Each issue
+  has `title`, `description`, `file_path`, `start_line`, `end_line` and
+  `problematic_code_snippet`, and 271 of 580 add `rule_name`. `start_line` is
+  a new-side line (28 exact new-side matches of the snippet on 8 pull requests,
+  0 old-side); about a third are off by one, within the agreement tolerance, so
+  roughly a tenth of located issues are expected to be refused `off-diff`. The
+  36 issues with `null` path and line and the one with `""` and `0` are
+  `no-location`; every item keeps at least one located issue. The set ships no
+  diffs and no descriptions, so `--diffs` is required for it. `<slug>.patch`
+  holds the diff, and `<slug>.md` beside it, when the person fetched the pull
+  request body, is written as `pr-body.md`.
+- **D3, licences.** (a) The set's licence is `MIT`, declared in the dataset
+  card's front matter (`license: mit`); there is no LICENSE file. The owner
+  accepts the card declaration, so the manifest carries
+  `licenceSource: "dataset card"` beside `setLicence` (`SET_LICENCE_SOURCE` in
+  `benchmark.ts`) and the documents say so. (b) Upstream licences come from
+  `--licences`, which the person fills from the forks' licence files at the
+  pull request's base (Ghost MIT, aspnetcore MIT, prefect Apache-2.0, tauri
+  `Apache-2.0 OR MIT`, firefox-ios MPL-2.0; cal.com, dify and redis need a
+  person's reading). (c) Any SPDX identifier of the right shape is acceptable;
+  `isKnownLicence` checks shape only.
+- **D4, budget and who runs it.** The owner runs part B later with their own
+  credentials and chooses `--first <n>` then. Nothing in part A spends
+  anything or calls any API; the importer works offline on the downloaded
+  file.
 
 ## Acceptance criteria
 

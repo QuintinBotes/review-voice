@@ -1,5 +1,5 @@
 import { openDatabase } from '../store/db.ts';
-import { computeMetrics, DEFAULT_WINDOW_DAYS, stageSeconds } from '../evaluate/metrics.ts';
+import { byFamily, computeMetrics, DEFAULT_WINDOW_DAYS, describeByFamily, stageSeconds } from '../evaluate/metrics.ts';
 import { readRecallResults, recallMetrics, type RecallResults } from '../evaluate/recall-results.ts';
 import { postedBreakdown } from '../store/outcomes.ts';
 import { flag } from './shared.ts';
@@ -44,6 +44,7 @@ export function evaluateCommand(argv: string[]): number {
             metrics,
             posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule, by_evidence_block: byEvidenceBlock },
             stage_seconds: stageSeconds(db),
+            by_family: byFamily(db),
           },
           null,
           2,
@@ -71,6 +72,7 @@ export function evaluateCommand(argv: string[]): number {
         console.log(`${mark}  ${metric.name.padEnd(32)} ${value.padStart(8)}  ${target}`);
         console.log(`      ${metric.basis}`);
       }
+      for (const line of describeByFamily(byFamily(db))) console.log(line);
     }
     // A metric below target is information, not a command failure.
     return 0;
