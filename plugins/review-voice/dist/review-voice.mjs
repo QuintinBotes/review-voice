@@ -36,6 +36,40 @@ function pluginVersion() {
   return "0.0.0-unknown";
 }
 
+// plugins/review-voice/src/terminal.ts
+var TRANSPARENT = /[\u0000-\u0006\u0008\u000b\u000c\u000e-\u0017\u0019\u001c-\u001f\u007f-\u008f\u0091-\u0097\u0099\u009a\p{Cf}]|\r(?!\n)/gu;
+var CSI = /(?:\u001b[\t\u0007]*\[|\u009b)[\t\u0007 -?]*[@-~]?/;
+var STRING = /(?:\u001b[\t\u0007]*[\]PX^_]|[\u0090\u0098\u009d-\u009f])[^\u0007\u0018\u001a\u001b\u009c\r\n]*/;
+var SHORT = /\u001b[\t\u0007 -/]*[0-~]?/;
+var SEQUENCE = new RegExp([CSI, STRING, SHORT].map((form) => form.source).join("|"), "g");
+var ENDS = /[\u0007\u0018\u001a\u009c]/g;
+function terminalSafe(text5) {
+  return text5.replace(TRANSPARENT, "").replace(SEQUENCE, "").replace(ENDS, "");
+}
+function terminalSafeDeep(value) {
+  if (typeof value === "string") return terminalSafe(value);
+  if (Array.isArray(value)) return value.map((entry) => terminalSafeDeep(entry));
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(Object.entries(value).map(([key2, entry]) => [terminalSafe(key2), terminalSafeDeep(entry)]));
+}
+function terminalInert(text5) {
+  return text5.replace(
+    /[\u007f-\u009f\p{Cf}]/gu,
+    (character) => (
+      // By code unit, so a character outside the basic plane is written as its surrogate pair.
+      character.split("").map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`).join("")
+    )
+  );
+}
+function outputSafe(text5) {
+  try {
+    JSON.parse(text5);
+  } catch {
+    return terminalSafe(text5);
+  }
+  return terminalInert(text5);
+}
+
 // plugins/review-voice/src/doctor.ts
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
@@ -11574,9 +11608,10 @@ function matchCarried(recorded2, carried) {
   const used = /* @__PURE__ */ new Set();
   for (const finding of recorded2) {
     const body = findingBody(finding.text);
-    const source = carried.find(
-      (c) => !used.has(c.findingId) && c.path === finding.path && findingBody(c.text) === body
-    );
+    const free = carried.filter((c) => !used.has(c.findingId));
+    const source = free.find((c) => c.path === finding.path && findingBody(c.text) === body) ?? // `carry --text` prints a finding without its terminal controls, so the one that comes back may have lost
+    // some from its text. The path must still be its own: cleaned, two file names can read as one.
+    free.find((c) => c.path === finding.path && findingBody(terminalSafe(c.text)) === body);
     if (source === void 0) continue;
     used.add(source.findingId);
     if (source.line !== finding.line) {
@@ -12500,7 +12535,8 @@ function declineHeld(db, reviewRunId, at2, reason2) {
   if (row === void 0) return { ok: false, error: `No recorded run ${reviewRunId}.` };
   const parsed2 = JSON.parse(row.output_json);
   const held = Array.isArray(parsed2.held) ? parsed2.held : [];
-  const matching = held.filter((entry) => entry.path === at2.path && entry.line === at2.line);
+  const exact = held.filter((entry) => entry.path === at2.path && entry.line === at2.line);
+  const matching = exact.length > 0 ? exact : held.filter((entry) => terminalSafe(entry.path) === terminalSafe(at2.path) && entry.line === at2.line);
   if (matching.length === 0) {
     const anchors = held.map((entry) => `${entry.path}:${entry.line}`);
     return {
@@ -13877,9 +13913,9 @@ function notRunReport(names, skipped) {
     ...skipped === void 0 ? {} : { skipped }
   };
 }
-function sanitisedVersion(stdout) {
-  const firstLine3 = stdout.split("\n")[0] ?? "";
-  const clean2 = firstLine3.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "").trim();
+function sanitisedVersion(stdout, mask) {
+  const firstLine3 = mask(terminalSafe(stdout)).split("\n")[0] ?? "";
+  const clean2 = mask(firstLine3.replace(/[\t\p{Zl}\p{Zp}]/gu, "")).trim();
   const capped = [...clean2].slice(0, MAX_VERSION_POINTS).join("").trim();
   return capped === "" ? void 0 : capped;
 }
@@ -13922,14 +13958,20 @@ async function collectEvidence(commands, options) {
       continue;
     }
     const mask = (text5) => maskPassthrough(text5, process.env, options.envPassthrough ?? []);
-    const output = `${result.stdout ?? ""}
+    const printed = `${result.stdout ?? ""}
 ${result.stderr ?? ""}`;
+    const output = terminalSafe(printed);
     const version = command.version === void 0 ? void 0 : await readVersion(spawn3, command.version, options.cwd, timeoutMs, env, mask);
-    const signals = parseOutput(command.name, command.run, output).map((signal2) => ({
-      ...signal2,
-      claim: mask(signal2.claim),
-      evidence: signal2.evidence.map(mask)
-    }));
+    const signals = parseOutput(command.name, command.run, output).map((signal2) => {
+      const placed = signal2.path === null || printed.includes(signal2.path) || !output.includes(signal2.path);
+      return {
+        ...signal2,
+        path: placed ? signal2.path : null,
+        line: placed ? signal2.line : null,
+        claim: mask(signal2.claim),
+        evidence: signal2.evidence.map(mask)
+      };
+    });
     outcomes.push({
       name: command.name,
       command: command.run,
@@ -13949,7 +13991,7 @@ ${result.stderr ?? ""}`;
 async function readVersion(spawn3, run, cwd, timeout, env, mask) {
   const result = await spawnInGroup(spawn3, run, cwd, timeout, env);
   if (result.error !== void 0 || result.status !== 0) return void 0;
-  return sanitisedVersion(mask(String(result.stdout ?? "")));
+  return sanitisedVersion(String(result.stdout ?? ""), mask);
 }
 function spawnInGroup(spawn3, run, cwd, timeout, env, args) {
   return spawn3(run, {
@@ -14065,6 +14107,7 @@ var DARWIN_OFF = "sandbox-exec is not yet trusted to confine a reproduction (iss
 var PROBE_DOMAIN = "review-voice.probe";
 var CREDENTIAL_DIRS = [".ssh", ".gnupg", ".aws", ".config/gh", "Library/Keychains"];
 var CREDENTIAL_FILES = [".netrc", ".npmrc", ".git-credentials"];
+var DEVICES = ["null", "zero", "full", "random", "urandom"];
 var SAFE_ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 var SAFE_PATH = /^[A-Za-z0-9._/-]+$/;
 var shellQuote = (text5) => `'${text5.replaceAll("'", `'\\''`)}'`;
@@ -14118,8 +14161,11 @@ function layoutOf(ctx, places) {
     ...CREDENTIAL_DIRS.map((dir) => realOf(join7(home, dir))),
     // Linux has no rule for Unix sockets, and one on a read-only mount still
     // connects (a Docker socket, the session bus), so the places they live are
-    // covered; on macOS `deny network*` refuses them.
-    ...platform === "linux" ? ["/tmp", "/run", "/var/run"].map(realOf) : []
+    // covered; on macOS `deny network*` refuses them. A device node takes a
+    // write on a read-only mount too, and /dev/pts holds the user's terminals,
+    // so /dev is covered and given back only the devices in DEVICES; on macOS
+    // the profile allows a write to /dev/null alone.
+    ...platform === "linux" ? ["/tmp", "/run", "/var/run", "/dev"].map(realOf) : []
   ]);
   const hiddenFiles = unique(CREDENTIAL_FILES.map((file2) => realOf(join7(home, file2))));
   const links = ctx.config.linkPaths.filter((name) => existsSync3(join7(clone, name)) && lstatSync3(join7(worktree, name), { throwIfNoEntry: false }) === void 0).map((name) => {
@@ -14222,6 +14268,10 @@ function linuxSetup(layout) {
     for (const hold of holds.filter((entry) => inside(entry.source, cover.path))) {
       lines2.push(hold.dir ? `mkdir -p ${at2(hold.source)}` : `mkdir -p ${at2(dirname5(hold.source))}; touch ${at2(hold.source)}`);
     }
+    if (cover.path === "/dev") {
+      for (const name of DEVICES) lines2.push(`touch ${at2(`/dev/${name}`)}`, `mount --bind /dev/${name} ${at2(`/dev/${name}`)}`);
+      lines2.push(`ln -s /proc/self/fd ${at2("/dev/fd")}`, ...["stdin", "stdout", "stderr"].map((name, fd) => `ln -s /proc/self/fd/${fd} ${at2(`/dev/${name}`)}`));
+    }
     lines2.push(`mount -o remount,bind,ro ${at2(cover.path)}`);
   }
   for (const hold of holds) {
@@ -14275,6 +14325,8 @@ function probeScript(targets) {
     // A named domain, since a path domain is checked as a file write. An escape
     // deletes what it wrote, though cfprefsd keeps an empty plist of the domain,
     // one fixed name however often a broken sandbox is probed.
+    // The user's terminals are devices there, which take a write on a read-only mount.
+    "if (fs.existsSync('/dev/pts')) escaped.push('terminal');",
     "if (t.domain !== null) { const cp = require('child_process'); if (cp.spawnSync('/usr/bin/defaults', ['write', t.domain, 'probe', 'escaped']).status === 0) { escaped.push('preference'); cp.spawnSync('/usr/bin/defaults', ['delete', t.domain]); } }",
     "const socket = require('net').connect(t.port, '127.0.0.1');",
     "let done = false;",
@@ -14336,7 +14388,7 @@ async function runProbe(ctx, layout) {
       connect: connections > 0,
       profile: contentOf(overwrite) !== before
     };
-    const seen = ["write", "read", "connect", "profile", "signal", "preference"].filter((name) => said.has(name) || outside[name] === true);
+    const seen = ["write", "read", "connect", "profile", "terminal", "signal", "preference"].filter((name) => said.has(name) || outside[name] === true);
     if (seen.length > 0) return { platform, mechanism: "none", probe: `escaped by ${seen.join(", ")}` };
     if (result.error === void 0 && result.status === 0 && result.stdout.trim() === "RV_PROBE_OK") return { platform, mechanism, probe: "passed" };
     const why = result.error === void 0 ? firstLine2(result.stderr) || firstLine2(result.stdout) || `exited ${String(result.status)}` : result.error.message;
@@ -14430,7 +14482,7 @@ function reachedMarker(text5, candidateId) {
   return text5.split("\n").some((line3) => line3.replace(/^[#\s]*/, "").replace(/\r$/, "") === marker);
 }
 function recorded(text5) {
-  const clean2 = Buffer.from(redact(text5).text, "utf8");
+  const clean2 = Buffer.from(redact(terminalSafe(redact(text5).text)).text, "utf8");
   if (clean2.length <= OUTPUT_CAP_BYTES) return clean2.toString("utf8");
   let end = OUTPUT_CAP_BYTES;
   while (end > 0 && ((clean2[end] ?? 0) & 192) === 128) end -= 1;
@@ -15670,7 +15722,8 @@ var fromRow = (row) => ({
   event: row.event,
   reviewUrl: row.review_url,
   status: row.status,
-  detail: row.detail,
+  // Rows written before details were cleaned can hold a review's stderr or a check name as it came.
+  detail: row.detail === null ? null : terminalSafe(row.detail),
   attempts: row.attempts,
   updatedAt: row.updated_at
 });
@@ -15712,7 +15765,7 @@ function watchSummary(db) {
   const recent = db.prepare("SELECT * FROM watch_heads ORDER BY updated_at DESC, rowid DESC LIMIT 5").all();
   return [
     `watcher          ${counts.map((row) => `${row.n} ${row.status}`).join(", ")}`,
-    ...recent.map((row) => `  ${row.repository}#${row.pull_number} ${row.head_sha.slice(0, 7)} ${row.status}${row.detail === null ? "" : ` ${row.detail}`}`)
+    ...recent.map((row) => `  ${row.repository}#${row.pull_number} ${row.head_sha.slice(0, 7)} ${row.status}${row.detail === null ? "" : ` ${terminalSafe(row.detail)}`}`)
   ];
 }
 function settledHeads(db, maxAttemptsPerHead) {
@@ -16525,7 +16578,7 @@ async function checkOutcomes(options) {
       result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
     }
   }
-  return result;
+  return terminalSafeDeep(result);
 }
 async function readPull(client, repository, pullNumber, warnings) {
   const { data: pull } = await client.get(`/repos/${repository}/pulls/${pullNumber}`);
@@ -18515,7 +18568,7 @@ async function runPass(options, json2) {
     const held = [];
     const counts = /* @__PURE__ */ new Map();
     for (const entry of queue.entries) {
-      const outcome = await handle(options, client, db, entry);
+      const outcome = terminalSafeDeep(await handle(options, client, db, entry));
       const summary = `${entry.repository}#${entry.pull}: ${entry.action.kind}`;
       if (outcome.row === null) {
         lines2.push(`${summary} (no row: ${outcome.detail})`);
@@ -19228,7 +19281,7 @@ var COMMAND_HELP = {
       "Flags:",
       "  --json                 Emit the result as JSON",
       "Reads: the text to redact on stdin.",
-      "Writes: the redacted text (or JSON) on stdout.",
+      "Writes: the redacted text on stdout, without terminal control characters; with --json, JSON.",
       "Exit codes: 0 ok, 2 bad invocation."
     )
   },
@@ -19809,7 +19862,8 @@ var COMMAND_HELP = {
       "  --files <path>         files.json from `diff --pr`: a finding on a file in scope.noLongerChanged",
       "                         (the base now holds it) is settled; a run of only these carries clean.",
       "Reads: nothing on stdin; the local store, and --thread and --files when given.",
-      "Writes: JSON (or with --text, the review text) on stdout; what did not carry on stderr.",
+      "Writes: JSON (or with --text, the review text without terminal control characters) on stdout;",
+      "  what did not carry on stderr.",
       "  JSON adds heldBack: {findingId, path, line, severity, reason}[], not counted as serious findings",
       '  that did not carry; with --text each is on stderr as "Held back: ...". settled has the same',
       '  shape, for findings on files the pull request no longer changes ("Settled: ..." with --text).',
@@ -20575,7 +20629,7 @@ async function verifyFindings(findings, config2, options) {
     const unavailable = result.failed;
     const parsed2 = unavailable ? null : parseVerdict(`${result.stdout}
 ${result.stderr}`);
-    const raw = parsed2 === null ? null : maskPassthroughDeep(parsed2, process.env, config2.envPassthrough ?? []);
+    const raw = parsed2 === null ? null : maskPassthroughDeep(terminalSafeDeep(parsed2), process.env, config2.envPassthrough ?? []);
     if (raw === null) {
       didNotRun.push(name);
       verdicts.push({
@@ -23415,11 +23469,12 @@ async function runReview(options, deps) {
     ownSignals(false);
   }
   const costs = run.stages.map((stage) => stage.costUsd).filter((cost) => cost !== void 0);
-  return {
+  const runDir = run.dir === "" ? null : run.dir;
+  const report = terminalSafeDeep({
     exitCode: run.exitCode,
     runId: run.runId,
     head: run.head === "" ? null : run.head,
-    runDir: run.dir === "" ? null : run.dir,
+    runDir,
     scope: run.summary["scope"] ?? null,
     plan: run.plan,
     findings: run.findings,
@@ -23438,7 +23493,8 @@ async function runReview(options, deps) {
     families: run.families,
     failure,
     ...error === void 0 ? {} : { error }
-  };
+  });
+  return { ...report, runDir };
 }
 function failureLines(report, failure) {
   const lines2 = [
@@ -23761,11 +23817,11 @@ function realExistingPath(path) {
 
 // plugins/review-voice/src/cli/redact.ts
 function redactCommand(argv) {
-  const result = redact(readStdin());
+  const input = readStdin();
   if (argv.includes("--json")) {
-    console.log(JSON.stringify(result, null, 2));
+    console.log(JSON.stringify(redact(input), null, 2));
   } else {
-    process.stdout.write(result.text);
+    process.stdout.write(redact(terminalSafe(redact(input).text)).text);
   }
   return 0;
 }
@@ -23807,7 +23863,7 @@ function draftCommand(argv) {
     return 2;
   }
   const output = readStdin();
-  const draft = buildDraft({ repository, pullNumber, output, diffHash: hashDiff(output) });
+  const draft = terminalSafeDeep(buildDraft({ repository, pullNumber, output, diffHash: hashDiff(output) }));
   if (argv.includes("--json")) {
     console.log(JSON.stringify(draft, null, 2));
   } else {
@@ -24013,7 +24069,7 @@ function calibrateCommand() {
       return { policyId: stored.policyId, version: stored.version, scope: scopeLabel(scope), active: stored.active };
     });
     const blocked = proposals.filter((proposal) => !proposal.activatable).map((proposal) => ({ ruleId: proposal.ruleId, scope: scopeLabel(proposal.scope), blockedBecause: proposal.blockedBecause }));
-    console.log(JSON.stringify({ policies, blocked, proposals }, null, 2));
+    console.log(JSON.stringify(terminalSafeDeep({ policies, blocked, proposals }), null, 2));
     return 0;
   } finally {
     db.close();
@@ -24949,7 +25005,7 @@ function policyCommand(argv) {
     switch (action) {
       case void 0:
       case "show":
-        console.log(JSON.stringify({ policies: scope === null ? listPolicies(db) : listPolicies(db, scope) }, null, 2));
+        console.log(JSON.stringify(terminalSafeDeep({ policies: scope === null ? listPolicies(db) : listPolicies(db, scope) }), null, 2));
         return 0;
       case "approve": {
         if (argument === void 0) {
@@ -25295,7 +25351,7 @@ function evaluateCommand(argv) {
   try {
     const metrics = [...computeMetrics(db, { windowDays }), ...recallMetrics(recall)];
     if (json2 || html) {
-      const report = evaluationReport(db, metrics, { windowDays });
+      const report = terminalSafeDeep(evaluationReport(db, metrics, { windowDays }));
       if (json2) {
         console.log(JSON.stringify(report, null, 2));
         return 0;
@@ -28553,7 +28609,7 @@ async function verdictCommand(argv) {
       owner: config2?.ownerReviewer ?? null,
       policy: config2?.verdictPolicy
     });
-    console.log(JSON.stringify(output, null, 2));
+    console.log(JSON.stringify(terminalSafeDeep(output), null, 2));
     return exitCode;
   } finally {
     db.close();
@@ -28583,7 +28639,7 @@ async function postCommand(argv) {
       policy: config2?.verdictPolicy,
       recheckThread: argv.includes("--recheck-thread")
     });
-    console.log(JSON.stringify(output, null, 2));
+    console.log(JSON.stringify(terminalSafeDeep(output), null, 2));
     return exitCode;
   } finally {
     db.close();
@@ -29887,7 +29943,7 @@ function challengeCommand(argv) {
   const body = `${JSON.stringify(result.document, null, 2)}
 `;
   if (outFile === null) {
-    process.stdout.write(body);
+    process.stdout.write(terminalInert(body));
   } else {
     try {
       writeFileSync15(outFile, body);
@@ -30145,7 +30201,7 @@ function describeReproduction(record3) {
 function explainCommand(argv) {
   const db = openDatabase();
   try {
-    const detail = runDetail(db, flag(argv, "--run") ?? void 0);
+    const detail = terminalSafeDeep(runDetail(db, flag(argv, "--run") ?? void 0));
     if (detail === null) {
       console.log("No review has been recorded yet.");
       return 0;
@@ -30196,7 +30252,7 @@ function explainCommand(argv) {
         console.log(
           `  partly addressed  ${prior.author} at ${prior.path}:${prior.line}; ${remaining.length} of ${remaining.length + addressed.length} still open: ${remaining.join("; ")}`
         );
-        const later2 = history?.get(`${detail.reviewRunId}:${finding.findingId}`);
+        const later2 = terminalSafeDeep(history?.get(`${detail.reviewRunId}:${finding.findingId}`));
         if (later2?.state?.status === "resolved") {
           console.log(`  follow-up         resolved in run ${later2.stateRunId} - ${later2.state.reason}`);
         } else if (later2?.state?.status === "open") {
@@ -30349,8 +30405,8 @@ function statusCommand() {
     const runs = db.prepare("SELECT COUNT(*) AS n FROM review_runs").get().n;
     const audits = db.prepare("SELECT COUNT(*) AS n FROM audit_events").get().n;
     const totals = feedbackTotals(db);
-    const last = latestRun(db);
-    const lastDetail = runDetail(db);
+    const last = terminalSafeDeep(latestRun(db));
+    const lastDetail = terminalSafeDeep(runDetail(db));
     console.log(`data directory   ${dataDirectory()}`);
     console.log(`database         ${databasePath()}`);
     console.log(`review runs      ${runs}`);
@@ -30598,7 +30654,9 @@ function carryCommand(argv) {
       );
       return 1;
     }
-    process.stdout.write(`${result.output}
+    const text5 = terminalSafe(result.output);
+    if (text5 !== result.output) console.error(`Terminal control characters were removed from the text carried from ${from}.`);
+    process.stdout.write(`${text5}
 `);
     return 0;
   } catch (error) {
@@ -32452,6 +32510,10 @@ ${error.message}`);
 
 // plugins/review-voice/src/cli.ts
 async function main(argv) {
+  const { log, error } = console;
+  console.error = (...args) => error(terminalSafe(format(...args)));
+  console.warn = console.error;
+  console.log = (...args) => log(outputSafe(format(...args)));
   const exit = await dispatch(argv);
   const command = argv[0];
   if (exit === 2 && command !== void 0 && commandHelp(command) !== null) {

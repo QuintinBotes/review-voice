@@ -1,5 +1,6 @@
 import { spawn as spawnChild } from 'node:child_process';
 import { parseOutput } from './parsers.ts';
+import { terminalSafe } from '../terminal.ts';
 import type { CommandOutcome, EvidenceReport } from './types.ts';
 
 export interface ConfiguredCommand {
@@ -94,18 +95,19 @@ export function notRunReport(names: readonly string[], skipped?: string): Eviden
 
 /**
  * A version line comes from a tool run on a repository whose contents are
- * untrusted, and lands in a stored record. Control, bidi and zero-width
- * characters can reorder or hide text, so they go; the cap is by code point so
- * a surrogate pair is never split.
+ * untrusted, and lands in a stored record. Terminal sequences, control, bidi
+ * and zero-width characters can reorder or hide text, so they go; the cap is
+ * by code point so a surrogate pair is never split.
  */
-function sanitisedVersion(stdout: string): string | undefined {
-  const firstLine = stdout.split('\n')[0] ?? '';
-  const clean = firstLine
-    // Control (Cc) and format (Cf) characters: the format class holds the bidi
-    // controls and the zero-width characters, and line and paragraph separators
-    // would break the one-line record.
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '')
-    .trim();
+function sanitisedVersion(stdout: string, mask: (text: string) => string): string | undefined {
+  // Cleaned before it is masked, so a sequence printed inside a value cannot
+  // hide it from the mask. Masked whole, before the first line is taken and
+  // capped: a cut value no longer matches, and a multiline one would leave its
+  // first line behind.
+  const firstLine = mask(terminalSafe(stdout)).split('\n')[0] ?? '';
+  // A tab and the line and paragraph separators would break the one-line
+  // record. Masked again without them, since one inside a value hid it above.
+  const clean = mask(firstLine.replace(/[\t\p{Zl}\p{Zp}]/gu, '')).trim();
   const capped = [...clean].slice(0, MAX_VERSION_POINTS).join('').trim();
   return capped === '' ? undefined : capped;
 }
@@ -174,16 +176,26 @@ export async function collectEvidence(
     }
 
     const mask = (text: string): string => maskPassthrough(text, process.env, options.envPassthrough ?? []);
-    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+    const printed = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+    // Without its terminal sequences, so none reaches a signal, hides a diagnostic or splits a value past the mask.
+    const output = terminalSafe(printed);
     const version = command.version === undefined ? undefined : await readVersion(spawn, command.version, options.cwd, timeoutMs, env, mask);
     // Parsed from the true output, so a passed-through directory in a path does
     // not break the location; then the text a reader sees is masked. The path
     // and line stay as printed, because matching a finding to a signal reads them.
-    const signals = parseOutput(command.name, command.run, output).map((signal) => ({
-      ...signal,
-      claim: mask(signal.claim),
-      evidence: signal.evidence.map(mask),
-    }));
+    const signals = parseOutput(command.name, command.run, output).map((signal) => {
+      // Cleaned, two file names can read as one. A path the cleaning made, one
+      // in the cleaned text and not in what the tool printed, is no file's own
+      // name, so its signal keeps its text and loses its place.
+      const placed = signal.path === null || printed.includes(signal.path) || !output.includes(signal.path);
+      return {
+        ...signal,
+        path: placed ? signal.path : null,
+        line: placed ? signal.line : null,
+        claim: mask(signal.claim),
+        evidence: signal.evidence.map(mask),
+      };
+    });
     outcomes.push({
       name: command.name,
       command: command.run,
@@ -217,9 +229,7 @@ async function readVersion(
 ): Promise<string | undefined> {
   const result = await spawnInGroup(spawn, run, cwd, timeout, env);
   if (result.error !== undefined || result.status !== 0) return undefined;
-  // Masked whole, before the first line is taken and capped: a cut value no
-  // longer matches, and a multiline one would leave its first line behind.
-  return sanitisedVersion(mask(String(result.stdout ?? '')));
+  return sanitisedVersion(String(result.stdout ?? ''), mask);
 }
 
 /**

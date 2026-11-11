@@ -26,6 +26,7 @@ import { modelForFinding, type RequestedMode, type StagePlan } from './plan.ts';
 import * as prompts from './prompts.ts';
 import { STAGES, type StageId } from './stages.ts';
 import { SAFE_GIT, addHeadWorktree, removeHeadWorktree } from './worktree.ts';
+import { terminalSafeDeep } from '../terminal.ts';
 
 /**
  * `review-voice review` (docs/adr/0022): walks the stage table, calling the
@@ -1604,11 +1605,13 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     ownSignals(false);
   }
   const costs = run.stages.map((stage) => stage.costUsd).filter((cost): cost is number => cost !== undefined);
-  return {
+  const runDir = run.dir === '' ? null : run.dir;
+  // Notes and errors quote stage stderr, which quotes the pull request, a tool and the agents.
+  const report = terminalSafeDeep({
     exitCode: run.exitCode,
     runId: run.runId,
     head: run.head === '' ? null : run.head,
-    runDir: run.dir === '' ? null : run.dir,
+    runDir,
     scope: run.summary['scope'] ?? null,
     plan: run.plan,
     findings: run.findings,
@@ -1627,7 +1630,9 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     families: run.families,
     failure,
     ...(error === undefined ? {} : { error }),
-  };
+  });
+  // A path on this machine that a caller reads the run's files from, so it is the one the files are at.
+  return { ...report, runDir };
 }
 
 /** The "Review unavailable" block: the mode, the risk and the checks the run did establish. */

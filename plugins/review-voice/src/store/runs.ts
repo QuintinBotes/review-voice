@@ -15,6 +15,7 @@ import type { FollowUpState } from './follow-ups.ts';
 import type { VerifiedSimplification } from '../simplification.ts';
 import { suggestedPatchOf, type SuggestedPatch } from '../scoring/score.ts';
 import { redact } from '../redact/redact.ts';
+import { terminalSafe } from '../terminal.ts';
 import type { EvidenceSignal } from '../evidence/types.ts';
 import type { ReproductionRecord, ReproductionRun } from '../evidence/reproduce.ts';
 import { flatten, MACHINE_PATH } from '../publish/evidence-block.ts';
@@ -1289,7 +1290,9 @@ export function declineHeld(
   if (row === undefined) return { ok: false, error: `No recorded run ${reviewRunId}.` };
   const parsed = JSON.parse(row.output_json) as { held?: unknown };
   const held = Array.isArray(parsed.held) ? (parsed.held as HeldFinding[]) : [];
-  const matching = held.filter((entry) => entry.path === at.path && entry.line === at.line);
+  const exact = held.filter((entry) => entry.path === at.path && entry.line === at.line);
+  // A person passes the path as `explain` showed it, which is the stored one without what a terminal acts on.
+  const matching = exact.length > 0 ? exact : held.filter((entry) => terminalSafe(entry.path) === terminalSafe(at.path) && entry.line === at.line);
   if (matching.length === 0) {
     const anchors = held.map((entry) => `${entry.path}:${entry.line}`);
     return {

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { expandCommand } from '../agents/command-cli.ts';
 import type { Family } from '../agents/types.ts';
 import { commandEnvironment, maskPassthroughDeep, onStop, spawnCommand } from '../evidence/run.ts';
+import { terminalSafeDeep } from '../terminal.ts';
 import type { DecisiveEvidence, FindingVerdict, RawVerdict, VerificationReport, Verdict } from './types.ts';
 
 export interface VerifiableFinding {
@@ -313,9 +314,10 @@ export async function verifyFindings(
     const unavailable = result.failed;
     // A verifier that quotes its own credential, in a reason or its evidence,
     // must not carry it into the report. Masked after parsing, since a value
-    // the verifier JSON-escaped only matches once decoded.
+    // the verifier JSON-escaped only matches once decoded, and after its
+    // terminal sequences are gone, so none can split the value past the mask.
     const parsed = unavailable ? null : parseVerdict(`${result.stdout}\n${result.stderr}`);
-    const raw = parsed === null ? null : maskPassthroughDeep(parsed, process.env, config.envPassthrough ?? []);
+    const raw = parsed === null ? null : maskPassthroughDeep(terminalSafeDeep(parsed), process.env, config.envPassthrough ?? []);
 
     if (raw === null) {
       // A verifier that could not run has not confirmed anything, and must

@@ -75,6 +75,62 @@ comment. APPROVE also needs the head the review read and green CI, both re-read
 immediately before the request. And a person confirms each post with
 `--confirm`; nothing approves on its own.
 
+### 1b. Terminal control sequences in untrusted text
+
+A pull request chooses text that reaches a reviewer's terminal: a file name, a
+check run's name, what a tool or a reproduction prints, and what a model writes
+when the diff steers it. An OSC 52 sequence in it sets the clipboard of whoever
+prints it, and CSI and OSC sequences can clear, rewrite or hide output.
+`terminalSafe` (`src/terminal.ts`) removes C0 controls but tab and newline (a
+carriage return survives only before a newline), DEL, C1 controls and the
+format characters (bidi, zero-width), and takes each ESC or C1 sequence whole,
+so no parameter bytes are left. A control placed inside a sequence, which a
+terminal executes before it carries on, does not break the match. A sequence
+never runs past its line, so one a tool echoed from a source file cannot take
+the diagnostics after it. It runs in four places:
+
+- Output of code the pull request controls is cleaned as it is captured,
+  before it is masked or redacted, so a sequence cannot split a secret past
+  either: reproduction output, a configured check's output and version line,
+  and a second-pass verdict. Reproduction output is also redacted once before
+  it is cleaned, since a sequence beside a secret can be the only word
+  boundary its pattern has. A diagnostic whose path exists only in the cleaned
+  text, not in what the tool printed, keeps its text and loses its path and
+  line: cleaned, two file names can read as one.
+- What a command shows a person is cleaned as the command reads it: the review
+  report, the stored run in `explain` and `status`, the watcher's details
+  (before they are stored and again as a row is read), and the output of
+  `outcomes`, `evaluate --json`, `verdict`, `post`, `draft`, `calibrate` and
+  `policy show`. The store and what is posted keep the text as it came, and
+  `decline` takes a path as `explain` showed it. The report's run directory
+  is the reviewer's own path, which a caller reads files from, so it stays as
+  it is on disk and is cleaned where it is printed.
+- The CLI's own error stream is cleaned whole: a diagnostic can quote any of
+  this, and nothing parses one. That covers `console.warn`, where the bundled
+  YAML parser quotes the line of a `.review-voice/policy.yaml` or
+  `config.yaml` it warns about.
+- Everything on the CLI's own output stream is cleaned by what it is. A JSON
+  document, `challenge` without `--out` included, has DEL, the C1 controls and
+  the format characters written as JSON escapes. `JSON.stringify` already
+  escapes every C0 control, so a stage that parses the output reads the data
+  it would have read, and a bidi control in a diff still reaches the analyst.
+  Any other text is cleaned as a line for a person: a command's own lines, the
+  review `carry --text` prints, and the text `redact` prints, which is redacted,
+  cleaned and redacted again. A carried finding is paired with the text
+  `carry --text` printed only under its own path.
+
+A reproduction is also kept from the terminal itself: its sandbox has no
+terminal device to open (section 4).
+
+**Residual risk.** A string decoded from a stage's JSON is the text as it
+came, so a caller that prints one cleans it first. Removal cannot tell a
+hostile zero-width character from one a script needs, so a joiner inside an
+emoji or a Persian word is lost from what is shown, and from a review that
+`carry --text` carries, which says so on the error stream; `record
+--carried-from` still pairs that text with the stored finding it came from, so
+its verified score is kept. What follows a
+newline inside a sequence stays as text, harmless but not tidy.
+
 ### 2. Secrets in code or review history
 
 **Attack.** A credential lands in the corpus, the index, a log, or a prompt.
@@ -251,6 +307,12 @@ store, outlive the run, or simply pass on purpose.
   copy of the head worktree and its scratch directory, the data directory, the
   run directory, the clone's `.git` and the listed credential locations hidden,
   and every process ended when the run ends.
+- A device node takes a write even on a read-only mount, and `/dev/pts` holds
+  the reviewer's terminals, where an OSC 52 sequence would set the clipboard.
+  The sandbox's `/dev` is therefore its own: `null`, `zero`, `full`, `random`
+  and `urandom`, with the links to the process's own descriptors, and no
+  terminal or other device of the host. The probe fails if `/dev/pts` is still
+  there. A reproduction's own output is a pipe the CLI reads.
 - The environment is an allowlist (`PATH`, `LANG`, `LC_ALL`, `TERM`, a scratch
   `HOME` and `TMPDIR`, `CI`, `NO_COLOR`), so no token and no `REVIEW_VOICE_*`
   variable reaches it.
@@ -258,7 +320,8 @@ store, outlive the run, or simply pass on purpose.
   running reproduction.
 - The head worktree the challenger reads is never writable by a reproduction,
   and a run that changes anything in its own copy is recorded as not run.
-- Output is redacted and capped at 8 KiB per run before it is stored or shown.
+- Output is redacted, loses its terminal sequences (section 1b), is redacted again and is capped
+  at 8 KiB per run before it is stored or shown.
   The database keeps each record's exit codes and reason without the output,
   with one exception. A `reproduction-did-not-fail` hold's reason keeps the
   first redacted output line, cut at 120 characters, for as long as the run
@@ -268,7 +331,8 @@ store, outlive the run, or simply pass on purpose.
   a finding only outside the categories no suppression may reach.
 
 **Residual risk.** A reproduction can read the user's other files, read-only,
-outside the hidden locations. What it prints reaches the challenger's model
+outside the hidden locations. A named pipe among them still takes a write,
+since a read-only mount stops neither that nor a device. What it prints reaches the challenger's model
 after redaction, so a planted instruction there is one more piece of untrusted
 evidence the challenger must ignore. Code under review can sense the sandbox and
 pass on purpose, which turns a real finding into a `reproduction-did-not-fail`

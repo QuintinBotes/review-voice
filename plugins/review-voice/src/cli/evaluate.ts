@@ -4,6 +4,7 @@ import { byFamily, computeMetrics, DEFAULT_WINDOW_DAYS, describeByFamily, evalua
 import { htmlDocument, renderEvaluationHtml } from '../evaluate/report.ts';
 import { readRecallResults, recallMetrics, type RecallResults } from '../evaluate/recall-results.ts';
 import { flag, resolveOutPath } from './shared.ts';
+import { terminalSafeDeep } from '../terminal.ts';
 
 export function evaluateCommand(argv: string[]): number {
   // Read before the store is opened: a bad file is a bad invocation, and
@@ -53,7 +54,8 @@ export function evaluateCommand(argv: string[]): number {
   try {
     const metrics = [...computeMetrics(db, { windowDays }), ...recallMetrics(recall)];
     if (json || html) {
-      const report = evaluationReport(db, metrics, { windowDays });
+      // A rule id holds the category the analyst gave, which nothing checks against a list.
+      const report = terminalSafeDeep(evaluationReport(db, metrics, { windowDays }));
       if (json) {
         console.log(JSON.stringify(report, null, 2));
         return 0;

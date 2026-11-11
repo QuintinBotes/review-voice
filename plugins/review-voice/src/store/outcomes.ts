@@ -6,6 +6,7 @@ import { ruleIdFor } from '../policy/rules.ts';
 import { runDetail, type StoredFinding } from './runs.ts';
 import { stripEvidenceBlock } from '../publish/evidence-block.ts';
 import { parseFinding } from '../contract/parse.ts';
+import { terminalSafeDeep } from '../terminal.ts';
 
 /**
  * What became of each inline comment Review Voice posted (docs/adr/0029).
@@ -344,7 +345,8 @@ export async function checkOutcomes(options: CheckOptions): Promise<CheckResult>
       result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
     }
   }
-  return result;
+  // A stored path is the pull request's file name, which can hold any byte but NUL.
+  return terminalSafeDeep(result);
 }
 
 async function readPull(client: GitHubClient, repository: string, pullNumber: number, warnings: string[]): Promise<PullContext> {

@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { parseHunks, type FileHunks } from '../diff/hunks.ts';
 import { applyChallenge, candidatesById, challengePrompts, intentStatements, reproductionsById } from '../verify/challenge.ts';
 import { readStdin, flag } from './shared.ts';
+import { terminalInert } from '../terminal.ts';
 
 /**
  * The independent challenge (docs/adr/0024): `--emit-prompts` builds one
@@ -88,7 +89,8 @@ export function challengeCommand(argv: string[]): number {
   }
   const body = `${JSON.stringify(result.document, null, 2)}\n`;
   if (outFile === null) {
-    process.stdout.write(body);
+    // The next stage's input, so the data stays: what JSON leaves raw is written as an escape.
+    process.stdout.write(terminalInert(body));
   } else {
     try {
       writeFileSync(outFile, body);

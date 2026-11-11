@@ -4,6 +4,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { format } from 'node:util';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
 import { pluginVersion } from './version.ts';
+import { outputSafe, terminalSafe } from './terminal.ts';
 import { OPTIONAL_CHECKS, runDoctor } from './doctor.ts';
 import { splitFindings, parseFinding } from './contract/parse.ts';
 import { GitError } from './diff/acquire.ts';
@@ -83,6 +84,15 @@ export { diffSummary, emitDiff } from './cli/diff.ts';
 export { resolveOutPath, verificationProblem } from './cli/shared.ts';
 
 async function main(argv: string[]): Promise<number> {
+  // This process's own streams, past the capture `runInProcess` makes. A
+  // diagnostic can quote a file name, a tool, a model or GitHub, and nothing
+  // parses it. Standard output may be JSON a later stage reads, which keeps
+  // its data.
+  const { log, error } = console;
+  console.error = (...args: unknown[]) => error(terminalSafe(format(...args)));
+  // The bundled YAML parser reports a warning through this, quoting the line of the repository's file it read.
+  console.warn = console.error;
+  console.log = (...args: unknown[]) => log(outputSafe(format(...args)));
   const exit = await dispatch(argv);
   const command = argv[0];
   // Said once here, not at every call site that rejects its flags.
