@@ -240,6 +240,29 @@ test('a diagnostic for a file whose cleaned name is no file the tool named keeps
   assertSafe(JSON.stringify(report.signals), 'signals');
 });
 
+test('a SARIF document leaves no terminal control in a signal, masks a listed value a sequence split even across the message cut, and drops a path whose name only reads like another', async () => {
+  await withListed(async () => {
+    const at = (uri, startLine) => [{ physicalLocation: { artifactLocation: { uri }, region: { startLine } } }];
+    const results = [
+      { ruleId: 'r1', level: 'error', message: { text: `first ${HOSTILE} ${SPLIT}` }, locations: at('src/cart.ts', 3) },
+      { ruleId: 'r2', level: 'error', message: { text: 'second' }, locations: at('src/a\u200bb.ts', 12) },
+      // The value starts before the 500 point cut of a message and ends after it.
+      { ruleId: 'r3', level: 'error', message: { text: `${'x'.repeat(490)} ${SPLIT}` }, locations: at('src/cart.ts', 9) },
+    ];
+    const report = await collectEvidence([{ name: 'scan', run: 'scan' }], {
+      cwd: '/synthetic/repository',
+      enabled: true,
+      envPassthrough: [LISTED],
+      spawn: () => ({ status: 1, stdout: JSON.stringify({ version: '2.1.0', runs: [{ tool: { driver: { name: 'tool' } }, results }] }), stderr: '' }),
+    });
+    assert.deepEqual(report.signals.map((signal) => [signal.path, signal.line]), [['src/cart.ts', 3], [null, null], ['src/cart.ts', 9]]);
+    for (const signal of report.signals) for (const text of [signal.claim, ...signal.evidence]) assert.doesNotMatch(text, UNSAFE, shown(text));
+    assert.ok(report.signals[0].claim.includes(`${CLEAN} [redacted:${LISTED}]`), shown(report.signals[0].claim));
+    assert.ok(!JSON.stringify(report).includes(VALUE));
+    assert.ok(!JSON.stringify(report).includes(VALUE.slice(0, 9)), 'no first part of the value is left by the cut');
+  });
+});
+
 test('a diagnostic a tool printed on its error stream reaches a signal without terminal controls', async () => {
   // rustc, cargo and go vet print their diagnostics there.
   const report = await collectEvidence([{ name: 'typecheck', run: 'check' }], {
@@ -655,4 +678,13 @@ test('policy show prints a proposed policy without terminal controls', async () 
     // The stored YAML already writes a C0 control as an escape, which is text; the C1 CSI and the bidi override go whole.
     assert.ok(policy.contentYaml.includes('three four five'), shown(policy.contentYaml));
   });
+});
+
+test('a tab placed anywhere inside a sequence goes with it, which the cleaning of a SARIF rule id relies on', () => {
+  for (const sequence of [`${ESC}[1;31m`, '\u009b31m', OSC52, `${ESC}]0;title${ESC}\\`, `${ESC}(B`, `${ESC}P1$r${ESC}\\`]) {
+    for (let index = 1; index < sequence.length; index += 1) {
+      const tabbed = `${sequence.slice(0, index)}\t${sequence.slice(index)}`;
+      assert.equal(terminalSafe(`a${tabbed}b`), 'ab', JSON.stringify(tabbed));
+    }
+  }
 });

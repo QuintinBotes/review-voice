@@ -21,8 +21,9 @@ export interface CommandOutcome {
   /** Set when the command could not run at all, as distinct from failing. */
   unavailable?: string;
   /**
-   * The tool's own version line, recorded only when the configuration says how
-   * to ask for it (`version:`), so the audit record can name what ran.
+   * The tool's own version line, so the audit record can name what ran. It comes
+   * from the configured `version:` command, else from the producer name and
+   * version a SARIF document states, and is absent when neither recorded one.
    */
   version?: string;
   signals: EvidenceSignal[];

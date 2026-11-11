@@ -1,0 +1,55 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "ruff",
+          "version": "0.8.0",
+          "rules": [
+            {
+              "id": "F401",
+              "fullDescription": { "text": "## What it does\nChecks for unused imports.\n" },
+              "help": { "text": "`{name}` imported but unused" },
+              "properties": { "id": "F401", "kind": "pyflakes", "name": "unused-import", "problem.severity": "error" }
+            },
+            {
+              "id": "E501",
+              "fullDescription": { "text": "## What it does\nChecks for lines that exceed the specified maximum character length.\n" },
+              "help": { "text": "Line too long ({width} > {limit})" },
+              "properties": { "id": "E501", "kind": "pycodestyle", "name": "line-too-long", "problem.severity": "error" }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "level": "error",
+          "message": { "text": "`os` imported but unused" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "file:///work/repo/src/app.py" },
+                "region": { "startLine": 1, "startColumn": 8, "endLine": 1, "endColumn": 10 }
+              }
+            }
+          ],
+          "ruleId": "F401"
+        },
+        {
+          "level": "error",
+          "message": { "text": "Line too long (101 > 88)" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "file:///work/repo/src/my%20module.py" },
+                "region": { "startLine": 7, "startColumn": 89, "endLine": 7, "endColumn": 102 }
+              }
+            }
+          ],
+          "ruleId": "E501"
+        }
+      ]
+    }
+  ]
+}

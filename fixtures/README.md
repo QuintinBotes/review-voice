@@ -10,6 +10,7 @@ carries other people's words and other companies' code.
 | `negative/` | A known false positive stays suppressed |
 | `no-findings/` | A clean diff produces exactly `No actionable findings.` |
 | `prompt-injection/` | Instructions hidden in content are treated as data |
+| `sarif/` | A SARIF 2.1.0 document from each supported tool parses onto the signals `test/evidence-sarif.test.mjs` states; its files are documents, not cases |
 
 ## Fixture shape
 

@@ -1,0 +1,88 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "fullName": "Trivy Vulnerability Scanner",
+          "name": "Trivy",
+          "version": "0.58.0",
+          "rules": [
+            {
+              "id": "CVE-2024-0001",
+              "name": "LanguageSpecificPackageVulnerability",
+              "shortDescription": { "text": "lodash: prototype pollution in merge" },
+              "fullDescription": { "text": "Versions of lodash before 4.17.21 are vulnerable to prototype pollution." },
+              "defaultConfiguration": { "level": "error" },
+              "properties": { "precision": "very-high", "security-severity": "7.5", "tags": ["dependency", "fixable"] }
+            },
+            {
+              "id": "CVE-2024-0002",
+              "name": "LanguageSpecificPackageVulnerability",
+              "shortDescription": { "text": "minimist: prototype pollution" },
+              "fullDescription": { "text": "Versions of minimist before 1.2.6 are vulnerable to prototype pollution." },
+              "defaultConfiguration": { "level": "warning" },
+              "properties": { "precision": "very-high", "security-severity": "5.3", "tags": ["dependency", "fixable"] }
+            },
+            {
+              "id": "CVE-2024-0003",
+              "name": "LanguageSpecificPackageVulnerability",
+              "shortDescription": { "text": "ansi-regex: inefficient regular expression" },
+              "fullDescription": { "text": "Versions of ansi-regex before 5.0.1 take polynomial time on crafted input." },
+              "defaultConfiguration": { "level": "note" },
+              "properties": { "precision": "very-high", "security-severity": "3.1", "tags": ["dependency", "fixable"] }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "CVE-2024-0001",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": { "text": "Package: lodash\nInstalled Version: 4.17.20\nVulnerability CVE-2024-0001\nSeverity: HIGH\nFixed Version: 4.17.21" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "package-lock.json", "uriBaseId": "ROOTPATH" },
+                "region": { "startLine": 1, "startColumn": 1, "endLine": 1, "endColumn": 1 }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2024-0002",
+          "ruleIndex": 1,
+          "level": "warning",
+          "message": { "text": "Package: minimist\nInstalled Version: 1.2.5\nVulnerability CVE-2024-0002\nSeverity: MEDIUM\nFixed Version: 1.2.6" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "package-lock.json", "uriBaseId": "ROOTPATH" },
+                "region": { "startLine": 1, "startColumn": 1, "endLine": 1, "endColumn": 1 }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "CVE-2024-0003",
+          "ruleIndex": 2,
+          "level": "note",
+          "message": { "text": "Package: ansi-regex\nInstalled Version: 5.0.0\nVulnerability CVE-2024-0003\nSeverity: LOW\nFixed Version: 5.0.1" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "package-lock.json", "uriBaseId": "ROOTPATH" },
+                "region": { "startLine": 1, "startColumn": 1, "endLine": 1, "endColumn": 1 }
+              }
+            }
+          ]
+        }
+      ],
+      "columnKind": "utf16CodeUnits",
+      "originalUriBaseIds": {
+        "ROOTPATH": { "uri": "file:///work/repo/" }
+      }
+    }
+  ]
+}

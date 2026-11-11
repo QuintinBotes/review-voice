@@ -108,19 +108,19 @@ function checkBinary(name, args) {
 }
 function checkClaude() {
   const bin = process.env["REVIEW_VOICE_CLAUDE_BIN"] || "claude";
-  const found = checkBinary(bin, ["--version"]);
+  const found2 = checkBinary(bin, ["--version"]);
   return {
     name: "claude",
-    ok: found.ok,
-    detail: found.ok ? `found (login not checked): ${found.detail}` : `${bin} not found on PATH (needed only by review and watch)`
+    ok: found2.ok,
+    detail: found2.ok ? `found (login not checked): ${found2.detail}` : `${bin} not found on PATH (needed only by review and watch)`
   };
 }
 function checkFamily(family) {
-  const found = checkBinary(family, ["--version"]);
+  const found2 = checkBinary(family, ["--version"]);
   return {
     name: family,
-    ok: found.ok,
-    detail: found.ok ? `found (used only when runners.${family} is configured): ${found.detail}` : `not found on PATH (needed only when runners.${family} is configured)`
+    ok: found2.ok,
+    detail: found2.ok ? `found (used only when runners.${family} is configured): ${found2.detail}` : `not found on PATH (needed only when runners.${family} is configured)`
   };
 }
 var OPTIONAL_CHECKS = /* @__PURE__ */ new Set(["gh", "claude", "codex", "gemini"]);
@@ -835,15 +835,15 @@ function patchLineFor(hunks, line3) {
 }
 function classifyAnchor(hunks, path, line3) {
   const literal = path.replace(/^\.\/+/, "");
-  const normalised = hunks.has(literal) ? literal : normalisePath(path);
-  const file2 = hunks.get(normalised);
+  const normalised2 = hunks.has(literal) ? literal : normalisePath(path);
+  const file2 = hunks.get(normalised2);
   const patchLine = patchLineFor(hunks, line3);
   if (file2 === void 0) {
-    return { path: normalised, line: line3, kind: "file-not-in-diff", ok: false, nearest: [], patchLine, beyondHunks: false };
+    return { path: normalised2, line: line3, kind: "file-not-in-diff", ok: false, nearest: [], patchLine, beyondHunks: false };
   }
   const kind = file2.added.has(line3) ? "added" : file2.deletionSites.has(line3) ? "deletion-site" : file2.context.has(line3) ? "context" : "outside-hunk";
   return {
-    path: normalised,
+    path: normalised2,
     line: line3,
     kind,
     ok: kind === "added" || kind === "deletion-site",
@@ -1336,7 +1336,7 @@ function globToRegExp(glob) {
 }
 function governsCount(globs, changedPaths) {
   if (globs.length === 0 || changedPaths.length === 0) return 0;
-  const normalised = changedPaths.map((path) => path.split("\\").join("/"));
+  const normalised2 = changedPaths.map((path) => path.split("\\").join("/"));
   const compiled = globs.flatMap((glob) => {
     try {
       const exact = globToRegExp(glob);
@@ -1345,11 +1345,11 @@ function governsCount(globs, changedPaths) {
       return [];
     }
   });
-  return normalised.filter((path) => compiled.some((pattern) => pattern.test(path))).length;
+  return normalised2.filter((path) => compiled.some((pattern) => pattern.test(path))).length;
 }
 function governsAny(globs, changedPaths) {
   if (globs.length === 0 || changedPaths.length === 0) return false;
-  const normalised = changedPaths.map((path) => path.split("\\").join("/"));
+  const normalised2 = changedPaths.map((path) => path.split("\\").join("/"));
   return globs.some((glob) => {
     let pattern;
     try {
@@ -1358,7 +1358,7 @@ function governsAny(globs, changedPaths) {
       return false;
     }
     const loose = glob.includes("/") ? null : globToRegExp(`**/${glob}`);
-    return normalised.some((path) => pattern.test(path) || loose !== null && loose.test(path));
+    return normalised2.some((path) => pattern.test(path) || loose !== null && loose.test(path));
   });
 }
 function pointerTargets(content) {
@@ -1943,7 +1943,7 @@ function productionChange(files2, diffText, partial, markedGenerated2 = /* @__PU
 
 // plugins/review-voice/src/policy/load.ts
 import { readFileSync as readFileSync5, existsSync as existsSync4 } from "node:fs";
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { dirname as dirname6, isAbsolute, join as join8 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
@@ -2487,19 +2487,19 @@ var Alias = class extends NodeBase {
       if (ctx)
         ctx.aliasResolveCache = nodes;
     }
-    let found = void 0;
+    let found2 = void 0;
     for (const node of nodes) {
       if (node === this)
         break;
       if (node.anchor === this.source)
-        found = node;
+        found2 = node;
     }
-    if (found && ctx) {
+    if (found2 && ctx) {
       const { anchors, doc: doc2, maxAliasCount } = ctx;
-      let data = anchors.get(found);
+      let data = anchors.get(found2);
       if (!data) {
-        toJS(found, null, ctx);
-        data = anchors.get(found);
+        toJS(found2, null, ctx);
+        data = anchors.get(found2);
       }
       if (data?.res === void 0) {
         const msg = "This should not happen: Alias anchor was not resolved?";
@@ -2508,14 +2508,14 @@ var Alias = class extends NodeBase {
       if (maxAliasCount >= 0) {
         data.count += 1;
         if (data.aliasCount === 0)
-          data.aliasCount = getAliasCount(doc2, found, anchors);
+          data.aliasCount = getAliasCount(doc2, found2, anchors);
         if (data.count * data.aliasCount > maxAliasCount) {
           const msg = "Excessive alias count indicates a resource exhaustion attack";
           throw new ReferenceError(msg);
         }
       }
     }
-    return found;
+    return found2;
   }
   toJSON(_arg, ctx) {
     if (!ctx)
@@ -2781,13 +2781,13 @@ var Collection = class extends NodeBase {
 };
 
 // node_modules/yaml/browser/dist/stringify/stringifyComment.js
-var stringifyComment = (str) => str.replace(/^(?!$)(?: $)?/gm, "#");
+var stringifyComment = (str2) => str2.replace(/^(?!$)(?: $)?/gm, "#");
 function indentComment(comment, indent) {
   if (/^\n+$/.test(comment))
     return comment.substring(1);
   return indent ? comment.replace(/^(?! *$)/gm, indent) : comment;
 }
-var lineComment = (str, indent, comment) => str.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str.endsWith(" ") ? "" : " ") + comment;
+var lineComment = (str2, indent, comment) => str2.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str2.endsWith(" ") ? "" : " ") + comment;
 
 // node_modules/yaml/browser/dist/stringify/foldFlowLines.js
 var FOLD_FLOW = "flow";
@@ -2922,16 +2922,16 @@ var getFoldOptions = (ctx, isBlock2) => ({
   lineWidth: ctx.options.lineWidth,
   minContentWidth: ctx.options.minContentWidth
 });
-var containsDocumentMarker = (str) => /^(%|---|\.\.\.)/m.test(str);
-function lineLengthOverLimit(str, lineWidth, indentLength) {
+var containsDocumentMarker = (str2) => /^(%|---|\.\.\.)/m.test(str2);
+function lineLengthOverLimit(str2, lineWidth, indentLength) {
   if (!lineWidth || lineWidth < 0)
     return false;
   const limit = lineWidth - indentLength;
-  const strLen = str.length;
+  const strLen = str2.length;
   if (strLen <= limit)
     return false;
   for (let i = 0, start = 0; i < strLen; ++i) {
-    if (str[i] === "\n") {
+    if (str2[i] === "\n") {
       if (i - start > limit)
         return true;
       start = i + 1;
@@ -2948,11 +2948,11 @@ function doubleQuotedString(value, ctx) {
   const { implicitKey } = ctx;
   const minMultiLineLength = ctx.options.doubleQuotedMinMultiLineLength;
   const indent = ctx.indent || (containsDocumentMarker(value) ? "  " : "");
-  let str = "";
+  let str2 = "";
   let start = 0;
   for (let i = 0, ch = json2[i]; ch; ch = json2[++i]) {
     if (ch === " " && json2[i + 1] === "\\" && json2[i + 2] === "n") {
-      str += json2.slice(start, i) + "\\ ";
+      str2 += json2.slice(start, i) + "\\ ";
       i += 1;
       start = i;
       ch = "\\";
@@ -2961,38 +2961,38 @@ function doubleQuotedString(value, ctx) {
       switch (json2[i + 1]) {
         case "u":
           {
-            str += json2.slice(start, i);
+            str2 += json2.slice(start, i);
             const code3 = json2.substr(i + 2, 4);
             switch (code3) {
               case "0000":
-                str += "\\0";
+                str2 += "\\0";
                 break;
               case "0007":
-                str += "\\a";
+                str2 += "\\a";
                 break;
               case "000b":
-                str += "\\v";
+                str2 += "\\v";
                 break;
               case "001b":
-                str += "\\e";
+                str2 += "\\e";
                 break;
               case "0085":
-                str += "\\N";
+                str2 += "\\N";
                 break;
               case "00a0":
-                str += "\\_";
+                str2 += "\\_";
                 break;
               case "2028":
-                str += "\\L";
+                str2 += "\\L";
                 break;
               case "2029":
-                str += "\\P";
+                str2 += "\\P";
                 break;
               default:
                 if (code3.substr(0, 2) === "00")
-                  str += "\\x" + code3.substr(2);
+                  str2 += "\\x" + code3.substr(2);
                 else
-                  str += json2.substr(i, 6);
+                  str2 += json2.substr(i, 6);
             }
             i += 5;
             start = i + 1;
@@ -3002,14 +3002,14 @@ function doubleQuotedString(value, ctx) {
           if (implicitKey || json2[i + 2] === '"' || json2.length < minMultiLineLength) {
             i += 1;
           } else {
-            str += json2.slice(start, i) + "\n\n";
+            str2 += json2.slice(start, i) + "\n\n";
             while (json2[i + 2] === "\\" && json2[i + 3] === "n" && json2[i + 4] !== '"') {
-              str += "\n";
+              str2 += "\n";
               i += 2;
             }
-            str += indent;
+            str2 += indent;
             if (json2[i + 2] === " ")
-              str += "\\";
+              str2 += "\\";
             i += 1;
             start = i + 1;
           }
@@ -3018,8 +3018,8 @@ function doubleQuotedString(value, ctx) {
           i += 1;
       }
   }
-  str = start ? str + json2.slice(start) : json2;
-  return implicitKey ? str : foldFlowLines(str, indent, FOLD_QUOTED, getFoldOptions(ctx, false));
+  str2 = start ? str2 + json2.slice(start) : json2;
+  return implicitKey ? str2 : foldFlowLines(str2, indent, FOLD_QUOTED, getFoldOptions(ctx, false));
 }
 function singleQuotedString(value, ctx) {
   if (ctx.options.singleQuote === false || ctx.implicitKey && value.includes("\n") || /[ \t]\n|\n[ \t]/.test(value))
@@ -3147,15 +3147,15 @@ function plainString(item, ctx, onComment, onChompKeep) {
       return quotedString(value, ctx);
     }
   }
-  const str = value.replace(/\n+/g, `$&
+  const str2 = value.replace(/\n+/g, `$&
 ${indent}`);
   if (actualString) {
-    const test = (tag) => tag.default && tag.tag !== "tag:yaml.org,2002:str" && tag.test?.test(str);
+    const test = (tag) => tag.default && tag.tag !== "tag:yaml.org,2002:str" && tag.test?.test(str2);
     const { compat, tags } = ctx.doc.schema;
     if (tags.some(test) || compat?.some(test))
       return quotedString(value, ctx);
   }
-  return implicitKey ? str : foldFlowLines(str, indent, FOLD_FLOW, getFoldOptions(ctx, false));
+  return implicitKey ? str2 : foldFlowLines(str2, indent, FOLD_FLOW, getFoldOptions(ctx, false));
 }
 function stringifyString(item, ctx, onComment, onChompKeep) {
   const { implicitKey, inFlow } = ctx;
@@ -3297,11 +3297,11 @@ function stringify(item, ctx, onComment, onChompKeep) {
   const props = stringifyProps(node, tagObj, ctx);
   if (props.length > 0)
     ctx.indentAtStart = (ctx.indentAtStart ?? 0) + props.length + 1;
-  const str = typeof tagObj.stringify === "function" ? tagObj.stringify(node, ctx, onComment, onChompKeep) : isScalar(node) ? stringifyString(node, ctx, onComment, onChompKeep) : node.toString(ctx, onComment, onChompKeep);
+  const str2 = typeof tagObj.stringify === "function" ? tagObj.stringify(node, ctx, onComment, onChompKeep) : isScalar(node) ? stringifyString(node, ctx, onComment, onChompKeep) : node.toString(ctx, onComment, onChompKeep);
   if (!props)
-    return str;
-  return isScalar(node) || str[0] === "{" || str[0] === "[" ? `${props} ${str}` : `${props}
-${ctx.indent}${str}`;
+    return str2;
+  return isScalar(node) || str2[0] === "{" || str2[0] === "[" ? `${props} ${str2}` : `${props}
+${ctx.indent}${str2}`;
 }
 
 // node_modules/yaml/browser/dist/stringify/stringifyPair.js
@@ -3325,8 +3325,8 @@ function stringifyPair({ key: key2, value }, ctx, onComment, onChompKeep) {
   });
   let keyCommentDone = false;
   let chompKeep = false;
-  let str = stringify(key2, ctx, () => keyCommentDone = true, () => chompKeep = true);
-  if (!explicitKey && !ctx.inFlow && str.length > 1024) {
+  let str2 = stringify(key2, ctx, () => keyCommentDone = true, () => chompKeep = true);
+  if (!explicitKey && !ctx.inFlow && str2.length > 1024) {
     if (simpleKeys)
       throw new Error("With simple keys, single line scalar must not span more than 1024 characters");
     explicitKey = true;
@@ -3335,27 +3335,27 @@ function stringifyPair({ key: key2, value }, ctx, onComment, onChompKeep) {
     if (allNullValues || value == null) {
       if (keyCommentDone && onComment)
         onComment();
-      return str === "" ? "?" : explicitKey ? `? ${str}` : str;
+      return str2 === "" ? "?" : explicitKey ? `? ${str2}` : str2;
     }
   } else if (allNullValues && !simpleKeys || value == null && explicitKey) {
-    str = `? ${str}`;
+    str2 = `? ${str2}`;
     if (keyComment && !keyCommentDone) {
-      str += lineComment(str, ctx.indent, commentString(keyComment));
+      str2 += lineComment(str2, ctx.indent, commentString(keyComment));
     } else if (chompKeep && onChompKeep)
       onChompKeep();
-    return str;
+    return str2;
   }
   if (keyCommentDone)
     keyComment = null;
   if (explicitKey) {
     if (keyComment)
-      str += lineComment(str, ctx.indent, commentString(keyComment));
-    str = `? ${str}
+      str2 += lineComment(str2, ctx.indent, commentString(keyComment));
+    str2 = `? ${str2}
 ${indent}:`;
   } else {
-    str = `${str}:`;
+    str2 = `${str2}:`;
     if (keyComment)
-      str += lineComment(str, ctx.indent, commentString(keyComment));
+      str2 += lineComment(str2, ctx.indent, commentString(keyComment));
   }
   let vsb, vcb, valueComment;
   if (isNode(value)) {
@@ -3371,7 +3371,7 @@ ${indent}:`;
   }
   ctx.implicitKey = false;
   if (!explicitKey && !keyComment && isScalar(value))
-    ctx.indentAtStart = str.length + 1;
+    ctx.indentAtStart = str2.length + 1;
   chompKeep = false;
   if (!indentSeq && indentStep.length >= 2 && !ctx.inFlow && !explicitKey && isSeq(value) && !value.flow && !value.tag && !value.anchor) {
     ctx.indent = ctx.indent.substring(2);
@@ -3415,16 +3415,16 @@ ${ctx.indent}`;
   } else if (valueStr === "" || valueStr[0] === "\n") {
     ws = "";
   }
-  str += ws + valueStr;
+  str2 += ws + valueStr;
   if (ctx.inFlow) {
     if (valueCommentDone && onComment)
       onComment();
   } else if (valueComment && !valueCommentDone) {
-    str += lineComment(str, ctx.indent, commentString(valueComment));
+    str2 += lineComment(str2, ctx.indent, commentString(valueComment));
   } else if (chompKeep && onChompKeep) {
     onChompKeep();
   }
-  return str;
+  return str2;
 }
 
 // node_modules/yaml/browser/dist/log.js
@@ -3595,31 +3595,31 @@ function stringifyBlockCollection({ comment, items }, ctx, { blockItemPrefix, fl
       }
     }
     chompKeep = false;
-    let str2 = stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
+    let str3 = stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
     if (comment2)
-      str2 += lineComment(str2, itemIndent, commentString(comment2));
+      str3 += lineComment(str3, itemIndent, commentString(comment2));
     if (chompKeep && comment2)
       chompKeep = false;
-    lines2.push(blockItemPrefix + str2);
+    lines2.push(blockItemPrefix + str3);
   }
-  let str;
+  let str2;
   if (lines2.length === 0) {
-    str = flowChars.start + flowChars.end;
+    str2 = flowChars.start + flowChars.end;
   } else {
-    str = lines2[0];
+    str2 = lines2[0];
     for (let i = 1; i < lines2.length; ++i) {
       const line3 = lines2[i];
-      str += line3 ? `
+      str2 += line3 ? `
 ${indent}${line3}` : "\n";
     }
   }
   if (comment) {
-    str += "\n" + indentComment(commentString(comment), indent);
+    str2 += "\n" + indentComment(commentString(comment), indent);
     if (onComment)
       onComment();
   } else if (chompKeep && onChompKeep)
     onChompKeep();
-  return str;
+  return str2;
 }
 function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
   const { indent, indentStep, flowCollectionPadding: fcPadding, options: { commentString } } = ctx;
@@ -3662,21 +3662,21 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
     }
     if (comment)
       reqNewline = true;
-    let str = stringify(item, itemCtx, () => comment = null);
-    reqNewline || (reqNewline = lines2.length > linesAtValue || str.includes("\n"));
+    let str2 = stringify(item, itemCtx, () => comment = null);
+    reqNewline || (reqNewline = lines2.length > linesAtValue || str2.includes("\n"));
     if (i < items.length - 1) {
-      str += ",";
+      str2 += ",";
     } else if (ctx.options.trailingComma) {
       if (ctx.options.lineWidth > 0) {
-        reqNewline || (reqNewline = lines2.reduce((sum, line3) => sum + line3.length + 2, 2) + (str.length + 2) > ctx.options.lineWidth);
+        reqNewline || (reqNewline = lines2.reduce((sum, line3) => sum + line3.length + 2, 2) + (str2.length + 2) > ctx.options.lineWidth);
       }
       if (reqNewline) {
-        str += ",";
+        str2 += ",";
       }
     }
     if (comment)
-      str += lineComment(str, itemIndent, commentString(comment));
-    lines2.push(str);
+      str2 += lineComment(str2, itemIndent, commentString(comment));
+    lines2.push(str2);
     linesAtValue = lines2.length;
   }
   const { start, end } = flowChars;
@@ -3688,11 +3688,11 @@ function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
       reqNewline = ctx.options.lineWidth > 0 && len > ctx.options.lineWidth;
     }
     if (reqNewline) {
-      let str = start;
+      let str2 = start;
       for (const line3 of lines2)
-        str += line3 ? `
+        str2 += line3 ? `
 ${indentStep}${indent}${line3}` : "\n";
-      return `${str}
+      return `${str2}
 ${indent}${end}`;
     } else {
       return `${start}${fcPadding}${lines2.join(" ")}${fcPadding}${end}`;
@@ -3976,7 +3976,7 @@ var string = {
   identify: (value) => typeof value === "string",
   default: true,
   tag: "tag:yaml.org,2002:str",
-  resolve: (str) => str,
+  resolve: (str2) => str2,
   stringify(item, ctx, onComment, onChompKeep) {
     ctx = Object.assign({ actualString: true }, ctx);
     return stringifyString(item, ctx, onComment, onChompKeep);
@@ -4000,7 +4000,7 @@ var boolTag = {
   default: true,
   tag: "tag:yaml.org,2002:bool",
   test: /^(?:[Tt]rue|TRUE|[Ff]alse|FALSE)$/,
-  resolve: (str) => new Scalar(str[0] === "t" || str[0] === "T"),
+  resolve: (str2) => new Scalar(str2[0] === "t" || str2[0] === "T"),
   stringify({ source, value }, ctx) {
     if (source && boolTag.test.test(source)) {
       const sv = source[0] === "t" || source[0] === "T";
@@ -4038,7 +4038,7 @@ var floatNaN = {
   default: true,
   tag: "tag:yaml.org,2002:float",
   test: /^(?:[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN)$/,
-  resolve: (str) => str.slice(-3).toLowerCase() === "nan" ? NaN : str[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
+  resolve: (str2) => str2.slice(-3).toLowerCase() === "nan" ? NaN : str2[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
   stringify: stringifyNumber
 };
 var floatExp = {
@@ -4047,7 +4047,7 @@ var floatExp = {
   tag: "tag:yaml.org,2002:float",
   format: "EXP",
   test: /^[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)[eE][-+]?[0-9]+$/,
-  resolve: (str) => parseFloat(str),
+  resolve: (str2) => parseFloat(str2),
   stringify(node) {
     const num = Number(node.value);
     return isFinite(num) ? num.toExponential() : stringifyNumber(node);
@@ -4058,11 +4058,11 @@ var float = {
   default: true,
   tag: "tag:yaml.org,2002:float",
   test: /^[-+]?(?:\.[0-9]+|[0-9]+\.[0-9]*)$/,
-  resolve(str) {
-    const node = new Scalar(parseFloat(str));
-    const dot = str.indexOf(".");
-    if (dot !== -1 && str[str.length - 1] === "0")
-      node.minFractionDigits = str.length - dot - 1;
+  resolve(str2) {
+    const node = new Scalar(parseFloat(str2));
+    const dot = str2.indexOf(".");
+    if (dot !== -1 && str2[str2.length - 1] === "0")
+      node.minFractionDigits = str2.length - dot - 1;
     return node;
   },
   stringify: stringifyNumber
@@ -4070,7 +4070,7 @@ var float = {
 
 // node_modules/yaml/browser/dist/schema/core/int.js
 var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
-var intResolve = (str, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str.substring(offset), radix);
+var intResolve = (str2, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str2) : parseInt(str2.substring(offset), radix);
 function intStringify(node, radix, prefix) {
   const { value } = node;
   if (intIdentify(value) && value >= 0)
@@ -4083,7 +4083,7 @@ var intOct = {
   tag: "tag:yaml.org,2002:int",
   format: "OCT",
   test: /^0o[0-7]+$/,
-  resolve: (str, _onError, opt) => intResolve(str, 2, 8, opt),
+  resolve: (str2, _onError, opt) => intResolve(str2, 2, 8, opt),
   stringify: (node) => intStringify(node, 8, "0o")
 };
 var int = {
@@ -4091,7 +4091,7 @@ var int = {
   default: true,
   tag: "tag:yaml.org,2002:int",
   test: /^[-+]?[0-9]+$/,
-  resolve: (str, _onError, opt) => intResolve(str, 0, 10, opt),
+  resolve: (str2, _onError, opt) => intResolve(str2, 0, 10, opt),
   stringify: stringifyNumber
 };
 var intHex = {
@@ -4100,7 +4100,7 @@ var intHex = {
   tag: "tag:yaml.org,2002:int",
   format: "HEX",
   test: /^0x[0-9a-fA-F]+$/,
-  resolve: (str, _onError, opt) => intResolve(str, 2, 16, opt),
+  resolve: (str2, _onError, opt) => intResolve(str2, 2, 16, opt),
   stringify: (node) => intStringify(node, 16, "0x")
 };
 
@@ -4129,7 +4129,7 @@ var jsonScalars = [
     identify: (value) => typeof value === "string",
     default: true,
     tag: "tag:yaml.org,2002:str",
-    resolve: (str) => str,
+    resolve: (str2) => str2,
     stringify: stringifyJSON
   },
   {
@@ -4146,7 +4146,7 @@ var jsonScalars = [
     default: true,
     tag: "tag:yaml.org,2002:bool",
     test: /^true$|^false$/,
-    resolve: (str) => str === "true",
+    resolve: (str2) => str2 === "true",
     stringify: stringifyJSON
   },
   {
@@ -4154,7 +4154,7 @@ var jsonScalars = [
     default: true,
     tag: "tag:yaml.org,2002:int",
     test: /^-?(?:0|[1-9][0-9]*)$/,
-    resolve: (str, _onError, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str, 10),
+    resolve: (str2, _onError, { intAsBigInt }) => intAsBigInt ? BigInt(str2) : parseInt(str2, 10),
     stringify: ({ value }) => intIdentify2(value) ? value.toString() : JSON.stringify(value)
   },
   {
@@ -4162,7 +4162,7 @@ var jsonScalars = [
     default: true,
     tag: "tag:yaml.org,2002:float",
     test: /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?$/,
-    resolve: (str) => parseFloat(str),
+    resolve: (str2) => parseFloat(str2),
     stringify: stringifyJSON
   }
 ];
@@ -4170,9 +4170,9 @@ var jsonError = {
   default: true,
   tag: "",
   test: /^/,
-  resolve(str, onError) {
-    onError(`Unresolved plain scalar ${JSON.stringify(str)}`);
-    return str;
+  resolve(str2, onError) {
+    onError(`Unresolved plain scalar ${JSON.stringify(str2)}`);
+    return str2;
   }
 };
 var schema2 = [map, seq].concat(jsonScalars, jsonError);
@@ -4193,10 +4193,10 @@ var binary = {
    */
   resolve(src, onError) {
     if (typeof atob === "function") {
-      const str = atob(src.replace(/[\n\r]/g, ""));
-      const buffer = new Uint8Array(str.length);
-      for (let i = 0; i < str.length; ++i)
-        buffer[i] = str.charCodeAt(i);
+      const str2 = atob(src.replace(/[\n\r]/g, ""));
+      const buffer = new Uint8Array(str2.length);
+      for (let i = 0; i < str2.length; ++i)
+        buffer[i] = str2.charCodeAt(i);
       return buffer;
     } else {
       onError("This environment does not support reading binary tags; either Buffer or atob is required");
@@ -4207,26 +4207,26 @@ var binary = {
     if (!value)
       return "";
     const buf = value;
-    let str;
+    let str2;
     if (typeof btoa === "function") {
       let s = "";
       for (let i = 0; i < buf.length; ++i)
         s += String.fromCharCode(buf[i]);
-      str = btoa(s);
+      str2 = btoa(s);
     } else {
       throw new Error("This environment does not support writing binary tags; either Buffer or btoa is required");
     }
     type ?? (type = Scalar.BLOCK_LITERAL);
     if (type !== Scalar.QUOTE_DOUBLE) {
       const lineWidth = Math.max(ctx.options.lineWidth - ctx.indent.length, ctx.options.minContentWidth);
-      const n = Math.ceil(str.length / lineWidth);
+      const n = Math.ceil(str2.length / lineWidth);
       const lines2 = new Array(n);
       for (let i = 0, o = 0; i < n; ++i, o += lineWidth) {
-        lines2[i] = str.substr(o, lineWidth);
+        lines2[i] = str2.substr(o, lineWidth);
       }
-      str = lines2.join(type === Scalar.BLOCK_LITERAL ? "\n" : " ");
+      str2 = lines2.join(type === Scalar.BLOCK_LITERAL ? "\n" : " ");
     }
-    return stringifyString({ comment, type, value: str }, ctx, onComment, onChompKeep);
+    return stringifyString({ comment, type, value: str2 }, ctx, onComment, onChompKeep);
   }
 };
 
@@ -4392,7 +4392,7 @@ var floatNaN2 = {
   default: true,
   tag: "tag:yaml.org,2002:float",
   test: /^(?:[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN)$/,
-  resolve: (str) => str.slice(-3).toLowerCase() === "nan" ? NaN : str[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
+  resolve: (str2) => str2.slice(-3).toLowerCase() === "nan" ? NaN : str2[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
   stringify: stringifyNumber
 };
 var floatExp2 = {
@@ -4401,7 +4401,7 @@ var floatExp2 = {
   tag: "tag:yaml.org,2002:float",
   format: "EXP",
   test: /^[-+]?(?:[0-9][0-9_]*)?(?:\.[0-9_]*)?[eE][-+]?[0-9]+$/,
-  resolve: (str) => parseFloat(str.replace(/_/g, "")),
+  resolve: (str2) => parseFloat(str2.replace(/_/g, "")),
   stringify(node) {
     const num = Number(node.value);
     return isFinite(num) ? num.toExponential() : stringifyNumber(node);
@@ -4412,11 +4412,11 @@ var float2 = {
   default: true,
   tag: "tag:yaml.org,2002:float",
   test: /^[-+]?(?:[0-9][0-9_]*)?\.[0-9_]*$/,
-  resolve(str) {
-    const node = new Scalar(parseFloat(str.replace(/_/g, "")));
-    const dot = str.indexOf(".");
+  resolve(str2) {
+    const node = new Scalar(parseFloat(str2.replace(/_/g, "")));
+    const dot = str2.indexOf(".");
     if (dot !== -1) {
-      const f = str.substring(dot + 1).replace(/_/g, "");
+      const f = str2.substring(dot + 1).replace(/_/g, "");
       if (f[f.length - 1] === "0")
         node.minFractionDigits = f.length;
     }
@@ -4427,34 +4427,34 @@ var float2 = {
 
 // node_modules/yaml/browser/dist/schema/yaml-1.1/int.js
 var intIdentify3 = (value) => typeof value === "bigint" || Number.isInteger(value);
-function intResolve2(str, offset, radix, { intAsBigInt }) {
-  const sign = str[0];
+function intResolve2(str2, offset, radix, { intAsBigInt }) {
+  const sign = str2[0];
   if (sign === "-" || sign === "+")
     offset += 1;
-  str = str.substring(offset).replace(/_/g, "");
+  str2 = str2.substring(offset).replace(/_/g, "");
   if (intAsBigInt) {
     switch (radix) {
       case 2:
-        str = `0b${str}`;
+        str2 = `0b${str2}`;
         break;
       case 8:
-        str = `0o${str}`;
+        str2 = `0o${str2}`;
         break;
       case 16:
-        str = `0x${str}`;
+        str2 = `0x${str2}`;
         break;
     }
-    const n2 = BigInt(str);
+    const n2 = BigInt(str2);
     return sign === "-" ? BigInt(-1) * n2 : n2;
   }
-  const n = parseInt(str, radix);
+  const n = parseInt(str2, radix);
   return sign === "-" ? -1 * n : n;
 }
 function intStringify2(node, radix, prefix) {
   const { value } = node;
   if (intIdentify3(value)) {
-    const str = value.toString(radix);
-    return value < 0 ? "-" + prefix + str.substr(1) : prefix + str;
+    const str2 = value.toString(radix);
+    return value < 0 ? "-" + prefix + str2.substr(1) : prefix + str2;
   }
   return stringifyNumber(node);
 }
@@ -4464,7 +4464,7 @@ var intBin = {
   tag: "tag:yaml.org,2002:int",
   format: "BIN",
   test: /^[-+]?0b[0-1_]+$/,
-  resolve: (str, _onError, opt) => intResolve2(str, 2, 2, opt),
+  resolve: (str2, _onError, opt) => intResolve2(str2, 2, 2, opt),
   stringify: (node) => intStringify2(node, 2, "0b")
 };
 var intOct2 = {
@@ -4473,7 +4473,7 @@ var intOct2 = {
   tag: "tag:yaml.org,2002:int",
   format: "OCT",
   test: /^[-+]?0[0-7_]+$/,
-  resolve: (str, _onError, opt) => intResolve2(str, 1, 8, opt),
+  resolve: (str2, _onError, opt) => intResolve2(str2, 1, 8, opt),
   stringify: (node) => intStringify2(node, 8, "0")
 };
 var int2 = {
@@ -4481,7 +4481,7 @@ var int2 = {
   default: true,
   tag: "tag:yaml.org,2002:int",
   test: /^[-+]?[0-9][0-9_]*$/,
-  resolve: (str, _onError, opt) => intResolve2(str, 0, 10, opt),
+  resolve: (str2, _onError, opt) => intResolve2(str2, 0, 10, opt),
   stringify: stringifyNumber
 };
 var intHex2 = {
@@ -4490,7 +4490,7 @@ var intHex2 = {
   tag: "tag:yaml.org,2002:int",
   format: "HEX",
   test: /^[-+]?0x[0-9a-fA-F_]+$/,
-  resolve: (str, _onError, opt) => intResolve2(str, 2, 16, opt),
+  resolve: (str2, _onError, opt) => intResolve2(str2, 2, 16, opt),
   stringify: (node) => intStringify2(node, 16, "0x")
 };
 
@@ -4574,9 +4574,9 @@ var set = {
 };
 
 // node_modules/yaml/browser/dist/schema/yaml-1.1/timestamp.js
-function parseSexagesimal(str, asBigInt) {
-  const sign = str[0];
-  const parts = sign === "-" || sign === "+" ? str.substring(1) : str;
+function parseSexagesimal(str2, asBigInt) {
+  const sign = str2[0];
+  const parts = sign === "-" || sign === "+" ? str2.substring(1) : str2;
   const num = (n) => asBigInt ? BigInt(n) : Number(n);
   const res = parts.replace(/_/g, "").split(":").reduce((res2, p2) => res2 * num(60) + num(p2), num(0));
   return sign === "-" ? num(-1) * res : res;
@@ -4613,7 +4613,7 @@ var intTime = {
   tag: "tag:yaml.org,2002:int",
   format: "TIME",
   test: /^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+$/,
-  resolve: (str, _onError, { intAsBigInt }) => parseSexagesimal(str, intAsBigInt),
+  resolve: (str2, _onError, { intAsBigInt }) => parseSexagesimal(str2, intAsBigInt),
   stringify: stringifySexagesimal
 };
 var floatTime = {
@@ -4622,7 +4622,7 @@ var floatTime = {
   tag: "tag:yaml.org,2002:float",
   format: "TIME",
   test: /^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*$/,
-  resolve: (str) => parseSexagesimal(str, false),
+  resolve: (str2) => parseSexagesimal(str2, false),
   stringify: stringifySexagesimal
 };
 var timestamp = {
@@ -4633,8 +4633,8 @@ var timestamp = {
   // may be omitted altogether, resulting in a date format. In such a case, the time part is
   // assumed to be 00:00:00Z (start of day, UTC).
   test: RegExp("^([0-9]{4})-([0-9]{1,2})-([0-9]{1,2})(?:(?:t|T|[ \\t]+)([0-9]{1,2}):([0-9]{1,2}):([0-9]{1,2}(\\.[0-9]+)?)(?:[ \\t]*(Z|[-+][012]?[0-9](?::[0-9]{2})?))?)?$"),
-  resolve(str) {
-    const match = str.match(timestamp.test);
+  resolve(str2) {
+    const match = str2.match(timestamp.test);
     if (!match)
       throw new Error("!!timestamp expects a date, starting with yyyy-mm-dd");
     const [, year, month, day, hour, minute, second] = match.map(Number);
@@ -5202,7 +5202,7 @@ function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIn
   let tag = null;
   let newlineAfterProp = null;
   let comma = null;
-  let found = null;
+  let found2 = null;
   let start = null;
   for (const token of tokens) {
     if (reqSpace) {
@@ -5239,7 +5239,7 @@ function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIn
         if (atNewline) {
           if (comment)
             comment += token.source;
-          else if (!found || indicator !== "seq-item-ind")
+          else if (!found2 || indicator !== "seq-item-ind")
             spaceBefore = true;
         } else
           commentSep += token.source;
@@ -5273,9 +5273,9 @@ function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIn
       case indicator:
         if (anchor || tag)
           onError(token, "BAD_PROP_ORDER", `Anchors and tags must be after the ${token.source} indicator`);
-        if (found)
+        if (found2)
           onError(token, "UNEXPECTED_TOKEN", `Unexpected ${token.source} in ${flow ?? "collection"}`);
-        found = token;
+        found2 = token;
         atNewline = indicator === "seq-item-ind" || indicator === "explicit-key-ind";
         hasSpace = false;
         break;
@@ -5304,7 +5304,7 @@ function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIn
     onError(tab, "TAB_AS_INDENT", "Tabs are not allowed as indentation");
   return {
     comma,
-    found,
+    found: found2,
     spaceBefore,
     comment,
     hasNewline,
@@ -7311,15 +7311,15 @@ var LineCounter = class {
 };
 
 // node_modules/yaml/browser/dist/parse/parser.js
-function includesToken(list2, type) {
-  for (let i = 0; i < list2.length; ++i)
-    if (list2[i].type === type)
+function includesToken(list3, type) {
+  for (let i = 0; i < list3.length; ++i)
+    if (list3[i].type === type)
       return true;
   return false;
 }
-function findNonEmptyIndex(list2) {
-  for (let i = 0; i < list2.length; ++i) {
-    switch (list2[i].type) {
+function findNonEmptyIndex(list3) {
+  for (let i = 0; i < list3.length; ++i) {
+    switch (list3[i].type) {
       case "space":
       case "comment":
       case "newline":
@@ -8327,8 +8327,8 @@ var ALIASES = {
   logic: "correctness"
 };
 function canonicalCategory(category) {
-  const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
-  return LEGACY_BY_CATEGORY[normalised] !== void 0 ? normalised : ALIASES[normalised] ?? normalised;
+  const normalised2 = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  return LEGACY_BY_CATEGORY[normalised2] !== void 0 ? normalised2 : ALIASES[normalised2] ?? normalised2;
 }
 var MAX_TIER_MOVEMENT = 1;
 function boundToRequest(derived, requested, reach, reason2) {
@@ -8376,7 +8376,7 @@ function deriveSeverity(category, requested, reach = null) {
       reason: "no category was supplied, so the middle tier is used rather than a guess"
     };
   }
-  const normalised = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const normalised2 = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
   const resolved = canonicalCategory(category);
   const legacy = LEGACY_BY_CATEGORY[resolved];
   if (legacy === void 0) {
@@ -8400,7 +8400,7 @@ function deriveSeverity(category, requested, reach = null) {
       severity: legacy,
       requested,
       reach: reach ?? null,
-      reason: resolved === normalised ? `${resolved} carries ${legacy}` : `${category} read as ${resolved}, which carries ${legacy}`
+      reason: resolved === normalised2 ? `${resolved} carries ${legacy}` : `${category} read as ${resolved}, which carries ${legacy}`
     };
   }
   const tiers = BY_CATEGORY_AND_REACH[resolved];
@@ -8414,7 +8414,7 @@ function deriveSeverity(category, requested, reach = null) {
     };
   }
   const varies = new Set(Object.values(tiers ?? {})).size > 1;
-  const describe = resolved === normalised ? `${resolved} at ${resolvedReach} reach carries ${severity}` : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`;
+  const describe = resolved === normalised2 ? `${resolved} at ${resolvedReach} reach carries ${severity}` : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`;
   if (!varies) {
     return { severity, requested, reach: reach ?? null, reason: describe };
   }
@@ -8985,8 +8985,8 @@ function partlyAddressedProblem(value) {
   }
   const v = value;
   for (const key2 of ["remaining", "addressed"]) {
-    const list2 = v[key2];
-    if (!Array.isArray(list2) || list2.length === 0 || !list2.every((item) => typeof item === "string" && item.trim().length > 0)) {
+    const list3 = v[key2];
+    if (!Array.isArray(list3) || list3.length === 0 || !list3.every((item) => typeof item === "string" && item.trim().length > 0)) {
       return `${key2} must be a non-empty array of non-empty strings`;
     }
   }
@@ -9331,8 +9331,8 @@ var GLOBAL_SCOPE = { type: "global", key: "owner" };
 function commonDirectory(paths) {
   let common = null;
   for (const path of paths) {
-    const normalised = posix2.normalize(path.split("\\").join("/"));
-    const segments = normalised.split("/").filter((part) => part.length > 0 && part !== ".");
+    const normalised2 = posix2.normalize(path.split("\\").join("/"));
+    const segments = normalised2.split("/").filter((part) => part.length > 0 && part !== ".");
     const directories = segments[0] === ".." ? [] : segments.slice(0, -1);
     if (common === null) {
       common = directories;
@@ -9970,9 +9970,9 @@ var GitHubClient = class {
     let next = path;
     while (next !== null && items.length < limit) {
       const page = await this.get(next);
-      const list2 = page.data?.[key2];
-      if (!Array.isArray(list2)) break;
-      items.push(...list2);
+      const list3 = page.data?.[key2];
+      if (!Array.isArray(list3)) break;
+      items.push(...list3);
       next = page.linkNext;
     }
     return items.slice(0, limit);
@@ -10327,12 +10327,12 @@ function kindsIn(text5, language3) {
   return kinds;
 }
 function findTypeEscapes(diff, paths) {
-  const found = [];
+  const found2 = [];
   for (const hunk of countHunks(diff, new Set(paths))) {
     const language3 = LANGUAGES2[extname(hunk.path).toLowerCase()];
     if (language3 === void 0) continue;
     for (const { line: line3, text: text5 } of hunk.added) {
-      for (const kind of kindsIn(text5, language3)) found.push({ path: hunk.path, line: line3, kind });
+      for (const kind of kindsIn(text5, language3)) found2.push({ path: hunk.path, line: line3, kind });
     }
   }
   const byPathLineKind = (a, b) => {
@@ -10340,9 +10340,9 @@ function findTypeEscapes(diff, paths) {
     if (a.line !== b.line) return a.line - b.line;
     return a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0;
   };
-  found.sort(byPathLineKind);
+  found2.sort(byPathLineKind);
   const perFile = /* @__PURE__ */ new Map();
-  return found.filter((escape) => {
+  return found2.filter((escape) => {
     const seen = perFile.get(escape.path) ?? 0;
     perFile.set(escape.path, seen + 1);
     return seen < MAX_PER_FILE;
@@ -10525,7 +10525,7 @@ function findRemovedControls(diff, paths, deletedFiles = []) {
     return true;
   };
   const netted = (text5) => spend(added, collapse(text5));
-  const found = [];
+  const found2 = [];
   const byPath = /* @__PURE__ */ new Map();
   const entriesOf = (path) => {
     const entries = byPath.get(path) ?? [];
@@ -10562,7 +10562,7 @@ function findRemovedControls(diff, paths, deletedFiles = []) {
   }
   for (const entries of byPath.values()) {
     entries.sort((a, b) => a.line - b.line);
-    found.push(...entries.slice(0, MAX_PER_FILE2));
+    found2.push(...entries.slice(0, MAX_PER_FILE2));
   }
   for (const file2 of deletedFiles) {
     const lang = LANGUAGES3[extname2(file2.path).toLowerCase()];
@@ -10575,12 +10575,12 @@ function findRemovedControls(diff, paths, deletedFiles = []) {
       if (kept >= MAX_PER_FILE2) continue;
       for (const kind of kindsIn2(text5, lang, allowlisted)) {
         if (kept >= MAX_PER_FILE2) break;
-        found.push({ path: file2.path, line: 1, kind, text: text5.trim().slice(0, MAX_TEXT), deletedFile: true });
+        found2.push({ path: file2.path, line: 1, kind, text: text5.trim().slice(0, MAX_TEXT), deletedFile: true });
         kept += 1;
       }
     }
   }
-  return found.sort((a, b) => a.path === b.path ? a.line - b.line : a.path < b.path ? -1 : 1);
+  return found2.sort((a, b) => a.path === b.path ? a.line - b.line : a.path < b.path ? -1 : 1);
 }
 
 // plugins/review-voice/src/diff/risk-markers.ts
@@ -10697,22 +10697,22 @@ function kindsIn3(text5, lang, urls) {
   return [...kinds];
 }
 function findRiskMarkers(diff, paths) {
-  const found = [];
+  const found2 = [];
   for (const hunk of countHunks(diff, new Set(paths))) {
     const lang = LANGUAGES4[extname3(hunk.path).toLowerCase()];
     if (lang === void 0) continue;
     const urls = /^urls?$/i.test(basename2(hunk.path, extname3(hunk.path)));
     for (const { line: line3, text: text5 } of hunk.added) {
-      for (const kind of kindsIn3(text5, lang, urls)) found.push({ path: hunk.path, line: line3, kind });
+      for (const kind of kindsIn3(text5, lang, urls)) found2.push({ path: hunk.path, line: line3, kind });
     }
   }
-  found.sort((a, b) => {
+  found2.sort((a, b) => {
     if (a.path !== b.path) return a.path < b.path ? -1 : 1;
     if (a.line !== b.line) return a.line - b.line;
     return a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0;
   });
   const perFile = /* @__PURE__ */ new Map();
-  return found.filter((marker) => {
+  return found2.filter((marker) => {
     const seen = perFile.get(marker.path) ?? 0;
     perFile.set(marker.path, seen + 1);
     return seen < MAX_PER_FILE3;
@@ -10905,7 +10905,7 @@ var UNCHANGED_REASONS = /* @__PURE__ */ new Set(["base-merged", "history-rewritt
 function parseReviewScope(value) {
   if (typeof value !== "object" || value === null) return null;
   const scope = value;
-  const strings = (list2) => Array.isArray(list2) && list2.every((item) => typeof item === "string");
+  const strings = (list3) => Array.isArray(list3) && list3.every((item) => typeof item === "string");
   const prior = typeof scope.since === "string" && nullableString(scope.priorRunId) && nullableString(scope.priorReviewedAt);
   if (scope.kind === "incremental" && prior && Number.isInteger(scope.commits) && strings(scope.files)) {
     return scope;
@@ -11327,7 +11327,7 @@ function hasReplayMarkers(section2) {
 }
 function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedReason, conflicts = [], withdrawn = [], priorMergeBase = mergeBase) {
   const diffText = git6.diffText;
-  const read = (left, list2) => list2.length === 0 ? "" : diffText(left, options.head, list2, options.cwd);
+  const read = (left, list3) => list3.length === 0 ? "" : diffText(left, options.head, list3, options.cwd);
   const wanted = new Set(paths);
   const conflicted = conflicts.filter((path) => wanted.has(path));
   const own = patchSections(read(mergeBase, conflicted));
@@ -11461,10 +11461,10 @@ function reanchorScores(scores, candidateId, target, hunks) {
   return { ok: true, updated, from, to, anchorCheck: check };
 }
 function reanchorCandidates(parsed2, candidateId, to) {
-  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord(parsed2) && Array.isArray(parsed2["candidates"]) ? parsed2["candidates"] : null;
-  if (list2 === null) return null;
-  if (!list2.some((c) => isRecord(c) && idOf(c) === candidateId)) return null;
-  const rewritten = list2.map((c) => {
+  const list3 = Array.isArray(parsed2) ? parsed2 : isRecord(parsed2) && Array.isArray(parsed2["candidates"]) ? parsed2["candidates"] : null;
+  if (list3 === null) return null;
+  if (!list3.some((c) => isRecord(c) && idOf(c) === candidateId)) return null;
+  const rewritten = list3.map((c) => {
     if (!(isRecord(c) && idOf(c) === candidateId)) return c;
     const moved = c["path"] !== to.path || c["line"] !== to.line;
     const { suggested_patch: _patch, ...rest } = c;
@@ -11811,8 +11811,8 @@ function hash(value) {
   return createHash("sha256").update(value).digest("hex").slice(0, 32);
 }
 function isPlaceholder(value) {
-  const normalised = value.toLowerCase().replace(/[<>{}[\]]/g, "");
-  if (PLACEHOLDERS.has(normalised)) return true;
+  const normalised2 = value.toLowerCase().replace(/[<>{}[\]]/g, "");
+  if (PLACEHOLDERS.has(normalised2)) return true;
   return value.length >= 4 && value === value.charAt(0).repeat(value.length);
 }
 function redact(input) {
@@ -11936,7 +11936,7 @@ function partlyAddressedOf(value) {
   if (typeof value !== "object" || value === null) return void 0;
   const v = value;
   if (v["kind"] !== "own-comment" || v["status"] !== "partly-addressed") return void 0;
-  const strings = (list2) => Array.isArray(list2) && list2.length > 0 && list2.every((item) => typeof item === "string") ? list2 : null;
+  const strings = (list3) => Array.isArray(list3) && list3.length > 0 && list3.every((item) => typeof item === "string") ? list3 : null;
   const remaining = strings(v["remaining"]);
   const addressed = strings(v["addressed"]);
   if (remaining === null || addressed === null) return void 0;
@@ -12016,11 +12016,11 @@ function describeFamilies(families) {
   return `Families second-pass ${families.secondPass ?? "none"}, challenge ${families.challenge ?? "none"}`;
 }
 function familiesOf(verdicts, stages) {
-  const list2 = Array.isArray(verdicts) ? verdicts : [];
-  const first = list2.length === 0 ? void 0 : asRecord(list2[0])?.["family"];
+  const list3 = Array.isArray(verdicts) ? verdicts : [];
+  const first = list3.length === 0 ? void 0 : asRecord(list3[0])?.["family"];
   const challenge2 = stages.find((stage) => stage.name === "challenge");
   return {
-    secondPass: list2.length === 0 ? null : isFamily(first) ? first : "unknown",
+    secondPass: list3.length === 0 ? null : isFamily(first) ? first : "unknown",
     challenge: challenge2 === void 0 ? null : isFamily(challenge2.family) ? challenge2.family : "claude"
   };
 }
@@ -12240,7 +12240,7 @@ var STRUCTURE_LISTS = ["sizeCrossings", "branchGrowth", "typeEscapes", "removedC
 var repositoryPath = (path) => path !== "" && !/^[\\/]/u.test(path) && !MACHINE_PATH.test(path);
 function recordedStructure(raw) {
   const value = asRecord(raw);
-  if (value === null || !STRUCTURE_LISTS.every((list2) => Array.isArray(value[list2]))) return null;
+  if (value === null || !STRUCTURE_LISTS.every((list3) => Array.isArray(value[list3]))) return null;
   const files2 = /* @__PURE__ */ new Map();
   const entries = /* @__PURE__ */ new Map();
   const deleted = /* @__PURE__ */ new Map();
@@ -12387,17 +12387,17 @@ function documentNamed(text5, documents) {
 }
 function conventionQuotesFor(evidence, documents) {
   if (!Array.isArray(evidence) || documents.length === 0) return void 0;
-  const found = [];
+  const found2 = [];
   for (const entry of evidence) {
-    if (found.length >= MAX_CONVENTION_QUOTES) break;
+    if (found2.length >= MAX_CONVENTION_QUOTES) break;
     if (typeof entry !== "string") continue;
     const document = documentNamed(entry, documents);
     if (document === void 0) continue;
     const content = squashed(document.content).toLowerCase();
     const quote3 = [...entry.matchAll(QUOTED)].map((match) => squashed(match[1] ?? "")).find((segment) => segment.split(" ").length >= 4 && content.includes(segment.toLowerCase()));
-    if (quote3 !== void 0) found.push({ path: document.path, quote: redactedAsPosted(quote3) });
+    if (quote3 !== void 0) found2.push({ path: document.path, quote: redactedAsPosted(quote3) });
   }
-  return found.length === 0 ? void 0 : found;
+  return found2.length === 0 ? void 0 : found2;
 }
 function assignIds(output, hints, facts = {}) {
   const taken = /* @__PURE__ */ new Set();
@@ -13816,80 +13816,385 @@ function removeHeadWorktree(headDir, cwd = process.cwd()) {
 import { spawn as spawnChild } from "node:child_process";
 
 // plugins/review-voice/src/evidence/parsers.ts
-function signal(tool, kind, path, line3, claim, raw) {
+import { createHash as createHash4 } from "node:crypto";
+import { posix as posix4 } from "node:path";
+function signal(tool, kind, path, line3, claim, raw, confidence = 0.95) {
   return {
     kind,
     path,
     line: line3,
     claim,
     evidence: [raw.trim()],
-    // A compiler or type checker reporting a concrete diagnostic is about as
-    // reliable as static evidence gets; it is still not a finding on its own.
-    confidence: 0.95,
+    confidence,
     tool
   };
 }
-var TSC = /^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.*)$/;
-var PYTHON3 = /^(.+?):(\d+)(?::(\d+))?:\s+(error|warning|note|[A-Z]\d+)\s*:?\s*(.*)$/;
-var DOTNET = /^\s*(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+([A-Z]+\d+):\s+(.*?)(?:\s+\[.*\])?$/;
+var SARIF_KINDS = [
+  [/gitleaks/, "secret"],
+  [/trivy/, "vulnerability"],
+  [/semgrep|opengrep|codeql/, "sast_finding"],
+  [/ruff|golangci-lint/, "lint_error"]
+];
+var str = (value) => typeof value === "string" ? value : void 0;
+var list = (value) => Array.isArray(value) ? value.filter((entry) => typeof entry === "object" && entry !== null) : [];
+function indexed(value, index) {
+  const entry = Array.isArray(value) && typeof index === "number" ? value[index] : void 0;
+  return typeof entry === "object" && entry !== null ? entry : void 0;
+}
+var PLACEHOLDERS2 = /(\{\{|\}\}|\{\d+\})/;
+var MAX_SARIF_MESSAGE_POINTS = 500;
+var MAX_SARIF_RULE_POINTS = 200;
+var MAX_COMPOSED_UNITS = 16 * 1024 * 1024;
+var COMPOSED_PER_UNIT = 8;
+function cut2(text5, points) {
+  return [...text5.slice(0, 2 * points)].slice(0, points).join("");
+}
+function memo(fn) {
+  const done = /* @__PURE__ */ new Map();
+  return (text5) => {
+    if (!done.has(text5)) done.set(text5, fn(text5));
+    return done.get(text5);
+  };
+}
+var MARKER = /\[(?:REDACTED|redacted):\w*\]/g;
+var HOLDS_MARKER = new RegExp(MARKER.source);
+function found(text5, needle, from) {
+  if (needle === "") return from;
+  const borders = new Int32Array(needle.length + 1);
+  borders[0] = -1;
+  for (let index = 0, border = -1; index < needle.length; ) {
+    while (border >= 0 && needle.charCodeAt(index) !== needle.charCodeAt(border)) border = borders[border];
+    index += 1;
+    border += 1;
+    borders[index] = border;
+  }
+  for (let index = from, matched = 0; index < text5.length; index += 1) {
+    while (matched >= 0 && text5.charCodeAt(index) !== needle.charCodeAt(matched)) matched = borders[matched];
+    matched += 1;
+    if (matched === needle.length) return index + 1 - matched;
+  }
+  return -1;
+}
+function replaced(text5, version) {
+  if (version === text5) return [];
+  const spans = [];
+  let end = 0;
+  let read = 0;
+  let marker = "";
+  for (const next of [...version.matchAll(MARKER), void 0]) {
+    const kept = version.slice(read, next?.index);
+    const start = next === void 0 ? Math.max(end, text5.length - kept.length) : read === 0 ? 0 : found(text5, kept, end);
+    const fits = start !== -1 && (read > 0 || start === 0) && text5.startsWith(kept, start);
+    if (read > 0 || !fits) spans.push({ start: end, end: fits ? start : text5.length, marker });
+    if (!fits || next === void 0) break;
+    end = start + kept.length;
+    marker = next[0];
+    read = next.index + marker.length;
+  }
+  return spans;
+}
+function cleaner(mask = (text5) => text5) {
+  return (text5) => {
+    const masked = mask(text5);
+    const redacted = redact(text5).text;
+    if (masked === text5) return redacted;
+    if (redacted === text5) return masked;
+    let cleaned = "";
+    let copied = 0;
+    for (const part of [...replaced(text5, masked), ...replaced(text5, redacted)].sort((a, b) => a.start - b.start)) {
+      if (part.start >= copied) cleaned += text5.slice(copied, part.start) + part.marker;
+      copied = Math.max(copied, part.end);
+    }
+    return cleaned + text5.slice(copied);
+  };
+}
+function sarifDocument(output) {
+  const start = output.indexOf("{");
+  const end = output.lastIndexOf("}");
+  if (start === -1 || end < start) return void 0;
+  try {
+    return JSON.parse(output.slice(start, end + 1));
+  } catch {
+    return void 0;
+  }
+}
+function sarifRuns(output) {
+  const document = sarifDocument(output);
+  return document?.version === "2.1.0" && Array.isArray(document.runs) ? list(document.runs) : void 0;
+}
+var SARIF_SCHEMA = /"\$schema"\s*:\s*"[^"]*sarif/i;
+var SARIF_VERSION = /"version"\s*:\s*"2\.1\.0"/;
+var SARIF_RUNS = /"runs"\s*:/;
+function isSarif(output) {
+  const document = sarifDocument(output);
+  if (document !== void 0 && (document.version === "2.1.0" && "runs" in document || /sarif/i.test(str(document.$schema) ?? ""))) return true;
+  const text5 = output.replace(/\\u00([0-7][0-9a-f])/gi, (_escape, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
+  return SARIF_SCHEMA.test(text5) || SARIF_VERSION.test(text5) && SARIF_RUNS.test(text5);
+}
+function sarifPath(uri, root, changes) {
+  let path = uri;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(uri)) {
+    const url = URL.canParse(uri) ? new URL(uri) : void 0;
+    if (url?.protocol !== "file:" || url.host !== "") return null;
+    path = url.pathname;
+  }
+  const plain = decoded(path);
+  if ([...new Set(path === uri ? [uri, plain] : [uri, decoded(uri), path, plain])].some(changes)) return void 0;
+  path = normalised(plain);
+  if (root === void 0) return path;
+  const relative6 = posix4.relative(root, posix4.resolve(root, path));
+  return relative6 === "" || relative6 === ".." || relative6.startsWith("../") ? null : relative6;
+}
+function underBase(uri, base) {
+  const entry = typeof base === "object" && base !== null ? base : void 0;
+  const baseUri = str(entry?.uri);
+  if (baseUri === void 0 || entry?.uriBaseId !== void 0) return void 0;
+  if (baseUri === "" || /^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(uri)) return uri;
+  return `${baseUri}${baseUri.endsWith("/") ? "" : "/"}${uri}`;
+}
+function normalised(path) {
+  const absolute = path.startsWith("/");
+  const kept = [];
+  for (const segment of path.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment !== "..") kept.push(segment);
+    else if (kept.length > 0 && kept.at(-1) !== "..") kept.pop();
+    else if (!absolute) kept.push("..");
+  }
+  const joined2 = kept.join("/");
+  const slash = path.endsWith("/") ? "/" : "";
+  if (absolute) return joined2 === "" ? "/" : `/${joined2}${slash}`;
+  return `${joined2 === "" ? "." : joined2}${slash}`;
+}
+function decoded(text5) {
+  return text5.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+    const bytes = Buffer.from(run.replaceAll("%", ""), "hex");
+    const utf8 = bytes.toString("utf8");
+    return Buffer.from(utf8, "utf8").equals(bytes) ? utf8 : run.replace(/%[0-7][0-9a-f]/gi, (escape) => String.fromCharCode(Number.parseInt(escape.slice(1), 16)));
+  });
+}
+function sarifSignals(output, tool, root, cleaned = cleaner()) {
+  const signals = [];
+  const seen = /* @__PURE__ */ new Set();
+  const sanitisedId = memo((ruleId) => {
+    const tabbed = cleaned(ruleId).replace(/(?![\t\n\u001b\u0090\u0098\u009b\u009d-\u009f])[\p{Cc}\p{Cf}]/gu, "	$&");
+    return cut2(cleaned(terminalSafe(tabbed).replace(/[\s\p{Cc}\p{Cf}]+/gu, " ").trim()), MAX_SARIF_RULE_POINTS).trimEnd();
+  });
+  const sanitisedMessage = (text5, first = cleaned(text5)) => {
+    const spaced = terminalSafe(first).replace(/\s+/g, " ").trim();
+    return cut2(spaced === first ? first : cleaned(spaced), MAX_SARIF_MESSAGE_POINTS).trimEnd();
+  };
+  const digest = (text5) => createHash4("sha256").update(text5).digest("base64");
+  const told = (text5, first) => ({ message: sanitisedMessage(text5, first), digest: digest(text5) });
+  const described = memo((text5) => told(text5));
+  const idDigest = memo(digest);
+  const numbers = /* @__PURE__ */ new Map([[null, 0]]);
+  let dropped = 0;
+  const placeOf = memo((uri) => {
+    const path = sarifPath(uri, root, (text5) => cleaned(text5) !== text5 || terminalSafe(text5) !== text5);
+    if (path === void 0) return { path: null, place: dropped -= 1 };
+    if (!numbers.has(path)) numbers.set(path, numbers.size);
+    return { path, place: numbers.get(path) };
+  });
+  const unfollowed = memo((_location) => ({ path: null, place: dropped -= 1 }));
+  let room = Math.min(MAX_COMPOSED_UNITS, COMPOSED_PER_UNIT * output.length);
+  const composed = (parts, length, values) => {
+    if (length > room) return void 0;
+    room -= length;
+    let text5 = "";
+    for (const [index, part] of parts.entries()) {
+      if (index % 2 === 0) text5 += part;
+      else if (part === "{{" || part === "}}") text5 += part.charAt(0);
+      else {
+        const value = Array.isArray(values) ? values[Number(part.slice(1, -1))] : void 0;
+        text5 += typeof value === "string" ? value : part;
+      }
+      if (text5.length - length > room) return void 0;
+    }
+    const first = cleaned(text5);
+    room -= Math.max(0, text5.length - length) + Math.max(0, first.length - text5.length);
+    return told(text5, first);
+  };
+  const strings = /* @__PURE__ */ new Map();
+  const composedFrom = (entry, values) => {
+    const template = str(entry.text);
+    if (template === void 0) return void 0;
+    let known = strings.get(entry);
+    if (known === void 0) {
+      known = { parts: template.split(PLACEHOLDERS2), messages: /* @__PURE__ */ new Map() };
+      strings.set(entry, known);
+    }
+    const key2 = Array.isArray(values) ? JSON.stringify(values.map(str)) : "";
+    if (!known.messages.has(key2)) known.messages.set(key2, composed(known.parts, template.length, values));
+    return known.messages.get(key2);
+  };
+  for (const run of sarifRuns(output) ?? []) {
+    const driver = run.tool?.driver;
+    const driverName = (str(driver?.name) ?? "").toLowerCase();
+    const kind = SARIF_KINDS.find(([pattern]) => pattern.test(driverName))?.[1] ?? "static_finding";
+    const extensions = list(run.tool?.extensions);
+    const byGuid = /* @__PURE__ */ new Map();
+    const idsOf = /* @__PURE__ */ new Map();
+    const byId = /* @__PURE__ */ new Map();
+    for (const component of [driver, ...extensions]) {
+      if (!byGuid.has(component?.guid)) byGuid.set(component?.guid, component);
+      const ids = /* @__PURE__ */ new Map();
+      for (const rule of list(component?.rules)) {
+        if (!ids.has(rule.id)) ids.set(rule.id, rule);
+        if (!byId.has(rule.id)) byId.set(rule.id, rule);
+      }
+      idsOf.set(component, ids);
+    }
+    for (const result of list(run.results)) {
+      if (result.kind !== void 0 && result.kind !== "fail") continue;
+      if (list(result.suppressions).some((entry2) => entry2.status === void 0 || entry2.status === "accepted")) continue;
+      const reference = result.rule?.toolComponent;
+      const componentIndex = reference?.index;
+      const guid = str(reference?.guid);
+      const component = typeof componentIndex === "number" && Number.isInteger(componentIndex) && componentIndex >= 0 ? indexed(run.tool?.extensions, componentIndex) : guid === void 0 ? driver : byGuid.get(guid);
+      const referenced = indexed(component?.rules, typeof result.ruleIndex === "number" ? result.ruleIndex : result.rule?.index);
+      const ruleId = str(result.ruleId) ?? str(result.rule?.id) ?? str(referenced?.id);
+      if (ruleId === void 0) continue;
+      const id = sanitisedId(ruleId);
+      if (id === "") continue;
+      const rule = referenced ?? idsOf.get(component)?.get(ruleId) ?? byId.get(ruleId);
+      const level = str(result.level) ?? str(rule?.defaultConfiguration?.level) ?? "warning";
+      if (level !== "error" && level !== "warning") continue;
+      const messageId = result.message?.id;
+      const messageStrings = rule?.messageStrings;
+      const entry = typeof messageId === "string" && typeof messageStrings === "object" && messageStrings !== null && Object.hasOwn(messageStrings, messageId) ? messageStrings[messageId] : void 0;
+      const text5 = str(result.message?.text);
+      const values = result.message?.arguments;
+      const description = str(rule?.shortDescription?.text);
+      const said = text5 !== void 0 ? (Array.isArray(values) ? composed(text5.split(PLACEHOLDERS2), text5.length, values) : void 0) ?? told(text5) : (typeof entry === "object" && entry !== null ? composedFrom(entry, values) : void 0) ?? (description === void 0 ? void 0 : described(description));
+      const message = said?.message;
+      const location = list(result.locations)[0]?.physicalLocation;
+      const artifact = location?.artifactLocation;
+      const source = artifact?.uri === void 0 ? indexed(run.artifacts, artifact?.index)?.location : artifact;
+      const uri = str(source?.uri);
+      const baseId = str(source?.uriBaseId);
+      const bases = run.originalUriBaseIds;
+      const based = uri === void 0 || baseId === void 0 || typeof bases !== "object" || bases === null || !Object.hasOwn(bases, baseId) ? uri : underBase(uri, bases[baseId]);
+      const { path, place } = uri === void 0 ? { path: null, place: 0 } : based === void 0 ? unfollowed(`${baseId}\0${uri}`) : placeOf(based);
+      const startLine = location?.region?.startLine;
+      const given = typeof startLine === "number" && Number.isInteger(startLine) && startLine > 0 ? startLine : null;
+      const line3 = path === null ? null : given;
+      const claim = message === void 0 || message === "" ? id : `${id}: ${message}`;
+      const key2 = `${place}\0${given}\0${idDigest(ruleId)}\0${said?.digest ?? ""}`;
+      if (seen.has(key2)) continue;
+      seen.add(key2);
+      signals.push(signal(tool, kind, path, line3, claim, message === void 0 || message === "" ? id : message, level === "error" ? 0.95 : 0.8));
+    }
+  }
+  return signals;
+}
+var TSC = /^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.*)$/d;
+var PYTHON3 = /^(.+?):(\d+)(?::(\d+))?:\s+(error|warning|note|[A-Z]\d+)\s*:?\s*(.*)$/d;
+var DOTNET = /^\s*(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+([A-Z]+\d+):\s+(.*?)(?:\s+\[(?!REDACTED:|redacted:).*\])?$/d;
+var ESLINT = /^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$/d;
+function reads(pattern, claim, clean2 = cleaner()) {
+  return (match) => {
+    const cleaned = clean2(match[0]);
+    const again = cleaned === match[0] ? match : pattern.exec(cleaned);
+    return { claim: again === null ? cleaned.trim() : claim(again), holds: cleaned.startsWith(match[0].slice(0, match.indices?.[2]?.[1])) };
+  };
+}
+function positioned(tool, kind, read) {
+  return (match) => {
+    const { claim, holds } = read(match);
+    return signal(tool, kind, holds ? match[1] : null, holds ? Number(match[2]) : null, claim, match[0]);
+  };
+}
 var ADAPTERS = [
+  {
+    // First, because the per-tool adapters match on command text and a `ruff`
+    // or `eslint` command may print SARIF; the command plays no part here, so
+    // a wrapper script named anything is covered. Snippets, code flows, fixes,
+    // fingerprints and properties are never copied, because a snippet is
+    // repository content, and for a secrets scanner it is the secret itself.
+    name: "sarif",
+    matches: (_command, output) => isSarif(output),
+    parse: sarifSignals,
+    // shortcut: matches, parse and version each parse the document, slow only for output near the 16 MB cap.
+    version: (output) => {
+      const driver = sarifRuns(output)?.[0]?.tool?.driver;
+      const name = str(driver?.name);
+      const version = str(driver?.version) ?? str(driver?.semanticVersion);
+      return name === void 0 || version === void 0 ? void 0 : `${name} ${version}`;
+    }
+  },
   {
     name: "typescript",
     matches: (command, output) => /tsc|typecheck|tsgo/i.test(command) || TSC.test(output.split("\n")[0] ?? ""),
-    parse: (output, tool) => output.split("\n").map((line3) => TSC.exec(line3)).filter((match) => match !== null).filter((match) => match[4] === "error").map(
-      (match) => signal(tool, "type_error", match[1], Number(match[2]), `${match[5]}: ${match[6]}`, match[0])
-    )
+    parse: (output, tool, _root, clean2) => {
+      const toSignal = positioned(tool, "type_error", reads(TSC, (match) => `${match[5]}: ${match[6]}`, clean2));
+      return output.split("\n").map((line3) => TSC.exec(line3)).filter((match) => match !== null).filter((match) => match[4] === "error").map(toSignal);
+    }
   },
   {
     name: "dotnet",
     matches: (command) => /dotnet|msbuild|csc\b/i.test(command),
-    parse: (output, tool) => output.split("\n").map((line3) => DOTNET.exec(line3)).filter((match) => match !== null).filter((match) => match[4] === "error").map(
-      (match) => signal(tool, "compile_error", match[1], Number(match[2]), `${match[5]}: ${match[6]}`, match[0])
-    ).filter((current, index, all) => all.findIndex((other) => other.claim === current.claim && other.path === current.path && other.line === current.line) === index)
+    parse: (output, tool, _root, clean2) => {
+      const toSignal = positioned(tool, "compile_error", reads(DOTNET, (match) => `${match[5]}: ${match[6]}`, clean2));
+      return output.split("\n").map((line3) => DOTNET.exec(line3)).filter((match) => match !== null).filter((match) => match[4] === "error").map((match) => ({ match, kept: toSignal(match) })).filter((current, index, all) => all.findIndex((other) => other.kept.claim === current.kept.claim && other.match[1] === current.match[1] && other.match[2] === current.match[2]) === index).map(({ kept }) => kept);
+    }
   },
   {
     name: "python",
     matches: (command) => /mypy|ruff|flake8|pylint|pytest/i.test(command),
-    parse: (output, tool) => output.split("\n").map((line3) => PYTHON3.exec(line3)).filter((match) => match !== null).filter((match) => match[4] !== "note").map(
-      (match) => signal(tool, "lint_or_type_error", match[1], Number(match[2]), `${match[4]}: ${match[5]}`, match[0])
-    )
+    parse: (output, tool, _root, clean2) => {
+      const toSignal = positioned(tool, "lint_or_type_error", reads(PYTHON3, (match) => `${match[4]}: ${match[5]}`, clean2));
+      return output.split("\n").map((line3) => PYTHON3.exec(line3)).filter((match) => match !== null).filter((match) => match[4] !== "note").map(toSignal);
+    }
   },
   {
     name: "eslint",
     matches: (command) => /eslint|biome|oxlint/i.test(command),
-    parse: (output, tool) => {
+    parse: (output, tool, _root, clean2) => {
+      const read = reads(ESLINT, (match) => `${match[5]}: ${match[4]}`, clean2);
       const signals = [];
       let file2 = null;
       for (const line3 of output.split("\n")) {
-        if (/^\S.*\.(ts|tsx|js|jsx|mjs|cjs)$/.test(line3.trim())) {
+        if (/^\S.*\.(ts|tsx|js|jsx|mjs|cjs)$/.test(line3.trim()) || /^\S/.test(line3) && HOLDS_MARKER.test(line3) && !ESLINT.test(line3)) {
           file2 = line3.trim();
           continue;
         }
-        const match = /^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$/.exec(line3);
+        const match = ESLINT.exec(line3);
         if (match !== null && match[3] === "error") {
-          signals.push(signal(tool, "lint_error", file2, Number(match[1]), `${match[5]}: ${match[4]}`, line3));
+          const { claim, holds } = read(match);
+          signals.push(signal(tool, "lint_error", file2, holds ? Number(match[1]) : null, claim, line3));
         }
       }
       return signals;
     }
   }
 ];
-function parseOutput(name, command, output) {
+function parseOutput(name, command, output, root, clean2) {
   const haystack = `${name} ${command}`;
   const adapter = ADAPTERS.find((candidate) => candidate.matches(haystack, output));
-  return adapter === void 0 ? [] : adapter.parse(output, name);
+  if (adapter === void 0) return { signals: [] };
+  const version = adapter.version?.(output);
+  return { signals: adapter.parse(output, name, root, clean2), ...version === void 0 ? {} : { version } };
 }
 
 // plugins/review-voice/src/evidence/run.ts
 var DEFAULT_TIMEOUT_SECONDS = 120;
 var MAX_VERSION_POINTS = 80;
+var MAX_SIGNAL_TEXT_POINTS = 4096;
 var SHELL_UNAVAILABLE_EXIT_CODES = [126, 127];
 var BASE_ENVIRONMENT = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CI", "TERM"];
 var MIN_MASKED_LENGTH = 8;
 function maskPassthrough(text5, source, passthrough) {
+  const names = /* @__PURE__ */ new Map();
+  for (const name of passthrough) {
+    const value = source[name];
+    if (typeof value !== "string") continue;
+    for (const form of [value, ...value.split("\n").map((line3) => line3.trim())]) {
+      if (form.length >= MIN_MASKED_LENGTH && !names.has(form)) names.set(form, name);
+    }
+  }
   let masked = text5;
-  const values = passthrough.map((name) => [name, source[name]]).filter((entry) => typeof entry[1] === "string" && entry[1].length >= MIN_MASKED_LENGTH).sort((a, b) => b[1].length - a[1].length);
-  for (const [name, value] of values) masked = masked.split(value).join(`[redacted:${name}]`);
+  for (const [value, name] of [...names].sort((a, b) => b[0].length - a[0].length)) masked = masked.split(value).join(`[redacted:${name}]`);
   return masked;
 }
 function maskPassthroughDeep(value, source, passthrough) {
@@ -13917,10 +14222,23 @@ function notRunReport(names, skipped) {
     ...skipped === void 0 ? {} : { skipped }
   };
 }
-function sanitisedVersion(stdout, mask) {
-  const firstLine3 = mask(terminalSafe(stdout)).split("\n")[0] ?? "";
-  const clean2 = mask(firstLine3.replace(/[\t\p{Zl}\p{Zp}]/gu, "")).trim();
-  const capped = [...clean2].slice(0, MAX_VERSION_POINTS).join("").trim();
+function sanitisedVersion(stdout, clean2) {
+  const printed = clean2(stdout);
+  const safe = terminalSafe(printed);
+  const whole = safe === printed ? printed : clean2(safe);
+  const end = whole.indexOf("\n");
+  const stripped = clean2((end === -1 ? whole : whole.slice(0, end)).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ""));
+  const spaced = `${stripped}${end === -1 ? "" : whole.slice(end)}`.replace(/\s+/g, " ");
+  const first = stripped.replace(/\s+/g, " ").length;
+  let line3 = "";
+  let copied = 0;
+  for (const part of replaced(spaced, clean2(spaced))) {
+    if (part.start >= first) break;
+    line3 += spaced.slice(copied, part.start) + part.marker;
+    copied = part.end;
+  }
+  line3 += spaced.slice(copied, first);
+  const capped = cut2(line3.trim(), MAX_VERSION_POINTS).trim();
   return capped === "" ? void 0 : capped;
 }
 async function collectEvidence(commands, options) {
@@ -13962,20 +14280,23 @@ async function collectEvidence(commands, options) {
       continue;
     }
     const mask = (text5) => maskPassthrough(text5, process.env, options.envPassthrough ?? []);
+    const clean2 = cleaner(mask);
     const printed = `${result.stdout ?? ""}
 ${result.stderr ?? ""}`;
-    const output = terminalSafe(printed);
-    const version = command.version === void 0 ? void 0 : await readVersion(spawn3, command.version, options.cwd, timeoutMs, env, mask);
-    const signals = parseOutput(command.name, command.run, output).map((signal2) => {
-      const placed = signal2.path === null || printed.includes(signal2.path) || !output.includes(signal2.path);
-      return {
-        ...signal2,
-        path: placed ? signal2.path : null,
-        line: placed ? signal2.line : null,
-        claim: mask(signal2.claim),
-        evidence: signal2.evidence.map(mask)
-      };
-    });
+    const safe = terminalSafe(printed);
+    const output = isSarif(safe) ? safe : terminalSafe(clean2(printed));
+    const configuredVersion = command.version === void 0 ? void 0 : await readVersion(spawn3, command.version, options.cwd, timeoutMs, env, clean2);
+    const parsed2 = parseOutput(command.name, command.run, output, options.cwd, clean2);
+    const named = output === printed ? null : new Set(parseOutput(command.name, command.run, printed, options.cwd, clean2).signals.map((signal2) => signal2.path));
+    const keeps = memo((path) => clean2(path) === path && terminalSafe(path) === path && (named === null || named.has(path)));
+    const cleanCut = (text5) => cut2(clean2(text5), MAX_SIGNAL_TEXT_POINTS);
+    const signals = parsed2.signals.map((signal2) => ({
+      ...signal2,
+      ...signal2.path !== null && !keeps(signal2.path) ? { path: null, line: null } : {},
+      claim: cleanCut(signal2.claim),
+      evidence: signal2.evidence.map(cleanCut)
+    }));
+    const version = configuredVersion ?? (parsed2.version === void 0 ? void 0 : sanitisedVersion(parsed2.version, clean2));
     outcomes.push({
       name: command.name,
       command: command.run,
@@ -13992,10 +14313,10 @@ ${result.stderr ?? ""}`;
     didNotRun
   };
 }
-async function readVersion(spawn3, run, cwd, timeout, env, mask) {
+async function readVersion(spawn3, run, cwd, timeout, env, clean2) {
   const result = await spawnInGroup(spawn3, run, cwd, timeout, env);
   if (result.error !== void 0 || result.status !== 0) return void 0;
-  return sanitisedVersion(String(result.stdout ?? ""), mask);
+  return sanitisedVersion(String(result.stdout ?? ""), clean2);
 }
 function spawnInGroup(spawn3, run, cwd, timeout, env, args) {
   return spawn3(run, {
@@ -14250,8 +14571,8 @@ function linuxSetup(layout) {
   };
   const covers = [];
   for (const path of [...layout.hiddenDirs, ...layout.hiddenFiles].sort((a, b) => a.length - b.length)) {
-    const found = kind(path);
-    if (found !== null && !covers.some((cover) => cover.dir && inside(path, cover.path))) covers.push({ path, dir: found === "dir" });
+    const found2 = kind(path);
+    if (found2 !== null && !covers.some((cover) => cover.dir && inside(path, cover.path))) covers.push({ path, dir: found2 === "dir" });
   }
   const lines2 = [
     "set -e",
@@ -14548,12 +14869,12 @@ async function runReproduction(record3, content, runner, layout, ctx) {
 var isRecord3 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var RESERVED = /* @__PURE__ */ new Set(["scratch", "probe", "stage", "sandbox.sb", "probe-escape", "trees"]);
 async function reproduce(verification2, candidates, ctx) {
-  const list2 = isRecord3(verification2) && Array.isArray(verification2["verifications"]) ? verification2["verifications"] : Array.isArray(verification2) ? verification2 : [];
+  const list3 = isRecord3(verification2) && Array.isArray(verification2["verifications"]) ? verification2["verifications"] : Array.isArray(verification2) ? verification2 : [];
   const reproductions = [];
   const seen = /* @__PURE__ */ new Set();
   let sandbox = null;
   const text5 = (value) => typeof value === "string" ? value : "";
-  for (const entry of list2.filter(isRecord3)) {
+  for (const entry of list3.filter(isRecord3)) {
     const repro = entry["reproduction"];
     const id = entry["candidate_id"] ?? entry["candidateId"];
     if (!isRecord3(repro) || typeof id !== "string") continue;
@@ -15219,14 +15540,14 @@ var TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 function readQueue(block, result) {
   if (block === null) return;
   const queue = result.queue;
-  const list2 = (value, key2) => {
+  const list3 = (value, key2) => {
     if (value === void 0) return void 0;
     if (Array.isArray(value)) return value;
     result.warnings.push(`queue.${key2} must be a list; using the default.`);
     return void 0;
   };
   const logins = (value, key2) => {
-    const entries = list2(value, key2);
+    const entries = list3(value, key2);
     if (entries === void 0) return void 0;
     const kept = [];
     for (const entry of entries) {
@@ -15236,7 +15557,7 @@ function readQueue(block, result) {
     return kept;
   };
   const sourceList = (value, key2) => {
-    const entries = list2(value, key2);
+    const entries = list3(value, key2);
     if (entries === void 0) return void 0;
     const kept = [];
     for (const entry of entries) {
@@ -15260,7 +15581,7 @@ function readQueue(block, result) {
     return void 0;
   };
   queue.sources = sourceList(block["sources"], "sources") ?? queue.sources;
-  const teams = list2(block["teams"], "teams");
+  const teams = list3(block["teams"], "teams");
   if (teams !== void 0) {
     queue.teams = [];
     for (const entry of teams) {
@@ -15278,7 +15599,7 @@ function readQueue(block, result) {
   }
   queue.skip.authors = logins(skip2["authors"], "skip.authors") ?? queue.skip.authors;
   queue.skip.assignedTo = logins(skip2["assigned_to"], "skip.assigned_to") ?? queue.skip.assignedTo;
-  const patterns = list2(skip2["author_patterns"], "skip.author_patterns");
+  const patterns = list3(skip2["author_patterns"], "skip.author_patterns");
   if (patterns !== void 0) {
     queue.skip.authorPatterns = [];
     for (const entry of patterns) {
@@ -15365,7 +15686,7 @@ function readRetention(block, result) {
   read("audit_days", "auditDays");
 }
 function contentHash(text5) {
-  return createHash4("sha256").update(text5).digest("hex").slice(0, 16);
+  return createHash5("sha256").update(text5).digest("hex").slice(0, 16);
 }
 function layerFromPolicyFile(text5, source, fallbackKey) {
   const doc = asRecord2(parse(text5));
@@ -16201,13 +16522,13 @@ var MAX_LINKED_ISSUES = 5;
 var MAX_ISSUE_BODY = 1e4;
 var cappedBody = (body) => {
   if (body.length <= MAX_ISSUE_BODY) return body;
-  const cut3 = body.slice(0, MAX_ISSUE_BODY);
-  const paragraph = cut3.lastIndexOf("\n\n");
-  if (paragraph !== -1) return cut3.slice(0, paragraph);
-  const line3 = cut3.lastIndexOf("\n");
-  if (line3 !== -1) return cut3.slice(0, line3);
-  const sentence = [...cut3.matchAll(/[.!?](?=\s)/gu)].at(-1);
-  return sentence === void 0 ? "" : cut3.slice(0, sentence.index + 1);
+  const cut4 = body.slice(0, MAX_ISSUE_BODY);
+  const paragraph = cut4.lastIndexOf("\n\n");
+  if (paragraph !== -1) return cut4.slice(0, paragraph);
+  const line3 = cut4.lastIndexOf("\n");
+  if (line3 !== -1) return cut4.slice(0, line3);
+  const sentence = [...cut4.matchAll(/[.!?](?=\s)/gu)].at(-1);
+  return sentence === void 0 ? "" : cut4.slice(0, sentence.index + 1);
 };
 var CLOSING_REFERENCE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)|([\w.-]+\/[\w.-]+)#(\d+)|#(\d+))\b/giu;
 function closingReferences(description, repository) {
@@ -16428,13 +16749,13 @@ function suggestionApplied(reviewed, current, patch) {
   const start = patch.start_line - 1;
   const original = unixLines(patch.original);
   const replacement = unixLines(patch.replacement);
-  const replaced = replacement.split("\n");
+  const replaced2 = replacement.split("\n");
   if (original === replacement || before.join("\n") === after.join("\n")) return false;
   if (after.slice(start, patch.end_line).join("\n") === original) return false;
   if (before.slice(start, patch.end_line).join("\n") !== original) return false;
-  if (after.slice(start, start + replaced.length).join("\n") !== replacement) return false;
+  if (after.slice(start, start + replaced2.length).join("\n") !== replacement) return false;
   if (before.slice(0, start).join("\n") !== after.slice(0, start).join("\n")) return false;
-  return after[start + replaced.length] === before[patch.end_line];
+  return after[start + replaced2.length] === before[patch.end_line];
 }
 function unixLines(text5) {
   return text5.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3).join("\n");
@@ -16571,12 +16892,12 @@ async function checkOutcomes(options) {
     }
     try {
       const context2 = await readPull(options.client, repository, pullNumber, result.warnings);
-      const cut3 = context2.replies.length >= READ_LIMIT;
-      if (cut3 && options.pullNumber !== void 0) result.warnings.push(`${repository}#${pullNumber}: only the first ${READ_LIMIT} inline comments were read, so no reply is offered on it`);
+      const cut4 = context2.replies.length >= READ_LIMIT;
+      if (cut4 && options.pullNumber !== void 0) result.warnings.push(`${repository}#${pullNumber}: only the first ${READ_LIMIT} inline comments were read, so no reply is offered on it`);
       for (const run of runs) {
         const followed = await followRun(options, context2, run, viewerLogin);
         result.outcomes.push(...followed.outcomes);
-        if (!cut3) result.questions.push(...followed.questions);
+        if (!cut4) result.questions.push(...followed.questions);
       }
     } catch (error) {
       result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
@@ -16891,7 +17212,7 @@ function findingPlacer(db) {
     return known.get(findingId) ?? { severity: "unknown", lane: "diff", rule: "unknown" };
   };
 }
-var collect = (map2, statsOf2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list2]) => [key2, statsOf2(list2)]));
+var collect = (map2, statsOf2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list3]) => [key2, statsOf2(list3)]));
 function postedBreakdown(db, { since } = {}) {
   const rows = since === void 0 ? db.prepare("SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes").all() : db.prepare(
     `SELECT o.review_run_id AS review_run_id, o.finding_id AS finding_id, o.outcome AS outcome, o.strength AS strength
@@ -17138,9 +17459,9 @@ function ruleEffectiveness(db) {
   for (const suppression of activeSuppressions(db)) {
     byRule.set(suppression.ruleId, [...byRule.get(suppression.ruleId) ?? [], suppression]);
   }
-  return [...byRule.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([ruleId, list2]) => {
-    const suppressions = list2.map((s) => ({ glob: s.glob, policy_version: s.policyVersion }));
-    const approvedAt = list2.map((s) => s.approvedAt).filter((at2) => at2 !== null).sort()[0] ?? null;
+  return [...byRule.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([ruleId, list3]) => {
+    const suppressions = list3.map((s) => ({ glob: s.glob, policy_version: s.policyVersion }));
+    const approvedAt = list3.map((s) => s.approvedAt).filter((at2) => at2 !== null).sort()[0] ?? null;
     if (approvedAt === null) {
       return {
         rule_id: ruleId,
@@ -17150,7 +17471,7 @@ function ruleEffectiveness(db) {
         runs: null,
         posted: null,
         feedback: null,
-        basis: `no approval time recorded for policy version ${list2[0]?.policyVersion ?? "unknown"}; nothing counted`
+        basis: `no approval time recorded for policy version ${list3[0]?.policyVersion ?? "unknown"}; nothing counted`
       };
     }
     const rows = db.prepare("SELECT output_json FROM review_runs WHERE created_at >= ?").all(approvedAt);
@@ -17489,8 +17810,8 @@ function candidateSetAgreement(db) {
     } catch {
       continue;
     }
-    const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? [];
-    const located = list2.map((candidate) => {
+    const list3 = Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? [];
+    const located = list3.map((candidate) => {
       const line3 = Number(candidate["line"]);
       return {
         path: String(candidate["path"] ?? ""),
@@ -17633,8 +17954,8 @@ function refusal(head, reason2) {
 }
 var MAX_PRIOR_DEPTH = 8;
 function pullRequestComplexity(run, loadRun) {
-  let found = run.complexity;
-  if (found?.level === "high") return found;
+  let found2 = run.complexity;
+  if (found2?.level === "high") return found2;
   const seen = /* @__PURE__ */ new Set([run.reviewRunId]);
   let current = run;
   for (let depth = 0; depth < MAX_PRIOR_DEPTH; depth += 1) {
@@ -17645,10 +17966,10 @@ function pullRequestComplexity(run, loadRun) {
     const prior = loadRun(priorId);
     if (prior === null) break;
     if (prior.complexity?.level === "high") return prior.complexity;
-    found = found ?? prior.complexity;
+    found2 = found2 ?? prior.complexity;
     current = prior;
   }
-  return found;
+  return found2;
 }
 var MAX_REVIEWS2 = 300;
 async function standingOwnerReview(client, repository, pullNumber, owner) {
@@ -18272,7 +18593,7 @@ ${items.join("\n")}
 }
 
 // plugins/review-voice/src/watch/lock.ts
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 import { readFileSync as readFileSync6, realpathSync as realpathSync2, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { connect, createServer as createServer2 } from "node:net";
 import { join as join9 } from "node:path";
@@ -18283,7 +18604,7 @@ function lockPort(dataDir) {
     path = realpathSync2(dataDir);
   } catch {
   }
-  return 49152 + Number(createHash5("sha256").update(path).digest().readBigUInt64BE(0) % 16000n);
+  return 49152 + Number(createHash6("sha256").update(path).digest().readBigUInt64BE(0) % 16000n);
 }
 var answer = (dataDir) => `review-voice-watch ${process.pid} ${dataDir}
 `;
@@ -19177,8 +19498,10 @@ var COMMAND_HELP = {
       "Writes: JSON on stdout. Runs the commands configured under static_evidence.commands.",
       "  Each command may set version to a command whose first stdout line records the tool version,",
       "  sanitised and capped at 80 code points. It uses the check's cwd, environment, timeout and output cap;",
-      "  a failed version command records no version. REVIEW_VOICE_NO_COMMANDS=1 skips all commands,",
-      "  listing their names in didNotRun with skipped: REVIEW_VOICE_NO_COMMANDS.",
+      "  a failed version command records no version of its own. SARIF 2.1.0 output from any tool is parsed, and the",
+      "  document's own tool name and version are recorded when the version command is not set or failed;",
+      "  other output needs a known adapter (tsc, dotnet, mypy, ruff, eslint). REVIEW_VOICE_NO_COMMANDS=1 skips",
+      "  all commands, listing their names in didNotRun with skipped: REVIEW_VOICE_NO_COMMANDS.",
       "  The report records the directory the commands ran in as cwd.",
       "Exit codes: 0 ok (a failing check is evidence, not an error), 2 not in a repository or --cwd is not a directory."
     )
@@ -20205,13 +20528,13 @@ function commandHelp(command) {
   return Object.hasOwn(COMMAND_HELP, command) ? COMMAND_HELP[command].body : null;
 }
 function topLevelHelp() {
-  const list2 = COMMAND_ORDER.map((name) => `  ${name.padEnd(21)}${COMMAND_HELP[name].summary}`);
+  const list3 = COMMAND_ORDER.map((name) => `  ${name.padEnd(21)}${COMMAND_HELP[name].summary}`);
   const reference = COMMAND_ORDER.map((name) => COMMAND_HELP[name].body);
   return [
     "review-voice <command>",
     "",
     "Commands:",
-    ...list2,
+    ...list3,
     "",
     "Options:",
     "  --version           Print the plugin version",
@@ -20515,15 +20838,15 @@ function downgrade(severity) {
 }
 var MAX_DECISIVE_EVIDENCE = 10;
 function decisiveEvidence(raw) {
-  const list2 = raw.decisive_evidence ?? raw.decisiveEvidence;
-  if (!Array.isArray(list2)) return [];
-  return list2.filter((entry) => {
+  const list3 = raw.decisive_evidence ?? raw.decisiveEvidence;
+  if (!Array.isArray(list3)) return [];
+  return list3.filter((entry) => {
     const e = typeof entry === "object" && entry !== null ? entry : {};
     return typeof e["path"] === "string" && e["path"].length > 0 && Number.isInteger(e["line"]) && e["line"] > 0 && typeof e["why"] === "string" && e["why"].trim().length > 0;
   }).slice(0, MAX_DECISIVE_EVIDENCE).map((entry) => ({ path: entry.path, line: entry.line, why: entry.why }));
 }
 function jsonCandidates(text5) {
-  const found = [];
+  const found2 = [];
   let depth = 0;
   let start = -1;
   let inString = false;
@@ -20543,14 +20866,14 @@ function jsonCandidates(text5) {
     } else if (ch === "}") {
       depth -= 1;
       if (depth === 0 && start !== -1) {
-        found.push(text5.slice(start, i + 1));
+        found2.push(text5.slice(start, i + 1));
         start = -1;
       } else if (depth < 0) {
         depth = 0;
       }
     }
   }
-  return found;
+  return found2;
 }
 var VERDICTS = ["confirmed", "rejected", "uncertain"];
 function parseVerdict(stdout) {
@@ -21560,7 +21883,7 @@ function parseIntent(value, description, issues = []) {
 }
 
 // plugins/review-voice/src/verify/challenge.ts
-import { posix as posix4 } from "node:path";
+import { posix as posix5 } from "node:path";
 var CHALLENGE_VERDICTS = ["confirmed", "partly", "refuted"];
 var isRecord4 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var idOf2 = (entry) => {
@@ -21573,9 +21896,9 @@ function eligibleFindings(scores) {
 }
 function candidatesById(parsed2) {
   const key2 = isRecord4(parsed2) ? ["candidates", "kept"].find((k) => Array.isArray(parsed2[k])) : void 0;
-  const list2 = Array.isArray(parsed2) ? parsed2 : isRecord4(parsed2) && key2 !== void 0 ? parsed2[key2] : [];
+  const list3 = Array.isArray(parsed2) ? parsed2 : isRecord4(parsed2) && key2 !== void 0 ? parsed2[key2] : [];
   const out = /* @__PURE__ */ new Map();
-  for (const entry of list2) {
+  for (const entry of list3) {
     if (!isRecord4(entry)) continue;
     const id = idOf2(entry);
     if (id !== null) out.set(id, entry);
@@ -21583,8 +21906,8 @@ function candidatesById(parsed2) {
   return out;
 }
 function intentStatements(parsed2) {
-  const list2 = isRecord4(parsed2) && Array.isArray(parsed2["statements"]) ? parsed2["statements"] : Array.isArray(parsed2) ? parsed2 : [];
-  return list2.filter((s) => isRecord4(s) && typeof s["id"] === "string");
+  const list3 = isRecord4(parsed2) && Array.isArray(parsed2["statements"]) ? parsed2["statements"] : Array.isArray(parsed2) ? parsed2 : [];
+  return list3.filter((s) => isRecord4(s) && typeof s["id"] === "string");
 }
 function challengePrompt(finding, candidate, statements, diffFile, reproduction) {
   const pick = (snake, camel) => text3(candidate?.[snake]) ?? text3(candidate?.[camel]) ?? text3(finding[snake]) ?? text3(finding[camel]);
@@ -21640,9 +21963,9 @@ function reproductionRows(record3) {
   ];
 }
 function reproductionsById(parsed2) {
-  const list2 = isRecord4(parsed2) && Array.isArray(parsed2["reproductions"]) ? parsed2["reproductions"] : [];
+  const list3 = isRecord4(parsed2) && Array.isArray(parsed2["reproductions"]) ? parsed2["reproductions"] : [];
   const out = /* @__PURE__ */ new Map();
-  for (const entry of list2) {
+  for (const entry of list3) {
     if (!isRecord4(entry) || typeof entry["candidateId"] !== "string" || out.has(entry["candidateId"])) continue;
     if (!Array.isArray(entry["runs"])) continue;
     out.set(entry["candidateId"], entry);
@@ -21657,11 +21980,11 @@ function challengePrompts(scores, candidates, statements, diffFile, reproduction
 }
 var DECISIVE2 = /^\S(?:.*\S)?:\d+(?:-\d+)?$/u;
 function parseChallengeVerdicts(raw) {
-  const list2 = Array.isArray(raw) ? raw : isRecord4(raw) && Array.isArray(raw["verdicts"]) ? raw["verdicts"] : null;
-  if (list2 === null) return { ok: false, problems: ['expected {"verdicts": [...]}'] };
+  const list3 = Array.isArray(raw) ? raw : isRecord4(raw) && Array.isArray(raw["verdicts"]) ? raw["verdicts"] : null;
+  if (list3 === null) return { ok: false, problems: ['expected {"verdicts": [...]}'] };
   const problems = [];
   const verdicts = [];
-  list2.forEach((entry, index) => {
+  list3.forEach((entry, index) => {
     if (!isRecord4(entry)) {
       problems.push(`verdict ${index} is not an object`);
       return;
@@ -21709,11 +22032,11 @@ function parseChallengeVerdicts(raw) {
 }
 function withoutReproductionFiles(evidence, reproductions) {
   const placed = [...reproductions.values()].filter((record3) => record3.copy !== "");
-  const local = new Set(placed.flatMap((record3) => [posix4.normalize(record3.file), posix4.basename(record3.file)]));
-  const read = (entry) => posix4.normalize(entry.replace(/[\p{Cf}`]/gu, "").trim().replace(/:\d+(?:-\d+)?$/, ""));
+  const local = new Set(placed.flatMap((record3) => [posix5.normalize(record3.file), posix5.basename(record3.file)]));
+  const read = (entry) => posix5.normalize(entry.replace(/[\p{Cf}`]/gu, "").trim().replace(/:\d+(?:-\d+)?$/, ""));
   return evidence.filter((entry) => {
     const path = read(entry);
-    return !local.has(path) && !local.has(posix4.basename(path));
+    return !local.has(path) && !local.has(posix5.basename(path));
   });
 }
 function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = /* @__PURE__ */ new Map()) {
@@ -21879,9 +22202,9 @@ function contradiction(e) {
   return null;
 }
 function parseSecondPass(parsed2) {
-  const list2 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null ? parsed2.verdicts : void 0;
-  if (!Array.isArray(list2)) throw new ReconcileInputError('expected the verify report, {"verdicts": [...]}, or an array');
-  list2.forEach((entry, index) => {
+  const list3 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null ? parsed2.verdicts : void 0;
+  if (!Array.isArray(list3)) throw new ReconcileInputError('expected the verify report, {"verdicts": [...]}, or an array');
+  list3.forEach((entry, index) => {
     const e = typeof entry === "object" && entry !== null ? entry : {};
     const who = `verdict ${index}`;
     if (!OUTCOMES2.includes(e["outcome"])) {
@@ -21900,13 +22223,13 @@ function parseSecondPass(parsed2) {
       throw new ReconcileInputError(`${who}: needs candidateId, or path and line`);
     }
   });
-  return list2;
+  return list3;
 }
 function parseTieBreaks(parsed2) {
-  const list2 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null ? parsed2.tie_breaks ?? parsed2.tieBreaks : void 0;
-  if (!Array.isArray(list2)) throw new ReconcileInputError('expected an array or {"tie_breaks": [...]}');
+  const list3 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null ? parsed2.tie_breaks ?? parsed2.tieBreaks : void 0;
+  if (!Array.isArray(list3)) throw new ReconcileInputError('expected an array or {"tie_breaks": [...]}');
   const seen = /* @__PURE__ */ new Set();
-  return list2.map((entry, index) => {
+  return list3.map((entry, index) => {
     const e = typeof entry === "object" && entry !== null ? entry : {};
     const id = candidateIdOf(e);
     const who = `entry ${index} (${id ?? "no candidate id"})`;
@@ -22348,7 +22671,7 @@ var Stop = class extends Error {
   }
 };
 var isRecord5 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-var list = (value) => Array.isArray(value) ? value.filter(isRecord5) : [];
+var list2 = (value) => Array.isArray(value) ? value.filter(isRecord5) : [];
 var idOf3 = (entry) => String(entry["candidate_id"] ?? entry["candidateId"] ?? "");
 var readJson = (path) => JSON.parse(readFileSync13(path, "utf8"));
 var writeJson = (path, value) => writeFileSync6(path, `${JSON.stringify(value, null, 2)}
@@ -22452,7 +22775,7 @@ function resolveConfig(run) {
 function noteConfigChange(run) {
   if (run.configSource === null || run.configSource.kind !== "base" && run.configSource.kind !== "default") return;
   const manifest = readJson(at(run, "files.json"));
-  const changed = list(isRecord5(manifest) ? manifest["files"] : []).some((file2) => file2["path"] === CONFIG_PATH || file2["previousPath"] === CONFIG_PATH);
+  const changed = list2(isRecord5(manifest) ? manifest["files"] : []).some((file2) => file2["path"] === CONFIG_PATH || file2["previousPath"] === CONFIG_PATH);
   if (!changed) return;
   const note = `Configuration was read from the base commit ${shortRef(run.pullBase.sha ?? "")}; the pull request's changes to ${CONFIG_PATH} were not applied to this review.`;
   if (!run.notes.includes(note)) run.notes.push(note);
@@ -22513,7 +22836,7 @@ function reproductionRunners(run) {
   if (!run.plan.stages.reproduce.run || noCommands(run)) return null;
   const context2 = readJson(at(run, "context.json"));
   const block = isRecord5(context2) && isRecord5(context2["reproduction"]) ? context2["reproduction"] : {};
-  const runners = list(block["runners"]).flatMap(
+  const runners = list2(block["runners"]).flatMap(
     (runner) => typeof runner["name"] === "string" && typeof runner["run"] === "string" && typeof runner["extension"] === "string" ? [{ name: runner["name"], run: runner["run"], extension: runner["extension"] }] : []
   );
   return runners.length === 0 ? null : runners;
@@ -22559,7 +22882,7 @@ async function prep(run) {
   if (noCommands(run)) {
     run.notes.push("REVIEW_VOICE_NO_COMMANDS=1, so the static evidence commands were not run.");
     const context2 = readJson(at(run, "context.json"));
-    const configured = isRecord5(context2) && isRecord5(context2["staticEvidence"]) ? list(context2["staticEvidence"]["commands"]) : [];
+    const configured = isRecord5(context2) && isRecord5(context2["staticEvidence"]) ? list2(context2["staticEvidence"]["commands"]) : [];
     writeJson(at(run, "evidence.json"), {
       enabled: false,
       signals: [],
@@ -22570,7 +22893,7 @@ async function prep(run) {
   } else {
     const context2 = readJson(at(run, "context.json"));
     const staticEvidence = isRecord5(context2) && isRecord5(context2["staticEvidence"]) ? context2["staticEvidence"] : {};
-    const willRun = staticEvidence["enabled"] === true && list(staticEvidence["commands"]).length > 0;
+    const willRun = staticEvidence["enabled"] === true && list2(staticEvidence["commands"]).length > 0;
     const where = willRun ? ["--cwd", prepareWorkspace(run)] : [];
     writeFileSync6(at(run, "evidence.json"), (await must(run, ["evidence", ...where])).stdout);
   }
@@ -22593,7 +22916,7 @@ async function prep(run) {
   ]);
   const followUps = (await must(run, ["follow-ups", ...pr])).stdout;
   writeFileSync6(at(run, "follow-ups.json"), followUps);
-  run.followUps = list(parsed(followUps)["followUps"]).length > 0;
+  run.followUps = list2(parsed(followUps)["followUps"]).length > 0;
   writeJson(at(run, "authorship.json"), authorshipOf(run));
   const input = ["--files", at(run, "files.json"), "--diff-file", at(run, "diff.patch")];
   const plan = (await must(run, ["plan", ...input, "--authorship", at(run, "authorship.json"), ...run.options.mode === void 0 ? [] : ["--mode", run.options.mode]])).stdout;
@@ -22631,7 +22954,7 @@ async function carry(run) {
   if (result.code !== 0) throw new Stop(2, `carry exited ${result.code}: ${firstLines(result.stderr)}`);
   const carried = parsed(result.stdout);
   writeJson(at(run, "carry.json"), carried);
-  const serious = seriousNotCarried(list(carried["notCarried"]));
+  const serious = seriousNotCarried(list2(carried["notCarried"]));
   if (serious.length > 0) {
     return reviewInFull(run, `Not carried: ${serious.map((f) => `${f.findingId} (${String(f.severity)})`).join(", ")}, on code that changed`);
   }
@@ -22670,7 +22993,7 @@ function prepareWorkspace(run) {
     run.cleanup.push(() => removeWorktree(run, headDir));
   }
   const manifest = readJson(at(run, "files.json"));
-  const changed = list(isRecord5(manifest) ? manifest["files"] : []).filter((f) => (f["reviewed"] === true || f["status"] === "deleted") && typeof f["path"] === "string");
+  const changed = list2(isRecord5(manifest) ? manifest["files"] : []).filter((f) => (f["reviewed"] === true || f["status"] === "deleted") && typeof f["path"] === "string");
   const baseRoot = at(run, "base");
   rmSync6(baseRoot, { recursive: true, force: true });
   rmSync6(at(run, "history"), { recursive: true, force: true });
@@ -22759,7 +23082,7 @@ async function lanes(run) {
   results.forEach((result2, index) => {
     const lane = running[index];
     if (!result2.ok) throw new Stop(7, `The ${lane.name} lane failed twice: ${firstLines(result2.error)}`);
-    output.set(lane.name, list(withoutCounts(result2.output)["candidates"]));
+    output.set(lane.name, list2(withoutCounts(result2.output)["candidates"]));
   });
   const prior = isRecord5(run.summary["prior"]) ? run.summary["prior"]["runId"] : null;
   const args = [
@@ -22785,7 +23108,7 @@ async function lanes(run) {
     const report = parsed(checked.stdout);
     const produced = running.flatMap((lane) => (output.get(lane.name) ?? []).map((candidate) => ({ lane, candidate })));
     const failing = /* @__PURE__ */ new Map();
-    for (const failure of [...list(report["anchorFailures"]), ...list(report["laneFailures"]), ...list(report["intentFailures"])]) {
+    for (const failure of [...list2(report["anchorFailures"]), ...list2(report["laneFailures"]), ...list2(report["intentFailures"])]) {
       const owner = produced.find((entry2) => idOf3(entry2.candidate) === String(failure["candidateId"])) ?? produced.find((entry2) => entry2.candidate["path"] === failure["path"] && entry2.candidate["line"] === failure["line"]);
       const candidate = owner?.candidate ?? failure;
       const entry = failing.get(candidate) ?? { lane: owner?.lane ?? running[0], reasons: [] };
@@ -22808,16 +23131,16 @@ async function lanes(run) {
       );
       if (!result2.ok) throw new Stop(7, `The ${lane.name} lane failed twice to re-anchor: ${firstLines(result2.error)}`);
       const kept = (output.get(lane.name) ?? []).filter((candidate) => !failing.has(candidate));
-      output.set(lane.name, [...kept, ...list(withoutCounts(result2.output)["candidates"])]);
+      output.set(lane.name, [...kept, ...list2(withoutCounts(result2.output)["candidates"])]);
     }
     checked = await check();
   }
   if (checked.code !== 0) throw new Stop(7, `check-candidates refused the candidates again: ${firstLines(checked.stderr || checked.stdout)}`);
   writeFileSync6(at(run, "checked.json"), checked.stdout);
   const result = parsed(checked.stdout);
-  run.kept = list(result["kept"]);
+  run.kept = list2(result["kept"]);
   const claims = new Map(merged().map((candidate) => [idOf3(candidate), candidate["claim"]]));
-  for (const drop of list(result["droppedAsRepeat"])) {
+  for (const drop of list2(result["droppedAsRepeat"])) {
     const claim = claims.get(idOf3(drop));
     run.held.push({
       path: String(drop["path"]),
@@ -22829,7 +23152,7 @@ async function lanes(run) {
       ...typeof claim === "string" ? { text: claim } : {}
     });
   }
-  for (const drop of list(result["droppedAsTool"])) {
+  for (const drop of list2(result["droppedAsTool"])) {
     const claim = claims.get(idOf3(drop));
     run.held.push({
       path: String(drop["path"]),
@@ -22841,7 +23164,7 @@ async function lanes(run) {
       ...typeof claim === "string" ? { text: claim } : {}
     });
   }
-  const dropped = list(result["droppedAsHeld"]).length;
+  const dropped = list2(result["droppedAsHeld"]).length;
   if (dropped > 0) run.notes.push(`${dropped} candidate(s) restated a finding an earlier run held back, and were dropped.`);
 }
 async function verify(run) {
@@ -22856,7 +23179,7 @@ async function verify(run) {
   if (!result.ok) throw new Stop(7, `The evidence-verifier failed twice: ${firstLines(result.error)}`);
   const output = withoutCounts(result.output);
   run.followUps = run.followUps && Array.isArray(output["follow_ups"]);
-  const verdicts = new Map(list(output["verifications"]).map((entry) => [idOf3(entry), entry]));
+  const verdicts = new Map(list2(output["verifications"]).map((entry) => [idOf3(entry), entry]));
   for (const candidate of run.kept) {
     const verdict2 = verdicts.get(idOf3(candidate));
     if (verdict2?.["verified"] === true || candidate["severity"] === "question" && verdict2?.["premises_verified"] === true) {
@@ -22868,7 +23191,7 @@ async function verify(run) {
 }
 var firstOutputLine = (text5) => text5.split("\n").map((line3) => line3.trim()).find((line3) => line3 !== "") ?? "";
 function applyReproductions(survivors, report) {
-  const records = isRecord5(report) ? list(report["reproductions"]) : [];
+  const records = isRecord5(report) ? list2(report["reproductions"]) : [];
   const held = [];
   const notes = [];
   const holding = /* @__PURE__ */ new Set();
@@ -22888,7 +23211,7 @@ function applyReproductions(survivors, report) {
       continue;
     }
     holding.add(id);
-    const runs = list(record3["runs"]);
+    const runs = list2(record3["runs"]);
     const output = firstOutputLine(String(runs.at(-1)?.["output"] ?? "")).slice(0, 120);
     held.push({
       path: String(candidate["path"]),
@@ -22965,8 +23288,8 @@ async function secondPass(run) {
   const first = await must(run, ["reconcile", "--verification", at(run, "verification.json"), "--second-pass", at(run, "second-pass.json")], candidates, 1);
   writeFileSync6(at(run, "reconcile.json"), first.stdout);
   const reconciled = parsed(first.stdout);
-  run.reconciled = list(reconciled["candidates"]);
-  run.disputes = list(reconciled["disputes"]);
+  run.reconciled = list2(reconciled["candidates"]);
+  run.disputes = list2(reconciled["disputes"]);
 }
 async function tieBreak(run) {
   if (run.disputes.length === 0) return skip(run, "tie-break", "no disputes");
@@ -22996,7 +23319,7 @@ async function tieBreak(run) {
     1
   );
   writeFileSync6(at(run, "reconciled.json"), reconciled.stdout);
-  run.reconciled = list(parsed(reconciled.stdout)["candidates"]);
+  run.reconciled = list2(parsed(reconciled.stdout)["candidates"]);
   run.tieBroken = true;
 }
 async function score(run) {
@@ -23051,8 +23374,8 @@ async function score(run) {
       ...typeof entry["claim"] === "string" && entry["claim"] !== "" ? { text: entry["claim"] } : {}
     });
   };
-  for (const entry of list(scores["belowGate"])) hold(entry, "below-gate", "score", `below the ${String(entry["gate"])} gate`);
-  for (const entry of list(scores["suppressed"])) {
+  for (const entry of list2(scores["belowGate"])) hold(entry, "below-gate", "score", `below the ${String(entry["gate"])} gate`);
+  for (const entry of list2(scores["suppressed"])) {
     const version = entry["policyVersion"];
     hold(
       entry,
@@ -23061,7 +23384,7 @@ async function score(run) {
       `held by approved policy${typeof version === "number" ? ` version ${version}` : ""} (rule ${String(entry["ruleId"] ?? "")})`
     );
   }
-  for (const entry of list(scores["unverified"])) {
+  for (const entry of list2(scores["unverified"])) {
     const missing = Array.isArray(entry["requiredContextMissing"]) ? entry["requiredContextMissing"].join("; ") : "context";
     hold(entry, "unverified", "verifier", `could not check: ${missing}`);
   }
@@ -23069,7 +23392,7 @@ async function score(run) {
 async function challenge(run) {
   if (!run.scored) return skip(run, "challenge", "nothing scored");
   const scores = parsed(readFileSync13(at(run, "scores.json"), "utf8"));
-  const eligible = list(scores["eligible"]);
+  const eligible = list2(scores["eligible"]);
   const out = at(run, "scores.challenged.json");
   const plan = run.plan;
   const challenged = eligible.filter((finding) => modelForFinding(plan, "challenge", finding["severity"]).run);
@@ -23097,7 +23420,7 @@ async function challenge(run) {
       1
     )).stdout
   );
-  const promptOf = new Map(list(emitted["prompts"]).map((entry) => [idOf3(entry), String(entry["prompt"])]));
+  const promptOf = new Map(list2(emitted["prompts"]).map((entry) => [idOf3(entry), String(entry["prompt"])]));
   const family = plan.families.challenge;
   const configured = family === "claude" ? void 0 : plan.runners[family];
   const runner = family === "claude" || configured === void 0 ? void 0 : { family, ...configured };
@@ -23125,22 +23448,22 @@ async function challenge(run) {
     run.notes.push(`The configured ${family} challenger failed, so the findings it did not judge are held and the review cannot approve.`);
   }
   const verdicts = results.map(
-    (result, index) => result.ok ? list(result.output["verdicts"])[0] : { candidate_id: idOf3(challenged[index]), verdict: "partly", line_ok: true, decisive_evidence: [], reason: why(result.error) }
+    (result, index) => result.ok ? list2(result.output["verdicts"])[0] : { candidate_id: idOf3(challenged[index]), verdict: "partly", line_ok: true, decisive_evidence: [], reason: why(result.error) }
   );
   writeJson(at(run, "challenge-verdicts.json"), { verdicts });
   await must(run, ["challenge", ...base, "--out", out], JSON.stringify({ verdicts }), 1);
   const document = parsed(readFileSync13(out, "utf8"));
   if (challenged.length < eligible.length) {
-    const after = new Map(list(document["eligible"]).map((entry) => [idOf3(entry), entry]));
+    const after = new Map(list2(document["eligible"]).map((entry) => [idOf3(entry), entry]));
     const asked = new Set(challenged.map(idOf3));
     document["eligible"] = eligible.flatMap((entry) => after.get(idOf3(entry)) ?? (asked.has(idOf3(entry)) ? [] : [entry]));
     writeJson(out, document);
   }
-  run.held.push(...list(document["challengeHeld"]));
+  run.held.push(...list2(document["challengeHeld"]));
 }
 async function edit(run) {
   const scoresFile = at(run, "scores.challenged.json");
-  const eligible = existsSync10(scoresFile) ? list(parsed(readFileSync13(scoresFile, "utf8"))["eligible"]) : [];
+  const eligible = existsSync10(scoresFile) ? list2(parsed(readFileSync13(scoresFile, "utf8"))["eligible"]) : [];
   const policy = parsed(readFileSync13(at(run, "context.json"), "utf8"))["policy"];
   const limits = isRecord5(policy) ? policy : {};
   const validate = [
@@ -23178,7 +23501,7 @@ ${checked.stderr.trim()}`;
 async function recordStage(run) {
   const scores = at(run, "scores.challenged.json");
   const scored = existsSync10(scores);
-  if (scored) writeJson(at(run, "record-candidates.json"), { candidates: list(parsed(readFileSync13(scores, "utf8"))["eligible"]) });
+  if (scored) writeJson(at(run, "record-candidates.json"), { candidates: list2(parsed(readFileSync13(scores, "utf8"))["eligible"]) });
   await record2(run, [
     ...scored ? ["--scores", scores, "--candidates", at(run, "record-candidates.json")] : [],
     ...run.secondPass ? ["--verdicts", at(run, "second-pass.json")] : [],
@@ -23242,7 +23565,7 @@ async function record2(run, extra) {
   );
   const result = parsed(recorded2.stdout);
   run.runId = typeof result["reviewRunId"] === "string" ? result["reviewRunId"] : null;
-  run.findings = list(result["findings"]);
+  run.findings = list2(result["findings"]);
   run.provenance = isRecord5(result["provenance"]) ? result["provenance"] : null;
   run.families = isRecord5(result["families"]) ? result["families"] : null;
   for (const warning of Array.isArray(result["warnings"]) ? result["warnings"] : []) run.notes.push(String(warning));
@@ -23302,7 +23625,7 @@ function staticChecksOf(run) {
     return null;
   }
   if (!isRecord5(document)) return null;
-  const commands = list(document["commands"]);
+  const commands = list2(document["commands"]);
   const ran = commands.filter((entry) => typeof entry["exitCode"] === "number" && entry["unavailable"] === void 0);
   return {
     ran: ran.map((entry) => String(entry["name"])),
@@ -23702,7 +24025,7 @@ function boundLists(value, limit = TEXT_CAP2) {
   if (Array.isArray(value)) return value.map((entry) => boundLists(entry, limit));
   if (value === null || typeof value !== "object") return value;
   const out = {};
-  let cut3 = false;
+  let cut4 = false;
   for (const [key2, item] of Object.entries(value)) {
     if (key2 === "precedentIds") {
       continue;
@@ -23710,17 +24033,17 @@ function boundLists(value, limit = TEXT_CAP2) {
     if (Array.isArray(item) && item.length > LIST_CAP && item.every((entry) => typeof entry === "string")) {
       out[key2] = item.slice(0, LIST_CAP);
       out[`${key2}Total`] = item.length;
-      cut3 = true;
+      cut4 = true;
     } else if (key2 === "excerpt" && typeof item === "string" && item.length > EXCERPT_CAP) {
       out[key2] = `${item.slice(0, EXCERPT_CAP)}...`;
     } else {
       const childLimit = key2 === "claim" || key2 === "failureMode" ? CLAIM_CAP : TEXT_CAP2;
       const bounded = boundLists(item, childLimit);
-      if (JSON.stringify(bounded) !== JSON.stringify(item)) cut3 = cut3 || containsCut(item, bounded);
+      if (JSON.stringify(bounded) !== JSON.stringify(item)) cut4 = cut4 || containsCut(item, bounded);
       out[key2] = bounded;
     }
   }
-  if (cut3) out["truncated"] = true;
+  if (cut4) out["truncated"] = true;
   return out;
 }
 function containsCut(before, after) {
@@ -23745,8 +24068,8 @@ function refExists(ref, cwd) {
   }
 }
 var VERDICT_KEYS = ["results", "verifications", "verdicts", "candidates"];
-function verificationProblem(list2) {
-  for (const [index, raw] of list2.entries()) {
+function verificationProblem(list3) {
+  for (const [index, raw] of list3.entries()) {
     const entry = typeof raw === "object" && raw !== null ? raw : {};
     const id = entry["candidate_id"] ?? entry["candidateId"];
     const who = `entry ${index} (${typeof id === "string" ? id : "no candidate id"})`;
@@ -24430,8 +24753,8 @@ function anchorsCommand(argv) {
     if (diffFile !== null) hunks = parseHunks(readFileSync16(diffFile, "utf8"));
     if (scoresFile !== null) {
       const parsed2 = JSON.parse(readFileSync16(scoresFile, "utf8"));
-      const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.scores;
-      scores = Array.isArray(list2) ? list2 : [];
+      const list3 = Array.isArray(parsed2) ? parsed2 : parsed2.scores;
+      scores = Array.isArray(list3) ? list3 : [];
     }
   } catch (error) {
     console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
@@ -24772,10 +25095,10 @@ function openFollowUps(db, repository, pullNumber) {
   return [...followUpHistory(db, repository, pullNumber).values()].filter((entry) => entry.state?.status !== "resolved").map((entry) => entry.followUp);
 }
 function parseFollowUpRulings(parsed2) {
-  const list2 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null ? parsed2["follow_ups"] ?? parsed2["followUps"] : void 0;
-  if (!Array.isArray(list2)) throw new FollowUpRulingError("expected an array, or an object with follow_ups");
+  const list3 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null ? parsed2["follow_ups"] ?? parsed2["followUps"] : void 0;
+  if (!Array.isArray(list3)) throw new FollowUpRulingError("expected an array, or an object with follow_ups");
   const strings = (value) => Array.isArray(value) && value.every((item) => typeof item === "string" && item.trim().length > 0);
-  return list2.map((entry, index) => {
+  return list3.map((entry, index) => {
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
       throw new FollowUpRulingError(`entry ${index}: not an object`);
     }
@@ -24978,20 +25301,20 @@ function purgeCommand(argv) {
   const db = openDatabase();
   try {
     const preview = previewPurge(db, scope);
-    let found = null;
+    let found2 = null;
     try {
-      found = directories ? previewRunDirectories(dataDirectory(), cutoff) : null;
-      const kept = found !== null && runsBefore === null ? previewRunDirectories(dataDirectory(), null).count - found.count : 0;
+      found2 = directories ? previewRunDirectories(dataDirectory(), cutoff) : null;
+      const kept = found2 !== null && runsBefore === null ? previewRunDirectories(dataDirectory(), null).count - found2.count : 0;
       const report = (listed, refreshed = 0) => ({
         count: listed.count,
         paths: listed.paths,
         kept: kept + refreshed
       });
       if (!confirm) {
-        console.log(JSON.stringify({ wouldRemove: found === null ? preview : { ...preview, runDirectories: report(found) }, confirmed: false }, null, 2));
+        console.log(JSON.stringify({ wouldRemove: found2 === null ? preview : { ...preview, runDirectories: report(found2) }, confirmed: false }, null, 2));
         return 0;
       }
-      const gone = found === null ? null : removeRunDirectories(dataDirectory(), cutoff, found.paths);
+      const gone = found2 === null ? null : removeRunDirectories(dataDirectory(), cutoff, found2.paths);
       const removed = executePurge(db, scope, gone?.count);
       console.log(JSON.stringify({ removed: gone === null ? removed : { ...removed, runDirectories: report(gone, gone.refreshed) }, confirmed: true }, null, 2));
       return 0;
@@ -25072,11 +25395,11 @@ var CUT_AT = 120;
 function escapeHtml(text5) {
   return text5.replace(/[\r\n]+/g, " ").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
-function cut2(text5) {
+function cut3(text5) {
   const points = [...text5];
   return points.length > CUT_AT ? `${points.slice(0, CUT_AT).join("")}...` : text5;
 }
-var text4 = (value) => escapeHtml(cut2(value));
+var text4 = (value) => escapeHtml(cut3(value));
 var count2 = (value) => value === null ? "no data" : String(value);
 var rate = (value) => value === null ? "no data" : value.toFixed(2);
 var p = (body) => `<p>${escapeHtml(body)}</p>
@@ -25453,8 +25776,8 @@ function gitTreeReader(root, ref) {
     }
   }
   const key2 = (path) => {
-    const posix7 = path.split(sep2).join("/");
-    return posix7 === "." ? "" : posix7;
+    const posix8 = path.split(sep2).join("/");
+    return posix8 === "." ? "" : posix8;
   };
   const file2 = (path) => {
     const entry = files2.get(key2(path));
@@ -26093,8 +26416,8 @@ function headerPath3(raw) {
   if (path === "/dev/null") return null;
   return path.startsWith("a/") || path.startsWith("b/") ? path.slice(2) : path;
 }
-function parsePatchFiles(normalised) {
-  const lines2 = normalised.split("\n");
+function parsePatchFiles(normalised2) {
+  const lines2 = normalised2.split("\n");
   const files2 = [];
   let current = null;
   let index = 0;
@@ -26247,11 +26570,11 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
   if (existsSync15(targetDir) && readdirSync5(targetDir).length > 0) {
     throw new Error(`${label2}: target directory ${targetDir} is not empty`);
   }
-  let normalised;
+  let normalised2;
   let files2;
   try {
-    normalised = normalisePatch(readFileSync22(patchPath2, "utf8"));
-    files2 = parsePatchFiles(normalised);
+    normalised2 = normalisePatch(readFileSync22(patchPath2, "utf8"));
+    files2 = parsePatchFiles(normalised2);
   } catch (error) {
     throw new Error(`${label2}: ${error.message}`);
   }
@@ -26301,7 +26624,7 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
   const scratch = mkdtempSync4(join23(tmpdir3(), "rv-fixture-patch-"));
   try {
     const copy = join23(scratch, "normalised.patch");
-    writeFileSync9(copy, normalised);
+    writeFileSync9(copy, normalised2);
     try {
       git3(targetDir, label2, ["apply", "--whitespace=nowarn", copy]);
     } catch (error) {
@@ -26343,7 +26666,7 @@ function readExpectation(cls, name, caseText) {
     block.push(line4);
   }
   const inExpect = (key2) => {
-    const match = block.map((line4) => new RegExp(`^  ${key2}:\\s*(\\S.*?)\\s*$`).exec(line4)).find((found) => found !== null && found !== void 0);
+    const match = block.map((line4) => new RegExp(`^  ${key2}:\\s*(\\S.*?)\\s*$`).exec(line4)).find((found2) => found2 !== null && found2 !== void 0);
     return match === void 0 || match === null ? null : scalar(match[1]);
   };
   const top = (key2) => {
@@ -26614,12 +26937,12 @@ async function recallCommand(argv, runInProcess2) {
   const classText = flag(argv, "--class");
   const classes = [];
   for (const name of classText === null ? RECALL_CLASSES : classText.split(",")) {
-    const found = RECALL_CLASSES.find((known2) => known2 === name);
-    if (found === void 0) {
+    const found2 = RECALL_CLASSES.find((known2) => known2 === name);
+    if (found2 === void 0) {
       console.error(`--class takes ${RECALL_CLASSES.join(", ")} (comma separated); ${name} is not scored.`);
       return 2;
     }
-    if (!classes.includes(found)) classes.push(found);
+    if (!classes.includes(found2)) classes.push(found2);
   }
   const runner = flag(argv, "--runner") ?? "claude";
   if (runner !== "claude" && runner !== "fake") {
@@ -26689,7 +27012,7 @@ async function recallCommand(argv, runInProcess2) {
 
 // plugins/review-voice/src/cli/import-benchmark.ts
 import { execFileSync as execFileSync17 } from "node:child_process";
-import { createHash as createHash6, randomBytes as randomBytes2 } from "node:crypto";
+import { createHash as createHash7, randomBytes as randomBytes2 } from "node:crypto";
 import { constants as constants3, copyFileSync as copyFileSync3, existsSync as existsSync18, lstatSync as lstatSync7, mkdirSync as mkdirSync12, readdirSync as readdirSync7, readFileSync as readFileSync25, renameSync as renameSync4, rmdirSync, rmSync as rmSync11, statSync as statSync9 } from "node:fs";
 import { dirname as dirname17, join as join26, resolve as resolve10 } from "node:path";
 
@@ -27096,7 +27419,7 @@ function importBenchmarkCommand(argv) {
     ({ counts } = importBenchmark({
       items,
       setVersion,
-      setSha256: createHash6("sha256").update(bytes).digest("hex"),
+      setSha256: createHash7("sha256").update(bytes).digest("hex"),
       setLicence,
       licences,
       diffs,
@@ -27615,22 +27938,22 @@ function absenceScope(text5, repository = null) {
   return "bounded";
 }
 function namedSymbols(text5) {
-  const found = /* @__PURE__ */ new Set();
+  const found2 = /* @__PURE__ */ new Set();
   for (const match of text5.matchAll(/`([^`]+)`/g)) {
     const token = (match[1] ?? "").trim();
-    if (token.length >= 4 && !/\s/.test(token) && !token.startsWith("-")) found.add(token);
+    if (token.length >= 4 && !/\s/.test(token) && !token.startsWith("-")) found2.add(token);
   }
   for (const match of text5.matchAll(/\b([A-Za-z_$][\w$]*\.(?:tsx?|jsx?|cs|py|go|rb|java|kt|rs))\b/g)) {
-    if (match[1] !== void 0) found.add(match[1]);
+    if (match[1] !== void 0) found2.add(match[1]);
   }
   for (const match of text5.matchAll(/\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,})\b/g)) {
-    if (match[1] !== void 0) found.add(match[1]);
+    if (match[1] !== void 0) found2.add(match[1]);
   }
-  for (const token of [...found]) {
+  for (const token of [...found2]) {
     const base = token.split("/").pop();
-    if (base !== void 0 && base !== token && base.length >= 4 && !base.startsWith("-")) found.add(base);
+    if (base !== void 0 && base !== token && base.length >= 4 && !base.startsWith("-")) found2.add(base);
   }
-  return [...found];
+  return [...found2];
 }
 var gitGrep = (symbol, cwd, ref) => {
   const args = ref === null ? ["grep", "--fixed-strings", "--quiet", "-e", symbol] : ["grep", "--fixed-strings", "--quiet", "-e", symbol, ref];
@@ -27810,7 +28133,7 @@ function checkAbsenceClaim(text5, cwd, ref = null, search = gitGrep, repository 
   const symbols = stated.filter((symbol) => !isPath(symbol) || tied.size === 0 || tied.has(symbol));
   if (symbols.length === 0) return null;
   const searchedRef = ref ?? "working tree";
-  const found = [];
+  const found2 = [];
   const checked = [];
   let paths = null;
   for (const symbol of symbols.slice(0, 12)) {
@@ -27820,21 +28143,21 @@ function checkAbsenceClaim(text5, cwd, ref = null, search = gitGrep, repository 
         paths ??= trackedPaths(cwd, ref);
         const path = symbol.replace(/^\.?\//, "").replace(/\/$/, "");
         const exists = path.includes("/") ? paths.some((tracked) => tracked === path || tracked.startsWith(`${path}/`)) : paths.some((tracked) => tracked === path || tracked.endsWith(`/${path}`));
-        if (exists) found.push(symbol);
+        if (exists) found2.push(symbol);
       } else if (search(symbol, cwd, ref)) {
-        found.push(symbol);
+        found2.push(symbol);
       }
     } catch {
       return { found: [], checked, inconclusive: true, searchedRef };
     }
   }
-  if (found.length === 0) {
+  if (found2.length === 0) {
     const accessor = checked.find(generatedAccessor);
     const sources = accessor === void 0 ? resources(cwd) : [];
     if (accessor !== void 0 || sources.length > 0) {
       const why = accessor !== void 0 ? `\`${accessor}\` is shaped like a generated resource accessor` : `the repository tracks resource sources (${sources.slice(0, 3).join(", ")}${sources.length > 3 ? ", ..." : ""})`;
       return {
-        found,
+        found: found2,
         checked,
         inconclusive: true,
         searchedRef,
@@ -27842,7 +28165,7 @@ function checkAbsenceClaim(text5, cwd, ref = null, search = gitGrep, repository 
       };
     }
   }
-  return { found, checked, inconclusive: false, searchedRef };
+  return { found: found2, checked, inconclusive: false, searchedRef };
 }
 
 // plugins/review-voice/src/diff/declarations.ts
@@ -27975,7 +28298,7 @@ function hunkHeader2(line3) {
   return { oldLine, newLine, remainingOld, remainingNew };
 }
 function declarationsFromDiff(diff) {
-  const found = [];
+  const found2 = [];
   let path = null;
   let active = null;
   const finishWhenCounted = () => {
@@ -27987,7 +28310,7 @@ function declarationsFromDiff(diff) {
       if (line3 === "\\ No newline at end of file") continue;
       if (line3.startsWith("+")) {
         const name = declarationName(line3.slice(1));
-        if (path !== null && name !== null) found.push({ path, name, line: active.newLine, added: true });
+        if (path !== null && name !== null) found2.push({ path, name, line: active.newLine, added: true });
         active.newLine += 1;
         active.remainingNew -= 1;
         finishWhenCounted();
@@ -27995,7 +28318,7 @@ function declarationsFromDiff(diff) {
       }
       if (line3.startsWith("-")) {
         const name = declarationName(line3.slice(1));
-        if (path !== null && name !== null) found.push({ path, name, line: active.oldLine, added: false });
+        if (path !== null && name !== null) found2.push({ path, name, line: active.oldLine, added: false });
         active.oldLine += 1;
         active.remainingOld -= 1;
         finishWhenCounted();
@@ -28022,13 +28345,13 @@ function declarationsFromDiff(diff) {
     const header = hunkHeader2(line3);
     if (header !== null) active = header;
   }
-  return found;
+  return found2;
 }
 
 // plugins/review-voice/src/scoring/reach.ts
 function symbolsFromHunks(diff, changedPath) {
   const wanted = changedPath === null ? null : normalisePath3(changedPath);
-  const found = /* @__PURE__ */ new Set();
+  const found2 = /* @__PURE__ */ new Set();
   let inFile = false;
   for (const raw of diff.split(/\r?\n/)) {
     if (raw.startsWith("diff --git ") || raw.startsWith("+++ ")) {
@@ -28044,10 +28367,10 @@ function symbolsFromHunks(diff, changedPath) {
     for (const m of text5.matchAll(
       /\b([a-z][A-Za-z0-9]{4,}[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{3,}|[A-Z][A-Z0-9]+_[A-Z0-9_]+)\b/g
     )) {
-      if (m[1] !== void 0) found.add(m[1]);
+      if (m[1] !== void 0) found2.add(m[1]);
     }
   }
-  return [...found];
+  return [...found2];
 }
 var REPOSITORY_WIDE_TOOLCHAIN_PATHS = [
   /(?:^|\/)(?:eslint\.config\.[^/]+|\.eslintrc(?:\.[^/]+)?|biome\.json|\.stylelintrc(?:\.[^/]+)?|\.prettierrc(?:\.[^/]+)?)$/i,
@@ -28105,12 +28428,12 @@ function isImportOnlyChange(diff, changedPath) {
 }
 function withinSubtree(path, changedDirectory) {
   if (changedDirectory === "") return false;
-  const normalised = normalisePath3(path);
-  return normalised === changedDirectory || normalised.startsWith(`${changedDirectory}/`);
+  const normalised2 = normalisePath3(path);
+  return normalised2 === changedDirectory || normalised2.startsWith(`${changedDirectory}/`);
 }
 function isRepositoryWideToolchainPath(path) {
-  const normalised = normalisePath3(path);
-  return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised));
+  const normalised2 = normalisePath3(path);
+  return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised2));
 }
 function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
   const searchedRef = ref ?? "working tree";
@@ -28147,13 +28470,13 @@ function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths
   if (diff !== null && isImportOnlyChange(diff, changedPath)) return result(null, false);
   for (const symbol of symbols) {
     searched.push(symbol);
-    let found;
+    let found2;
     try {
-      found = search(symbol, cwd, ref);
+      found2 = search(symbol, cwd, ref);
     } catch {
       return result(null, true);
     }
-    const code3 = found.filter(isCode);
+    const code3 = found2.filter(isCode);
     if (source !== "diff" && !code3.some((path) => normalisePath3(path) === normalisedChangedPath)) {
       ignored.push(symbol);
       continue;
@@ -28162,7 +28485,7 @@ function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths
       ignored.push(symbol);
       continue;
     }
-    for (const path of found) hits.add(path);
+    for (const path of found2) hits.add(path);
   }
   if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
   let counted = [...hits].filter(isCode);
@@ -28283,10 +28606,10 @@ function pathsWithHunks2(diff) {
   let hasHunkLine = false;
   const keepCurrent = () => {
     if (path === null || !hasHunkLine) return;
-    const normalised = normalisePath4(path);
-    if (seen.has(normalised)) return;
-    seen.add(normalised);
-    paths.push(normalised);
+    const normalised2 = normalisePath4(path);
+    if (seen.has(normalised2)) return;
+    seen.add(normalised2);
+    paths.push(normalised2);
   };
   for (const raw of diff.split(/\r?\n/)) {
     if (raw.startsWith("diff --git ")) {
@@ -28327,14 +28650,14 @@ function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declara
       declared.push(...declarations.map(timeBudgetDeclaration));
       return { file: file2(true, "time-budget"), references };
     }
-    let found;
+    let found2;
     try {
-      found = search(symbol, cwd, ref, remaining());
+      found2 = search(symbol, cwd, ref, remaining());
     } catch {
       incomplete = true;
       break;
     }
-    const code3 = new Set(found.filter(isCode).map(normalisePath4));
+    const code3 = new Set(found2.filter(isCode).map(normalisePath4));
     if (directoryCount2(code3) > NON_DISCRIMINATING_DIRECTORIES) {
       symbols.push({ symbol, common: true });
       continue;
@@ -28736,17 +29059,17 @@ function ineligibleReason(input) {
 }
 
 // plugins/review-voice/src/corpus/dedup.ts
-import { createHash as createHash7 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 function contentKey(parts) {
-  const normalised = parts.body.replace(/\s+/g, " ").trim().toLowerCase();
+  const normalised2 = parts.body.replace(/\s+/g, " ").trim().toLowerCase();
   const SEPARATOR = String.fromCharCode(31);
-  return createHash7("sha256").update(
+  return createHash8("sha256").update(
     [
       parts.repository.toLowerCase(),
       parts.reviewerLogin.toLowerCase(),
       parts.filePath ?? "",
       String(parts.lineStart ?? ""),
-      normalised
+      normalised2
     ].join(SEPARATOR)
   ).digest("hex").slice(0, 32);
 }
@@ -29599,8 +29922,8 @@ async function replyCommand(argv) {
 import { readFileSync as readFileSync29 } from "node:fs";
 function keptCandidateIds(value) {
   const record3 = value;
-  const list2 = Array.isArray(value) ? value : Array.isArray(record3?.kept) ? record3.kept : Array.isArray(record3?.candidates) ? record3.candidates : [];
-  return list2.map((entry) => entry?.candidate_id).filter((id) => typeof id === "string");
+  const list3 = Array.isArray(value) ? value : Array.isArray(record3?.kept) ? record3.kept : Array.isArray(record3?.candidates) ? record3.candidates : [];
+  return list3.map((entry) => entry?.candidate_id).filter((id) => typeof id === "string");
 }
 function checkVerificationCommand(argv) {
   const candidatesFile = flag(argv, "--candidates");
@@ -29620,21 +29943,21 @@ function checkVerificationCommand(argv) {
     console.error("Expected the evidence-verifier output as JSON on stdin.");
     return 2;
   }
-  const list2 = verdictList(parsed2);
-  if (list2.length === 0) {
+  const list3 = verdictList(parsed2);
+  if (list3.length === 0) {
     console.error(
       `No verifications found. Expected an array, or an object with one of: ${VERDICT_KEYS.join(", ")}, each entry carrying candidate_id.`
     );
     return 2;
   }
-  const problem = verificationProblem(list2);
+  const problem = verificationProblem(list3);
   if (problem !== null) {
     console.error(`Malformed verification - ${problem}`);
     console.error("Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.");
     return 2;
   }
   if (keptIds !== null) {
-    const verified = new Set(list2.map((entry) => entry.candidate_id));
+    const verified = new Set(list3.map((entry) => entry.candidate_id));
     const missing = keptIds.filter((id) => !verified.has(id));
     if (missing.length > 0) {
       for (const id of missing) console.error(`No verification for kept candidate ${id}.`);
@@ -29642,7 +29965,7 @@ function checkVerificationCommand(argv) {
       return 2;
     }
   }
-  console.log(JSON.stringify({ valid: true, verifications: list2.length }, null, 2));
+  console.log(JSON.stringify({ valid: true, verifications: list3.length }, null, 2));
   return 0;
 }
 
@@ -29821,9 +30144,9 @@ function reconcileCommand(argv) {
   let candidates;
   try {
     const parsed2 = JSON.parse(readStdin());
-    const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.candidates;
-    if (!Array.isArray(list2)) throw new Error("no candidates");
-    candidates = list2;
+    const list3 = Array.isArray(parsed2) ? parsed2 : parsed2.candidates;
+    if (!Array.isArray(list3)) throw new Error("no candidates");
+    candidates = list3;
   } catch {
     console.error('Expected {"candidates": [...]} on stdin, as they were before the second pass.');
     return 2;
@@ -30139,11 +30462,11 @@ var STAGE_FIELDS = {
 };
 function parseStagesFile(parsed2, warn2 = () => void 0) {
   const keyed = typeof parsed2 === "object" && parsed2 !== null && !Array.isArray(parsed2) ? Object.keys(parsed2).filter((key2) => key2 !== "stages") : [];
-  const list2 = Array.isArray(parsed2) ? parsed2 : parsed2?.stages;
-  if (!Array.isArray(list2) || keyed.length > 0) {
+  const list3 = Array.isArray(parsed2) ? parsed2 : parsed2?.stages;
+  if (!Array.isArray(list3) || keyed.length > 0) {
     throw new Error(`expected an array or {"stages": [...]}${keyed.length === 0 ? "" : `, not keys ${keyed.map((key2) => JSON.stringify(key2)).join(", ")}`}`);
   }
-  list2.forEach((stage, index) => {
+  list3.forEach((stage, index) => {
     const problem = (() => {
       if (typeof stage !== "object" || stage === null || Array.isArray(stage)) return "not an object";
       const unknown = Object.keys(stage).filter((key2) => !Object.hasOwn(STAGE_FIELDS, key2));
@@ -30154,7 +30477,7 @@ function parseStagesFile(parsed2, warn2 = () => void 0) {
     })();
     if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
   });
-  return list2;
+  return list3;
 }
 function cleanStages(stages, diff) {
   const diffLines = diff === null ? void 0 : changedLineCount(diff);
@@ -30691,12 +31014,12 @@ function carryCommand(argv) {
   }
 }
 function listIn(parsed2, keys) {
-  if (Array.isArray(parsed2)) return { list: parsed2, rebuild: (list2) => list2 };
+  if (Array.isArray(parsed2)) return { list: parsed2, rebuild: (list3) => list3 };
   if (typeof parsed2 !== "object" || parsed2 === null) return null;
   const record3 = parsed2;
   const key2 = keys.find((k) => Array.isArray(record3[k]));
   if (key2 === void 0) return null;
-  return { list: record3[key2], rebuild: (list2) => ({ ...record3, [key2]: list2 }) };
+  return { list: record3[key2], rebuild: (list3) => ({ ...record3, [key2]: list3 }) };
 }
 function stringsIn(value) {
   if (typeof value === "string") return [value];
@@ -30736,15 +31059,15 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
     const parsed2 = listIn(JSON.parse(readFileSync35(candidatesFile, "utf8")), ["candidates"]);
     if (parsed2 === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidates = parsed2.list;
-    const normalised = candidates.map((raw, index) => normaliseCandidate(raw, index));
-    assertUniqueCandidateIds(normalised);
-    const misplaced = normalised.filter((c) => !candidateAnchor(hunks, c).ok);
+    const normalised2 = candidates.map((raw, index) => normaliseCandidate(raw, index));
+    assertUniqueCandidateIds(normalised2);
+    const misplaced = normalised2.filter((c) => !candidateAnchor(hunks, c).ok);
     if (misplaced.length > 0) {
       throw new Error(
         `interdiff candidate(s) not on a changed line of ${join29(dir, "diff.patch")}: ${misplaced.map((c) => c.candidateId).join(", ")}`
       );
     }
-    candidates = candidates.map((raw, index) => withId(raw, normalised[index].candidateId));
+    candidates = candidates.map((raw, index) => withId(raw, normalised2[index].candidateId));
     const parsedVerification = listIn(JSON.parse(readFileSync35(verificationFile, "utf8")), VERDICT_KEYS);
     verification2 = parsedVerification?.list ?? [];
     if (parsedVerification === null && candidates.length > 0) throw new Error(`${verificationFile} contains no verifications`);
@@ -30956,11 +31279,11 @@ function carryCandidatesCommand(argv) {
 // plugins/review-voice/src/cli/record.ts
 import { execFileSync as execFileSync24 } from "node:child_process";
 import { readFileSync as readFileSync38 } from "node:fs";
-import { join as join30, posix as posix6 } from "node:path";
+import { join as join30, posix as posix7 } from "node:path";
 
 // plugins/review-voice/src/cli/check-candidates.ts
 import { readFileSync as readFileSync37 } from "node:fs";
-import { isAbsolute as isAbsolute6, posix as posix5, relative as relative5 } from "node:path";
+import { isAbsolute as isAbsolute6, posix as posix6, relative as relative5 } from "node:path";
 
 // plugins/review-voice/src/cli/score.ts
 import { readFileSync as readFileSync36 } from "node:fs";
@@ -31058,9 +31381,9 @@ function deletedFileCheck(argv) {
     if (anchor.ok || anchor.kind !== "file-not-in-diff") return false;
     const path = candidate.path.replace(/^\.\/+/, "");
     if (path === "" || path.startsWith("/") || path.split(/[\\/]/).includes("..") || !isReviewable(path, false)) return false;
-    const found = deletions();
-    if (found === null || !found.paths.has(path)) return false;
-    const count4 = baseLines(found.from, path);
+    const found2 = deletions();
+    if (found2 === null || !found2.paths.has(path)) return false;
+    const count4 = baseLines(found2.from, path);
     return count4 !== null && Number.isInteger(candidate.line) && candidate.line >= 1 && candidate.line <= count4;
   };
 }
@@ -31198,14 +31521,14 @@ function scoreCommand(argv) {
   if (verificationFlag !== null) {
     try {
       const parsed2 = JSON.parse(readFileSync36(verificationFlag, "utf8"));
-      const list2 = verdictList(parsed2);
-      const problem = verificationProblem(list2);
+      const list3 = verdictList(parsed2);
+      const problem = verificationProblem(list3);
       if (problem !== null) {
         console.error(`Malformed verification - ${problem}`);
         console.error("Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.");
         return 2;
       }
-      for (const raw of list2) {
+      for (const raw of list3) {
         const id = raw["candidate_id"] ?? raw["candidateId"];
         const fixVerdict = raw["fix_verdict"] ?? raw["fixVerdict"];
         const fixConfidence = raw["fix_confidence"] ?? raw["fixConfidence"];
@@ -31670,14 +31993,14 @@ function namesHeldPath(candidate, entry) {
 }
 function matchHeld(candidate, held) {
   const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
-  let found = null;
+  let found2 = null;
   for (const entry of held) {
     if (entry.path !== candidate.path || Math.abs(entry.line - candidate.line) > 2) continue;
     const drop = entry.verdict !== "below-gate" && entry.text !== void 0 && overlap(mine, significantWords(entry.text)) >= DUPLICATE_OVERLAP;
     if (drop) return { entry, drop };
-    found ??= { entry, drop };
+    found2 ??= { entry, drop };
   }
-  if (found !== null) return found;
+  if (found2 !== null) return found2;
   let best = null;
   for (const entry of held) {
     if (entry.text === void 0 || !namesHeldPath(candidate, entry)) continue;
@@ -31699,7 +32022,7 @@ function readSignals(file2, root) {
     const s = entry;
     if (typeof s !== "object" || s === null || typeof s.path !== "string" || typeof s.line !== "number" || typeof s.claim !== "string") return [];
     const spelled = s.path.split("\\").join("/");
-    const path = isAbsolute6(spelled) ? relative5(realExistingPath(signalRoot), realExistingPath(spelled)) : posix5.normalize(spelled).replace(/^\.\//, "");
+    const path = isAbsolute6(spelled) ? relative5(realExistingPath(signalRoot), realExistingPath(spelled)) : posix6.normalize(spelled).replace(/^\.\//, "");
     if (path === "" || path === "." || path.startsWith("..") || isAbsolute6(path)) return [];
     return [
       {
@@ -31719,7 +32042,7 @@ function matchSignal(candidate, signals) {
   if (isSuppressionExempt(candidate.category)) return null;
   const text5 = `${candidate.claim} ${candidate.failureMode}`;
   const mine = significantWords(text5);
-  const path = posix5.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
+  const path = posix6.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
   for (const signal2 of signals) {
     if (signal2.path !== path || signal2.line === null || Math.abs(signal2.line - candidate.line) > 2) continue;
     const message = `${signal2.claim} ${signal2.evidence.join(" ")}`;
@@ -32028,7 +32351,7 @@ function checkCandidatesCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/record.ts
-var plainPath2 = (path) => posix6.normalize(path.split("\\").join("/")).replace(/^\.\//, "");
+var plainPath2 = (path) => posix7.normalize(path.split("\\").join("/")).replace(/^\.\//, "");
 function policyVersionRefs(value) {
   if (!Array.isArray(value)) return null;
   const refs = [];
@@ -32109,11 +32432,11 @@ function recordCommand(argv) {
     }
     try {
       const parsed2 = JSON.parse(readFileSync38(bodyFindingsFile, "utf8"));
-      const list2 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null && Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : null;
-      if (list2 === null) throw new Error('expected an array or {"bodyFindings": [...]}');
-      if (list2.length > 1) throw new Error("at most one body-only simplification is allowed per review");
+      const list3 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null && Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : null;
+      if (list3 === null) throw new Error('expected an array or {"bodyFindings": [...]}');
+      if (list3.length > 1) throw new Error("at most one body-only simplification is allowed per review");
       const hunks = parseHunks(diff);
-      bodyFindings = list2.map((entry, index) => {
+      bodyFindings = list3.map((entry, index) => {
         const checked = parseVerifiedSimplification(entry, hunks);
         if (checked.problem !== null || checked.value === null) {
           throw new Error(`entry ${index}: ${checked.problem ?? "not a verified simplification"}`);
@@ -32219,13 +32542,13 @@ function recordCommand(argv) {
   if (heldFile !== null) {
     try {
       const parsed2 = JSON.parse(readFileSync38(heldFile, "utf8"));
-      const list2 = Array.isArray(parsed2) ? parsed2 : parsed2?.held;
-      if (!Array.isArray(list2)) throw new Error('expected an array or {"held": [...]}');
-      list2.forEach((entry, index) => {
+      const list3 = Array.isArray(parsed2) ? parsed2 : parsed2?.held;
+      if (!Array.isArray(list3)) throw new Error('expected an array or {"held": [...]}');
+      list3.forEach((entry, index) => {
         const problem = heldProblem(entry);
         if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
       });
-      held = list2;
+      held = list3;
       for (const candidate of candidates) knownPaths.add(candidate.path);
       const heldHead = flag(argv, "--head");
       const atHead = manifestMode !== "worktree" && manifestMode !== "staged" && heldHead !== null;
@@ -32341,9 +32664,9 @@ function recordCommand(argv) {
     }
     try {
       const parsed2 = JSON.parse(readFileSync38(followUpThreadFile, "utf8"));
-      const list2 = Array.isArray(parsed2) ? parsed2 : parsed2.comments;
-      if (!Array.isArray(list2)) throw new Error("comments is not a list");
-      followUpThread = list2;
+      const list3 = Array.isArray(parsed2) ? parsed2 : parsed2.comments;
+      if (!Array.isArray(list3)) throw new Error("comments is not a list");
+      followUpThread = list3;
       followUpThreadFor = Array.isArray(parsed2) ? { repository: void 0, pullNumber: void 0 } : { repository: parsed2.repository, pullNumber: parsed2.pullNumber };
       if (checks !== void 0) checks.issuesRead = linkedIssuesOf(parsed2).map((issue) => issue.number);
     } catch (error) {
