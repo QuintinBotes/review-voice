@@ -376,7 +376,10 @@ These switches and `removed_controls` below default to false. Enabling one
 changes only an otherwise APPROVE verdict to COMMENT. It does not raise a
 maintainability tier, create a REQUEST_CHANGES event, add a new GitHub write,
 or put the structural reason in the posted review. The signal is named only in the existing local
-`humanReviewNote` and decision data.
+`humanReviewNote` and decision data. `record --files` stores every signal as
+per-file counts (`RecordedStructure`, no source text), and with
+`verdict.reading_guide` those counts may post as the collapsed Reading guide
+(see "Posting").
 
 The third is `typeEscapes`: `{ path, line, kind }` for each escape from the type
 system on a line the change adds to production source, found by a small
@@ -1487,6 +1490,39 @@ key is taken and the comments already sent are filtered out, and
 Every reader of a posted comment (`thread`, the outcome matcher) cuts it off
 at its marker first. `evidenceBlocks` in the verdict, and on the
 `review_post_attempted` row, counts the comments that carry one.
+
+**Posting tier.** `verdict.min_posted_tier` (one of `blocking`, `important`,
+`minor`, `nit`; default `nit`, which posts every tier) is read from the base
+commit like the rest of `verdict:`, so a pull request cannot raise it to hide
+its own findings. `planFindings` compares each verified finding's severity with
+the tier through one closed table in which `question` ranks with `minor`, as
+`eventFor` treats them, and puts a finding below the tier in
+`PlannedFindings.belowTier` in review order. It is not posted, stays in the
+recorded run (so `explain` still shows it), is listed in the preview and in
+`VerdictOutput.belowTier` with the reason `below verdict.min_posted_tier
+(<tier>)`, and is counted in the scope block's prose and JSON as `belowTier`.
+A finding whose recorded category is one `isSuppressionExempt` accepts
+(`security`, `authorization`, `authentication`, `data_integrity`,
+`trust_boundary`) posts whatever its tier; a breach is not a noise preference.
+A withheld finding's severity joins the held severities, so a withheld finding
+above a nit keeps an approval at COMMENT exactly as an unverified one does; a
+withheld nit changes nothing. The validator is untouched, and the posted
+subset keeps the validated order.
+
+**Reading guide.** `verdict.reading_guide` (default `false`) puts a collapsed
+Reading guide between the findings and the scope block. `readingGuide` builds
+it from `RunDetail.structure` alone, the per-file counts `record --files`
+aggregates from the manifest's `structure` (`recordedStructure` in
+`src/store/runs.ts`), never from the signals' text. Files are ordered by removed
+controls, risk markers, a size crossing, branch growth, type escapes and then
+path; at most 20 are listed and the rest counted in one line. Every path goes
+through `safeCheckName` inside a code span. The guide has one fixed caption and
+no other prose, no line numbers, function names or source text, and no JSON
+trailer; a run without a recorded structure says `Structure not recorded.`
+rather than reading as empty. It follows the idempotency key, so toggling it
+keeps the key, and the scope block's trailer stays the last line before any CI
+annotation. It never names the ADR 0012 cap or the reasons ADR 0020 lets a
+signal add to it.
 
 **Carry.** With `carry_approval_on_unchanged`, a run whose scope is `unchanged`
 and that maps to a clean approval looks for the owner's latest deciding review.

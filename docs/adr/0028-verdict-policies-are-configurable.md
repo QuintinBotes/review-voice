@@ -150,3 +150,37 @@ setting and never a path, such as
 `review.human_review.sensitive_paths` stays the setting for code that needs a
 person's eyes and a thorough review; these lists are an approval rule and
 cost nothing. No GitHub write is added.
+
+`verdict.min_posted_tier` (default `nit`, which posts every tier) withholds a
+verified finding below the chosen tier. It is a tier, not a count. A cap drops
+a real finding to hit a number, while a tier withholds by the severity the CLI
+derived, keeps the withheld findings in the recorded run, lists them in the
+preview and in `belowTier`, and counts them in the scope block as
+`belowTier`. The table is closed.
+
+| severity | tier rank |
+|---|---|
+| `blocking` | 0 |
+| `important` | 1 |
+| `minor` | 2 |
+| `question` | 2, as `eventFor` treats a question as a minor |
+| `nit` | 3 |
+
+A withheld finding above a nit keeps an approval at COMMENT, through the same
+rule that holds an unverified one, because approving past a known defect is
+worse than approving past an unchecked one; a withheld nit changes nothing.
+The five categories no suppression may reach (`security`, `authorization`,
+`authentication`, `data_integrity`, `trust_boundary`, [0032](0032-approved-policies-are-enforced-at-scoring.md))
+post at any tier. The key is read from the base commit
+([0031](0031-a-github-action-runs-one-review-per-pull-request-event.md)), so a
+pull request cannot raise the tier to hide its own findings.
+
+`verdict.reading_guide` (default `false`) puts a collapsed Reading guide
+between the findings and the scope block, built from the recorded per-file
+counts of the structural signals alone. It lists the changed files that carry
+one, most first, with one fixed caption and no other prose. It follows the idempotency
+key, so toggling it keeps the key, and the scope block's trailer stays the
+last line before any CI annotation. [0016](0016-what-the-verifier-could-not-check.md)'s
+lists stay local, and the reasons [0020](0020-structural-signals-may-opt-into-human-review.md)
+lets a signal add to the complexity cap stay off the posted body. Both
+settings ride on the existing review write; no GitHub write is added.

@@ -12,7 +12,7 @@ import { readSuppressions } from './rules.ts';
 import { BUILTIN_RERUN_SIGNATURES, type CiRules, type GateCheck } from '../publish/ci.ts';
 import { DEFAULT_HUMAN_REVIEW, type HumanReviewConfig } from '../diff/complexity.ts';
 import { DEFAULT_STRUCTURE, type StructureConfig } from '../diff/structure.ts';
-import { DEFAULT_VERDICT_POLICY, type VerdictPolicy } from '../publish/verdict.ts';
+import { DEFAULT_VERDICT_POLICY, POSTED_TIERS, type VerdictPolicy } from '../publish/verdict.ts';
 import { globToRegExp } from '../conventions/globs.ts';
 import { CHANGE_KINDS, MODEL_KEYS, MODES, type ChangeKind, type ModelOverrides, type RequestedMode, type Tier } from '../review/plan.ts';
 import { agentExists, DIFF_LANE, LANE_SIGNALS, LANE_TIERS, type Lane, type LaneSignal } from '../review/lanes.ts';
@@ -183,7 +183,7 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
   verdict: [
     'ci_pending', 'ci_red', 'ci_needs_rerun', 'carry_approval_on_unchanged', 'recheck_thread_before_post', 'never_approve',
     'never_approve_paths', 'only_approve_paths', 'scope_block', 'scope_block_models', 'evidence_block', 'evidence_block_precedents',
-    'held_queue',
+    'held_queue', 'min_posted_tier', 'reading_guide',
   ],
   static_evidence: ['enabled', 'env_passthrough', 'commands'],
   'static_evidence.commands[]': ['name', 'run', 'timeout_seconds', 'version'],
@@ -756,6 +756,8 @@ function readVerdictPolicy(block: Record<string, unknown> | null, result: Loaded
   policy.evidenceBlock = enabled('evidence_block', DEFAULT_VERDICT_POLICY.evidenceBlock);
   policy.evidenceBlockPrecedents = enabled('evidence_block_precedents', DEFAULT_VERDICT_POLICY.evidenceBlockPrecedents);
   policy.heldQueue = enabled('held_queue', DEFAULT_VERDICT_POLICY.heldQueue);
+  policy.minPostedTier = choice('min_posted_tier', POSTED_TIERS, DEFAULT_VERDICT_POLICY.minPostedTier);
+  policy.readingGuide = enabled('reading_guide', DEFAULT_VERDICT_POLICY.readingGuide);
 }
 
 const TEAM = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;

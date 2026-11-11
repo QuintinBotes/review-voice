@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { SEVERITIES, type Severity } from '../contract/limits.ts';
-import { challengeNotRun, type RunDetail, type StoredFinding } from '../store/runs.ts';
+import { challengeNotRun, REMOVED_CONTROL_ORDER, repositoryPath, RISK_MARKER_ORDER, type RunDetail, type StoredFinding } from '../store/runs.ts';
 import type { ReviewComment, ReviewEvent, ReviewPayload } from '../github/writer.ts';
 import type { CiEntry, CiState } from './ci.ts';
 import { renderSimplification, type VerifiedSimplification } from '../simplification.ts';
-import type { SuggestedPatch } from '../scoring/score.ts';
+import { isSuppressionExempt, type SuggestedPatch } from '../scoring/score.ts';
 import { stripEvidenceBlock } from './evidence-block.ts';
 import { globToRegExp } from '../conventions/globs.ts';
 
@@ -26,6 +26,15 @@ export function eventFor(severities: readonly Severity[]): ReviewEvent {
 }
 
 const RANK: Record<Severity, number> = { blocking: 0, important: 1, minor: 2, question: 3, nit: 4 };
+
+/** The tiers `verdict.min_posted_tier` may name; a verified finding below the chosen one is not posted. */
+export const POSTED_TIERS = ['blocking', 'important', 'minor', 'nit'] as const;
+export type PostedTier = (typeof POSTED_TIERS)[number];
+
+// Not RANK, which orders a summary line: a question ranks with a minor here
+// because `eventFor` treats both as a comment and the derivation caps a
+// question at minor, so a tier that posts minors posts questions too.
+const TIER_RANK: Record<Severity, number> = { blocking: 0, important: 1, minor: 2, question: 2, nit: 3 };
 
 export interface ReviewFinding {
   /** Positional, as `record` assigns it; null for a block that did not parse. */
@@ -237,11 +246,14 @@ export interface PlannedFindings {
    */
   unanchored: ReviewFinding[];
   held: HeldBack[];
+  /** Verified findings below `verdict.min_posted_tier`, in review order: not posted, kept in the record. */
+  belowTier: ReviewFinding[];
   /** The event the posted findings call for, before CI is considered. */
   mapped: ReviewEvent;
   /**
-   * True when a held finding kept an approval at COMMENT: an unverified one
-   * above a nit, or any hold for a configured challenger that did not run.
+   * True when a held finding kept an approval at COMMENT: one above a nit that
+   * is unverified or below the posting tier, or any hold for a configured
+   * challenger that did not run.
    */
   heldBackApproval: boolean;
   /** Inline findings whose backing score verified the repair, so a suggestion may render on them. */
@@ -270,12 +282,14 @@ export interface EvidenceBacking {
  * claim must not block someone's merge. Held findings still count in one
  * direction: an unverified concern above a nit keeps the review from
  * approving, since approving past a concern nobody has checked is the false
- * APPROVE this design exists to prevent.
+ * APPROVE this design exists to prevent. A verified finding below the posting
+ * tier is withheld the same way, and counts the same way against an approval.
  */
-export function planFindings(output: string, run: RunDetail, loadRun: RunLoader): PlannedFindings {
+export function planFindings(output: string, run: RunDetail, loadRun: RunLoader, minPostedTier: PostedTier = 'nit'): PlannedFindings {
   const inline: ReviewFinding[] = [];
   const unanchored: ReviewFinding[] = [];
   const held: HeldBack[] = [];
+  const belowTier: ReviewFinding[] = [];
   const heldSeverities: Severity[] = [];
   const fixVerified = new Map<ReviewFinding, FixBacking>();
   const backing = new Map<ReviewFinding, EvidenceBacking>();
@@ -310,6 +324,16 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
       heldSeverities.push(finding.severity ?? 'minor');
       continue;
     }
+    // Below the tier the owner chose to post, unless the recorded category is
+    // one no suppression may reach: a breach is not a noise preference, and its
+    // derived tier alone does not protect it.
+    // A carried finding's own record has no category; the verified origin's record does.
+    const category = run.findings.find((stored) => stored.findingId === finding.findingId)?.category ?? result.stored?.category;
+    if (TIER_RANK[finding.severity] > TIER_RANK[minPostedTier] && (category === undefined || !isSuppressionExempt(category))) {
+      belowTier.push(finding);
+      heldSeverities.push(finding.severity);
+      continue;
+    }
     // A stale consumer keeps its `path:line` in the body text: the reader still
     // needs to know where, and an inline comment there would be refused. So
     // does a finding about a file the change deletes, which has no new side.
@@ -328,7 +352,7 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
   const heldBackApproval = mapped === 'APPROVE' && (eventFor(heldSeverities) !== 'APPROVE' || challengeMissing);
   if (heldBackApproval) mapped = 'COMMENT';
 
-  return { inline, unanchored, held, mapped, heldBackApproval, fixVerified, backing };
+  return { inline, unanchored, held, belowTier, mapped, heldBackApproval, fixVerified, backing };
 }
 
 export type Action = 'post' | 'wait' | 'refuse' | 'carry';
@@ -374,6 +398,10 @@ export interface VerdictPolicy {
    * verdict and the posted review are unchanged.
    */
   heldQueue: boolean;
+  /** `verdict.min_posted_tier`: a verified finding below it is not posted, outside the categories no suppression may reach (docs/adr/0028). */
+  minPostedTier: PostedTier;
+  /** `verdict.reading_guide`: put the collapsed reading guide before the scope block (docs/adr/0028). */
+  readingGuide: boolean;
 }
 
 export const DEFAULT_VERDICT_POLICY: Readonly<VerdictPolicy> = Object.freeze({
@@ -393,6 +421,8 @@ export const DEFAULT_VERDICT_POLICY: Readonly<VerdictPolicy> = Object.freeze({
   evidenceBlock: false,
   evidenceBlockPrecedents: false,
   heldQueue: false,
+  minPostedTier: 'nit',
+  readingGuide: false,
 });
 
 export function verdictPolicy(policy: Partial<VerdictPolicy> | undefined): VerdictPolicy {
@@ -596,7 +626,7 @@ export function decide(input: {
     carriedReviewUrl: null,
   });
   if (input.heldBackApproval === true) {
-    reasons.push('an unverified finding above a nit was held back, so this comments rather than approves');
+    reasons.push('a finding above a nit was held back, unverified or below the posting tier, so this comments rather than approves');
   }
   if (input.headMoved) {
     return done({
@@ -838,7 +868,7 @@ export function wouldHaveSummary(planned: PlannedFindings): string {
   }
   if (planned.heldBackApproval) {
     const nits = count === 0 ? '' : `, with ${plural(count, 'nit')}`;
-    return `Would have commented: an unverified finding above a nit was held back${nits}.`;
+    return `Would have commented: a finding above a nit was held back, unverified or below the posting tier${nits}.`;
   }
   return `Would have commented: ${plural(count, 'comment')}, the highest ${highest}.`;
 }
@@ -915,6 +945,8 @@ export interface HeldCounts {
   restatesTool: number;
   policySuppressed: number;
   other: number;
+  /** Verified findings `verdict.min_posted_tier` withheld; `scopeBlock` sets it, since the record has no verdict for them. */
+  belowTier: number;
 }
 
 /**
@@ -923,7 +955,7 @@ export interface HeldCounts {
  * of the total.
  */
 export function heldCounts(held: readonly { verdict: string }[]): HeldCounts {
-  const counts: HeldCounts = { unverified: 0, belowGate: 0, challenge: 0, restatesTool: 0, policySuppressed: 0, other: 0 };
+  const counts: HeldCounts = { unverified: 0, belowGate: 0, challenge: 0, restatesTool: 0, policySuppressed: 0, other: 0, belowTier: 0 };
   for (const entry of held) {
     switch (entry.verdict) {
       case 'unverified':
@@ -1033,6 +1065,7 @@ export function scopeBlock(
   // not posted either, and a block that said "nothing held back" over it
   // would be false. It has no held verdict of its own, so it counts as other.
   held.other += planned.held.length;
+  held.belowTier = planned.belowTier.length;
   const notPosted = [
     held.unverified > 0 ? plural(held.unverified, 'unverified claim') : null,
     held.belowGate > 0 ? `${held.belowGate} below the gate` : null,
@@ -1040,6 +1073,7 @@ export function scopeBlock(
     held.restatesTool > 0 ? `${held.restatesTool} restating a static check` : null,
     held.policySuppressed > 0 ? `${held.policySuppressed} suppressed by policy` : null,
     held.other > 0 ? `${held.other} held for other reasons` : null,
+    held.belowTier > 0 ? `${held.belowTier} below the posting tier` : null,
   ].filter((part): part is string => part !== null);
 
   const posted = [...planned.inline, ...planned.unanchored];
@@ -1081,6 +1115,64 @@ export function scopeBlock(
   ].join('\n');
 }
 
+/** How many files the reading guide lists; the rest are counted in one line, so the word budget never applies to it. */
+const MAX_GUIDE_FILES = 20;
+
+/**
+ * The collapsed "Reading guide" block (docs/adr/0028, `verdict.reading_guide`):
+ * the changed files that carry a structural signal, most first.
+ *
+ * Pure and built from the recorded counts alone, so two renders of one run are
+ * identical and the guide cannot describe code the review did not measure. It
+ * lists lexical leads, never findings, and its one fixed caption says so; no
+ * line numbers, function names or source text, so the validator never sees it
+ * and it is never a verdict input. Every path goes through `safeCheckName`
+ * inside a code span, as the scope block's names do, so a path named to close
+ * the block renders as text. A structure the run did not record says so rather
+ * than reading as empty. It never names the ADR 0012 cap or ADR 0020's reasons.
+ */
+export function readingGuide(run: RunDetail): string {
+  const lines = ['<details><summary>Reading guide</summary>', '', 'Changed files by structural signal, most first. Lexical leads the CLI measured, not findings.', ''];
+  const structure = run.structure;
+  if (structure === null) {
+    lines.push('Structure not recorded.');
+  } else {
+    const sum = (counts: Partial<Record<string, number>>): number => Object.values(counts).reduce<number>((total, count) => total + (count ?? 0), 0);
+    const kinds = (counts: Partial<Record<string, number>>, order: Readonly<Record<string, number>>): string =>
+      Object.keys(counts)
+        .filter((kind) => (counts[kind] ?? 0) > 0)
+        // The store reads only kinds the table holds; the fallback is for the index type.
+        .sort((a, b) => (order[a] ?? 0) - (order[b] ?? 0))
+        .join(', ');
+    // Checked again here as well as at record time, since a row stored before the check could hold one.
+    const files = [...structure.files].filter((file) => repositoryPath(file.path)).sort(
+      (a, b) =>
+        sum(b.removedControls) - sum(a.removedControls) ||
+        sum(b.riskMarkers) - sum(a.riskMarkers) ||
+        Number(b.sizeCrossing !== null) - Number(a.sizeCrossing !== null) ||
+        b.branchGrowth - a.branchGrowth ||
+        b.typeEscapes - a.typeEscapes ||
+        (a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+    );
+    if (files.length === 0) lines.push('No structural signal in this change.');
+    files.slice(0, MAX_GUIDE_FILES).forEach((file, index) => {
+      const removed = sum(file.removedControls);
+      const risks = sum(file.riskMarkers);
+      const parts = [
+        removed > 0 ? `${plural(removed, 'removed control')} (${kinds(file.removedControls, REMOVED_CONTROL_ORDER)})` : null,
+        risks > 0 ? `${plural(risks, 'risk marker')} (${kinds(file.riskMarkers, RISK_MARKER_ORDER)})` : null,
+        file.sizeCrossing === null ? null : `crossed ${file.sizeCrossing.threshold} lines (now ${file.sizeCrossing.headLines})`,
+        file.branchGrowth > 0 ? `${plural(file.branchGrowth, 'function')} grew past the branch threshold` : null,
+        file.typeEscapes > 0 ? plural(file.typeEscapes, 'type escape') : null,
+      ].filter((part): part is string => part !== null);
+      lines.push(`${index + 1}. \`${safeCheckName(file.path)}\`${file.deletedFile ? ' (deleted file)' : ''}: ${parts.join('; ')}`);
+    });
+    if (files.length > MAX_GUIDE_FILES) lines.push(`and ${plural(files.length - MAX_GUIDE_FILES, 'more file')} with a signal.`);
+    if (structure.unmeasured > 0) lines.push(`${plural(structure.unmeasured, 'production file')} could not be measured.`);
+  }
+  return [...lines, '', '</details>'].join('\n');
+}
+
 /** The body with the scope block after the findings; CI annotations are added after this, never before. */
 export function withScopeBlock(body: string, block: string): string {
   return `${body}\n\n${block}`;
@@ -1113,6 +1205,8 @@ export function renderPreview(input: {
   pullNumber: number;
   payload: ReviewPayload;
   held: readonly HeldBack[];
+  /** Verified findings `verdict.min_posted_tier` withheld; a `HeldBack` has the same four fields. */
+  belowTier: readonly Pick<ReviewFinding, 'findingId' | 'severity' | 'path' | 'line'>[];
   /** Comments already on this head from an earlier post, so not sent again. */
   alreadyInline?: number | undefined;
   /** Suggestion blocks left out of their comments, whose prose still posts. */
@@ -1141,6 +1235,12 @@ export function renderPreview(input: {
     for (const held of input.held) {
       const where = held.path === null ? 'no anchor' : `${held.path}:${held.line ?? '?'}`;
       lines.push(`  ${held.findingId ?? '-'} ${where} (${held.reason})`);
+    }
+  }
+  if (input.belowTier.length > 0) {
+    lines.push(`Below the posting tier, not posted: ${input.belowTier.length}`);
+    for (const finding of input.belowTier) {
+      lines.push(`  ${finding.findingId ?? '-'} ${finding.path ?? 'no anchor'}:${finding.line ?? '?'} (${finding.severity})`);
     }
   }
   return lines.join('\n');
