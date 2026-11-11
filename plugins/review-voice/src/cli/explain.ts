@@ -1,7 +1,7 @@
 import { describeScope, parseReviewScope, type ReviewScope } from '../diff/incremental.ts';
 import { followUpHistory } from '../store/follow-ups.ts';
 import { openDatabase } from '../store/db.ts';
-import { runDetail, describeChecks, describeProvenance, type RecordedReproduction } from '../store/runs.ts';
+import { runDetail, describeChecks, describeFamilies, describeProvenance, type RecordedReproduction } from '../store/runs.ts';
 import { describeStage, shallowPassWarning } from '../store/effort.ts';
 import { backingAt, challengeFacts } from '../publish/evidence-block.ts';
 import { planFindings } from '../publish/verdict.ts';
@@ -84,6 +84,8 @@ export function explainCommand(argv: string[]): number {
     for (const stage of detail.stages) console.log(`Effort ${describeStage(stage)}`);
     const shallow = shallowPassWarning(detail.stages, detail.findings.length);
     if (shallow !== null) console.log(`Warning ${shallow}`);
+    // After the effort lines, because a test pins the first of those to the line after the provenance.
+    console.log(describeFamilies(detail.families));
     if (detail.complexity !== null) {
       console.log(
         detail.complexity.level === 'high'

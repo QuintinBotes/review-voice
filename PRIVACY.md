@@ -9,7 +9,7 @@ token can reach, and adding a repository always requires explicit confirmation.
 
 With GitHub ingestion enabled, from allowlisted repositories only:
 
-- Pull request metadata, titles and descriptions
+- Pull request metadata, titles and descriptions and, when `review.linked_issues` is on, the title and body of each issue a pull request closes
 - Inline review comments, review threads and submitted review summaries
 - Pull request conversation comments (if enabled in config)
 - Changed-file metadata and diff hunks

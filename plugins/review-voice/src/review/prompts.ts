@@ -92,10 +92,13 @@ function context(run: RunFiles, extra: string[] = []): string[] {
   ];
 }
 
-export function intentPrompt(run: RunFiles, title: string): string {
+export function intentPrompt(run: RunFiles, title: string, issues: readonly number[] = []): string {
   return [
     `Extract what the description of the pull request titled ${JSON.stringify(title)} states.`,
     file(run, 'thread.json', 'the thread; the description is its description entry'),
+    ...(issues.length === 0
+      ? []
+      : [`The description closes ${issues.map((n) => `#${n}`).join(', ')}. Their linkedIssues entries in the thread are a second source to quote from.`]),
     '',
     'Return {"statements": [...]} as schemas/intent.schema.json describes. {"statements": []} is valid.',
   ].join('\n');

@@ -1,8 +1,9 @@
+import { writeFileSync } from 'node:fs';
 import { openDatabase } from '../store/db.ts';
-import { computeMetrics, DEFAULT_WINDOW_DAYS, stageSeconds } from '../evaluate/metrics.ts';
+import { byFamily, computeMetrics, DEFAULT_WINDOW_DAYS, describeByFamily, evaluationReport, formatMetricValue, metricMark, metricTarget } from '../evaluate/metrics.ts';
+import { htmlDocument, renderEvaluationHtml } from '../evaluate/report.ts';
 import { readRecallResults, recallMetrics, type RecallResults } from '../evaluate/recall-results.ts';
-import { postedBreakdown } from '../store/outcomes.ts';
-import { flag } from './shared.ts';
+import { flag, resolveOutPath } from './shared.ts';
 import { terminalSafeDeep } from '../terminal.ts';
 
 export function evaluateCommand(argv: string[]): number {
@@ -34,46 +35,53 @@ export function evaluateCommand(argv: string[]): number {
     }
     windowDays = Number(match[1]);
   }
+  const json = argv.includes('--json');
+  const html = argv.includes('--html');
+  const out = flag(argv, '--out');
+  if (json && html) {
+    console.error('--json and --html are exclusive.');
+    return 2;
+  }
+  if (argv.includes('--out') && !html) {
+    console.error('--out needs --html.');
+    return 2;
+  }
+  if (argv.includes('--out') && out === null) {
+    console.error('--out needs a path.');
+    return 2;
+  }
   const db = openDatabase();
   try {
     const metrics = [...computeMetrics(db, { windowDays }), ...recallMetrics(recall)];
-    if (argv.includes('--json')) {
-      const { bySeverity, byLane, byRule, byEvidenceBlock } = postedBreakdown(db);
+    if (json || html) {
       // A rule id holds the category the analyst gave, which nothing checks against a list.
-      console.log(
-        JSON.stringify(
-          terminalSafeDeep({
-            metrics,
-            posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule, by_evidence_block: byEvidenceBlock },
-            stage_seconds: stageSeconds(db),
-          }),
-          null,
-          2,
-        ),
-      );
-    } else {
-      for (const metric of metrics) {
-        const value = metric.value === null ? 'no data' : (Number.isInteger(metric.value) && metric.name.endsWith('_tracked') ? String(metric.value) : metric.value.toFixed(2));
-        // A goal that is not met is not a failure, and printing it as one
-        // trains the reader to ignore the word.
-        const mark =
-          metric.meets === null || metric.target === 'no target'
-            ? '  -'
-            : metric.meets
-              ? '  ok'
-              : metric.kind === 'goal'
-                ? 'over'
-                : 'FAIL';
-        const target =
-          metric.target === 'no target'
-            ? 'reported, not scored'
-            : metric.kind === 'goal'
-              ? `goal ${metric.target}`
-              : `target ${metric.target}`;
-        console.log(`${mark}  ${metric.name.padEnd(32)} ${value.padStart(8)}  ${target}`);
-        console.log(`      ${metric.basis}`);
+      const report = terminalSafeDeep(evaluationReport(db, metrics, { windowDays }));
+      if (json) {
+        console.log(JSON.stringify(report, null, 2));
+        return 0;
       }
+      const fragment = renderEvaluationHtml(report);
+      if (out === null) {
+        process.stdout.write(fragment);
+        return 0;
+      }
+      try {
+        writeFileSync(resolveOutPath(out, 'evaluation.html'), htmlDocument(fragment, 'Review Voice evaluation'), 'utf8');
+      } catch (error) {
+        console.error(`Cannot write ${out}: expected a file path or a directory; ${error instanceof Error ? error.message : String(error)}`);
+        return 2;
+      }
+      return 0;
     }
+    for (const metric of metrics) {
+      const mark = metricMark(metric);
+      // The dash is three characters wide, not four, so a padStart(4) would
+      // change every unscored line; the column is what it has always been.
+      const column = mark === '-' ? '  -' : mark === 'ok' ? '  ok' : mark;
+      console.log(`${column}  ${metric.name.padEnd(32)} ${formatMetricValue(metric).padStart(8)}  ${metricTarget(metric)}`);
+      console.log(`      ${metric.basis}`);
+    }
+    for (const line of describeByFamily(byFamily(db))) console.log(line);
     // A metric below target is information, not a command failure.
     return 0;
   } finally {

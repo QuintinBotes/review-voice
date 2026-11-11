@@ -1,4 +1,9 @@
-import { commandEnvironment, maskPassthroughDeep, spawnCommand } from '../evidence/run.ts';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { expandCommand } from '../agents/command-cli.ts';
+import type { Family } from '../agents/types.ts';
+import { commandEnvironment, maskPassthroughDeep, onStop, spawnCommand } from '../evidence/run.ts';
 import { terminalSafeDeep } from '../terminal.ts';
 import type { DecisiveEvidence, FindingVerdict, RawVerdict, VerificationReport, Verdict } from './types.ts';
 
@@ -36,9 +41,15 @@ export interface VerificationContext {
 
 export interface VerifierConfig {
   enabled: boolean;
-  /** A command reading a finding as JSON on stdin and writing a verdict to stdout. */
-  command: string;
+  /**
+   * A command reading a finding as JSON on stdin and writing a verdict to
+   * stdout: a shell string, or an argv list run without a shell whose
+   * `{schema}`, `{output}` and `{cwd}` tokens are replaced (a configured runner).
+   */
+  command: string | readonly string[];
   name?: string;
+  /** The verifier's model family, when known, so its verdicts can be grouped. */
+  family?: Family | undefined;
   timeoutSeconds?: number;
   /**
    * A rejection at or above this confidence drops the finding. Below it, the
@@ -52,6 +63,26 @@ export interface VerifierConfig {
 
 const DEFAULT_TIMEOUT_SECONDS = 90;
 const DEFAULT_DROP_THRESHOLD = 0.8;
+
+/** The verdict shape, for a configured runner's `{schema}` token. */
+export const SECOND_PASS_SCHEMA = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['confirmed', 'rejected', 'uncertain'] },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+    reason: { type: 'string' },
+    suggested_severity: { type: 'string', enum: ['blocking', 'important', 'minor', 'nit', 'question'] },
+    decisive_evidence: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { path: { type: 'string' }, line: { type: 'integer', minimum: 1 }, why: { type: 'string' } },
+        required: ['path', 'line', 'why'],
+      },
+    },
+  },
+  required: ['verdict'],
+} as const;
 
 /** What `verify` says when the pass is off because nothing is configured. */
 export const HOW_TO_ENABLE =
@@ -102,7 +133,7 @@ function decisiveEvidence(raw: RawVerdict): DecisiveEvidence[] {
  * unparseable span; non-greedy stops at the first closing brace and breaks on
  * the nested objects a real verdict contains.
  */
-function jsonCandidates(text: string): string[] {
+export function jsonCandidates(text: string): string[] {
   const found: string[] = [];
   let depth = 0;
   let start = -1;
@@ -179,31 +210,67 @@ export interface RunResult {
   failed: boolean;
 }
 
-export type Runner = (command: string, input: string, timeoutMs: number, cwd: string, env: NodeJS.ProcessEnv) => RunResult | Promise<RunResult>;
+export type Runner = (command: string | readonly string[], input: string, timeoutMs: number, cwd: string, env: NodeJS.ProcessEnv) => RunResult | Promise<RunResult>;
 
 // The spawner the static checks use, so a stop signal reaches this command and
-// what it started too (issue 277).
+// what it started too (issue 277). A shell string keeps its shell; an argv list
+// runs without one, with the verdict schema behind {schema} and the answer read
+// from {output} in place of stdout when the command names it.
 const spawnRunner: Runner = async (command, input, timeoutMs, cwd, env) => {
-  const result = await spawnCommand(command, {
-    cwd,
-    env,
-    shell: true,
-    encoding: 'utf8',
-    input,
-    timeout: timeoutMs,
-    killSignal: 'SIGKILL',
-    maxBuffer: 8 * 1024 * 1024,
-    detached: true,
-  });
-  return {
-    stdout: result.stdout,
-    stderr: result.stderr,
-    // An EPIPE on the input write (a command that answered without reading it,
-    // #297) never reaches here: spawnCommand ignores errors on stdin. Only a
-    // command that never ran, or was killed (no exit status), is a failure.
-    failed: result.error !== undefined || result.status === null,
-  };
+  const argv = typeof command === 'string' ? null : command;
+  const dir = argv === null ? null : mkdtempSync(join(tmpdir(), 'rv-second-pass-'));
+  const withdraw = dir === null ? () => {} : onStop(() => rmSync(dir, { recursive: true, force: true }));
+  try {
+    const output = dir === null ? null : join(dir, 'output.json');
+    let args: string[] | undefined;
+    if (argv !== null && dir !== null) {
+      const schema = join(dir, 'schema.json');
+      writeFileSync(schema, JSON.stringify(SECOND_PASS_SCHEMA));
+      args = expandCommand(argv.slice(1), { schema, output: output!, cwd });
+    }
+    const result = await spawnCommand(argv === null ? (command as string) : (argv[0] ?? ''), {
+      cwd,
+      env,
+      shell: dir === null,
+      ...(args === undefined ? {} : { args }),
+      encoding: 'utf8',
+      input,
+      timeout: timeoutMs,
+      killSignal: 'SIGKILL',
+      maxBuffer: 8 * 1024 * 1024,
+      detached: true,
+    });
+    const fromFile = output !== null && command.includes('{output}');
+    let stdout = result.stdout;
+    if (fromFile) {
+      try {
+        stdout = readFileSync(output, 'utf8');
+      } catch {
+        stdout = '';
+      }
+    }
+    return {
+      stdout,
+      // An argv runner answers on stdout or through {output}, as the challenger's
+      // does. A CLI's stderr is its event stream, which can quote the tree under
+      // review, and a verdict there must not decide a finding.
+      stderr: argv === null ? result.stderr : '',
+      // An EPIPE on the input write (a command that answered without reading it,
+      // #297) never reaches here: spawnCommand ignores errors on stdin. For a
+      // shell string only a command that never ran, or was killed (no exit
+      // status), is a failure. An argv runner answers only with exit status 0,
+      // as the challenger's does, so a CLI that failed cannot reject a finding.
+      failed: result.error !== undefined || (argv === null ? result.status === null : result.status !== 0),
+    };
+  } finally {
+    withdraw();
+    if (dir !== null) rmSync(dir, { recursive: true, force: true });
+  }
 };
+
+/** Whether the configuration names a command at all: a blank string or an empty list is none. */
+const hasCommand = (command: string | readonly string[]): boolean =>
+  typeof command === 'string' ? command.trim().length > 0 : command.length > 0;
 
 export async function verifyFindings(
   findings: VerifiableFinding[],
@@ -211,8 +278,9 @@ export async function verifyFindings(
   options: { cwd: string; runner?: Runner; context?: VerificationContext },
 ): Promise<VerificationReport> {
   const name = config.name ?? 'external';
+  const family = config.family === undefined ? {} : { family: config.family };
 
-  if (!config.enabled || config.command.trim().length === 0) {
+  if (!config.enabled || !hasCommand(config.command)) {
     return {
       enabled: false,
       verifier: null,
@@ -268,6 +336,7 @@ export async function verifyFindings(
         originalSeverity: finding.severity,
         finalSeverity: finding.severity,
         verifier: name,
+        ...family,
       });
       continue;
     }
@@ -328,10 +397,11 @@ export async function verifyFindings(
       originalSeverity: finding.severity,
       finalSeverity,
       verifier: name,
+      ...family,
       ...(decisive.length > 0 ? { decisiveEvidence: decisive } : {}),
       ...(proposedSeverity === undefined ? {} : { proposedSeverity }),
     });
   }
 
-  return { enabled: true, verifier: name, verdicts, didNotRun: [...new Set(didNotRun)] };
+  return { enabled: true, verifier: name, ...family, verdicts, didNotRun: [...new Set(didNotRun)] };
 }

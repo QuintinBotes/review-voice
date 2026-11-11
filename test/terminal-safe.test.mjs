@@ -524,7 +524,7 @@ test('status prints the last run without terminal controls in its rule ids or it
   });
 });
 
-test('evaluate prints rule ids without terminal controls', async () => {
+test('evaluate prints rule ids without terminal controls, as JSON and as the rendered page', async () => {
   await withData(async (db) => {
     const { reviewRunId } = record(db, { candidates: [{ path: 'src/cart.ts', line: 12, category: `correctness${HOSTILE}` }] });
     db.prepare(
@@ -535,6 +535,11 @@ test('evaluate prints rule ids without terminal controls', async () => {
     assert.equal(evaluated.code, 0, shown(evaluated.stderr));
     assertSafe(evaluated.stdout, 'evaluate --json');
     assert.ok(Object.keys(JSON.parse(evaluated.stdout).posted_breakdown.by_rule).some((rule) => rule.startsWith(`correctness${CLEAN}:`)));
+    // The fragment is written straight to the output stream, past the wrapper that cleans a printed line.
+    const page = throughBundle(['evaluate', '--html'], '');
+    assert.equal(page.status, 0, shown(page.stderr));
+    assertSafe(page.stdout, 'evaluate --html');
+    assert.ok(page.stdout.includes(`correctness${CLEAN}:`), shown(page.stdout));
   });
 });
 

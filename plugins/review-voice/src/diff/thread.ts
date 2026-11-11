@@ -102,7 +102,84 @@ interface RawIssueComment {
   created_at?: string;
 }
 
+interface RawIssue {
+  number?: number;
+  repository_url?: string;
+  title?: string;
+  body?: string | null;
+  state?: string;
+  html_url?: string;
+  /** Present when the number is a pull request, which the issues endpoint also answers for. */
+  pull_request?: unknown;
+}
+
+/**
+ * An issue the description closes, read with `review.linked_issues` on. Its
+ * body is a second source the intent extractor may quote, held to the same
+ * whole-sentence check as the description.
+ */
+export interface LinkedIssue {
+  number: number;
+  /** Redacted, never quoted by the extractor; context only. */
+  title: string;
+  /** Redacted first, then cut at 10000 characters and back to the last blank line, so a cut never hides part of a secret from redaction or splits a sentence. */
+  body: string;
+  state: string;
+  url: string;
+  truncated?: true;
+}
+
 const MAX_COMMENTS = 300;
+const MAX_LINKED_ISSUES = 5;
+const MAX_ISSUE_BODY = 10000;
+
+/**
+ * The body cut at the cap, back to a boundary no sentence crosses, so no
+ * sentence the cap split survives: the cut would read as a sentence end, and
+ * a quote of the clipped half would pass without the condition that followed
+ * it. The last blank line first, since a hard-wrapped sentence runs across a
+ * single line break; then a line break, then a sentence end; else nothing.
+ */
+const cappedBody = (body: string): string => {
+  if (body.length <= MAX_ISSUE_BODY) return body;
+  const cut = body.slice(0, MAX_ISSUE_BODY);
+  const paragraph = cut.lastIndexOf('\n\n');
+  if (paragraph !== -1) return cut.slice(0, paragraph);
+  const line = cut.lastIndexOf('\n');
+  if (line !== -1) return cut.slice(0, line);
+  const sentence = [...cut.matchAll(/[.!?](?=\s)/gu)].at(-1);
+  return sentence === undefined ? '' : cut.slice(0, sentence.index + 1);
+};
+// GitHub's closing keywords, an optional colon, whitespace, then `#N`, `owner/repo#N` or an issue URL.
+const CLOSING_REFERENCE =
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)|([\w.-]+\/[\w.-]+)#(\d+)|#(\d+))\b/giu;
+
+/**
+ * The issues the description closes with a GitHub closing keyword, in first
+ * mention order and without duplicates. Only `repository`'s own issues are
+ * read: naming a pull request is the consent for reading it and nothing else,
+ * so a reference to another repository goes to `skipped`, even an allowlisted
+ * one. A same-repository number past the fifth goes to `beyond`, so the cap is
+ * named rather than silent. A bare `#N` with no keyword is a mention, not a
+ * requirement of this change.
+ */
+export function closingReferences(description: string, repository: string): { numbers: number[]; beyond: number[]; skipped: string[] } {
+  const numbers: number[] = [];
+  const beyond: number[] = [];
+  const skipped: string[] = [];
+  for (const match of description.matchAll(CLOSING_REFERENCE)) {
+    const [, text, urlRepository, urlNumber, shortRepository, shortNumber, bareNumber] = match;
+    const named = urlRepository ?? shortRepository;
+    if (named !== undefined && named.toLowerCase() !== repository.toLowerCase()) {
+      skipped.push(text!);
+      continue;
+    }
+    const number = Number(urlNumber ?? shortNumber ?? bareNumber);
+    if (numbers.includes(number) || beyond.includes(number)) continue;
+    (numbers.length < MAX_LINKED_ISSUES ? numbers : beyond).push(number);
+  }
+  return { numbers, beyond, skipped };
+}
 
 function clean(body: string | undefined, author: string | undefined): { body: string; author: string } | null {
   if (body === undefined || body.trim().length === 0) return null;
@@ -123,7 +200,17 @@ export async function readThread(options: {
   pullNumber: number;
   /** Injectable so a test can stub fetch. */
   client?: GitHubClient;
-}): Promise<{ repository: string; pullNumber: number; comments: ThreadComment[]; reviews: ThreadReview[]; truncated: boolean; warnings?: string[] }> {
+  /** `review.linked_issues`: also read the same-repository issues the description closes. */
+  linkedIssues?: boolean;
+}): Promise<{
+  repository: string;
+  pullNumber: number;
+  comments: ThreadComment[];
+  reviews: ThreadReview[];
+  linkedIssues?: LinkedIssue[];
+  truncated: boolean;
+  warnings?: string[];
+}> {
   // Naming a pull request is the consent for reading it, the same rule
   // `acquirePullRequestDiff` follows.
   const client = options.client ?? new GitHubClient({ allowlist: [options.repository] });
@@ -140,11 +227,47 @@ export async function readThread(options: {
     comments.push({ path: null, line: null, author: description.author, body: description.body, kind: 'description' });
   }
 
+  const warnings: string[] = [];
+  const linkedIssues: LinkedIssue[] = [];
+  if (options.linkedIssues === true) {
+    // Over the redacted text, so the CLI and the extractor read the same description.
+    const references = closingReferences(description?.body ?? '', options.repository);
+    for (const text of references.skipped) warnings.push(`Skipped ${text}: a linked issue outside ${options.repository} is not read.`);
+    if (references.beyond.length > 0) {
+      warnings.push(`Read the first ${MAX_LINKED_ISSUES} linked issues; not read: ${references.beyond.map((n) => `#${n}`).join(', ')}.`);
+    }
+    for (const number of references.numbers) {
+      try {
+        // Optional: the review goes on without an issue it cannot read.
+        const { data } = await client.get<RawIssue>(`/repos/${options.repository}/issues/${number}`, { retryRateLimits: false, followRedirects: false });
+        // A transferred issue answers with a 301 that fetch follows after the allowlist check, so only the issue asked for counts.
+        if (data.number !== number || !(data.repository_url ?? '').toLowerCase().endsWith(`/repos/${options.repository}`.toLowerCase())) {
+          warnings.push(`Could not read issue #${number} (GitHub answered for another issue or repository); continuing without it.`);
+          continue;
+        }
+        // A pull request is not a requirement of this change; this also covers a description that closes its own number.
+        if (data.pull_request !== undefined) continue;
+        const body = redact(data.body ?? '').text;
+        linkedIssues.push({
+          number,
+          title: redact(data.title ?? '').text,
+          body: cappedBody(body),
+          state: data.state ?? 'unknown',
+          url: data.html_url ?? '',
+          ...(body.length > MAX_ISSUE_BODY ? { truncated: true as const } : {}),
+        });
+      } catch (error) {
+        warnings.push(
+          `Could not read issue #${number} (${error instanceof Error ? error.message.slice(0, 160) : String(error)}); continuing without it.`,
+        );
+      }
+    }
+  }
+
   const inline = await client.paginate<RawInline>(
     `/repos/${options.repository}/pulls/${options.pullNumber}/comments?per_page=100`,
     MAX_COMMENTS,
   );
-  const warnings: string[] = [];
   let states = new Map<number, ThreadState>();
   if (inline.length > 0) {
     try {
@@ -255,6 +378,8 @@ export async function readThread(options: {
     pullNumber: options.pullNumber,
     comments,
     reviews: threadReviews,
+    // Absent when the option is off, so every existing reader of a thread file sees what it saw before.
+    ...(options.linkedIssues === true ? { linkedIssues } : {}),
     truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS,
     ...(warnings.length > 0 ? { warnings } : {}),
   };

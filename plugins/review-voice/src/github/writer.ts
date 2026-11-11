@@ -1,7 +1,7 @@
 import { githubToken } from './auth.ts';
 import { GitHubError, NotAllowlisted } from './client.ts';
 
-/** Raised for any write other than the one this writer exists to make. */
+/** Raised for any write other than the two this writer exists to make. */
 export class WriteViolation extends Error {}
 
 export type ReviewEvent = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES';
@@ -35,26 +35,36 @@ export interface WriterOptions {
 }
 
 /**
- * The one path a write may take. Owner and repository are GitHub names, the
+ * The first path a write may take. Owner and repository are GitHub names, the
  * number is a pull request, and nothing may follow `reviews`: no review id, so
  * no submit, dismiss or edit of an existing review, and no query string.
  */
 const REVIEW_PATH = /^\/repos\/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)\/pulls\/([1-9][0-9]*)\/reviews$/;
 
+/**
+ * The second: a reply to one of this tool's own inline comments (docs/adr/0035).
+ * Nothing may follow `replies`, so no edit, reaction or deletion of a comment.
+ */
+const REPLY_PATH = /^\/repos\/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)\/pulls\/([1-9][0-9]*)\/comments\/([1-9][0-9]*)\/replies$/;
+
+/** The longest reply body; the renderer holds the same bound. */
+export const REPLY_MAX_LENGTH = 600;
+
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 /**
- * The only thing in Review Voice that writes to GitHub (docs/adr/0010).
+ * The only thing in Review Voice that writes to GitHub (docs/adr/0010, 0035).
  *
  * Kept apart from `GitHubClient` on purpose. That client still refuses every
  * non-GET request, and its test still says so; widening it would have turned
  * one permitted write into a general capability that every reader holds. This
- * class can make exactly one request, `POST /repos/{owner}/{repo}/pulls/{n}/reviews`,
- * and checks that in code before anything reaches the network.
+ * class can make exactly two requests, `POST /repos/{owner}/{repo}/pulls/{n}/reviews`
+ * and `POST /repos/{owner}/{repo}/pulls/{n}/comments/{id}/replies`, and checks
+ * that in code before anything reaches the network.
  *
- * It never retries. A create-review request is not idempotent, so a retry
- * after a timeout is how one review becomes two; the caller's audit log is
- * what decides whether another attempt is safe.
+ * It never retries. Neither request is idempotent, so a retry after a timeout
+ * is how one review becomes two; the caller's audit log is what decides
+ * whether another attempt is safe.
  */
 export class ReviewWriter {
   private readonly allowlist: Set<string>;
@@ -88,18 +98,40 @@ export class ReviewWriter {
     };
   }
 
+  /** Replies under one of this tool's own inline comments, with exactly `{ body }`. */
+  async replyToComment(
+    repository: string,
+    pullNumber: number,
+    commentId: number,
+    body: string,
+  ): Promise<{ id: number | null; htmlUrl: string | null }> {
+    if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+      throw new WriteViolation(`Refused a reply on pull request ${String(pullNumber)}: not a pull request number.`);
+    }
+    if (!Number.isInteger(commentId) || commentId < 1) {
+      throw new WriteViolation(`Refused a reply to comment ${String(commentId)}: not a comment id.`);
+    }
+    const data = await this.request('POST', `/repos/${repository}/pulls/${pullNumber}/comments/${commentId}/replies`, { body });
+    const record = (typeof data === 'object' && data !== null ? data : {}) as Record<string, unknown>;
+    return {
+      id: typeof record['id'] === 'number' ? record['id'] : null,
+      htmlUrl: typeof record['html_url'] === 'string' ? record['html_url'] : null,
+    };
+  }
+
   /**
-   * Every request goes through here, and here admits one method and one path.
+   * Every request goes through here, and here admits one method and two paths.
    * Public so the refusal can be tested directly rather than inferred.
    */
   async request(method: string, path: string, body: unknown): Promise<unknown> {
     if (method !== 'POST') {
-      throw new WriteViolation(`Review Voice writes one thing; refused a ${method} to ${path}.`);
+      throw new WriteViolation(`Review Voice writes two things, a review and a reply to its own comment; refused a ${method} to ${path}.`);
     }
-    const match = REVIEW_PATH.exec(path);
+    const match = REVIEW_PATH.exec(path) ?? REPLY_PATH.exec(path);
     if (match === null) {
-      throw new WriteViolation(`Review Voice writes one thing; refused a POST to ${path}.`);
+      throw new WriteViolation(`Review Voice writes two things, a review and a reply to its own comment; refused a POST to ${path}.`);
     }
+    if (REPLY_PATH.test(path)) assertReplyBody(body);
     const repository = `${match[1]}/${match[2]}`;
     if (!this.allowlist.has(repository.toLowerCase())) {
       throw new NotAllowlisted(`${repository} is not a repository this writer may post to.`);
@@ -180,5 +212,23 @@ function assertPayload(payload: ReviewPayload): void {
   const keys = Object.keys(payload).sort().join(',');
   if (keys !== 'body,comments,commit_id,event') {
     throw new WriteViolation(`Refused a review with unexpected fields: ${keys}.`);
+  }
+}
+
+/** A reply is `{ body }` and nothing else: no event, no anchor, no edit of what it answers. */
+function assertReplyBody(payload: unknown): void {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    throw new WriteViolation('Refused a reply whose payload is not an object.');
+  }
+  const body = (payload as Record<string, unknown>)['body'];
+  if (typeof body !== 'string' || body.trim().length === 0) {
+    throw new WriteViolation('Refused a reply without a body.');
+  }
+  if (body.length > REPLY_MAX_LENGTH) {
+    throw new WriteViolation(`Refused a reply over ${REPLY_MAX_LENGTH} characters.`);
+  }
+  const keys = Object.keys(payload).join(',');
+  if (keys !== 'body') {
+    throw new WriteViolation(`Refused a reply with unexpected fields: ${keys}.`);
   }
 }

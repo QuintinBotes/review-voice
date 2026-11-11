@@ -17,6 +17,7 @@ import { terminalSafe } from '../terminal.ts';
 import type { EvidenceSignal } from '../evidence/types.ts';
 import type { ReproductionRecord, ReproductionRun } from '../evidence/reproduce.ts';
 import { flatten, MACHINE_PATH } from '../publish/evidence-block.ts';
+import { FAMILIES, type Family } from '../agents/types.ts';
 
 export interface StoredFinding {
   findingId: string;
@@ -191,6 +192,14 @@ export const HELD_VERDICTS: readonly HeldVerdict[] = [
   'reproduction-did-not-fail',
 ];
 
+/**
+ * A hold for a challenge the configuration asked for and did not get. Nothing
+ * judged the finding, so the hold caps the verdict and a carry keeps it (docs/adr/0024).
+ */
+export function challengeNotRun(entry: HeldFinding): boolean {
+  return typeof entry.reason === 'string' && entry.reason.startsWith('challenger not run:');
+}
+
 /** Null when the entry is well formed, else what is wrong with it. */
 export function heldProblem(entry: unknown): string | null {
   if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return 'not an object';
@@ -304,6 +313,66 @@ export interface RunProvenance {
 /** The caller supplies everything but the policy rows, which `recordRun` reads itself. */
 export type RunProvenanceInput = Omit<RunProvenance, 'independence' | 'policyVersions'> &
   Partial<Pick<RunProvenance, 'independence' | 'policyVersions'>>;
+
+/**
+ * Which model family ran each cross-checking stage (docs/adr/0021, amended).
+ * Stored beside the provenance, not in it: the independence label keeps its
+ * two values, and a family is a separate recorded fact.
+ */
+export interface RunFamilies {
+  /** `unknown` when verdicts exist without a family; null when there was no second pass. */
+  secondPass: Family | 'unknown' | null;
+  /** Null when no challenge stage ran. */
+  challenge: Family | null;
+}
+
+const isFamily = (value: unknown): value is Family => (FAMILIES as readonly unknown[]).includes(value);
+
+/** The `Families` line the driver report and `explain` print. */
+export function describeFamilies(families: RunFamilies | null): string {
+  if (families === null) return 'Families not recorded';
+  return `Families second-pass ${families.secondPass ?? 'none'}, challenge ${families.challenge ?? 'none'}`;
+}
+
+/**
+ * Derived from the record, never trusted: the first second-pass verdict's
+ * family, and the challenge stage's, `claude` when it names none (the only
+ * runner before families were recorded).
+ */
+function familiesOf(verdicts: unknown, stages: readonly StageTiming[]): RunFamilies {
+  const list = Array.isArray(verdicts) ? verdicts : [];
+  const first = list.length === 0 ? undefined : (asRecord(list[0])?.['family'] as unknown);
+  const challenge = stages.find((stage) => stage.name === 'challenge');
+  return {
+    secondPass: list.length === 0 ? null : isFamily(first) ? first : 'unknown',
+    challenge: challenge === undefined ? null : isFamily(challenge.family) ? challenge.family : 'claude',
+  };
+}
+
+const reportedFamilies = new Set<string>();
+
+/** The stored families, or null for a row without the key; a malformed value is null too, said once on stderr. */
+export function storedFamilies(raw: unknown, reviewRunId: string): RunFamilies | null {
+  if (typeof raw !== 'string') return null;
+  let value: unknown;
+  try {
+    value = asRecord(JSON.parse(raw))?.['families'];
+  } catch {
+    return null;
+  }
+  if (value === undefined) return null;
+  const v = asRecord(value);
+  const secondPass = v?.['secondPass'];
+  const challenge = v?.['challenge'];
+  if (v !== null && (secondPass === null || secondPass === 'unknown' || isFamily(secondPass)) && (challenge === null || isFamily(challenge))) {
+    return { secondPass: secondPass as RunFamilies['secondPass'], challenge: challenge as Family | null };
+  }
+  if (!reportedFamilies.has(reviewRunId)) {
+    reportedFamilies.add(reviewRunId);
+    console.error(`The families recorded for run ${reviewRunId} are malformed; reading them as not recorded.`);
+  }
+  return null;
+}
 
 /**
  * The `Provenance` line `explain` and the driver report print, and `status`
@@ -549,6 +618,12 @@ export interface RecordedChecks {
   symbolsInconclusive: number;
   /** True when the symbol search stopped on its time budget. */
   symbolsBudgetExhausted: boolean;
+  /**
+   * The linked issues the thread read for intent (`review.linked_issues`), by
+   * number; `[]` when the thread read none. Absent on a row recorded before
+   * the thread said, which never claims it read no issues.
+   */
+  issuesRead?: number[];
 }
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
@@ -631,11 +706,13 @@ function storedChecks(raw: unknown): RecordedChecks | null {
     if (c === null || typeof c['name'] !== 'string' || typeof c['reason'] !== 'string') return null;
     didNot.push({ name: c['name'], reason: c['reason'] });
   }
+  const issuesRead = value['issuesRead'];
   return {
     staticRan: ran,
     staticDidNotRun: didNot,
     symbolsInconclusive: value['symbolsInconclusive'] as number,
     symbolsBudgetExhausted: value['symbolsBudgetExhausted'] as boolean,
+    ...(Array.isArray(issuesRead) ? { issuesRead: issuesRead.filter((n): n is number => Number.isInteger(n)) } : {}),
   };
 }
 
@@ -649,7 +726,9 @@ export function describeChecks(checks: RecordedChecks | null): string {
     checks.symbolsInconclusive === 0
       ? 'every symbol file finished'
       : `${checks.symbolsInconclusive} symbol file${checks.symbolsInconclusive === 1 ? '' : 's'} not finished${checks.symbolsBudgetExhausted ? ' (time budget)' : ''}`;
-  return `Checks ${staticParts.length === 0 ? 'no static checks' : staticParts.join('; ')}; ${symbols}`;
+  const issues =
+    checks.issuesRead === undefined ? '' : `; linked issues ${checks.issuesRead.length === 0 ? 'none' : checks.issuesRead.map((n) => `#${n}`).join(', ')}`;
+  return `Checks ${staticParts.length === 0 ? 'no static checks' : staticParts.join('; ')}; ${symbols}${issues}`;
 }
 
 export interface StageTiming {
@@ -669,6 +748,8 @@ export interface StageTiming {
   /** One model per agent call, in order: the challenge stage picks one per finding. */
   models?: string[] | undefined;
   costUsd?: number | undefined;
+  /** The model family the stage ran on; `claude` unless a configured runner ran it. */
+  family?: Family | undefined;
 }
 
 /**
@@ -886,7 +967,7 @@ export function hashDiff(diff: string): string {
 export function recordRun(
   db: Database,
   input: RecordRunInput,
-): { reviewRunId: string; findings: StoredFinding[]; provenance: RunProvenance | null } {
+): { reviewRunId: string; findings: StoredFinding[]; provenance: RunProvenance | null; families: RunFamilies | null } {
   if ((input.bodyFindings?.length ?? 0) > 1) {
     throw new Error('A review may record at most one body-only simplification finding.');
   }
@@ -920,6 +1001,8 @@ export function recordRun(
           mode: input.provenance.mode,
           policyVersions,
         };
+  // A run recorded without provenance has no families either.
+  const families = provenance === null ? null : familiesOf(input.verdicts, input.stages ?? []);
 
   // The run row and its audit event land together or not at all: a row left by
   // a failed audit write would read as a recorded review while the caller saw
@@ -960,7 +1043,8 @@ export function recordRun(
       input.pullNumber ?? null,
       input.scope === undefined ? null : JSON.stringify(input.scope),
       input.complexity === undefined || input.complexity === null ? null : JSON.stringify(input.complexity),
-      provenance === null ? null : JSON.stringify(provenance),
+      // Beside the provenance in its column, no migration; storedProvenance reads only the keys it knows.
+      provenance === null ? null : JSON.stringify({ ...provenance, families }),
     );
 
     recordAudit(db, 'review_run_recorded', { type: 'review_run', id: reviewRunId }, {
@@ -975,7 +1059,7 @@ export function recordRun(
     throw error;
   }
 
-  return { reviewRunId, findings, provenance };
+  return { reviewRunId, findings, provenance, families };
 }
 
 export interface RunDetail {
@@ -990,6 +1074,8 @@ export interface RunDetail {
   complexity: ComplexityAssessment | null;
   /** Null for rows recorded before provenance existed, and for a malformed value. */
   provenance: RunProvenance | null;
+  /** Null for rows recorded before families were stored, without provenance, or with a malformed value. */
+  families: RunFamilies | null;
   /** The commit reviewed. Null for runs recorded without `--head`. */
   headRef: string | null;
   createdAt: string;
@@ -1104,6 +1190,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     scope: storedScope(row['scope_json']),
     complexity: storedComplexity(row['complexity_json']),
     provenance: storedProvenance(row['provenance_json'], row['review_run_id'] as string),
+    families: storedFamilies(row['provenance_json'], row['review_run_id'] as string),
     headRef: typeof row['head_ref'] === 'string' ? row['head_ref'] : null,
     createdAt: row['created_at'] as string,
     output: parsed.output,

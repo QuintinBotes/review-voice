@@ -32,6 +32,8 @@ jobs:
           post: false
 ```
 
+The `permissions` block grants `contents: read` and `pull-requests: write` only. With `review.linked_issues: true` in the repository config, a private repository's workflow also needs `issues: read`; without it every issue read fails, stays a local warning and the review goes on without the issues.
+
 Pin the action to a release tag. Tags are named `review-voice--v<version>`; the first release with the action is 1.19.0, and 1.22.0 is the first ready for the GitHub Marketplace. Pin a full commit SHA instead if your organisation requires it.
 
 Pin both actions by commit SHA in your own repository.
@@ -120,8 +122,56 @@ input says. Prefer it to `continue-on-error: true` on the step, which lets a
 `failed_closed` change through as well. Nothing about a failure is ever
 posted to the pull request.
 
+## The analytics report
+
+`review-voice evaluate --html` renders the evaluation figures (the gates,
+goals and reported figures with their bases, seconds by stage, posted-finding
+outcomes, owner labels by lane and rule, and each active suppression since its
+approval) as a static HTML fragment in the subset GitHub renders in a job
+summary. The action does not write it, and it puts no `review-voice` command
+on the runner. A workflow that wants it adds these steps after the review step.
+They check out the plugin at the tag the review step pins (a release with
+`evaluate --html`), run its bundle on Node 22, and set `REVIEW_VOICE_DATA_DIR`
+to the action's own data directory, `${{ runner.temp }}/review-voice`, so the
+figures cover the store the cache restored. Without that variable the bundle
+opens an empty store on the runner and the summary reads `no data` throughout.
+
+```yaml
+      - uses: actions/checkout@v4
+        with:
+          repository: QuintinBotes/review-voice
+          ref: review-voice--v<version>
+          path: .review-voice-plugin
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - env:
+          REVIEW_VOICE_DATA_DIR: ${{ runner.temp }}/review-voice
+        run: node .review-voice-plugin/plugins/review-voice/dist/review-voice.mjs evaluate --html >> "$GITHUB_STEP_SUMMARY"
+```
+
+Leave it out unless everyone who can see the Actions run may see the lanes,
+rule ids and globs of the repository's configuration. Locally,
+`review-voice evaluate --html --out <path>` writes the same report as a
+complete static page that loads nothing. See
+[docs/EVALUATION.md](EVALUATION.md), "The rendered report".
+
 ## Provenance
 
 Every review the action runs is recorded with the origin `action`, which
 `explain`, `status` and the report's `Provenance` line show, so an Action
 review can be told apart from a local `review --pr`.
+
+## Configured runners
+
+A `runners:` block names another model family for the second pass or the
+challenge (ADR 0003, amended 2026-11-09). It is honoured only from a `config`
+input other than the default, which the step passes as `--config`, or from an
+absolute `REVIEW_VOICE_CONFIG` in the job's `env`; a block in the default
+`.review-voice/config.yaml` read from the base commit is ignored with a warning,
+because a runner is a command the job executes. The workflow must install the
+binary the block names (`codex`, `gemini`) before the step. A configured
+challenger that cannot run holds the challenged findings instead of passing
+them. A second-pass runner that cannot run leaves its verdicts unverified and
+the findings unchanged, as a shell verification command does. Either way the
+review goes on.

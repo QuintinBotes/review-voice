@@ -6,6 +6,7 @@ import type { PolicyVersionRef } from '../store/runs.ts';
 import { isSuppressionExempt, SUPPRESSION_EXEMPT_CATEGORIES } from '../scoring/score.ts';
 import { GLOBAL_SCOPE, type ProposedRule } from './compile.ts';
 import { categoryOfRuleId, readSuppressions, ruleIdOfRule } from './rules.ts';
+import type { Suppression } from './schema.ts';
 
 /** Which policy a stored version belongs to. The owner's global one, or a directory glob. */
 export interface PolicyScope {
@@ -105,11 +106,13 @@ function suppressedRuleIds(contentYaml: string, rules: ProposedRule[]): string[]
  * `loadConfig` layers, broadest first. Loading and recording both read through
  * here, so what a run says it was held to is what `score` loaded.
  */
-export function activePolicyRows(db: Database): { policyId: string; scopeType: string; scopeKey: string; version: number; contentYaml: string }[] {
+export function activePolicyRows(
+  db: Database,
+): { policyId: string; scopeType: string; scopeKey: string; version: number; contentYaml: string; approvedAt: string | null }[] {
   return (
     db
       .prepare(
-        `SELECT policy_id, scope_type, scope_key, version, content_yaml FROM policies
+        `SELECT policy_id, scope_type, scope_key, version, content_yaml, approved_at FROM policies
          WHERE ((scope_type = 'global' AND scope_key = 'owner') OR scope_type = 'path') AND active = 1
          ORDER BY CASE scope_type WHEN 'global' THEN 0 ELSE 1 END, scope_key, version DESC`,
       )
@@ -120,7 +123,35 @@ export function activePolicyRows(db: Database): { policyId: string; scopeType: s
     scopeKey: row['scope_key'] as string,
     version: row['version'] as number,
     contentYaml: row['content_yaml'] as string,
+    approvedAt: typeof row['approved_at'] === 'string' ? row['approved_at'] : null,
   }));
+}
+
+export type ActiveSuppression = Suppression & { policyId: string; scopeType: string; approvedAt: string | null };
+
+/**
+ * The suppressions of the active policy rows, for reporting. A row that will
+ * not parse contributes nothing, as in `load.ts`; no warnings are collected,
+ * because `load.ts` already warns where the policy is used.
+ */
+export function activeSuppressions(db: Database): ActiveSuppression[] {
+  const out: ActiveSuppression[] = [];
+  for (const row of activePolicyRows(db)) {
+    let doc: { suppressions?: unknown } | null;
+    try {
+      doc = parseYaml(row.contentYaml) as { suppressions?: unknown } | null;
+    } catch {
+      continue;
+    }
+    for (const suppression of readSuppressions(doc?.suppressions, row.version).suppressions) {
+      // Repeated from approvedPolicyLayers in load.ts, which is private and
+      // returns layers, not rows: a path policy applies inside its scope and
+      // nowhere else, so every suppression in it carries the scope's glob.
+      const glob = row.scopeType === 'path' ? row.scopeKey : suppression.glob;
+      out.push({ ...suppression, glob, policyId: row.policyId, scopeType: row.scopeType, approvedAt: row.approvedAt });
+    }
+  }
+  return out;
 }
 
 /** The active approved policy versions, as a run records them (`active_policy_versions_json`). */

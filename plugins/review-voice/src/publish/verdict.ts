@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { SEVERITIES, type Severity } from '../contract/limits.ts';
-import type { RunDetail, StoredFinding } from '../store/runs.ts';
+import { challengeNotRun, type RunDetail, type StoredFinding } from '../store/runs.ts';
 import type { ReviewComment, ReviewEvent, ReviewPayload } from '../github/writer.ts';
 import type { CiEntry, CiState } from './ci.ts';
 import { renderSimplification, type VerifiedSimplification } from '../simplification.ts';
 import type { SuggestedPatch } from '../scoring/score.ts';
 import { stripEvidenceBlock } from './evidence-block.ts';
+import { globToRegExp } from '../conventions/globs.ts';
 
 export type { ReviewEvent, ReviewPayload };
 
@@ -238,7 +239,10 @@ export interface PlannedFindings {
   held: HeldBack[];
   /** The event the posted findings call for, before CI is considered. */
   mapped: ReviewEvent;
-  /** True when an unverified finding above a nit kept an approval at COMMENT. */
+  /**
+   * True when a held finding kept an approval at COMMENT: an unverified one
+   * above a nit, or any hold for a configured challenger that did not run.
+   */
   heldBackApproval: boolean;
   /** Inline findings whose backing score verified the repair, so a suggestion may render on them. */
   /** The score that verified each finding's fix, so a patch posts only from its own candidate. */
@@ -317,7 +321,11 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader)
 
   const posted = [...inline, ...unanchored].map((finding) => finding.severity as Severity);
   let mapped = eventFor(posted);
-  const heldBackApproval = mapped === 'APPROVE' && eventFor(heldSeverities) !== 'APPROVE';
+  // A challenge the configuration asked for and did not get is a missing gate,
+  // so its hold is the one held finding that keeps a review from approving
+  // (docs/adr/0024, amended); otherwise a runner that cannot run would pass.
+  const challengeMissing = run.held.some(challengeNotRun);
+  const heldBackApproval = mapped === 'APPROVE' && (eventFor(heldSeverities) !== 'APPROVE' || challengeMissing);
   if (heldBackApproval) mapped = 'COMMENT';
 
   return { inline, unanchored, held, mapped, heldBackApproval, fixVerified, backing };
@@ -340,6 +348,16 @@ export interface VerdictPolicy {
   recheckThreadBeforePost: boolean;
   /** `verdict.never_approve`: every review is advisory, so approval is left to a person. */
   neverApprove: boolean;
+  /** `verdict.never_approve_paths`: globs; a pull request changing a matching path leaves approval to a person. Empty means none. */
+  neverApprovePaths: string[];
+  /** `verdict.only_approve_paths`: globs every changed path must match for an approval. Empty means no restriction. */
+  onlyApprovePaths: string[];
+  /**
+   * The path list that did not load, so every approval is held until it is
+   * fixed: an approval rule that cannot be read fails closed rather than
+   * widening approval. Null when both lists loaded.
+   */
+  malformedApprovalPaths: 'never_approve_paths' | 'only_approve_paths' | null;
   /** `verdict.scope_block`: end the posted body with the collapsed review scope block (docs/adr/0028). */
   scopeBlock: boolean;
   /** `verdict.scope_block_models`: name the models of the stages in that block; a public repository need not advertise them. */
@@ -350,6 +368,12 @@ export interface VerdictPolicy {
   evidenceBlock: boolean;
   /** `verdict.evidence_block_precedents`: count the owner precedents in that block; it reveals that a precedent store exists. */
   evidenceBlockPrecedents: boolean;
+  /**
+   * `verdict.held_queue`: list the held findings in the review report, the job
+   * summary inside GitHub Actions and the watcher report (docs/adr/0031). The
+   * verdict and the posted review are unchanged.
+   */
+  heldQueue: boolean;
 }
 
 export const DEFAULT_VERDICT_POLICY: Readonly<VerdictPolicy> = Object.freeze({
@@ -360,15 +384,86 @@ export const DEFAULT_VERDICT_POLICY: Readonly<VerdictPolicy> = Object.freeze({
   carryApprovalOnUnchanged: false,
   recheckThreadBeforePost: false,
   neverApprove: false,
+  neverApprovePaths: [],
+  onlyApprovePaths: [],
+  malformedApprovalPaths: null,
   scopeBlock: false,
   scopeBlockModels: false,
   suggestions: false,
   evidenceBlock: false,
   evidenceBlockPrecedents: false,
+  heldQueue: false,
 });
 
 export function verdictPolicy(policy: Partial<VerdictPolicy> | undefined): VerdictPolicy {
   return { ...DEFAULT_VERDICT_POLICY, ...policy };
+}
+
+export interface ApprovalPathHold {
+  /** The local reason, recorded with the verdict and never posted. */
+  reason: string;
+  /** The fixed sentence that ends the posted summary. It names the setting, never a path. */
+  posted: string;
+}
+
+/** The first three paths, sorted, then `+N more`, as the sensitive-paths reason reads. */
+function namedPaths(paths: readonly string[]): string {
+  const sorted = [...new Set(paths)].sort();
+  const more = sorted.length - 3;
+  return `${sorted.slice(0, 3).join(', ')}${more > 0 ? `, +${more} more` : ''}`;
+}
+
+/**
+ * Why the pull request's changed paths leave this approval to a person
+ * (docs/adr/0028 amendment), or null. Pure. A list that did not load and a
+ * file list GitHub may have cut, did not name in full or did not tie to the
+ * commit being approved all hold, because an approval rule that cannot be
+ * checked is not one to apply.
+ */
+export function approvalPathHold(
+  changed: { paths: readonly string[]; truncated: boolean; malformed?: boolean; untied?: boolean },
+  policy: Pick<VerdictPolicy, 'neverApprovePaths' | 'onlyApprovePaths' | 'malformedApprovalPaths'>,
+): ApprovalPathHold | null {
+  const unchecked = (setting: string): string => `Approval is held because the changed files could not be checked against ${setting}.`;
+  if (policy.malformedApprovalPaths !== null) {
+    return {
+      reason: `approval is left to a person, as verdict.${policy.malformedApprovalPaths} did not load, so the approval paths cannot be checked`,
+      posted: unchecked(policy.malformedApprovalPaths),
+    };
+  }
+  if (policy.neverApprovePaths.length === 0 && policy.onlyApprovePaths.length === 0) return null;
+  const unreadable = changed.truncated
+    ? 'the pull request lists more files than GitHub returns'
+    : changed.malformed === true
+      ? 'GitHub listed a changed file without a usable name'
+      : changed.untied === true
+        ? 'GitHub did not list the files of the commit being approved'
+        : null;
+  if (unreadable !== null) {
+    return {
+      reason: `approval is left to a person, as ${unreadable}, so the approval paths cannot be checked`,
+      posted: unchecked(policy.neverApprovePaths.length > 0 ? 'never_approve_paths' : 'only_approve_paths'),
+    };
+  }
+  const never = policy.neverApprovePaths.map(globToRegExp);
+  const matched = changed.paths.filter((path) => never.some((glob) => glob.test(path)));
+  if (matched.length > 0) {
+    return {
+      reason: `approval is left to a person, as verdict.never_approve_paths matches ${namedPaths(matched)}`,
+      posted: 'Approval is held because a changed file matches never_approve_paths.',
+    };
+  }
+  if (policy.onlyApprovePaths.length > 0) {
+    const only = policy.onlyApprovePaths.map(globToRegExp);
+    const outside = changed.paths.filter((path) => !only.some((glob) => glob.test(path)));
+    if (outside.length > 0) {
+      return {
+        reason: `approval is left to a person, as verdict.only_approve_paths does not cover ${namedPaths(outside)}`,
+        posted: 'Approval is held because a changed file is outside only_approve_paths.',
+      };
+    }
+  }
+  return null;
 }
 
 /** How many checks an annotation names; past it the line stops being read. */
@@ -442,8 +537,9 @@ export interface Decision {
   exitCode: number;
   cappedByCi: boolean;
   /**
-   * True when `never_approve` capped an approval at COMMENT, so a caller can
-   * tell a policy refusal apart from any other refusal without reading the reasons.
+   * True when `never_approve`, `never_approve_paths` or `only_approve_paths`
+   * capped an approval at COMMENT, so a caller can tell a policy refusal apart
+   * from any other refusal without reading the reasons.
    */
   cappedByPolicy: boolean;
   /** Lines appended to the posted body; only ever set on a `post`. */
@@ -484,6 +580,8 @@ export function decide(input: {
    * `carry_approval_on_unchanged` is on and one was found.
    */
   carriedReviewUrl?: string | null | undefined;
+  /** The reason `approvalPathHold` gave for leaving this approval to a person, when one applies. */
+  approvalPathHold?: string | null | undefined;
   policy?: Partial<VerdictPolicy> | undefined;
 }): Decision {
   const policy = verdictPolicy(input.policy);
@@ -559,17 +657,22 @@ export function decide(input: {
     return done({ event: 'COMMENT', action: 'post', reasons: [...reasons, why], exitCode: 0, cappedByCi: false }, annotations);
   }
 
-  // An advisory posture leaves every approval to a person. It sits after the
-  // carry, needs-rerun and uncovered-carry guards, so those still win, and
-  // before the complexity cap, so this reason is the one recorded when both
-  // apply. Before the CI guard too, so pending CI cannot make the head wait
-  // for an approval that will never be sent.
-  if (policy.neverApprove && input.mapped === 'APPROVE') {
+  // An advisory posture, or a path list, leaves this approval to a person. It
+  // sits after the carry, needs-rerun and uncovered-carry guards, so those
+  // still win, and before the complexity cap, so this reason is the one
+  // recorded when both apply. Before the CI guard too, so pending CI cannot
+  // make the head wait for an approval that will never be sent. never_approve
+  // keeps its own texts when both apply.
+  const policyHold = policy.neverApprove ? 'approval is left to a person by policy' : (input.approvalPathHold ?? null);
+  if (policyHold !== null && input.mapped === 'APPROVE') {
     if (input.recheck) {
       return done({
         event: 'COMMENT',
         action: 'refuse',
-        reasons: [...reasons, 'there is no approval to re-check under never_approve'],
+        reasons: [
+          ...reasons,
+          policy.neverApprove ? 'there is no approval to re-check under never_approve' : 'there is no approval to re-check under the approval paths',
+        ],
         exitCode: 2,
         cappedByCi: false,
         cappedByPolicy: true,
@@ -579,7 +682,7 @@ export function decide(input: {
       {
         event: 'COMMENT',
         action: 'post',
-        reasons: [...reasons, 'approval is left to a person by policy'],
+        reasons: [...reasons, policyHold],
         exitCode: 0,
         cappedByCi: false,
         cappedByPolicy: true,
@@ -774,6 +877,8 @@ export function buildPayload(input: {
   event: ReviewEvent;
   planned: PlannedFindings;
   cappedBy: 'ci' | 'held' | 'complexity' | 'policy' | null;
+  /** Under a path hold, the fixed sentence (`ApprovalPathHold.posted`) that ends the summary line; `never_approve` keeps the plain line. */
+  pathHold?: string | undefined;
   /** Optional advice that was separately verified but never enters the verdict. */
   bodyFindings?: readonly VerifiedSimplification[];
   /** The patches checked against the head, by inline finding; each renders as a suggestion block. */
@@ -781,7 +886,7 @@ export function buildPayload(input: {
 }): ReviewPayload {
   const posted = [...input.planned.inline, ...input.planned.unanchored];
   const body = [
-    summaryLine(input.event, posted, input.cappedBy),
+    `${summaryLine(input.event, posted, input.cappedBy)}${input.pathHold === undefined ? '' : ` ${input.pathHold}`}`,
     ...input.planned.unanchored.map((finding) => finding.raw),
     ...(input.bodyFindings ?? []).map(renderSimplification),
   ].join('\n\n');
@@ -877,8 +982,12 @@ export function scopeBlock(
   const headPart = head === null || safeCheckName(head) === '' ? `Head ${NOT_RECORDED}` : `Head \`${safeCheckName(head).slice(0, 7)}\``;
   const scopePart = run.scope === null ? `scope ${NOT_RECORDED}` : `${run.scope.kind} scope`;
   const modePart = provenance?.mode == null ? `mode ${NOT_RECORDED}` : `${provenance.mode} mode`;
+  // A family is a vendor choice, so it shows only where the models do (docs/adr/0034).
+  const families = policy.scopeBlockModels ? (run.families ?? null) : null;
+  const challengeFamily = families !== null && families.challenge !== null && families.challenge !== 'claude' ? families.challenge : null;
   const originPart =
-    provenance === null ? `Origin: ${NOT_RECORDED}.` : `Origin: ${safeCheckName(provenance.origin)} (${safeCheckName(provenance.independence)}).`;
+    (provenance === null ? `Origin: ${NOT_RECORDED}.` : `Origin: ${safeCheckName(provenance.origin)} (${safeCheckName(provenance.independence)}).`) +
+    (challengeFamily === null ? '' : ` Challenge: ${safeCheckName(challengeFamily)}.`);
 
   // A name from configuration or the store is rendered as inline code, as the
   // CI annotations render check names: `safeCheckName` has removed backticks,
@@ -915,6 +1024,9 @@ export function scopeBlock(
         : `Symbol context: ${plural(checks.symbolsInconclusive, 'file')} not finished${checks.symbolsBudgetExhausted ? ' (time budget)' : ''}.`;
     if (checks.symbolsInconclusive > 0) notChecked.push('files the symbol search did not finish');
   }
+  // Each number is inline code, so GitHub neither links it nor adds a reference to the issue's timeline.
+  const issuesRead = checks?.issuesRead ?? null;
+  const linkedLine = issuesRead === null || issuesRead.length === 0 ? null : `Linked issues: ${issuesRead.map((n) => code(`#${n}`)).join(', ')} read for intent.`;
 
   const held = heldCounts(run.held);
   // A recorded finding the posting step withheld (no score for it, say) was
@@ -944,6 +1056,11 @@ export function scopeBlock(
     findings,
     held,
     checks: checks === null ? null : { ran: checks.staticRan.length, didNotRun: checks.staticDidNotRun.length },
+    // Null when not recorded, as `checks` is, so an unrecorded run shows no data and never a zero.
+    issues: issuesRead,
+    ...(families !== null && (challengeFamily !== null || families.secondPass !== null)
+      ? { families: { secondPass: families.secondPass, challenge: families.challenge } }
+      : {}),
   };
   // Escaped, so no value can close the comment early or open markup inside it.
   const trailer = JSON.stringify(facts).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
@@ -955,6 +1072,7 @@ export function scopeBlock(
     stagesLine,
     staticLine,
     symbolLine,
+    ...(linkedLine === null ? [] : [linkedLine]),
     `Not posted: ${notPosted.length === 0 ? 'nothing held back' : notPosted.join(', ')}.`,
     `Not checked: ${notChecked.join(', ')}.`,
     '',
