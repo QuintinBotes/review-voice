@@ -217,6 +217,19 @@ test('(a) a clean run renders exactly the no-findings sentence and plans an appr
   assert.equal(analyst.model, 'sonnet');
 });
 
+test('the report names the run directory as it is on disk, whatever characters its path holds', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const fakeDir = fakes(t, { 'diff-analyst': [{ candidates: [] }] });
+  // A zero-width non-joiner, as a directory named in Persian can hold. Recall reads the run back from this path.
+  const out = join(mkdtempSync(join(tmpdir(), 'rv-driver-out-')), 'run‌dir');
+  t.after(() => rmSync(dirname(out), { recursive: true, force: true }));
+  const { report } = await review(t, repo, fakeDir, fakeGitHub(repo), { out });
+  assert.equal(report.exitCode, 0, report.error);
+  // Compared here, so a failure prints no path.
+  assert.ok(report.runDir === out, 'the run directory is the path the run wrote to');
+  assert.equal(readFileSync(join(report.runDir, 'review.txt'), 'utf8'), `${NO_FINDINGS}\n`);
+});
+
 test('(b) a finding the challenger confirms is rendered and recorded', async (t) => {
   const repo = repository(t, { 'src/app.ts': APP_HEAD });
   const fakeDir = fakes(t, {

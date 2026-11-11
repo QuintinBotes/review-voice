@@ -3,6 +3,7 @@ import { computeMetrics, DEFAULT_WINDOW_DAYS, stageSeconds } from '../evaluate/m
 import { readRecallResults, recallMetrics, type RecallResults } from '../evaluate/recall-results.ts';
 import { postedBreakdown } from '../store/outcomes.ts';
 import { flag } from './shared.ts';
+import { terminalSafeDeep } from '../terminal.ts';
 
 export function evaluateCommand(argv: string[]): number {
   // Read before the store is opened: a bad file is a bad invocation, and
@@ -38,13 +39,14 @@ export function evaluateCommand(argv: string[]): number {
     const metrics = [...computeMetrics(db, { windowDays }), ...recallMetrics(recall)];
     if (argv.includes('--json')) {
       const { bySeverity, byLane, byRule, byEvidenceBlock } = postedBreakdown(db);
+      // A rule id holds the category the analyst gave, which nothing checks against a list.
       console.log(
         JSON.stringify(
-          {
+          terminalSafeDeep({
             metrics,
             posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule, by_evidence_block: byEvidenceBlock },
             stage_seconds: stageSeconds(db),
-          },
+          }),
           null,
           2,
         ),

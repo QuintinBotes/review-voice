@@ -16,6 +16,7 @@ import { parseDuration } from './config.ts';
 import { acquireLock, lockPort } from './lock.ts';
 import type { ReviewPullRequest } from './review.ts';
 import { cloneDir, type PrepareClone } from './workspace.ts';
+import { terminalSafeDeep } from '../terminal.ts';
 
 type WatchSettings = Pick<
   LoadedConfig,
@@ -229,7 +230,8 @@ async function runPass(options: PassOptions, json: boolean): Promise<boolean> {
     const lines: string[] = [];
     const counts = new Map<string, number>();
     for (const entry of queue.entries) {
-      const outcome = await handle(options, client, db, entry);
+      // A detail quotes the review child's stderr or a check run's name, either of which the pull request can choose.
+      const outcome = terminalSafeDeep(await handle(options, client, db, entry));
       const summary = `${entry.repository}#${entry.pull}: ${entry.action.kind}`;
       if (outcome.row === null) {
         lines.push(`${summary} (no row: ${outcome.detail})`);

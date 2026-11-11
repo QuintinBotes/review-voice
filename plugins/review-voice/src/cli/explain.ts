@@ -5,6 +5,7 @@ import { runDetail, describeChecks, describeProvenance, type RecordedReproductio
 import { describeStage, shallowPassWarning } from '../store/effort.ts';
 import { backingAt, challengeFacts } from '../publish/evidence-block.ts';
 import { planFindings } from '../publish/verdict.ts';
+import { terminalSafeDeep } from '../terminal.ts';
 import { flag } from './shared.ts';
 
 export function reviewScopeFromManifest(value: unknown): ReviewScope | undefined {
@@ -25,7 +26,8 @@ function describeReproduction(record: RecordedReproduction): string {
 export function explainCommand(argv: string[]): number {
   const db = openDatabase();
   try {
-    const detail = runDetail(db, flag(argv, '--run') ?? undefined);
+    // Every string in a stored run can come from the pull request, a tool or a model.
+    const detail = terminalSafeDeep(runDetail(db, flag(argv, '--run') ?? undefined));
     if (detail === null) {
       console.log('No review has been recorded yet.');
       return 0;
@@ -125,7 +127,7 @@ export function explainCommand(argv: string[]): number {
             `${remaining.length} of ${remaining.length + addressed.length} still open: ${remaining.join('; ')}`,
         );
         // The state as later runs of the pull request found it; local only.
-        const later = history?.get(`${detail.reviewRunId}:${finding.findingId}`);
+        const later = terminalSafeDeep(history?.get(`${detail.reviewRunId}:${finding.findingId}`));
         if (later?.state?.status === 'resolved') {
           console.log(`  follow-up         resolved in run ${later.stateRunId} - ${later.state.reason}`);
         } else if (later?.state?.status === 'open') {

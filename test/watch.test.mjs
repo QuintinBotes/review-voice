@@ -355,6 +355,47 @@ test('a failed review adds an attempt, exits 1, and stops being retried at the c
   });
 });
 
+// A detail can quote a review child's stderr or a check run's name, which the pull request chooses.
+const ESC = '\u001b';
+const HOSTILE = `one${ESC}]52;c;${Buffer.from('synthetic clipboard text').toString('base64')}\u0007 two${ESC}[2J three\u009b31m four\u202e five\rsix`;
+const CLEAN = 'one two three four fivesix';
+
+test('a review detail that carries terminal controls is printed and stored without them', async () => {
+  await withWatcher(async (h) => {
+    const impl = fakeGitHub({ requested: [item(REPO, 7)], pulls: { [`${REPO}#7`]: openPull() } });
+    const review = fakeReview([{ exitCode: 7, runId: null, event: null, reviewUrl: null, detail: `an agent failed ${HOSTILE}` }]);
+    assert.equal(await h.run(['--once'], { impl, review }), 1);
+    assert.equal(h.out[0].split('\n')[0], `${REPO}#7: review (failed an agent failed ${CLEAN})`);
+    assert.equal(rows(h)[0].detail, `an agent failed ${CLEAN}`);
+  });
+});
+
+test('a stored watch row that carries terminal controls is shown without them by queue --settled and status', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-watch-controls-'));
+  const db = openDatabase(join(dir, 'review-voice.db'));
+  try {
+    // Written as a row stored before details were cleaned would be.
+    saveWatchHead(db, { repository: REPO, pull: 7, head: sha('a'), runId: null, event: null, reviewUrl: null, status: 'held', detail: `CI needs a rerun: build${HOSTILE}` }, NOW);
+    const out = [];
+    const deps = {
+      config: null,
+      client: () => assert.fail('the settled list reads nothing from GitHub'),
+      openDb: () => ({ prepare: (...args) => db.prepare(...args), close: () => {} }),
+      now: NOW,
+      out: (text) => out.push(text),
+      err: () => {},
+    };
+    assert.equal(await queueCommand(['--settled'], deps), 0);
+    assert.equal(await queueCommand(['--settled', '--json'], deps), 0);
+    assert.equal(out[0], [`HELD ${REPO}#7 aaaaaaa CI needs a rerun: build${CLEAN}`, '1 left for a person'].join('\n'));
+    assert.equal(JSON.parse(out[1])[0].detail, `CI needs a rerun: build${CLEAN}`);
+    assert.equal(watchSummary(db)[1], `  ${REPO}#7 aaaaaaa held CI needs a rerun: build${CLEAN}`);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('watch.max_attempts_per_head sets the cap', async () => {
   await withWatcher(async (h) => {
     const impl = fakeGitHub({ requested: [item(REPO, 7)], pulls: { [`${REPO}#7`]: openPull() } });

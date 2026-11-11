@@ -2,6 +2,7 @@ import { openDatabase } from '../store/db.ts';
 import { computeVerdict, postReview } from '../publish/post.ts';
 import { ReviewWriter } from '../github/writer.ts';
 import { inProcessState, githubClient, readStdin, inferRepository, flag, repositoryConfig } from './shared.ts';
+import { terminalSafeDeep } from '../terminal.ts';
 
 interface ReviewTarget {
   repository: string;
@@ -50,7 +51,7 @@ export async function verdictCommand(argv: string[]): Promise<number> {
       owner: config?.ownerReviewer ?? null,
       policy: config?.verdictPolicy,
     });
-    console.log(JSON.stringify(output, null, 2));
+    console.log(JSON.stringify(terminalSafeDeep(output), null, 2));
     return exitCode;
   } finally {
     db.close();
@@ -86,7 +87,7 @@ export async function postCommand(argv: string[]): Promise<number> {
       policy: config?.verdictPolicy,
       recheckThread: argv.includes('--recheck-thread'),
     });
-    console.log(JSON.stringify(output, null, 2));
+    console.log(JSON.stringify(terminalSafeDeep(output), null, 2));
     return exitCode;
   } finally {
     db.close();

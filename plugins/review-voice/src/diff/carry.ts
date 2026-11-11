@@ -3,6 +3,7 @@ import { topPathspecs } from './incremental.ts';
 import { DEFAULT_LIMITS } from '../contract/limits.ts';
 import { reason, type FileHunks } from './hunks.ts';
 import { candidateAnchor } from './reanchor.ts';
+import { terminalSafe } from '../terminal.ts';
 
 /** One stored finding, as far as carrying it forward needs to know it. */
 export interface CarryInput {
@@ -278,9 +279,12 @@ export function matchCarried(
   const used = new Set<string>();
   for (const finding of recorded) {
     const body = findingBody(finding.text);
-    const source = carried.find(
-      (c) => !used.has(c.findingId) && c.path === finding.path && findingBody(c.text) === body,
-    );
+    const free = carried.filter((c) => !used.has(c.findingId));
+    const source =
+      free.find((c) => c.path === finding.path && findingBody(c.text) === body) ??
+      // `carry --text` prints a finding without its terminal controls, so the one that comes back may have lost
+      // some from its text. The path must still be its own: cleaned, two file names can read as one.
+      free.find((c) => c.path === finding.path && findingBody(terminalSafe(c.text)) === body);
     if (source === undefined) continue;
     used.add(source.findingId);
     if (source.line !== finding.line) {
