@@ -26,6 +26,9 @@ review:
   # Which stages run and on which model (docs/adr/0025): fast, standard,
   # thorough, or auto, which picks from the diff. `--mode` beats this.
   mode: auto
+  # Also read the issues the description closes (`Closes #12`; same repository,
+  # at most five). A quote from an issue is checked like one from the description.
+  linked_issues: false
   # Set the model for a stage in every mode; an override never turns a stage
   # on or off. Keys: intent, analyst (the diff lane), lanes, verify, tie-break,
   # challenge, edit. Defaults are sonnet, or opus where the mode calls for it.

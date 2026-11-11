@@ -275,6 +275,14 @@ completeness rule: independently enumerate the surfaces the goal names, in the
 changed scope plus the entry points that reach the changed code, and accept
 the candidate only when its evidence names every miss.
 
+For a candidate whose `intent_ref` names a statement with `issue`, find the
+quote in that issue's entry under `linkedIssues` in `thread.json`, not in the
+description, and read the whole sentence around it. For a `question` about a
+requirement gap, `premises_verified` requires both that the sentence, with its
+conditions and qualifiers, states the requirement, and that your own search at
+the head for the behaviour found nothing; a requirement already met at the
+head, in the change or elsewhere, is a rejection.
+
 **Factual claims.** For a description, changed comment or documentation
 candidate, check every stated factual claim against the final head, diff,
 configuration and CI. Compare base and head before accepting a present-tense

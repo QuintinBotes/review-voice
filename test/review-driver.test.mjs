@@ -75,8 +75,8 @@ function repository(t, change, baseFiles = {}) {
   return { dir, base, head, files };
 }
 
-/** GitHub as the commands read it. `moved()` turns the head into another commit. */
-function fakeGitHub(repo, { description = '', moved = () => false, comments = () => [] } = {}) {
+/** GitHub as the commands read it. `moved()` turns the head into another commit; `issues` answers `/issues/<n>` by number. */
+function fakeGitHub(repo, { description = '', moved = () => false, comments = () => [], issues = {} } = {}) {
   const calls = [];
   const impl = async (url, init = {}) => {
     const parsed = new URL(String(url));
@@ -107,6 +107,8 @@ function fakeGitHub(repo, { description = '', moved = () => false, comments = ()
     }
     if (parsed.pathname.endsWith('/status')) return json({ state: 'success', total_count: 0, statuses: [] });
     if (parsed.pathname === `/repos/${REPO}/pulls/${PR}/comments`) return json(comments());
+    const issue = /\/issues\/(\d+)$/.exec(parsed.pathname);
+    if (issue !== null && issue[1] in issues) return json(issues[issue[1]]);
     if (/\/(comments|reviews|events)$/.test(parsed.pathname)) return json([]);
     return new Response('not found', { status: 404 });
   };
@@ -423,6 +425,47 @@ test('(i, j) agents run in the head worktree, which is removed; base and history
     assert.doesNotMatch(own, /\bgit |\bshell\b|run the command/i, 'and nothing after it asks for a shell');
   }
 });
+
+// S19 AC-5: the config the run reads decides whether the thread reads the issues the description closes.
+for (const enabled of [true, false]) {
+  test(`S19 AC-5: with review.linked_issues ${enabled} the thread ${enabled ? 'reads' : 'does not read'} the closed issue`, async (t) => {
+    const config = enabled ? { '.review-voice/config.yaml': 'review:\n  linked_issues: true\n' } : {};
+    const repo = repository(t, { 'src/app.ts': APP_HEAD }, config);
+    const requirement = 'The total must multiply each price by its quantity.';
+    const description = 'Multiply each price by its quantity so the total is right.\n\nCloses #5';
+    const fakeDir = fakes(t, {
+      'intent-extractor': [{ statements: [{ id: 'int_001', kind: 'goal', statement: 'The total multiplies price by quantity.', quote: enabled ? requirement : description.split('\n')[0] }] }],
+      'diff-analyst': [{ candidates: [] }],
+    });
+    const github = fakeGitHub(repo, {
+      description,
+      issues: {
+        5: { number: 5, repository_url: `https://api.github.com/repos/${REPO}`, title: 'Totals ignore quantity', body: requirement, state: 'open', html_url: `https://github.com/${REPO}/issues/5` },
+      },
+    });
+    const { report, data } = await review(t, repo, fakeDir, github);
+    assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+    const issueReads = github.calls.filter((call) => call.path.includes('/issues/5'));
+    const thread = JSON.parse(readFileSync(join(report.runDir, 'thread.json'), 'utf8'));
+    const prompt = callsOf(fakeDir, 'intent-extractor')[0].prompt;
+    const db = openDatabase(join(data, 'review-voice.db'));
+    const checks = runDetail(db, report.runId).checks;
+    db.close();
+    if (enabled) {
+      assert.deepEqual(issueReads.map((call) => call.method), ['GET']);
+      assert.deepEqual(thread.linkedIssues.map(({ number, body }) => ({ number, body })), [{ number: 5, body: requirement }]);
+      assert.match(prompt, /closes #5/);
+      assert.deepEqual(JSON.parse(readFileSync(join(report.runDir, 'intent.json'), 'utf8')).statements[0].issue, 5);
+      assert.deepEqual(checks.issuesRead, [5]);
+    } else {
+      // The conversation comments live under /issues/<pr>/comments; no issue itself is read.
+      assert.equal(github.calls.some((call) => /\/issues\/\d+$/.test(call.path)), false);
+      assert.equal('linkedIssues' in thread, false);
+      assert.doesNotMatch(prompt, /linkedIssues/);
+      assert.deepEqual(checks.issuesRead, []);
+    }
+  });
+}
 
 test('--post sends the verdict once posting is enabled, and the JSON report keeps its shape', async (t) => {
   const repo = repository(t, { 'src/app.ts': APP_HEAD }, { '.review-voice/config.yaml': 'writes:\n  github_posting_enabled: true\n' });

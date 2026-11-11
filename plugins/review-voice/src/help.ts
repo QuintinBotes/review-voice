@@ -81,6 +81,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '  --pr <number>          Pull request whose existing comments to read (required)',
       '  --repository <name>    owner/repo; inferred from the git remote if absent',
       '  --out <path>           Write <path> or <dir>/thread.json instead of stdout',
+      'With review.linked_issues: true, also reads the same-repository issues the description closes (at most five) as linkedIssues.',
       'Reads: nothing on stdin (reads GitHub, read-only).',
       'Writes: JSON on stdout, or to --out.',
       'Exit codes: 0 ok, 2 bad invocation, missing credential or repository not allowlisted.',
