@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { SEVERITIES, type Severity } from '../contract/limits.ts';
-import { REMOVED_CONTROL_ORDER, repositoryPath, RISK_MARKER_ORDER, type RunDetail, type StoredFinding } from '../store/runs.ts';
+import { challengeNotRun, REMOVED_CONTROL_ORDER, repositoryPath, RISK_MARKER_ORDER, type RunDetail, type StoredFinding } from '../store/runs.ts';
 import type { ReviewComment, ReviewEvent, ReviewPayload } from '../github/writer.ts';
 import type { CiEntry, CiState } from './ci.ts';
 import { renderSimplification, type VerifiedSimplification } from '../simplification.ts';
@@ -249,7 +249,11 @@ export interface PlannedFindings {
   belowTier: ReviewFinding[];
   /** The event the posted findings call for, before CI is considered. */
   mapped: ReviewEvent;
-  /** True when a finding above a nit, unverified or below the posting tier, kept an approval at COMMENT. */
+  /**
+   * True when a held finding kept an approval at COMMENT: one above a nit that
+   * is unverified or below the posting tier, or any hold for a configured
+   * challenger that did not run.
+   */
   heldBackApproval: boolean;
   /** Inline findings whose backing score verified the repair, so a suggestion may render on them. */
   /** The score that verified each finding's fix, so a patch posts only from its own candidate. */
@@ -340,7 +344,11 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader,
 
   const posted = [...inline, ...unanchored].map((finding) => finding.severity as Severity);
   let mapped = eventFor(posted);
-  const heldBackApproval = mapped === 'APPROVE' && eventFor(heldSeverities) !== 'APPROVE';
+  // A challenge the configuration asked for and did not get is a missing gate,
+  // so its hold is the one held finding that keeps a review from approving
+  // (docs/adr/0024, amended); otherwise a runner that cannot run would pass.
+  const challengeMissing = run.held.some(challengeNotRun);
+  const heldBackApproval = mapped === 'APPROVE' && (eventFor(heldSeverities) !== 'APPROVE' || challengeMissing);
   if (heldBackApproval) mapped = 'COMMENT';
 
   return { inline, unanchored, held, belowTier, mapped, heldBackApproval, fixVerified, backing };
@@ -908,8 +916,12 @@ export function scopeBlock(
   const headPart = head === null || safeCheckName(head) === '' ? `Head ${NOT_RECORDED}` : `Head \`${safeCheckName(head).slice(0, 7)}\``;
   const scopePart = run.scope === null ? `scope ${NOT_RECORDED}` : `${run.scope.kind} scope`;
   const modePart = provenance?.mode == null ? `mode ${NOT_RECORDED}` : `${provenance.mode} mode`;
+  // A family is a vendor choice, so it shows only where the models do (docs/adr/0034).
+  const families = policy.scopeBlockModels ? (run.families ?? null) : null;
+  const challengeFamily = families !== null && families.challenge !== null && families.challenge !== 'claude' ? families.challenge : null;
   const originPart =
-    provenance === null ? `Origin: ${NOT_RECORDED}.` : `Origin: ${safeCheckName(provenance.origin)} (${safeCheckName(provenance.independence)}).`;
+    (provenance === null ? `Origin: ${NOT_RECORDED}.` : `Origin: ${safeCheckName(provenance.origin)} (${safeCheckName(provenance.independence)}).`) +
+    (challengeFamily === null ? '' : ` Challenge: ${safeCheckName(challengeFamily)}.`);
 
   // A name from configuration or the store is rendered as inline code, as the
   // CI annotations render check names: `safeCheckName` has removed backticks,
@@ -977,6 +989,9 @@ export function scopeBlock(
     findings,
     held,
     checks: checks === null ? null : { ran: checks.staticRan.length, didNotRun: checks.staticDidNotRun.length },
+    ...(families !== null && (challengeFamily !== null || families.secondPass !== null)
+      ? { families: { secondPass: families.secondPass, challenge: families.challenge } }
+      : {}),
   };
   // Escaped, so no value can close the comment early or open markup inside it.
   const trailer = JSON.stringify(facts).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');

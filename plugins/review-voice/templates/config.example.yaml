@@ -242,6 +242,33 @@ reproduction:
   memory_mb: 1024
   cpu_seconds: 60
 
+# Other model families a review may run on (docs/adr/0021, amended). Nothing
+# runs until a family is written down here, and this block is read only from
+# your own configuration (--config, an absolute REVIEW_VOICE_CONFIG, or the
+# Action's config input), never from a pull request's base commit, because a
+# runner is a command your machine executes. Each command is a list of
+# arguments, never a shell string; {schema}, {output} and {cwd} are replaced
+# with the schema file, the answer file and the head worktree. The sandbox is
+# the external CLI's own, chosen by the flags you name: check the codex example
+# against the codex version you have installed, since it was not verified for
+# this release. A challenger that cannot run holds the findings it was to
+# check; a second-pass runner that cannot run leaves them unverified and
+# unchanged, as a shell verification command does.
+# runners:
+#   codex:
+#     command: [codex, exec, --sandbox, read-only, --output-schema, "{schema}", --output-last-message, "{output}", "-"]
+#     timeout_seconds: 600
+#     label: codex
+#     # The command gets the same minimal environment as static_evidence
+#     # commands, plus the names listed here. Example:
+#     # env_passthrough: [OPENAI_API_KEY]
+#   use:
+#     # Which family challenges every finding (docs/adr/0024); claude by default.
+#     challenge: claude
+#     # A pull request an agent of the challenge family wrote is challenged by
+#     # this family instead. Off unless set.
+#     agent_authored_challenge: codex
+
 verification:
   # An optional second pass over each surviving finding, run by a command you
   # choose. Off by default.
@@ -268,6 +295,12 @@ verification:
   enabled: false
   name: codex
   command: ""
+  # Instead of a command, run the second pass on a family configured under
+  # runners: (its argv, timeout and env_passthrough apply; a command beside it
+  # is ignored). family labels a hand-written command so its verdicts can be
+  # grouped by family; runner implies it.
+  # runner: codex
+  # family: codex
   timeout_seconds: 90
   # A rejection at or above this confidence drops the finding. Below it, the
   # finding is downgraded instead - an unsure verifier should not delete
@@ -307,8 +340,10 @@ watch:
   max_attempts_per_head: 2           # a head that failed this often is left for you
   review_timeout: 45m                # a review running longer is killed and recorded as failed; at most 6h
   # false runs each review with REVIEW_VOICE_NO_COMMANDS=1, so the static
-  # evidence and second-pass verification commands in this config, and
-  # reproductions, do not run unattended. true lets them run.
+  # evidence and second-pass verification commands in this config,
+  # reproductions, and the runners under runners: do not run unattended (the
+  # second pass is then skipped, and a configured challenger holds the
+  # findings it was to check). true lets them run.
   run_repository_commands: false
   # The 127.0.0.1 port that keeps a second watcher on this data directory
   # from starting. Derived from the data directory by default (49152 to

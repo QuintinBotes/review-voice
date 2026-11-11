@@ -1,13 +1,13 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { pluginVersion } from '../version.ts';
 import { validateOutput } from '../contract/validate.ts';
 import { DEFAULT_LIMITS } from '../contract/limits.ts';
 import { parseComplexity, type ComplexityAssessment } from '../diff/complexity.ts';
 import { parseVerifiedSimplification, type VerifiedSimplification } from '../simplification.ts';
 import type { ReviewScope } from '../diff/incremental.ts';
-import { parseHunks } from '../diff/hunks.ts';
+import { parseHunks, patchRenames } from '../diff/hunks.ts';
 import type { ThreadComment } from '../diff/thread.ts';
 import {
   FollowUpRulingError,
@@ -22,6 +22,7 @@ import {
   recordRun,
   runDetail,
   heldProblem,
+  challengeNotRun,
   type CarryMarker,
   CarryMismatch,
   type CandidateHint,
@@ -50,6 +51,9 @@ import { readSignals } from './check-candidates.ts';
 import { repositoryRoot } from '../diff/acquire.ts';
 import { SAFE_GIT } from '../review/worktree.ts';
 import type { EvidenceSignal } from '../evidence/types.ts';
+
+/** A path as the diff spells it. A held entry keeps the analyst's spelling, `./src/app.ts` included, so both sides of a comparison go through here. */
+const plainPath = (path: string): string => posix.normalize(path.split('\\').join('/')).replace(/^\.\//, '');
 
 /**
  * The approved policy versions a `score` output says it loaded, or null when
@@ -199,11 +203,18 @@ export function recordCommand(argv: string[]): number {
   let complexity: ComplexityAssessment | null = null;
   let structure: RecordedStructure | undefined;
   const knownPaths = new Set<string>();
+  // The pull request's own file list, a rename under both names; empty when the manifest carries none.
+  const pullFiles = new Set<string>();
   if (filesFile !== null) {
     try {
       const manifest = JSON.parse(readFileSync(filesFile, 'utf8')) as Record<string, unknown>;
       if (Array.isArray(manifest.files)) {
-        for (const file of manifest.files) if (typeof file?.path === 'string') knownPaths.add(file.path);
+        for (const file of manifest.files) {
+          if (typeof file?.path !== 'string') continue;
+          knownPaths.add(file.path);
+          pullFiles.add(plainPath(file.path));
+          if (typeof file.previousPath === 'string') pullFiles.add(plainPath(file.previousPath));
+        }
       }
       if (Number.isInteger(manifest.pullNumber) && (manifest.pullNumber as number) > 0) {
         pullNumber = manifest.pullNumber as number;
@@ -479,6 +490,27 @@ export function recordCommand(argv: string[]): number {
     let carry: CarryMarker | undefined;
     let carriedProvenance: RunProvenance | null = null;
     let carriedVersions: PolicyVersionRef[] | null = null;
+    // A hold for a challenger that did not run outlives a carry and a narrowed
+    // review: nothing judged that finding, and dropping its hold would let this
+    // run approve (docs/adr/0024). One on a file the pull request no longer
+    // changes is settled like its findings. The manifest's file list says so
+    // for every scope; the two scope lists say so for a manifest without one.
+    const left = new Set(
+      (scope?.kind === 'unchanged' || scope?.kind === 'interdiff' ? [...(scope.noLongerChanged ?? []), ...(scope.absorbedByBase ?? [])] : []).map(plainPath),
+    );
+    const stillChanged = (path: string): boolean => !left.has(path) && (pullFiles.size === 0 || pullFiles.has(path));
+    // A file this review's patch renames takes its hold to the new name. Under
+    // the old one, which the pull request's file list never held when the file
+    // was renamed before, the hold would read as one on a file that left.
+    const renamed = patchRenames(diff);
+    const unjudged = (prior: HeldFinding[] | undefined): HeldFinding[] =>
+      (prior ?? [])
+        .filter(challengeNotRun)
+        .map((entry) => {
+          const to = renamed.get(plainPath(entry.path));
+          return to === undefined ? entry : { ...entry, path: to };
+        })
+        .filter((entry) => stillChanged(plainPath(entry.path)));
     const carriedFrom = flag(argv, '--carried-from');
     if (carriedFrom !== null) {
       const head = flag(argv, '--head');
@@ -505,6 +537,8 @@ export function recordCommand(argv: string[]): number {
         const source = runDetail(db, carriedFrom);
         const prior = source?.carry ?? null;
         if (prior !== null && !prior.covered) carry = { ...prior, inheritedFrom: prior.inheritedFrom ?? carriedFrom };
+        // Like the marker above: a carry reviews no file, so every such hold travels with it.
+        held = [...held, ...unjudged(source?.held)];
         // Nothing re-reviewed the carried findings, so the record keeps the
         // provenance of the run that produced them: a carry by the driver must
         // not turn an interactive review into an independent one. A source from
@@ -518,6 +552,17 @@ export function recordCommand(argv: string[]): number {
         console.error((error as Error).message);
         return 2;
       }
+    }
+
+    // A review narrower than the pull request never releases such a hold, on a
+    // file it read or not: it saw its own hunks only, the held line may be far
+    // from them, and nothing challenges a finding that is not raised again. A
+    // full review inherits nothing, since it reads the whole pull request.
+    if (carriedFrom === null && (scope?.kind === 'incremental' || scope?.kind === 'interdiff') && scope.priorRunId !== null) {
+      const place = (entry: HeldFinding): string => `${plainPath(entry.path)}:${entry.line}`;
+      // The same finding held again by this run is recorded once.
+      const own = new Set(held.filter(challengeNotRun).map(place));
+      held = [...held, ...unjudged(runDetail(db, scope.priorRunId)?.held).filter((entry) => !own.has(place(entry)))];
     }
 
     const carryFile = flag(argv, '--carry');
@@ -595,7 +640,7 @@ export function recordCommand(argv: string[]): number {
       console.error('Warning: --thread and --follow-ups need --repository and a pull request in --files; ignored.');
     }
 
-    const { reviewRunId, findings, provenance } = recordRun(db, {
+    const { reviewRunId, findings, provenance, families } = recordRun(db, {
       repository,
       baseRef: flag(argv, '--base'),
       headRef,
@@ -641,8 +686,9 @@ export function recordCommand(argv: string[]): number {
         {
           reviewRunId,
           findings,
-          // So the review driver can print the line without a second command.
+          // So the review driver can print the lines without a second command.
           provenance,
+          families,
           ...(followUps.length === 0 ? {} : { followUps }),
           ...(warning === null ? {} : { warnings: [warning] }),
         },
