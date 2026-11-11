@@ -3,7 +3,8 @@ import { validateOutput } from '../contract/validate.ts';
 import { DEFAULT_LIMITS } from '../contract/limits.ts';
 import { countWords } from '../contract/words.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
-import { hashDiff } from '../store/runs.ts';
+import { hashDiff, storedFamilies } from '../store/runs.ts';
+import { FAMILIES } from '../agents/types.ts';
 import { postedStats } from '../store/outcomes.ts';
 
 export interface Metric {
@@ -188,26 +189,150 @@ function challengeCounts(db: Database): { held: number; judged: number; runs: nu
   let judged = 0;
   let runs = 0;
   for (const row of rows) {
-    let scores: unknown;
-    try {
-      scores = (JSON.parse(row.output_json) as { scores?: unknown } | null)?.scores;
-    } catch {
-      continue;
-    }
-    if (!Array.isArray(scores)) continue;
-    let judgedHere = 0;
-    for (const entry of scores) {
-      if (typeof entry !== 'object' || entry === null || !Object.hasOwn(entry, 'challenge')) continue;
-      judgedHere += 1;
-      const because = (entry as { rejectedBecause?: unknown }).rejectedBecause;
-      if (typeof because === 'string' && because.startsWith('challenge-')) held += 1;
-    }
-    if (judgedHere > 0) {
-      judged += judgedHere;
-      runs += 1;
-    }
+    const counts = challengeOf(row.output_json);
+    if (counts.judged === 0) continue;
+    held += counts.held;
+    judged += counts.judged;
+    runs += 1;
   }
   return { held, judged, runs };
+}
+
+/** One run's judged and held counts, as challengeCounts reads them; zero for a row that will not parse. */
+function challengeOf(outputJson: string): { held: number; judged: number } {
+  let scores: unknown;
+  try {
+    scores = (JSON.parse(outputJson) as { scores?: unknown } | null)?.scores;
+  } catch {
+    return { held: 0, judged: 0 };
+  }
+  let held = 0;
+  let judged = 0;
+  for (const entry of Array.isArray(scores) ? scores : []) {
+    if (typeof entry !== 'object' || entry === null || !Object.hasOwn(entry, 'challenge')) continue;
+    judged += 1;
+    const because = (entry as { rejectedBecause?: unknown }).rejectedBecause;
+    if (typeof because === 'string' && because.startsWith('challenge-')) held += 1;
+  }
+  return { held, judged };
+}
+
+export interface FamilyFigures {
+  second_pass: {
+    verdicts: number;
+    dropped: number;
+    downgraded: number;
+    tie_breaks: number;
+    runs: number;
+    drop_rate: number | null;
+    downgrade_rate: number | null;
+    tie_break_rate: number | null;
+  } | null;
+  challenge: { judged: number; held: number; runs: number; hold_rate: number | null } | null;
+}
+
+export interface ByFamily {
+  /** Only families with data; a second pass recorded without a family is listed as `unknown`. */
+  families: Record<string, FamilyFigures>;
+  /** Runs recorded before families were stored, or without provenance. */
+  runs_without_families: number;
+}
+
+/**
+ * The second pass's and the challenger's figures per model family
+ * (docs/adr/0034), grouped by the family each run recorded. Not a `Metric`,
+ * since its value is a map, and every figure is reported, never a gate. A family
+ * with no data for a half has null there, and one with neither is left out,
+ * so nothing reads zero for an absence.
+ */
+export function byFamily(db: Database): ByFamily {
+  const rows = db.prepare('SELECT review_run_id, output_json, provenance_json FROM review_runs').all() as unknown as {
+    review_run_id: string;
+    output_json: string;
+    provenance_json: string | null;
+  }[];
+  const second = new Map<string, { verdicts: number; dropped: number; downgraded: number; tie_breaks: number; runs: number }>();
+  const challenge = new Map<string, { judged: number; held: number; runs: number }>();
+  let without = 0;
+  const entries = (value: unknown): Record<string, unknown>[] =>
+    Array.isArray(value) ? value.filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null) : [];
+  for (const row of rows) {
+    const families = storedFamilies(row.provenance_json, row.review_run_id);
+    if (families === null) {
+      without += 1;
+      continue;
+    }
+    if (families.secondPass !== null) {
+      let output: { verdicts?: unknown; tieBreaks?: unknown } = {};
+      try {
+        output = (JSON.parse(row.output_json) as typeof output | null) ?? {};
+      } catch {
+        // A row that will not parse adds a run with no verdicts.
+      }
+      const verdicts = entries(output.verdicts);
+      const sum = second.get(families.secondPass) ?? { verdicts: 0, dropped: 0, downgraded: 0, tie_breaks: 0, runs: 0 };
+      sum.verdicts += verdicts.length;
+      sum.dropped += verdicts.filter((verdict) => verdict['outcome'] === 'dropped').length;
+      sum.downgraded += verdicts.filter((verdict) => verdict['outcome'] === 'downgraded').length;
+      sum.tie_breaks += entries(output.tieBreaks).filter((ruling) => ruling['applied'] === true).length;
+      sum.runs += 1;
+      second.set(families.secondPass, sum);
+    }
+    if (families.challenge !== null) {
+      const counts = challengeOf(row.output_json);
+      if (counts.judged > 0) {
+        const sum = challenge.get(families.challenge) ?? { judged: 0, held: 0, runs: 0 };
+        sum.judged += counts.judged;
+        sum.held += counts.held;
+        sum.runs += 1;
+        challenge.set(families.challenge, sum);
+      }
+    }
+  }
+  const rate = (count: number, over: number): number | null => (over === 0 ? null : count / over);
+  const listed = [...FAMILIES, 'unknown'].filter((name) => second.has(name) || challenge.has(name));
+  return {
+    families: Object.fromEntries(
+      listed.map((name) => {
+        const pass = second.get(name);
+        const judged = challenge.get(name);
+        const figures: FamilyFigures = {
+          second_pass:
+            pass === undefined
+              ? null
+              : {
+                  ...pass,
+                  drop_rate: rate(pass.dropped, pass.verdicts),
+                  downgrade_rate: rate(pass.downgraded, pass.verdicts),
+                  tie_break_rate: rate(pass.tie_breaks, pass.verdicts),
+                },
+          challenge: judged === undefined ? null : { ...judged, hold_rate: rate(judged.held, judged.judged) },
+        };
+        return [name, figures];
+      }),
+    ),
+    runs_without_families: without,
+  };
+}
+
+/** The `by family` block `evaluate` prints after the metrics. */
+export function describeByFamily(figures: ByFamily): string[] {
+  const names = Object.keys(figures.families);
+  const before = figures.runs_without_families > 0 ? ` (${figures.runs_without_families} run(s) recorded before families were stored)` : '';
+  if (names.length === 0) return [`by family  no data${before}`];
+  const fixed = (value: number | null): string => (value === null ? 'no data' : value.toFixed(2));
+  return [
+    `by family${before}`,
+    ...names.map((name) => {
+      const { second_pass: pass, challenge } = figures.families[name]!;
+      const second =
+        pass === null
+          ? 'second pass no data'
+          : `second pass ${pass.verdicts} verdicts, drop ${fixed(pass.drop_rate)}, downgrade ${fixed(pass.downgrade_rate)}, tie-break ${fixed(pass.tie_break_rate)}, ${pass.runs} run(s)`;
+      const challenged = challenge === null ? 'challenge no data' : `challenge ${challenge.judged} judged, hold ${fixed(challenge.hold_rate)}, ${challenge.runs} run(s)`;
+      return `  ${name.padEnd(8)}${second}; ${challenged}`;
+    }),
+  ];
 }
 
 /**

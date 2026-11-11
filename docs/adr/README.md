@@ -14,7 +14,7 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 |---|---|---|
 | [0001](0001-embedding-implementation.md) | Embedding and retrieval implementation | Accepted |
 | [0002](0002-github-auth-model.md) | GitHub authentication model | Accepted, amended 2026-10-06 by 0018 and 2026-10-25 by 0026 |
-| [0003](0003-static-analysis-adapters.md) | Static analysis adapter strategy | Accepted, amended 2026-11-08, amended 2026-11-09 (reproductions) |
+| [0003](0003-static-analysis-adapters.md) | Static analysis adapter strategy | Accepted, amended 2026-11-08, amended 2026-11-09 (reproductions), amended 2026-11-10 (configured runners) |
 | [0004](0004-outcome-inference-limits.md) | Outcome inference limits | Accepted, amended by 0029, amended 2026-11-08 |
 | [0005](0005-data-encryption.md) | Data encryption at rest | Accepted |
 | [0006](0006-team-governance.md) | Team and policy governance | Accepted |
@@ -32,10 +32,10 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0018](0018-read-only-graphql-thread-state.md) | Reading review-thread state through a GraphQL query | Accepted |
 | [0019](0019-cross-check-may-raise-through-tie-break.md) | A cross-check may raise a severity only through the tie-break | Accepted |
 | [0020](0020-structural-signals-may-opt-into-human-review.md) | Structural signals may opt into human review | Accepted, amended 2026-11-08 (removed controls) |
-| [0021](0021-agents-run-in-a-confined-headless-runner.md) | Agents run in a confined headless runner | Accepted |
+| [0021](0021-agents-run-in-a-confined-headless-runner.md) | Agents run in a confined headless runner | Accepted, amended 2026-11-09 (the command backend) |
 | [0022](0022-one-command-drives-a-review.md) | One command drives a review | Accepted, amended 2026-11-07 (`failure` in the report) |
 | [0023](0023-analyst-lanes-are-configured.md) | Analyst lanes are configured, each with its own severity rule | Accepted, amended 2026-11-08 (`when.signals`; security and concurrency analysts) |
-| [0024](0024-an-independent-challenge-gates-every-posted-finding.md) | An independent challenge gates every posted finding | Accepted, amended 2026-11-08 (evidence block), amended 2026-11-09 (reproductions) |
+| [0024](0024-an-independent-challenge-gates-every-posted-finding.md) | An independent challenge gates every posted finding | Accepted, amended 2026-11-08 (evidence block), amended 2026-11-09 (reproductions), amended 2026-11-10 by 0034 (the challenge family) |
 | [0025](0025-cost-modes-choose-stages-and-models.md) | Cost modes choose stages and models | Accepted, amended 2026-11-08 (`auto` and a removed control), amended 2026-11-09 (reproductions) |
 | [0026](0026-the-queue-reads-github-search-inside-the-allowlist.md) | The queue reads GitHub search, inside the allowlist | Accepted |
 | [0027](0027-one-watcher-remembers-every-head.md) | One watcher remembers every head | Accepted, amended 2026-11-07 (failure statuses, retention) |
@@ -45,3 +45,4 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0031](0031-a-github-action-runs-one-review-per-pull-request-event.md) | A GitHub Action runs one review per pull request event | Accepted, amended 2026-11-07 (config read from the base commit) |
 | [0032](0032-approved-policies-are-enforced-at-scoring.md) | Approved policies are enforced at scoring | Accepted |
 | [0033](0033-committable-suggestions-are-verified-patches.md) | Committable suggestions are verified patches | Accepted |
+| [0034](0034-a-cross-family-runner-is-configured-never-detected-into-use.md) | A cross-family runner is configured, never detected into use | Accepted |

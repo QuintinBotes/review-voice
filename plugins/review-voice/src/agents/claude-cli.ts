@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { stopCommands } from '../evidence/run.ts';
 import { agentFile } from './tools.ts';
 import {
   DEFAULT_AGENT_TIMEOUT_MS,
@@ -49,6 +50,8 @@ export function ownSignals(owned: boolean): void {
 
 function onSignal(signal: NodeJS.Signals): void {
   stopAll();
+  // The exit skips every finally, so the undo steps left with onStop (a command runner's temporary directory) run here.
+  stopCommands();
   process.exit(signal === 'SIGINT' ? 130 : 143);
 }
 
@@ -146,7 +149,7 @@ function claudeArguments(spec: AgentSpec, addDirs: string[], env: NodeJS.Process
   ];
 }
 
-function firstChars(text: string): string {
+export function firstChars(text: string): string {
   return text.trim().slice(0, ERROR_CHARS);
 }
 
@@ -173,24 +176,30 @@ export function interpretEnvelope(stdout: string, stderr: string, code: number |
   return { ok: false, output: null, costUsd, ...counted, error: detail };
 }
 
-export function runClaudeCli(
-  spec: AgentSpec,
-  prompt: string,
-  cwd: string,
-  addDirs: string[],
-  env: NodeJS.ProcessEnv,
-): Promise<Omit<AgentResult, 'seconds'>> {
-  // Always on stdin: argv cannot carry a NUL or a large diff, and a positional
-  // prompt is parsed for flags.
-  const args = claudeArguments(spec, addDirs, env);
-  const timeoutMs = agentTimeoutMs(spec);
-  const bin = claudeBin(env);
+/** What a watched process produced; `failed` is set when it never ran, timed out or overflowed. */
+export interface WatchedResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  failed?: string;
+}
 
+/**
+ * Spawns `bin` under the watchdog in its own process group, with the timeout,
+ * output cap, signal ownership and stdin discipline every agent backend shares
+ * (the command backend runs through here too, so `stopAll` kills either).
+ */
+export function spawnWatched(
+  bin: string,
+  args: readonly string[],
+  input: string,
+  options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number },
+): Promise<WatchedResult> {
   return new Promise((resolve) => {
     // Its own process group, so a timeout can kill everything it started.
     const child = spawn(process.execPath, ['-e', WATCHDOG, '--', bin, ...args], {
-      cwd,
-      env: childEnv(env),
+      cwd: options.cwd,
+      env: options.env,
       detached: process.platform !== 'win32',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -201,7 +210,7 @@ export function runClaudeCli(
     let stderrBytes = 0;
     let stopped: 'timeout' | 'output too large' | null = null;
     let settled = false;
-    const finish = (result: Omit<AgentResult, 'seconds'>): void => {
+    const finish = (result: WatchedResult): void => {
       untrack(child);
       if (settled) return;
       settled = true;
@@ -211,9 +220,13 @@ export function runClaudeCli(
     const stop = (reason: 'timeout' | 'output too large'): void => {
       stopped ??= reason;
       killTree(child);
+      // A descendant that left the group (setsid) still holds the pipes and close
+      // waits for them, so close follows the watchdog's exit only once they go (issue 277).
+      child.stdout?.destroy();
+      child.stderr?.destroy();
     };
 
-    const timer = setTimeout(() => stop('timeout'), timeoutMs);
+    const timer = setTimeout(() => stop('timeout'), options.timeoutMs);
 
     child.stdout?.on('data', (chunk: Buffer) => {
       stdoutBytes += chunk.length;
@@ -225,28 +238,38 @@ export function runClaudeCli(
       stderrBytes += chunk.length;
     });
     child.on('error', (error) => {
-      finish({ ok: false, output: null, costUsd: null, error: `could not start ${bin}: ${error.message}` });
+      finish({ code: null, stdout: '', stderr: '', failed: `could not start ${bin}: ${error.message}` });
     });
     child.on('close', (code) => {
-      if (stopped !== null) {
-        finish({ ok: false, output: null, costUsd: null, error: stopped });
-        return;
-      }
-      finish(
-        interpretEnvelope(
-          Buffer.concat(stdout).toString('utf8'),
-          Buffer.concat(stderr).toString('utf8'),
-          code,
-        ),
-      );
+      finish({
+        code,
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr).toString('utf8'),
+        ...(stopped === null ? {} : { failed: stopped }),
+      });
     });
     if (child.stdin) {
       // A process that exits before reading all of stdin is reported by its
       // exit status; the broken pipe itself carries no information.
       child.stdin.on('error', () => {});
-      child.stdin.end(prompt);
+      child.stdin.end(input);
     }
   });
+}
+
+export async function runClaudeCli(
+  spec: AgentSpec,
+  prompt: string,
+  cwd: string,
+  addDirs: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Omit<AgentResult, 'seconds'>> {
+  // Always on stdin: argv cannot carry a NUL or a large diff, and a positional
+  // prompt is parsed for flags.
+  const args = claudeArguments(spec, addDirs, env);
+  const result = await spawnWatched(claudeBin(env), args, prompt, { cwd, env: childEnv(env), timeoutMs: agentTimeoutMs(spec) });
+  if (result.failed !== undefined) return { ok: false, output: null, costUsd: null, error: result.failed };
+  return interpretEnvelope(result.stdout, result.stderr, result.code);
 }
 
 function killTree(child: ChildProcess): void {
