@@ -55,6 +55,7 @@ import { evaluateCommand } from './cli/evaluate.ts';
 import { conventionsCommand } from './cli/conventions.ts';
 import { checkIntentCommand } from './cli/check-intent.ts';
 import { recallCommand } from './cli/recall.ts';
+import { importBenchmarkCommand } from './cli/import-benchmark.ts';
 import { worktreeCommand } from './cli/worktree.ts';
 import { pullRequestDiffCommand, diffCommand } from './cli/diff.ts';
 import { threadCommand } from './cli/thread.ts';
@@ -199,6 +200,9 @@ async function dispatch(argv: string[]): Promise<number> {
 
     case 'recall':
       return await recallCommand(argv.slice(1), runInProcess);
+
+    case 'import-benchmark':
+      return importBenchmarkCommand(argv.slice(1));
 
     case 'outcomes':
       return outcomesCommand(argv.slice(1));
