@@ -5,6 +5,106 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.0] - 2026-11-11
+
+### Security
+
+- `redact()` replaces a secret where it stands in its match. It used to search
+  for the secret's text inside the match, so `postgres://postgres:postgres@db`
+  kept its password while the count said it was redacted. Every pattern now
+  runs in linear time with no length cap, and a token or a mask of several
+  million characters no longer overflows the stack. A connection string with a
+  password and no user is redacted. (#342)
+
+- Untrusted text reaches the terminal without its control sequences.
+  Reproduction output kept them, and `explain` printed a held reason copied
+  from it, so pull request code could write to the reviewer's clipboard
+  through OSC 52. One cleaner now runs where pull request code's output is
+  captured, where a command shows a stored record, and on the CLI's own
+  streams, where JSON keeps its data as escapes. The Linux sandbox no longer
+  exposes terminal devices. (#344)
+
+- `runners:` is honoured only from the operator's own configuration, and every
+  hop states where its configuration came from, so `watch` and the reviews it
+  launches never honour a reviewed repository's runner block. (#346)
+
+### Added
+
+- Verifier reproductions. With `reproduction.enabled: true` and a runner, a
+  thorough review has the verifier write a reproduction for each blocking or
+  important finding, and `reproduce` runs it in a throwaway copy of the head
+  under Linux namespaces, behind a probe. One that does not fail holds its
+  finding as `reproduction-did-not-fail`, outside the categories no
+  suppression may reach. macOS runs none. Off by default. (#323, #330,
+  closes #283)
+
+- A cross-family runner. `runners.codex` or `runners.gemini`, an argv list in
+  the operator's configuration, can run the second pass and the challenger on
+  another model family, and `runners.use` names the family each challenge runs
+  on. A configured challenger that cannot run holds its findings and caps the
+  event at COMMENT; nothing falls back to Claude. Such a hold outlives every
+  incremental review and ends on a full review, or when the pull request stops
+  changing the file. Every run records the family that ran its second pass and
+  its challenge, and `evaluate` reports rates by family. (#346, closes #284)
+
+- `review-voice import-benchmark` turns one downloaded public benchmark set
+  into recall fixtures outside the repository, offline, with a manifest and a
+  closed list of refusal codes. The run itself is not part of this release.
+  (#335, part of #285)
+
+- `review.linked_issues: true` lets the intent extractor quote the GitHub
+  issues a pull request description closes, as a second untrusted source
+  beside the description: closing keywords only, at most five issues, redacted
+  and capped. Off by default. (#331, closes #286)
+
+- Static evidence reads SARIF 2.1.0 from any tool that writes it, through one
+  adapter: the tool's own message, rule id, level, path and line. Every
+  adapter's output is masked and redacted whole before any cut. (#349,
+  closes #287)
+
+- `review-voice reply --pr <n>` previews, and with `--confirm` posts, one
+  templated reply where a person asked a question under one of this tool's own
+  inline comments. The text is rendered by code from the recorded run; no
+  model runs. (#336, closes #288)
+
+- `verdict.never_approve_paths` and `verdict.only_approve_paths` hold an
+  approval by changed path, and `verdict.held_queue: true` lists the findings
+  a review held, with the command that would post each one. Off by default.
+  (#334, closes #289)
+
+- `evaluate --json` prints one report object, including each approved
+  suppression's record since its approval, and `evaluate --html` renders it as
+  a static page that loads nothing. (#333, closes #290)
+
+- `verdict.min_posted_tier` posts only verified findings at or above a tier,
+  outside the categories no suppression may reach, and never approves over a
+  finding above a nit that it withheld. `verdict.reading_guide: true` adds a
+  collapsed list of changed files ranked by measured structural signals. Off
+  by default. (#329, closes #291)
+
+### Fixed
+
+- A verified finding above a nit that the confidence gate held no longer ends
+  in an approval: the review comments. (#348, closes #337)
+
+- `record` refuses a stages file it cannot read and names the problem, warns
+  when the analyst read few of the changed files, and checks held lines at the
+  head. (#325, closes #316, #320, #322)
+
+- An untraced stale comment's rejection names the route to post it. (#324,
+  closes #317)
+
+- An unknown key inside a config section warns like a top-level one. (#326,
+  closes #318)
+
+- `check-intent` finds a short answer's heading past a template comment or
+  under a bold label. (#327, closes #319)
+
+### Changed
+
+- `docs/agent-handoffs/approval-confidence/` holds specs S25 to S29, the
+  approval confidence program. (#328)
+
 ## [1.23.0] - 2026-11-09
 
 ### Added
