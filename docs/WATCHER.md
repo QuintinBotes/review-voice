@@ -270,7 +270,7 @@ The stage graph, in order. A stage the plan turns off is recorded as skipped.
 | 7 | `second-pass` (`verify` with the configured command) | CLI | as today |
 | 8 | `tie-break`, once per `reconcile` dispute | agent | dispute stays unsettled |
 | 9 | `score`, then lane severity rules | CLI | stop |
-| 10 | `challenge`, one challenger per eligible finding | agent | the finding is held |
+| 10 | `challenge`, one challenger per eligible finding, on the plan's challenge family | agent | the finding is held; a configured family that cannot run, or a `runners.use` value that names no family, holds every challenged finding and caps the event at COMMENT. No incremental or interdiff review releases that hold, whether or not it read the file. A full review (`review --full`) checks the finding again once the runner works |
 | 11 | `edit` (concise-editor), `validate-output` (one retry) | agent | relaunch once, then exit 7 |
 | 12 | `record`, then `verdict` | CLI | stop |
 | 13 | `post`, only with `--post` and posting enabled | CLI | per `post` exit codes |
@@ -287,8 +287,20 @@ GitHub search and the local store. It writes nothing.
 ### `watch`
 
 ```
-review-voice watch [--once] [--interval 2h] [--post] [--mode M] [--max N] [--json]
+review-voice watch [--once] [--interval 2h] [--post] [--mode M] [--max N] [--config <path>] [--json]
 ```
+
+The watcher reads the file `--config` names, else an absolute
+`REVIEW_VOICE_CONFIG`, else the checkout's `.review-voice/config.yaml`.
+Outside a repository only `--config` names a file. It copies that file to
+`<data directory>/watch-config.yaml` and hands each review the copy through
+`REVIEW_VOICE_CONFIG`, with `REVIEW_VOICE_CONFIG_SOURCE` beside it naming
+where the file came from: `flag` for `--config`, `env` for an
+absolute `REVIEW_VOICE_CONFIG` (or the source a `REVIEW_VOICE_CONFIG_SOURCE`
+beside it states), `checkout` otherwise. The `runners:` block is honoured only
+for `flag` and `env`, the operator's own configuration (ADR 0034), in the
+watcher and in every review it starts; a checkout's block is ignored with one
+warning.
 
 Each pass runs `queue`, then for every entry:
 - `review`: syncs the workspace clone and runs `review` (with `--post` when
@@ -393,7 +405,7 @@ claim during the run. That is the same repeat rule `check-candidates` applies.
 | reproduce | off | off | when configured |
 | second-pass | off | when configured | when configured |
 | tie-break | sonnet | opus | opus |
-| challenge | off | sonnet; opus for important or above | opus |
+| challenge | off | sonnet; opus for important or above; the `runners.<family>` label on a configured family | opus; the `runners.<family>` label on a configured family |
 | edit | sonnet | sonnet | sonnet |
 
 `auto` picks `fast` when no production source changed (documentation, tests,

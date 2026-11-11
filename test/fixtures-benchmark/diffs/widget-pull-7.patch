@@ -1,0 +1,14 @@
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -1,9 +1,9 @@
+ export function total(items) {
+   let sum = 0;
+-  for (const item of items) sum += item.price;
++  for (const item of items) sum += item.price * item.qty;
+   return sum;
+ }
+
+ export function count(items) {
+-  return items.length;
++  return items.filter((item) => item.qty > 0).length;
+ }

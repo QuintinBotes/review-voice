@@ -3,7 +3,7 @@ import { isAbsolute, posix, relative } from 'node:path';
 import { ordinaryFindingHint, parseHunks, reason, suggestedPatchMismatch, type FileHunks } from '../diff/hunks.ts';
 import type { ThreadComment } from '../diff/thread.ts';
 import { openDatabase } from '../store/db.ts';
-import { runDetail, type HeldFinding } from '../store/runs.ts';
+import { challengeNotRun, runDetail, type HeldFinding } from '../store/runs.ts';
 import { carryFindings, CarryError } from '../diff/carry.ts';
 import { DIFF_LANE, laneNamed } from '../review/lanes.ts';
 import { repositoryRoot } from '../diff/acquire.ts';
@@ -58,15 +58,18 @@ function carriedHeldFindings(runId: string, head: string): CarriedHeld[] {
     // `below-gate` is carried too, but only to flag: the verifier confirmed it,
     // so it argues for the candidate and never removes one (`matchHeld`). The
     // mark tells the verifier the same concern was already held below the gate.
+    // A hold for a challenge that never ran is no conclusion either: the finding
+    // is checked and challenged again, and holds again while the runner cannot run.
     const entries = detail.held.filter(
       (h) =>
-        h.verdict === 'refuted' ||
+        !challengeNotRun(h) &&
+        (h.verdict === 'refuted' ||
         h.verdict === 'partly' ||
         h.verdict === 'repeat' ||
         h.verdict === 'below-gate' ||
         h.verdict === 'owner-declined' ||
         h.verdict === 'challenge-refuted' ||
-        h.verdict === 'challenge-partly',
+        h.verdict === 'challenge-partly'),
     );
     const inputs = entries.map((h, i) => ({ findingId: String(i), path: h.path, line: h.line, text: '' }));
     const result = carryFindings(inputs, detail.headRef, head, process.cwd());

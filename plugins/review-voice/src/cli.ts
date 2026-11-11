@@ -1,5 +1,4 @@
 
-import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { format } from 'node:util';
@@ -16,13 +15,13 @@ import {
 import { openDatabase } from './store/db.ts';
 import { dataDirectory } from './store/paths.ts';
 import { MODES } from './review/plan.ts';
-import { configFile, loadConfig } from './policy/load.ts';
+import { loadConfig } from './policy/load.ts';
 import { repositoryRoot } from './diff/acquire.ts';
 import { stopCommandsOnSignal } from './evidence/run.ts';
 import { GitHubClient, NotAllowlisted, ReadOnlyViolation } from './github/client.ts';
 import { AuthError } from './github/auth.ts';
 import { queueCommand } from './queue/command.ts';
-import { CONFIG_COPY, watchCommand } from './watch/command.ts';
+import { reviewSpawnOptions, watchCommand, watchConfigSource } from './watch/command.ts';
 import { spawnReview } from './watch/review.ts';
 import { gitPrepareClone } from './watch/workspace.ts';
 import { ReviewWriter, WriteViolation } from './github/writer.ts';
@@ -56,6 +55,7 @@ import { evaluateCommand } from './cli/evaluate.ts';
 import { conventionsCommand } from './cli/conventions.ts';
 import { checkIntentCommand } from './cli/check-intent.ts';
 import { recallCommand } from './cli/recall.ts';
+import { importBenchmarkCommand } from './cli/import-benchmark.ts';
 import { worktreeCommand } from './cli/worktree.ts';
 import { pullRequestDiffCommand, diffCommand } from './cli/diff.ts';
 import { threadCommand } from './cli/thread.ts';
@@ -202,6 +202,9 @@ async function dispatch(argv: string[]): Promise<number> {
     case 'recall':
       return await recallCommand(argv.slice(1), runInProcess);
 
+    case 'import-benchmark':
+      return importBenchmarkCommand(argv.slice(1));
+
     case 'outcomes':
       return outcomesCommand(argv.slice(1));
 
@@ -235,13 +238,19 @@ async function dispatch(argv: string[]): Promise<number> {
       try {
         root = repositoryRoot(process.cwd());
       } catch {
-        // Not in a repository: there is no config, and watch refuses to start.
+        // Not in a repository: only --config names a config, and without it watch refuses to start.
+      }
+      const config = watchConfigSource(argv.slice(1), root);
+      if (typeof config === 'string') {
+        console.error(config);
+        return 2;
       }
       const dataDir = dataDirectory();
-      const review = spawnReview(fileURLToPath(import.meta.url), { configPath: join(dataDir, CONFIG_COPY) });
+      const review = spawnReview(fileURLToPath(import.meta.url), reviewSpawnOptions(dataDir, config));
       return await watchCommand(argv.slice(1), {
-        configSource: root === null ? null : configFile(root),
-        loadSettings: (path) => loadConfig(root ?? process.cwd(), undefined, path),
+        configSource: config?.path ?? null,
+        // The copy keeps the source of the file it was taken from.
+        loadSettings: (path) => loadConfig(root ?? process.cwd(), undefined, path, undefined, config?.source),
         client: (allowlist) => new GitHubClient({ allowlist, allowGlobs: true }),
         // Built from the recorded run's repository by post, as for the post command.
         writerFor: (allowlist) => new ReviewWriter({ allowlist }),
