@@ -121,6 +121,8 @@ export interface LoadedConfig {
   lanes: Lane[];
   /** `review.confidence_threshold` and `review.final_score_threshold`: defaults for `score` when its flags are absent. */
   thresholds: { technicalConfidence?: number; finalScore?: number };
+  /** `review.linked_issues`: whether `thread` also reads the same-repository issues the description closes. Off by default. */
+  linkedIssues: boolean;
   layers: PolicyLayer[];
   /**
    * The structured suppressions of every layer, as `resolvePolicy` resolves
@@ -163,7 +165,7 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
   repositories: ['include'],
   review: [
     'human_review', 'structure', 'mode', 'models', 'confidence_threshold', 'final_score_threshold', 'lanes', 'suggestions',
-    'max_findings', 'max_words_per_finding', 'max_total_words',
+    'linked_issues', 'max_findings', 'max_words_per_finding', 'max_total_words',
   ],
   'review.human_review': [
     'max_decision_points', 'max_hunk_decision_points', 'sensitive_paths', 'sensitive_exempt_paths', 'test_paths',
@@ -1279,6 +1281,9 @@ export function readConfigDocument(value: unknown, repositoryRoot: string, resul
     const suggestions = review['suggestions'];
     if (typeof suggestions === 'boolean') result.verdictPolicy.suggestions = suggestions;
     else if (suggestions !== undefined) result.warnings.push('review.suggestions must be true or false; using false.');
+    const linkedIssues = review['linked_issues'];
+    if (typeof linkedIssues === 'boolean') result.linkedIssues = linkedIssues;
+    else if (linkedIssues !== undefined) result.warnings.push('review.linked_issues must be true or false; using false.');
     result.layers.push({
       scope: { type: 'repository', key: repositoryRoot },
       source: '.review-voice/config.yaml',
@@ -1334,6 +1339,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
     lanes: [DIFF_LANE],
     thresholds: {},
+    linkedIssues: false,
     layers: [],
     suppressions: [],
     activePolicyVersions: [],

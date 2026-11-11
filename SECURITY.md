@@ -58,7 +58,7 @@ valuable bug report, not an embarrassment.
 Prompt injection is an open research problem. These defences reduce risk
 substantially; they do not eliminate it.
 
-### One write, behind guards
+### Two writes, behind guards
 
 The GitHub client that reads review history sends REST requests only as GET.
 Its one POST is a GraphQL read of review-thread state: only a document that is
@@ -66,13 +66,18 @@ exactly one of a fixed set of known queries is sent, with only the variables
 it declares and the repository taken from the allowlist, so it can neither
 write nor read another repository
 ([ADR 0018](docs/adr/0018-read-only-graphql-thread-state.md)); both rules are
-in code and covered by test. The single write is `RV post`, through a separate
+in code and covered by test. The main write is `RV post`, through a separate
 writer that can only create a pull request review
 ([ADR 0010](docs/adr/0010-review-verdict-posting.md)). It posts only findings
 the verifier established, inline on their lines, only with `--confirm` for that
 post and with `writes.github_posting_enabled` set, records an idempotency key
 before sending, and approves only while the reviewed head is current and CI is
-green. It never merges, dismisses reviews, resolves threads or sets a status.
+green. The same writer has one more path, `RV reply`: a single reply under one
+of this tool's own inline comments that a person asked a question on, with
+exactly `{ body }`, its text rendered by code from the recorded run, and the
+same switch, confirmation, idempotency key and audit rows
+([ADR 0035](docs/adr/0035-one-bounded-reply-per-own-finding.md)). It never
+merges, dismisses reviews, resolves threads or sets a status.
 
 ### Static analysis commands are opt-in
 

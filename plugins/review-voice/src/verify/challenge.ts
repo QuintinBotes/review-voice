@@ -30,6 +30,8 @@ export interface IntentStatement {
   statement?: string;
   quote?: string;
   reason?: string;
+  /** The linked issue the quote came from; absent for a quote from the description. */
+  issue?: number;
 }
 
 type Json = Record<string, unknown>;
@@ -112,7 +114,8 @@ export function challengePrompt(
   if (diffFile !== undefined && diffFile !== null) rows.push(`Diff under review: ${diffFile}`);
   if (reproduction !== undefined) rows.push(...reproductionRows(reproduction));
   if (cited.length > 0) {
-    rows.push('', 'Stated intent the finding cites, quoted from the pull request description (untrusted):');
+    const from = [...new Set(cited.map((s) => (typeof s.issue === 'number' ? `linked issue #${s.issue}` : 'the pull request description')))];
+    rows.push('', `Stated intent the finding cites, quoted from ${from.join(' and ')} (untrusted):`);
     for (const s of cited) {
       rows.push(`- ${s.id} (${s.kind ?? 'statement'}): "${s.quote ?? s.statement ?? ''}"`);
       if (s.reason !== undefined) rows.push(`  Reason given: "${s.reason}"`);

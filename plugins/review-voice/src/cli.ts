@@ -65,6 +65,7 @@ import { planCommand, lanesCommand } from './cli/plan.ts';
 import { verdictCommand, postCommand } from './cli/verdict.ts';
 import { consentPlanCommand, syncCommand } from './cli/sync.ts';
 import { outcomesCommand } from './cli/outcomes.ts';
+import { replyCommand } from './cli/reply.ts';
 import { checkVerificationCommand } from './cli/check-verification.ts';
 import { checkSimplificationCommand } from './cli/check-simplification.ts';
 import { verifyCommand } from './cli/verify.ts';
@@ -207,6 +208,9 @@ async function dispatch(argv: string[]): Promise<number> {
 
     case 'outcomes':
       return outcomesCommand(argv.slice(1));
+
+    case 'reply':
+      return await replyCommand(argv.slice(1));
 
     case 'draft':
       return draftCommand(argv.slice(1));

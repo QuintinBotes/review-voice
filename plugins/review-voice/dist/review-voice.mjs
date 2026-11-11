@@ -179,8 +179,8 @@ function scanFindings(output) {
   return { blocks, stray };
 }
 function parseFinding(raw, startLine) {
-  const joined = raw.replace(/\s*\n\s*/g, " ").trim();
-  const match = FINDING.exec(joined);
+  const joined2 = raw.replace(/\s*\n\s*/g, " ").trim();
+  const match = FINDING.exec(joined2);
   if (!match) {
     return { startLine, raw, severity: null, path: null, line: null, prose: "" };
   }
@@ -9740,7 +9740,10 @@ var GitHubClient = class {
   }
   /**
    * `retryRateLimits: false` fails at once on a rate limit instead of waiting
-   * it out, for a read the caller can do without.
+   * it out, for a read the caller can do without. `followRedirects: false`
+   * makes a redirect fail the read: a transferred issue answers with a 301 to
+   * another repository, and following it would send the credential to a read
+   * the allowlist never checked.
    */
   async get(path, init = {}) {
     if (init.method !== void 0 && init.method.toUpperCase() !== "GET") {
@@ -9749,15 +9752,17 @@ var GitHubClient = class {
       );
     }
     this.assertAllowed(path);
-    return this.request(path, init.retryRateLimits !== false);
+    return this.request(path, init.retryRateLimits !== false, init.followRedirects !== false);
   }
   /** The GET itself, once the caller has checked the path. */
-  async request(path, retryRateLimits) {
+  async request(path, retryRateLimits, followRedirects = true) {
     const { url: resolved, apiPath } = this.resolve(path);
     const url = resolved.href;
     for (let attempt = 0; ; attempt += 1) {
       const response = await this.doFetch(url, {
         method: "GET",
+        // A 3xx then comes back as a non-ok response, which the check below refuses.
+        redirect: followRedirects ? "follow" : "manual",
         headers: {
           accept: "application/vnd.github+json",
           authorization: this.authorization(),
@@ -10587,8 +10592,8 @@ function buildsQuery(code3, raw, quotes, triple, at2) {
       const interpolated = /\$\{|%s/.test(inside2) || /(?<![\w$])(?:rf|fr|f)$/i.test(prefix) && inside2.includes("{");
       const before = prefix.trimEnd();
       const after = close === -1 ? "" : code3.slice(end + delimiter.length).trimStart();
-      const joined = before.endsWith("+") || /^(?:\+|%(?!=)|\.format\s*\()/.test(after);
-      return interpolated || joined;
+      const joined2 = before.endsWith("+") || /^(?:\+|%(?!=)|\.format\s*\()/.test(after);
+      return interpolated || joined2;
     }
     index = close === -1 ? code3.length : close + delimiter.length;
   }
@@ -11542,9 +11547,9 @@ function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */
   return { carried, notCarried, heldBack, settled, output };
 }
 function findingBody(text4) {
-  const joined = text4.replace(/\s+/g, " ").trim();
-  const match = /^\[[a-z_]+\]\s+`[^`]+:\d+`\s*(.*)$/i.exec(joined);
-  return match === null ? joined : match[1] ?? "";
+  const joined2 = text4.replace(/\s+/g, " ").trim();
+  const match = /^\[[a-z_]+\]\s+`[^`]+:\d+`\s*(.*)$/i.exec(joined2);
+  return match === null ? joined2 : match[1] ?? "";
 }
 function matchCarried(recorded2, carried) {
   const matches = /* @__PURE__ */ new Map();
@@ -12156,11 +12161,13 @@ function storedChecks(raw) {
     if (c === null || typeof c["name"] !== "string" || typeof c["reason"] !== "string") return null;
     didNot.push({ name: c["name"], reason: c["reason"] });
   }
+  const issuesRead = value["issuesRead"];
   return {
     staticRan: ran,
     staticDidNotRun: didNot,
     symbolsInconclusive: value["symbolsInconclusive"],
-    symbolsBudgetExhausted: value["symbolsBudgetExhausted"]
+    symbolsBudgetExhausted: value["symbolsBudgetExhausted"],
+    ...Array.isArray(issuesRead) ? { issuesRead: issuesRead.filter((n) => Number.isInteger(n)) } : {}
   };
 }
 function describeChecks(checks) {
@@ -12169,7 +12176,8 @@ function describeChecks(checks) {
   const didNot = checks.staticDidNotRun.map((c) => `${c.name} did not run (${c.reason})`);
   const staticParts = [...ran, ...didNot];
   const symbols = checks.symbolsInconclusive === 0 ? "every symbol file finished" : `${checks.symbolsInconclusive} symbol file${checks.symbolsInconclusive === 1 ? "" : "s"} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}`;
-  return `Checks ${staticParts.length === 0 ? "no static checks" : staticParts.join("; ")}; ${symbols}`;
+  const issues = checks.issuesRead === void 0 ? "" : `; linked issues ${checks.issuesRead.length === 0 ? "none" : checks.issuesRead.map((n) => `#${n}`).join(", ")}`;
+  return `Checks ${staticParts.length === 0 ? "no static checks" : staticParts.join("; ")}; ${symbols}${issues}`;
 }
 var basename3 = (path) => path.split("/").pop()?.toLowerCase() ?? path.toLowerCase();
 function attribute(finding, hints, taken) {
@@ -13317,6 +13325,8 @@ function scopeBlock(run, planned, policy) {
     symbolLine = checks.symbolsInconclusive === 0 ? "Symbol context: every changed file finished." : `Symbol context: ${plural2(checks.symbolsInconclusive, "file")} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}.`;
     if (checks.symbolsInconclusive > 0) notChecked.push("files the symbol search did not finish");
   }
+  const issuesRead = checks?.issuesRead ?? null;
+  const linkedLine = issuesRead === null || issuesRead.length === 0 ? null : `Linked issues: ${issuesRead.map((n) => code3(`#${n}`)).join(", ")} read for intent.`;
   const held = heldCounts(run.held);
   held.other += planned.held.length;
   const notPosted = [
@@ -13341,6 +13351,8 @@ function scopeBlock(run, planned, policy) {
     findings,
     held,
     checks: checks === null ? null : { ran: checks.staticRan.length, didNotRun: checks.staticDidNotRun.length },
+    // Null when not recorded, as `checks` is, so an unrecorded run shows no data and never a zero.
+    issues: issuesRead,
     ...families !== null && (challengeFamily2 !== null || families.secondPass !== null) ? { families: { secondPass: families.secondPass, challenge: families.challenge } } : {}
   };
   const trailer = JSON.stringify(facts).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
@@ -13351,6 +13363,7 @@ function scopeBlock(run, planned, policy) {
     stagesLine,
     staticLine,
     symbolLine,
+    ...linkedLine === null ? [] : [linkedLine],
     `Not posted: ${notPosted.length === 0 ? "nothing held back" : notPosted.join(", ")}.`,
     `Not checked: ${notChecked.join(", ")}.`,
     "",
@@ -13516,7 +13529,7 @@ function expiredRunDirectories(dataDir, days, now) {
     return entry.mtimeMs < now.getTime() - limit * DAY_MS;
   }).map((entry) => entry.path);
 }
-var AUDIT_WHERE = "created_at < ? AND action NOT LIKE 'review_post_%'";
+var AUDIT_WHERE = "created_at < ? AND action NOT LIKE 'review_post_%' AND action NOT LIKE 'review_reply_%'";
 function auditCutoff(days, now) {
   return enabled(days) ? new Date(now.getTime() - days * DAY_MS).toISOString() : null;
 }
@@ -14446,6 +14459,7 @@ var CONFIG_KEYS = {
     "final_score_threshold",
     "lanes",
     "suggestions",
+    "linked_issues",
     "max_findings",
     "max_words_per_finding",
     "max_total_words"
@@ -15400,6 +15414,9 @@ function readConfigDocument(value, repositoryRoot2, result, honourRunners) {
     const suggestions = review2["suggestions"];
     if (typeof suggestions === "boolean") result.verdictPolicy.suggestions = suggestions;
     else if (suggestions !== void 0) result.warnings.push("review.suggestions must be true or false; using false.");
+    const linkedIssues = review2["linked_issues"];
+    if (typeof linkedIssues === "boolean") result.linkedIssues = linkedIssues;
+    else if (linkedIssues !== void 0) result.warnings.push("review.linked_issues must be true or false; using false.");
     result.layers.push({
       scope: { type: "repository", key: repositoryRoot2 },
       source: ".review-voice/config.yaml",
@@ -15438,6 +15455,7 @@ function loadConfig(repositoryRoot2, baselinePath, path, db, source) {
     verdictPolicy: { ...DEFAULT_VERDICT_POLICY },
     lanes: [DIFF_LANE],
     thresholds: {},
+    linkedIssues: false,
     layers: [],
     suppressions: [],
     activePolicyVersions: [],
@@ -15828,6 +15846,8 @@ var WriteViolation = class extends Error {
 };
 var REVIEW_EVENTS = ["APPROVE", "COMMENT", "REQUEST_CHANGES"];
 var REVIEW_PATH = /^\/repos\/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)\/pulls\/([1-9][0-9]*)\/reviews$/;
+var REPLY_PATH = /^\/repos\/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)\/pulls\/([1-9][0-9]*)\/comments\/([1-9][0-9]*)\/replies$/;
+var REPLY_MAX_LENGTH = 600;
 var SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 var ReviewWriter = class {
   allowlist;
@@ -15854,18 +15874,34 @@ var ReviewWriter = class {
       state: typeof record3["state"] === "string" ? record3["state"] : null
     };
   }
+  /** Replies under one of this tool's own inline comments, with exactly `{ body }`. */
+  async replyToComment(repository, pullNumber, commentId, body) {
+    if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+      throw new WriteViolation(`Refused a reply on pull request ${String(pullNumber)}: not a pull request number.`);
+    }
+    if (!Number.isInteger(commentId) || commentId < 1) {
+      throw new WriteViolation(`Refused a reply to comment ${String(commentId)}: not a comment id.`);
+    }
+    const data = await this.request("POST", `/repos/${repository}/pulls/${pullNumber}/comments/${commentId}/replies`, { body });
+    const record3 = typeof data === "object" && data !== null ? data : {};
+    return {
+      id: typeof record3["id"] === "number" ? record3["id"] : null,
+      htmlUrl: typeof record3["html_url"] === "string" ? record3["html_url"] : null
+    };
+  }
   /**
-   * Every request goes through here, and here admits one method and one path.
+   * Every request goes through here, and here admits one method and two paths.
    * Public so the refusal can be tested directly rather than inferred.
    */
   async request(method, path, body) {
     if (method !== "POST") {
-      throw new WriteViolation(`Review Voice writes one thing; refused a ${method} to ${path}.`);
+      throw new WriteViolation(`Review Voice writes two things, a review and a reply to its own comment; refused a ${method} to ${path}.`);
     }
-    const match = REVIEW_PATH.exec(path);
+    const match = REVIEW_PATH.exec(path) ?? REPLY_PATH.exec(path);
     if (match === null) {
-      throw new WriteViolation(`Review Voice writes one thing; refused a POST to ${path}.`);
+      throw new WriteViolation(`Review Voice writes two things, a review and a reply to its own comment; refused a POST to ${path}.`);
     }
+    if (REPLY_PATH.test(path)) assertReplyBody(body);
     const repository = `${match[1]}/${match[2]}`;
     if (!this.allowlist.has(repository.toLowerCase())) {
       throw new NotAllowlisted(`${repository} is not a repository this writer may post to.`);
@@ -15920,9 +15956,55 @@ function assertPayload(payload) {
     throw new WriteViolation(`Refused a review with unexpected fields: ${keys}.`);
   }
 }
+function assertReplyBody(payload) {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    throw new WriteViolation("Refused a reply whose payload is not an object.");
+  }
+  const body = payload["body"];
+  if (typeof body !== "string" || body.trim().length === 0) {
+    throw new WriteViolation("Refused a reply without a body.");
+  }
+  if (body.length > REPLY_MAX_LENGTH) {
+    throw new WriteViolation(`Refused a reply over ${REPLY_MAX_LENGTH} characters.`);
+  }
+  const keys = Object.keys(payload).join(",");
+  if (keys !== "body") {
+    throw new WriteViolation(`Refused a reply with unexpected fields: ${keys}.`);
+  }
+}
 
 // plugins/review-voice/src/diff/thread.ts
 var MAX_COMMENTS = 300;
+var MAX_LINKED_ISSUES = 5;
+var MAX_ISSUE_BODY = 1e4;
+var cappedBody = (body) => {
+  if (body.length <= MAX_ISSUE_BODY) return body;
+  const cut2 = body.slice(0, MAX_ISSUE_BODY);
+  const paragraph = cut2.lastIndexOf("\n\n");
+  if (paragraph !== -1) return cut2.slice(0, paragraph);
+  const line3 = cut2.lastIndexOf("\n");
+  if (line3 !== -1) return cut2.slice(0, line3);
+  const sentence = [...cut2.matchAll(/[.!?](?=\s)/gu)].at(-1);
+  return sentence === void 0 ? "" : cut2.slice(0, sentence.index + 1);
+};
+var CLOSING_REFERENCE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)|([\w.-]+\/[\w.-]+)#(\d+)|#(\d+))\b/giu;
+function closingReferences(description, repository) {
+  const numbers = [];
+  const beyond = [];
+  const skipped = [];
+  for (const match of description.matchAll(CLOSING_REFERENCE)) {
+    const [, text4, urlRepository, urlNumber, shortRepository, shortNumber, bareNumber] = match;
+    const named = urlRepository ?? shortRepository;
+    if (named !== void 0 && named.toLowerCase() !== repository.toLowerCase()) {
+      skipped.push(text4);
+      continue;
+    }
+    const number = Number(urlNumber ?? shortNumber ?? bareNumber);
+    if (numbers.includes(number) || beyond.includes(number)) continue;
+    (numbers.length < MAX_LINKED_ISSUES ? numbers : beyond).push(number);
+  }
+  return { numbers, beyond, skipped };
+}
 function clean(body, author) {
   if (body === void 0 || body.trim().length === 0) return null;
   return { body: redact(stripEvidenceBlock(body)).text, author: author ?? "unknown" };
@@ -15937,11 +16019,42 @@ async function readThread(options) {
   if (description !== null) {
     comments.push({ path: null, line: null, author: description.author, body: description.body, kind: "description" });
   }
+  const warnings = [];
+  const linkedIssues = [];
+  if (options.linkedIssues === true) {
+    const references = closingReferences(description?.body ?? "", options.repository);
+    for (const text4 of references.skipped) warnings.push(`Skipped ${text4}: a linked issue outside ${options.repository} is not read.`);
+    if (references.beyond.length > 0) {
+      warnings.push(`Read the first ${MAX_LINKED_ISSUES} linked issues; not read: ${references.beyond.map((n) => `#${n}`).join(", ")}.`);
+    }
+    for (const number of references.numbers) {
+      try {
+        const { data } = await client.get(`/repos/${options.repository}/issues/${number}`, { retryRateLimits: false, followRedirects: false });
+        if (data.number !== number || !(data.repository_url ?? "").toLowerCase().endsWith(`/repos/${options.repository}`.toLowerCase())) {
+          warnings.push(`Could not read issue #${number} (GitHub answered for another issue or repository); continuing without it.`);
+          continue;
+        }
+        if (data.pull_request !== void 0) continue;
+        const body = redact(data.body ?? "").text;
+        linkedIssues.push({
+          number,
+          title: redact(data.title ?? "").text,
+          body: cappedBody(body),
+          state: data.state ?? "unknown",
+          url: data.html_url ?? "",
+          ...body.length > MAX_ISSUE_BODY ? { truncated: true } : {}
+        });
+      } catch (error) {
+        warnings.push(
+          `Could not read issue #${number} (${error instanceof Error ? error.message.slice(0, 160) : String(error)}); continuing without it.`
+        );
+      }
+    }
+  }
   const inline = await client.paginate(
     `/repos/${options.repository}/pulls/${options.pullNumber}/comments?per_page=100`,
     MAX_COMMENTS
   );
-  const warnings = [];
   let states = /* @__PURE__ */ new Map();
   if (inline.length > 0) {
     try {
@@ -16040,6 +16153,8 @@ async function readThread(options) {
     pullNumber: options.pullNumber,
     comments,
     reviews: threadReviews,
+    // Absent when the option is off, so every existing reader of a thread file sees what it saw before.
+    ...options.linkedIssues === true ? { linkedIssues } : {},
     truncated: inline.length >= MAX_COMMENTS || conversation.length >= MAX_COMMENTS,
     ...warnings.length > 0 ? { warnings } : {}
   };
@@ -16187,6 +16302,25 @@ function sentRuns(db, options) {
   return runs;
 }
 var isBot = (user) => user?.type === "Bot" || (user?.login ?? "").endsWith("[bot]");
+var asksQuestion = (body) => body.split("\n").some((line3) => !/^\s*>/.test(line3) && line3.includes("?"));
+function replyWanted(root, replies, state, ownerReviewer) {
+  if (state === null || state.resolved) return null;
+  const login = (user) => user?.login?.toLowerCase() ?? null;
+  const poster = login(root.user);
+  if (poster === null) return null;
+  const under = replies.filter((reply) => reply.in_reply_to_id === root.id).sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
+  if (under.some((reply) => login(reply.user) === poster)) return null;
+  const owner = ownerReviewer?.toLowerCase() ?? null;
+  const latest = [...under].reverse().find((reply) => {
+    const author = login(reply.user);
+    return author !== null && !isBot(reply.user) && author !== owner;
+  });
+  if (latest === void 0) return null;
+  const body = latest.body ?? "";
+  const stance = classifyReply(body);
+  if (stance === "acknowledge" || !asksQuestion(body)) return null;
+  return { askedBy: latest.user.login, askedAt: latest.created_at ?? "", stance: stance === "reject" ? "reject" : "question" };
+}
 function sameHead(a, b) {
   const left = a.toLowerCase();
   const right = b.toLowerCase();
@@ -16194,9 +16328,10 @@ function sameHead(a, b) {
 }
 async function checkOutcomes(options) {
   const allowed = new Set(options.allowlist.map((name) => name.toLowerCase()));
-  const result = { outcomes: [], skipped: [], warnings: [] };
+  const result = { outcomes: [], skipped: [], warnings: [], questions: [] };
   const byPull = /* @__PURE__ */ new Map();
   for (const run of sentRuns(options.db, { since: options.since, repository: options.repository })) {
+    if (options.pullNumber !== void 0 && run.pullNumber !== options.pullNumber) continue;
     const key2 = `${run.repository.toLowerCase()}#${run.pullNumber}`;
     byPull.set(key2, [...byPull.get(key2) ?? [], run]);
   }
@@ -16214,8 +16349,12 @@ async function checkOutcomes(options) {
     }
     try {
       const context2 = await readPull(options.client, repository, pullNumber, result.warnings);
+      const cut2 = context2.replies.length >= READ_LIMIT;
+      if (cut2 && options.pullNumber !== void 0) result.warnings.push(`${repository}#${pullNumber}: only the first ${READ_LIMIT} inline comments were read, so no reply is offered on it`);
       for (const run of runs) {
-        result.outcomes.push(...await followRun(options, context2, run, viewerLogin));
+        const followed = await followRun(options, context2, run, viewerLogin);
+        result.outcomes.push(...followed.outcomes);
+        if (!cut2) result.questions.push(...followed.questions);
       }
     } catch (error) {
       result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
@@ -16248,14 +16387,29 @@ async function reviewIdsOf(options, run, viewerLogin) {
 function severityPrefix(finding) {
   return `**${finding.severity}** - `;
 }
+function postedProse(body) {
+  const prose = stripEvidenceBlock(body);
+  const block = prose.lastIndexOf("\n\n```suggestion\n");
+  return block >= 0 && prose.endsWith("```") ? prose.slice(0, block) : prose;
+}
+function postedAs(comment, finding) {
+  return postedProse(comment.body ?? "") === `${severityPrefix(finding)}${parseFinding(finding.text, 0).prose}`;
+}
 function matchComments(findings, comments) {
   const taken = /* @__PURE__ */ new Set();
   const matched = /* @__PURE__ */ new Map();
+  const at2 = (comment, finding) => typeof comment.id === "number" && !taken.has(comment.id) && comment.in_reply_to_id == null && comment.path === finding.path && (comment.original_line === finding.line || comment.line === finding.line);
   for (const finding of findings) {
+    const exact = comments.find((comment) => at2(comment, finding) && postedAs(comment, finding));
+    if (exact !== void 0) {
+      taken.add(exact.id);
+      matched.set(finding.findingId, exact);
+    }
+  }
+  for (const finding of findings) {
+    if (matched.has(finding.findingId)) continue;
     const words = significantWords(finding.text);
-    const candidates = comments.filter(
-      (comment) => typeof comment.id === "number" && !taken.has(comment.id) && comment.in_reply_to_id == null && comment.path === finding.path && (comment.original_line === finding.line || comment.line === finding.line)
-    );
+    const candidates = comments.filter((comment) => at2(comment, finding));
     let best;
     let bestScore = -1;
     for (const comment of candidates) {
@@ -16275,7 +16429,7 @@ function matchComments(findings, comments) {
 }
 async function followRun(options, context2, run, viewerLogin) {
   const detail = runDetail(options.db, run.runId);
-  if (detail === null) return [];
+  if (detail === null) return { outcomes: [], questions: [] };
   const { ids, source } = await reviewIdsOf(options, run, viewerLogin);
   const comments = [];
   for (const id of ids) {
@@ -16289,9 +16443,23 @@ async function followRun(options, context2, run, viewerLogin) {
   const matched = matchComments(detail.findings, comments);
   const checkedAt = (options.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
   const outcomes = [];
+  const questions = [];
   for (const finding of detail.findings) {
     const comment = matched.get(finding.findingId);
     if (comment === void 0) continue;
+    const wanted = source === "audit" && postedAs(comment, finding) ? replyWanted(comment, context2.replies, context2.states?.get(comment.id) ?? null, options.ownerReviewer ?? null) : null;
+    if (wanted !== null) {
+      questions.push({
+        reviewRunId: run.runId,
+        findingId: finding.findingId,
+        repository: run.repository,
+        pullNumber: run.pullNumber,
+        rootCommentId: comment.id,
+        path: finding.path,
+        line: finding.line,
+        ...wanted
+      });
+    }
     const decided = await decide2(options, context2, run, finding, comment);
     const outcome = {
       reviewRunId: run.runId,
@@ -16306,10 +16474,11 @@ async function followRun(options, context2, run, viewerLogin) {
       line: finding.line,
       reviewIdSource: source
     };
+    options.db.prepare("DELETE FROM finding_outcomes WHERE review_run_id = ? AND comment_id = ? AND finding_id <> ?").run(run.runId, outcome.commentId, outcome.findingId);
     saveOutcome(options.db, outcome);
     outcomes.push(outcome);
   }
-  return outcomes;
+  return { outcomes, questions };
 }
 async function linesChanged(options, context2, run, comment, finding) {
   if (run.headRef === null || context2.currentHead === null) return null;
@@ -16445,6 +16614,16 @@ function postedStats(db, { since } = {}) {
          JOIN review_runs r ON r.review_run_id = o.review_run_id WHERE r.created_at >= ?`
     ).all(since)
   );
+}
+function replyStats(db) {
+  const rows = db.prepare(
+    `SELECT o.outcome AS outcome, o.strength AS strength FROM (
+         SELECT DISTINCT json_extract(metadata_json, '$.run') AS run, json_extract(metadata_json, '$.finding') AS finding
+         FROM audit_events WHERE action = 'review_reply_sent' AND json_valid(metadata_json)
+       ) r LEFT JOIN finding_outcomes o ON o.review_run_id = r.run AND o.finding_id = r.finding`
+  ).all();
+  const { tracked, fixed, dismissed, fixedRate } = statsOf(rows);
+  return { replied: tracked, fixed, dismissed, fixedRate };
 }
 function evidenceBlockGroups(db) {
   const sent = /* @__PURE__ */ new Set();
@@ -16755,6 +16934,7 @@ function computeMetrics(db, options = {}) {
   const posted = postedStats(db);
   const recent = postedStats(db, { since: windowStart(windowDays, options.now) });
   const recentDecided = recent.fixed + recent.dismissed;
+  const replies = replyStats(db);
   const metric = (name, value, target, meets, basis, kind = "gate") => ({
     name,
     value,
@@ -16929,6 +17109,23 @@ function computeMetrics(db, options = {}) {
       "no target",
       () => true,
       `${recent.dismissed} dismissed / ${recentDecided} fixed or dismissed from runs created in the last ${windowDays} days; weak outcomes excluded`,
+      "goal"
+    ),
+    // The one reply per thread (docs/adr/0035), and what the author did after it.
+    metric(
+      "posted_replies",
+      replies.replied === 0 ? null : replies.replied,
+      "no target",
+      () => true,
+      "findings this tool replied under once; run `review-voice reply --pr N` to answer a pending question",
+      "goal"
+    ),
+    metric(
+      "replied_fixed_rate",
+      replies.fixedRate,
+      "no target",
+      () => true,
+      `${replies.fixed} fixed / (${replies.fixed + replies.dismissed} fixed or dismissed) of ${replies.replied} replied finding(s); weak outcomes excluded`,
       "goal"
     )
   ];
@@ -17444,18 +17641,18 @@ async function raisedByOthers(options, run, findings) {
   }
   return raised;
 }
-function keyBlocked(db, key2) {
+function keyBlocked(db, key2, prefix = "review_post_") {
   const rows = db.prepare(
     `SELECT audit_id, action, metadata_json FROM audit_events
-       WHERE action LIKE 'review_post_%' AND json_extract(metadata_json, '$.key') = ?`
-  ).all(key2);
+       WHERE action LIKE ? AND json_extract(metadata_json, '$.key') = ?`
+  ).all(`${prefix}%`, key2);
   const parsed2 = rows.map((row) => ({ id: row.audit_id, action: row.action, meta: JSON.parse(row.metadata_json) }));
-  if (parsed2.some((row) => row.action === "review_post_sent")) {
-    return "this exact review of this head was already sent";
+  if (parsed2.some((row) => row.action === `${prefix}sent`)) {
+    return prefix === "review_post_" ? "this exact review of this head was already sent" : "a reply on this thread was already sent";
   }
-  for (const attempt of parsed2.filter((row) => row.action === "review_post_attempted")) {
+  for (const attempt of parsed2.filter((row) => row.action === `${prefix}attempted`)) {
     const outcome = parsed2.find(
-      (row) => (row.action === "review_post_sent" || row.action === "review_post_failed") && row.meta["attempt"] === attempt.id
+      (row) => (row.action === `${prefix}sent` || row.action === `${prefix}failed`) && row.meta["attempt"] === attempt.id
     );
     if (outcome === void 0 || outcome.meta["uncertain"] === true) {
       return "an earlier attempt with this key got no definite answer from GitHub and may have posted; check the pull request";
@@ -17463,15 +17660,15 @@ function keyBlocked(db, key2) {
   }
   return null;
 }
-function claimKey(db, key2, subject, metadata) {
+function claimKey(db, key2, subject, metadata, action = "review_post_attempted") {
   db.exec("BEGIN IMMEDIATE");
   try {
-    const blocked = keyBlocked(db, key2);
+    const blocked = keyBlocked(db, key2, action.slice(0, -"attempted".length));
     if (blocked !== null) {
       db.exec("ROLLBACK");
       return { blocked };
     }
-    const attempt = recordAudit(db, "review_post_attempted", subject, { key: key2, ...metadata });
+    const attempt = recordAudit(db, action, subject, { key: key2, ...metadata });
     db.exec("COMMIT");
     return attempt;
   } catch (error) {
@@ -18498,6 +18695,7 @@ var COMMAND_HELP = {
       "  --pr <number>          Pull request whose existing comments to read (required)",
       "  --repository <name>    owner/repo; inferred from the git remote if absent",
       "  --out <path>           Write <path> or <dir>/thread.json instead of stdout",
+      "With review.linked_issues: true, also reads the same-repository issues the description closes (at most five) as linkedIssues.",
       "Reads: nothing on stdin (reads GitHub, read-only).",
       "Writes: JSON on stdout, or to --out.",
       "Exit codes: 0 ok, 2 bad invocation, missing credential or repository not allowlisted."
@@ -18979,16 +19177,46 @@ var COMMAND_HELP = {
       "  resolved, outdated, open or unknown. Fixed and dismissed are strong; the rest are weak.",
       "  Reads GitHub and writes nothing there. `evaluate` reports precision from the strong ones.",
       "  A posted suggestion whose replacement now stands at the current head is fixed, strong,",
-      '  with evidence "suggestion applied".',
+      '  with evidence "suggestion applied". On an open thread no poster has answered, when the',
+      "  newest reply from someone other than the poster, the owner or a bot asks a question, one",
+      '  more line prints: "<repo>#<pr> <finding> <path>:<line> question from <login>',
+      '  awaiting a reply; run reply --pr <pr>". A disagreement counts only when it asks; an',
+      "  acknowledgement never does, even with a question mark. Nothing is posted here.",
       "",
       "Flags:",
       "  --repository <name>    Only runs for owner/repo; naming it allows reading it",
       "  --since <Nd>           Only reviews sent in the last N days (default 30d)",
-      "  --json                 Emit one row per finding as JSON",
+      "  --json                 Emit one row per finding as JSON (the pending-question lines are text mode only)",
       "Reads: the local store, the allowlist in the repository config, and GitHub comments, threads and commits,",
       "  and for a finding with a suggestion, its file at the current head.",
       "Writes: one line per finding and totals on stdout (JSON with --json); outcomes in the local store.",
       "Exit codes: 0 ok, 2 bad invocation."
+    )
+  },
+  reply: {
+    summary: "Answer a question under an own inline comment, once; needs --confirm",
+    body: lines(
+      "review-voice reply --pr <number> [flags]",
+      "  Post one bounded reply under each of this tool's own inline comments on one pull request",
+      "  that a question or a questioning disagreement is waiting under (docs/adr/0035). The text",
+      "  is built by code from the recorded run: the head reviewed and the path:line references",
+      "  the challenger confirmed or the analyst cited, in a fixed template that adds no claim. No",
+      "  model runs. One reply per thread, ever; the thread is never resolved, edited or dismissed.",
+      "  Without --confirm each reply is previewed and nothing is sent.",
+      "",
+      "Flags:",
+      "  --pr <number>          Pull request number (required)",
+      "  --repository <name>    owner/repo; inferred from the git remote if absent",
+      "  --since <Nd>           Only reviews sent in the last N days (default 30d)",
+      "  --confirm              Send the replies; without it, only a preview",
+      "  --json                 Emit {questions, replies, refused} as JSON",
+      "Reads: the local store, the repository config (writes.github_posting_enabled, the owner, the",
+      "  allowlist) and GitHub comments and threads, as `outcomes` reads them.",
+      "Writes: one block per question on stdout (JSON with --json); with --confirm, WRITES one reply",
+      "  per thread to GitHub through the same writer as `post`, behind a per-thread idempotency key",
+      "  and review_reply_* audit rows. The writer allows only the recorded run's repository.",
+      "Exit codes: 0 every question sent, previewed or refused on its key, 1 a send failed,",
+      "  2 posting disabled or bad invocation."
     )
   },
   draft: {
@@ -19114,7 +19342,7 @@ var COMMAND_HELP = {
       "  the idempotency key is taken and is left out of the comment signature, so turning it on",
       "  or off never makes the same review, or the same comment, a second post.",
       "Reads: the validated review on stdin.",
-      "Writes: JSON on stdout. With --confirm, WRITES the review to GitHub (the plugin's only write).",
+      "Writes: JSON on stdout. With --confirm, WRITES the review to GitHub (one of the plugin's two writes; see reply).",
       "Exit codes: 0 sent, previewed or carried, 1 the send failed, 2 refused or bad invocation,",
       "  3 the head moved, 4 CI still running on an approval, 5 CI red, 6 CI needs a rerun,",
       '  8 the thread re-check found a finding someone else raised ({refused: "thread-changed",',
@@ -19172,6 +19400,8 @@ var COMMAND_HELP = {
       "  After the outcomes, each pass applies retention (retention.runs_days, default 30, and",
       "  retention.audit_days, default 180; 0 or null disables): run directories and audit events",
       "  older than that are removed, except posting records, and a line names what was removed.",
+      "  The watcher never replies under a comment. A question that `outcomes` reports as awaiting",
+      "  a reply is answered by a person with `reply --pr <n> --confirm` (docs/adr/0035).",
       "",
       "Flags:",
       "  --once                 Run one pass and exit, for a scheduler",
@@ -20821,10 +21051,11 @@ function answeredHeading(quote3, sentences) {
   };
   return (sentences.sections.find(matches) ?? sentences.answers.find(matches))?.heading ?? null;
 }
-function excerptOf(value, sentences, name, id, notes) {
+var whereOf = (source) => source.issue === null ? "the description" : `issue #${source.issue}`;
+function excerptOf(value, sentences, name, id, notes, where) {
   const problem = excerptProblem(value, sentences, name);
   if (problem === null) {
-    if (isShort(value)) notes.push(`Kept ${name.split(".").pop()} of ${id} under ${MIN_QUOTE_WORDS} words: it is a whole sentence of the description`);
+    if (isShort(value)) notes.push(`Kept ${name.split(".").pop()} of ${id} under ${MIN_QUOTE_WORDS} words: it is a whole sentence of ${where}`);
     return { value, problem: null };
   }
   if (!problem.endsWith("not part of one")) return { value: null, problem };
@@ -20832,6 +21063,17 @@ function excerptOf(value, sentences, name, id, notes) {
   if (widened === null || excerptProblem(widened, sentences, name) !== null) return { value: null, problem };
   notes.push(`Widened ${name.split(".").pop()} of ${id} to its whole sentence`);
   return { value: widened, problem: null };
+}
+function quoteFrom(value, sources, name, id, notes) {
+  let problem = null;
+  const notFound = `${name} does not occur in the pull request description`;
+  for (const source of sources) {
+    const answered = answeredHeading(value, source.sentences);
+    const quote3 = answered === null ? excerptOf(value, source.sentences, name, id, notes, whereOf(source)) : { value, problem: null };
+    if (quote3.problem === null) return { value: quote3.value, source, answered, problem: null };
+    if (problem === null && quote3.problem !== notFound) problem = quote3.problem;
+  }
+  return { value: null, problem: problem ?? `${notFound}${sources.length > 1 ? " or in a linked issue" : ""}` };
 }
 function text2(value, name, max = MAX_TEXT2) {
   if (typeof value !== "string" || value.trim().length === 0) return { value: null, problem: `${name} must be non-empty text` };
@@ -20844,14 +21086,22 @@ function descriptionOf(thread) {
   const bodies = comments.filter((comment) => comment?.kind === "description").map((comment) => comment.body).filter((body) => typeof body === "string");
   return bodies.length === 0 ? null : bodies.join("\n");
 }
-function statementOf(rawEntry, at2, sentences, removed) {
+function linkedIssuesOf(thread) {
+  const issues = thread?.linkedIssues;
+  if (!Array.isArray(issues)) return [];
+  return issues.flatMap((issue) => {
+    const { number, body } = issue ?? {};
+    return Number.isInteger(number) && typeof body === "string" ? [{ number, body }] : [];
+  });
+}
+function statementOf(rawEntry, at2, sources, removed) {
   if (typeof rawEntry !== "object" || rawEntry === null || Array.isArray(rawEntry)) {
     return { value: null, problem: `${at2} must be an object` };
   }
   const entry = Object.fromEntries(
     Object.entries(rawEntry).filter(([key2, value]) => !(value === null && (key2 === "reason" || key2 === "scope")))
   );
-  const unexpected = Object.keys(entry).find((key2) => !["id", "kind", "statement", "quote", "reason", "scope", "heading"].includes(key2));
+  const unexpected = Object.keys(entry).find((key2) => !["id", "kind", "statement", "quote", "reason", "scope", "heading", "issue"].includes(key2));
   if (unexpected !== void 0) return { value: null, problem: `${at2} has an unexpected ${JSON.stringify(unexpected)} field` };
   const id = entry["id"];
   if (typeof id !== "string" || !ID.test(id)) return { value: null, problem: `${at2}.id must match int_NNN` };
@@ -20863,10 +21113,10 @@ function statementOf(rawEntry, at2, sentences, removed) {
   if (statement.problem !== null) return { value: null, problem: statement.problem };
   const rawQuote = text2(entry["quote"], `${at2}.quote`, MAX_QUOTE);
   if (rawQuote.problem !== null) return { value: null, problem: rawQuote.problem };
-  const answered = answeredHeading(rawQuote.value, sentences);
-  const quote3 = answered === null ? excerptOf(rawQuote.value, sentences, `${at2}.quote`, id, removed) : rawQuote;
+  const quote3 = quoteFrom(rawQuote.value, sources, `${at2}.quote`, id, removed);
   if (quote3.problem !== null) return { value: null, problem: quote3.problem };
-  const heading = answered ?? (isShort(quote3.value) ? sectionHeading(quote3.value, sentences) : null);
+  const { source, answered } = quote3;
+  const heading = answered ?? (isShort(quote3.value) ? sectionHeading(quote3.value, source.sentences) : null);
   if (kind !== "non-goal") {
     const quoted = significantWords(answered === null ? quote3.value : `${answered} ${quote3.value}`);
     if (![...significantWords(statement.value)].some((word) => quoted.has(word))) {
@@ -20877,8 +21127,11 @@ function statementOf(rawEntry, at2, sentences, removed) {
   if (kind === "deliberate") {
     const parsed2 = text2(entry["reason"], `${at2}.reason`, MAX_QUOTE);
     if (parsed2.problem !== null) return { value: null, problem: `${parsed2.problem} on a deliberate statement` };
-    const excerpt = excerptOf(parsed2.value, sentences, `${at2}.reason`, id, removed);
-    if (excerpt.problem !== null) return { value: null, problem: excerpt.problem };
+    const excerpt = excerptOf(parsed2.value, source.sentences, `${at2}.reason`, id, removed, whereOf(source));
+    if (excerpt.problem !== null) {
+      const elsewhere = sources.some((other) => other !== source && excerptOf(parsed2.value, other.sentences, "", id, [], "").problem === null);
+      return { value: null, problem: elsewhere ? `${at2}.reason must be in the same source as its quote` : excerpt.problem };
+    }
     reason2 = excerpt.value;
   } else if (entry["reason"] !== void 0) {
     removed.push(`Removed reason from ${id} (only a deliberate statement takes reason)`);
@@ -20893,12 +21146,13 @@ function statementOf(rawEntry, at2, sentences, removed) {
       quote: quote3.value,
       ...reason2 === void 0 ? {} : { reason: reason2 },
       ...complete ? { scope: "complete" } : {},
-      ...heading === null ? {} : { heading }
+      ...heading === null ? {} : { heading },
+      ...source.issue === null ? {} : { issue: source.issue }
     },
     problem: null
   };
 }
-function parseIntent(value, description) {
+function parseIntent(value, description, issues = []) {
   const removed = [];
   const refuse = (problem, dropped2 = []) => ({ value: null, problem, dropped: dropped2, removed });
   if (typeof value !== "object" || value === null || Array.isArray(value)) return refuse('expected {"statements": [...]}');
@@ -20908,12 +21162,15 @@ function parseIntent(value, description) {
   const raw = document["statements"];
   if (!Array.isArray(raw)) return refuse("statements must be an array");
   if (raw.length > MAX_INTENT_STATEMENTS) return refuse(`statements must list at most ${MAX_INTENT_STATEMENTS} entries`);
-  const sentences = sentencesOf(description);
+  const sources = [
+    { issue: null, sentences: sentencesOf(description) },
+    ...issues.map((issue) => ({ issue: issue.number, sentences: sentencesOf(issue.body) }))
+  ];
   const statements = [];
   const dropped = [];
   for (const [index, rawEntry] of raw.entries()) {
     const removedHere = [];
-    const parsed2 = statementOf(rawEntry, `statements[${index}]`, sentences, removedHere);
+    const parsed2 = statementOf(rawEntry, `statements[${index}]`, sources, removedHere);
     if (parsed2.problem === null) removed.push(...removedHere);
     if (parsed2.problem === null) statements.push(parsed2.value);
     else {
@@ -20977,7 +21234,8 @@ function challengePrompt(finding, candidate, statements, diffFile, reproduction)
   if (diffFile !== void 0 && diffFile !== null) rows.push(`Diff under review: ${diffFile}`);
   if (reproduction !== void 0) rows.push(...reproductionRows(reproduction));
   if (cited.length > 0) {
-    rows.push("", "Stated intent the finding cites, quoted from the pull request description (untrusted):");
+    const from = [...new Set(cited.map((s) => typeof s.issue === "number" ? `linked issue #${s.issue}` : "the pull request description"))];
+    rows.push("", `Stated intent the finding cites, quoted from ${from.join(" and ")} (untrusted):`);
     for (const s of cited) {
       rows.push(`- ${s.id} (${s.kind ?? "statement"}): "${s.quote ?? s.statement ?? ""}"`);
       if (s.reason !== void 0) rows.push(`  Reason given: "${s.reason}"`);
@@ -21569,10 +21827,11 @@ function context(run, extra = []) {
     `- ${join16(run.dir, "history")}/: the last commits that touched each changed file, one file per path named <URI-encoded path>.txt`
   ];
 }
-function intentPrompt(run, title) {
+function intentPrompt(run, title, issues = []) {
   return [
     `Extract what the description of the pull request titled ${JSON.stringify(title)} states.`,
     file(run, "thread.json", "the thread; the description is its description entry"),
+    ...issues.length === 0 ? [] : [`The description closes ${issues.map((n) => `#${n}`).join(", ")}. Their linkedIssues entries in the thread are a second source to quote from.`],
     "",
     'Return {"statements": [...]} as schemas/intent.schema.json describes. {"statements": []} is valid.'
   ].join("\n");
@@ -22093,11 +22352,13 @@ function heldForRecord(held, diff) {
   return { held: kept, notes };
 }
 async function intent(run) {
-  const description = descriptionOf(readJson(at(run, "thread.json")));
+  const thread = readJson(at(run, "thread.json"));
+  const description = descriptionOf(thread);
   if (description === null || description.trim() === "") return skip(run, "intent", "the pull request has no description");
   const manifest = readJson(at(run, "files.json"));
   const title = isRecord5(manifest) && typeof manifest["title"] === "string" ? manifest["title"] : "";
-  const result = await agent(run, "intent", "intent-extractor", run.plan.stages.intent.model ?? "sonnet", SCHEMAS.intent, intentPrompt(files(run), title), async (output) => {
+  const issues = linkedIssuesOf(thread).map((issue) => issue.number);
+  const result = await agent(run, "intent", "intent-extractor", run.plan.stages.intent.model ?? "sonnet", SCHEMAS.intent, intentPrompt(files(run), title, issues), async (output) => {
     const checked = await cli(run, ["check-intent", "--thread", at(run, "thread.json")], JSON.stringify(output));
     if (checked.code !== 0) return checked.stderr.trim() || `check-intent exited ${checked.code}`;
     writeFileSync6(at(run, "intent.json"), checked.stdout);
@@ -25182,8 +25443,11 @@ function checkIntentCommand(argv) {
     return 2;
   }
   let description;
+  let issues;
   try {
-    description = descriptionOf(JSON.parse(readFileSync21(threadFile, "utf8")));
+    const thread = JSON.parse(readFileSync21(threadFile, "utf8"));
+    description = descriptionOf(thread);
+    issues = linkedIssuesOf(thread);
   } catch (error) {
     console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -25199,7 +25463,7 @@ function checkIntentCommand(argv) {
     console.error('Expected {"statements": [...]} on stdin.');
     return 2;
   }
-  const intent2 = parseIntent(document, description);
+  const intent2 = parseIntent(document, description, issues);
   for (const problem of intent2.dropped) console.error(`${intent2.problem === null ? "Dropped" : "Invalid"} statement ${problem}.`);
   for (const note of intent2.removed) console.error(`${note}.`);
   if (intent2.problem !== null) {
@@ -26764,7 +27028,8 @@ async function threadCommand(argv) {
     console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
     return 2;
   }
-  const result = await readThread({ repository, pullNumber, client: githubClient([repository]) });
+  const linkedIssues = repositoryConfig()?.linkedIssues === true;
+  const result = await readThread({ repository, pullNumber, client: githubClient([repository]), linkedIssues });
   for (const warning of result.warnings ?? []) console.error(`Warning: ${warning}`);
   const out = flag(argv, "--out");
   if (out === null) {
@@ -26779,6 +27044,7 @@ async function threadCommand(argv) {
         {
           path,
           comments: result.comments.length,
+          ...result.linkedIssues === void 0 ? {} : { linkedIssues: result.linkedIssues.length },
           truncated: result.truncated,
           ...result.warnings === void 0 ? {} : { warnings: result.warnings }
         },
@@ -28562,6 +28828,9 @@ async function syncCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/outcomes.ts
+function pendingQuestionLine(question) {
+  return `${question.repository}#${question.pullNumber} ${question.findingId} ${question.path}:${question.line} question from ${question.askedBy} awaiting a reply; run reply --pr ${question.pullNumber}`;
+}
 async function outcomesCommand(argv) {
   const repository = flag(argv, "--repository");
   if (argv.includes("--repository") && (repository === null || !/^[^/\s]+\/[^/\s]+$/.test(repository))) {
@@ -28587,7 +28856,7 @@ async function outcomesCommand(argv) {
   try {
     const result = await checkOutcomes({
       db,
-      client: new GitHubClient({ allowlist }),
+      client: githubClient(allowlist),
       allowlist,
       repository: repository ?? void 0,
       since,
@@ -28623,11 +28892,202 @@ async function outcomesCommand(argv) {
     for (const o of result.outcomes) {
       console.log(`${o.repository}#${o.pullNumber} ${o.findingId} ${o.path}:${o.line} ${o.outcome} (${o.strength}): ${o.evidence}`);
     }
+    for (const question of result.questions) console.log(pendingQuestionLine(question));
     const count3 = (name) => result.outcomes.filter((o) => o.outcome === name).length;
     console.log(
       `${result.outcomes.length} finding(s) tracked: ${count3("fixed")} fixed, ${count3("dismissed")} dismissed, ${count3("resolved")} resolved, ${count3("outdated")} outdated, ${count3("open")} open, ${count3("unknown")} unknown`
     );
     return 0;
+  } finally {
+    db.close();
+  }
+}
+
+// plugins/review-voice/src/publish/reply.ts
+var MAX_REFERENCES = 4;
+var isRecord7 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+function safeReference(raw) {
+  const reference = raw.replace(new RegExp("\\p{Cf}", "gu"), "").trim();
+  if (new RegExp("\\p{Cc}", "u").test(reference) || !/^\S+:\d+(?:-\d+)?$/.test(reference)) return null;
+  const path = reference.replace(/:\d+(?:-\d+)?$/, "");
+  if (/[\s`:]/.test(path) || path.startsWith("~")) return null;
+  if (!path.split(/[\\/]/).every((part) => part !== "" && part !== "." && part !== "..")) return null;
+  return reference;
+}
+function obeys(text4) {
+  return text4.length <= REPLY_MAX_LENGTH && findForbiddenPhrases(text4, DEFAULT_LIMITS.forbiddenPhrases).length === 0 && classifyReply(text4) === "other";
+}
+function joined(references) {
+  const code3 = references.map((reference) => `\`${reference}\``);
+  if (code3.length === 1) return code3[0];
+  return `${code3.slice(0, -1).join(", ")} and ${code3[code3.length - 1]}`;
+}
+function renderReply(input) {
+  const challenge2 = isRecord7(input.score?.challenge) ? input.score.challenge : null;
+  const challengeConfirmed = challenge2?.["verdict"] === "confirmed";
+  const cited = challengeConfirmed ? (Array.isArray(challenge2?.["decisive_evidence"]) ? challenge2["decisive_evidence"] : []).filter((entry) => typeof entry === "string") : (input.candidate?.evidence ?? []).filter((entry) => !MACHINE_PATH.test(flatten(entry, Number.POSITIVE_INFINITY))).flatMap((entry) => [...entry.matchAll(CITATION)].map((match) => match[0].replace(/`/g, "")));
+  const references = [];
+  for (const entry of cited) {
+    const reference = safeReference(entry);
+    if (reference !== null && obeys(reference) && !references.includes(reference)) references.push(reference);
+    if (references.length === MAX_REFERENCES) break;
+  }
+  if (references.length === 0) return null;
+  const head = typeof input.head === "string" && input.head.length >= 7 ? input.head.slice(0, 7) : "the head it reviewed";
+  const body = redact(
+    `Review Voice checked this at ${head}. The claim rests on ${joined(references)}.` + (challengeConfirmed ? " An independent challenge confirmed it at those lines." : "") + " This reply is built from the recorded review and is not repeated."
+  ).text;
+  return obeys(body) ? { body, references, challengeConfirmed } : null;
+}
+var replyKey = (question) => `reply:${question.repository.toLowerCase()}#${question.pullNumber}:${question.rootCommentId}`;
+async function postReplies(options) {
+  const subject = { type: "pull_request", id: `${options.repository.toLowerCase()}#${options.pullNumber}` };
+  if (!options.postingEnabled) {
+    const reasons = ["writes.github_posting_enabled is false in .review-voice/config.yaml"];
+    recordAudit(options.db, "review_reply_refused", subject, { reasons, questions: options.questions.length });
+    return { exitCode: 2, refused: reasons, replies: options.questions.map((question) => ({ question, status: "refused", reasons, key: replyKey(question), body: null })) };
+  }
+  const replies = [];
+  let failed2 = false;
+  for (const question of options.questions) {
+    const key2 = replyKey(question);
+    const refuse = (reasons, body2 = null, status = "refused") => {
+      recordAudit(options.db, "review_reply_refused", subject, { reasons, key: key2, run: question.reviewRunId, finding: question.findingId, rootCommentId: question.rootCommentId });
+      replies.push({ question, status, reasons, key: key2, body: body2 });
+    };
+    const run = runDetail(options.db, question.reviewRunId);
+    if (run === null || run.repository === null || run.repository.toLowerCase() !== question.repository.toLowerCase()) {
+      refuse([`run ${question.reviewRunId} is not a recorded review of ${question.repository}`]);
+      continue;
+    }
+    const finding = run.findings.find((entry) => entry.findingId === question.findingId);
+    if (finding === void 0) {
+      refuse([`run ${question.reviewRunId} has no finding ${question.findingId}`]);
+      continue;
+    }
+    const planned = planFindings(run.output, run, (id) => runDetail(options.db, id));
+    const posted = planned.inline.find((entry) => entry.findingId === finding.findingId);
+    const backing = posted === void 0 ? void 0 : planned.backing.get(posted);
+    const rendered = renderReply({
+      head: run.headRef,
+      finding,
+      score: backing?.score,
+      candidate: backing === void 0 ? void 0 : recordedCandidates(options.db, backing.runId).find((candidate) => candidate.candidateId === backing.score.candidateId)
+    });
+    if (rendered === null) {
+      refuse(["no recorded path:line evidence to quote"]);
+      continue;
+    }
+    const blocked = keyBlocked(options.db, key2, "review_reply_");
+    if (blocked !== null) {
+      refuse([blocked], rendered.body);
+      continue;
+    }
+    if (!options.confirm) {
+      refuse(["no --confirm: nothing is posted without one, per reply"], rendered.body, "previewed");
+      continue;
+    }
+    const claimed = claimKey(
+      options.db,
+      key2,
+      subject,
+      { run: run.reviewRunId, finding: finding.findingId, rootCommentId: question.rootCommentId, askedBy: question.askedBy, stance: question.stance },
+      "review_reply_attempted"
+    );
+    if (typeof claimed !== "string") {
+      refuse([claimed.blocked], rendered.body);
+      continue;
+    }
+    const { body } = rendered;
+    try {
+      const reply = await options.writerFor([run.repository]).replyToComment(options.repository, options.pullNumber, question.rootCommentId, body);
+      recordAudit(options.db, "review_reply_sent", subject, {
+        key: key2,
+        attempt: claimed,
+        run: run.reviewRunId,
+        finding: finding.findingId,
+        rootCommentId: question.rootCommentId,
+        replyId: reply.id,
+        url: reply.htmlUrl,
+        askedBy: question.askedBy,
+        stance: question.stance,
+        head: run.headRef
+      });
+      replies.push({ question, status: "sent", reasons: [], key: key2, body, reply: { id: reply.id, url: reply.htmlUrl } });
+    } catch (error) {
+      const status = error instanceof GitHubError ? error.status : null;
+      const message = error instanceof Error ? error.message : String(error);
+      recordAudit(options.db, "review_reply_failed", subject, {
+        key: key2,
+        attempt: claimed,
+        status,
+        message: message.slice(0, 300),
+        // Refused in code before any request, or GitHub answered with a 4xx:
+        // not sent, so a retry is safe. Anything else may have been.
+        uncertain: !(error instanceof WriteViolation || error instanceof NotAllowlisted || error instanceof AuthError || status !== null && status < 500)
+      });
+      replies.push({ question, status: "failed", reasons: [message], key: key2, body });
+      failed2 = true;
+    }
+  }
+  return { exitCode: failed2 ? 1 : 0, replies, refused: [] };
+}
+
+// plugins/review-voice/src/cli/reply.ts
+async function replyCommand(argv) {
+  const pullNumber = Number(flag(argv, "--pr"));
+  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+    console.error("--pr needs a pull request number.");
+    return 2;
+  }
+  const named = flag(argv, "--repository");
+  if (argv.includes("--repository") && (named === null || !/^[^/\s]+\/[^/\s]+$/.test(named))) {
+    console.error("--repository takes owner/repo.");
+    return 2;
+  }
+  const repository = named ?? inferRepository(process.cwd());
+  if (repository === null) {
+    console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
+    return 2;
+  }
+  const sinceFlag = flag(argv, "--since");
+  const days = sinceFlag === null ? 30 : /^(\d+)d$/.exec(sinceFlag)?.[1];
+  if (days === void 0 || argv.includes("--since") && sinceFlag === null) {
+    console.error("--since takes a number of days such as 30d.");
+    return 2;
+  }
+  const since = new Date(Date.now() - Number(days) * 864e5).toISOString();
+  const config2 = repositoryConfig();
+  const allowlist = named === null ? config2?.allowlist ?? [] : [named];
+  const db = openDatabase();
+  try {
+    const client = githubClient(allowlist);
+    const checked = await checkOutcomes({ db, client, allowlist, repository, pullNumber, since, ownerReviewer: config2?.ownerReviewer ?? null });
+    for (const warning of checked.warnings) console.error(warning);
+    for (const skipped of checked.skipped) console.error(`${skipped.repository}#${skipped.pullNumber}: skipped, ${skipped.reason}`);
+    const { exitCode, replies, refused } = await postReplies({
+      db,
+      client,
+      repository,
+      pullNumber,
+      questions: checked.questions,
+      // Built from the recorded run's repository, not from --repository.
+      writerFor: (runRepositories) => new ReviewWriter({ allowlist: runRepositories, ...inProcessState()?.fetchImpl === void 0 ? {} : { fetchImpl: inProcessState().fetchImpl } }),
+      confirm: argv.includes("--confirm"),
+      postingEnabled: config2?.postingEnabled ?? false
+    });
+    for (const reason2 of refused) console.error(`${reason2}; nothing can be sent.`);
+    if (argv.includes("--json")) {
+      console.log(JSON.stringify({ questions: checked.questions, replies, refused }, null, 2));
+      return exitCode;
+    }
+    if (replies.length === 0) console.log(`No pending question on ${repository}#${pullNumber}.`);
+    for (const result of replies) {
+      const { question } = result;
+      console.log(`${question.path}:${question.line} ${question.askedBy} (${question.stance}) ${result.status}${result.reasons.length === 0 ? "" : `: ${result.reasons.join("; ")}`}`);
+      if (result.body !== null) console.log(`  ${result.body}`);
+    }
+    return exitCode;
   } finally {
     db.close();
   }
@@ -31373,6 +31833,7 @@ function recordCommand(argv) {
       if (!Array.isArray(list2)) throw new Error("comments is not a list");
       followUpThread = list2;
       followUpThreadFor = Array.isArray(parsed2) ? { repository: void 0, pullNumber: void 0 } : { repository: parsed2.repository, pullNumber: parsed2.pullNumber };
+      if (checks !== void 0) checks.issuesRead = linkedIssuesOf(parsed2).map((issue) => issue.number);
     } catch (error) {
       console.error(`Cannot read ${followUpThreadFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -31652,6 +32113,8 @@ ${topLevelHelp()}`);
       return importBenchmarkCommand(argv.slice(1));
     case "outcomes":
       return outcomesCommand(argv.slice(1));
+    case "reply":
+      return await replyCommand(argv.slice(1));
     case "draft":
       return draftCommand(argv.slice(1));
     case "verdict":

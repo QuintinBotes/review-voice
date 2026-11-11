@@ -155,7 +155,7 @@ test('the writer refuses every method but POST, before the network', async () =>
   assert.equal(impl.calls.length, 0);
 });
 
-test('the writer refuses every path but creating a review', async () => {
+test('the writer refuses every path but creating a review or replying to its own comment', async () => {
   const impl = fakeGitHub();
   const writer = new ReviewWriter({ allowlist: [REPO], token: 't', fetchImpl: impl });
   for (const path of [
@@ -170,6 +170,11 @@ test('the writer refuses every path but creating a review', async () => {
     `/repos/${REPO}/../other/pulls/${PR}/reviews`,
     '/graphql',
     `https://api.github.com/repos/${REPO}/pulls/${PR}/reviews`,
+    `/repos/${REPO}/pulls/${PR}/comments/555`,
+    `/repos/${REPO}/pulls/${PR}/comments/555/reactions`,
+    `/repos/${REPO}/pulls/${PR}/comments/555/replies?x=1`,
+    `/repos/${REPO}/pulls/${PR}/comments/0/replies`,
+    `/repos/${REPO}/issues/${PR}/comments/555/replies`,
   ]) {
     await assert.rejects(() => writer.request('POST', path, PAYLOAD), WriteViolation, path);
   }

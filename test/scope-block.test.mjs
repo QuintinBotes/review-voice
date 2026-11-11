@@ -133,7 +133,7 @@ test('AC-3: the recorded scope has the specified shape and is shared by preview 
     head: HEAD, origin: 'driver', independence: 'independent',
     findings: { ...ZERO_FINDINGS, minor: 1 },
     held: { unverified: 1, belowGate: 2, challenge: 1, restatesTool: 1, policySuppressed: 1, other: 0 },
-    checks: { ran: 1, didNotRun: 1 },
+    checks: { ran: 1, didNotRun: 1 }, issues: null,
   };
   const expected = [
     '<details><summary>Review scope</summary>',
@@ -173,7 +173,7 @@ test('AC-3: missing provenance, checks, scope and stages are explicitly not reco
   assert.match(body, /^Stages: not recorded\.$/m);
   assert.match(body, /^Static checks: not recorded\.$/m);
   assert.match(body, /^Symbol context: not recorded\.$/m);
-  assert.deepEqual(trailer(body), { head: HEAD, origin: null, independence: null, findings: ZERO_FINDINGS, held: ZERO_HELD, checks: null });
+  assert.deepEqual(trailer(body), { head: HEAD, origin: null, independence: null, findings: ZERO_FINDINGS, held: ZERO_HELD, checks: null, issues: null });
 });
 
 test('AC-3: failed checks and completed symbol context describe what ran', async (t) => {
@@ -295,7 +295,7 @@ test('AC-7: JSON has all keys, the full head and every held verdict, including f
   }
   const facts = trailer(result.output.payload.body);
   assert.deepEqual(facts, {
-    head: HEAD, origin: 'driver', independence: 'independent', findings: ZERO_FINDINGS, held: expected, checks: { ran: 1, didNotRun: 1 },
+    head: HEAD, origin: 'driver', independence: 'independent', findings: ZERO_FINDINGS, held: expected, checks: { ran: 1, didNotRun: 1 }, issues: null,
   });
   assert.equal(Object.values(facts.held).reduce((sum, count) => sum + count, 0), HELD_VERDICTS.length + 1);
   assert.doesNotMatch(result.output.payload.body, /0 unverified|0 below|0 held|0 restating|0 suppressed/);
@@ -312,6 +312,31 @@ test('AC-7: JSON counts inline and unanchored findings at every severity', async
     ...result.planned, inline: findings.slice(0, 3), unanchored: [...findings.slice(3), findings[2]],
   }, { scopeBlockModels: false });
   assert.deepEqual(trailer(block).findings, { blocking: 1, important: 1, minor: 2, nit: 1, question: 1 });
+});
+
+// S19 AC-7: the issues the thread read for intent are named, as inline code, and
+// carried in the trailer; a run that recorded no checks, or checks from before
+// the thread said, carries null rather than a zero.
+test('S19 AC-7: linked issues read for intent appear in the block and the trailer, or as null when not recorded', async (t) => {
+  const { db } = fixture(t);
+  const policy = { scopeBlock: true };
+  const one = record(db, { checks: { ...CHECKS, issuesRead: [12] } }).reviewRunId;
+  const none = record(db, { checks: { ...CHECKS, issuesRead: [] } }).reviewRunId;
+  const withIssue = await computeVerdict(options(db, fakeGitHub(), { policy, runId: one }));
+  const withoutIssue = await computeVerdict(options(db, fakeGitHub(), { policy, runId: none }));
+  assert.match(withIssue.output.payload.body, /^Symbol context: .*\nLinked issues: `#12` read for intent\.\nNot posted: /m);
+  assert.deepEqual(trailer(withIssue.output.payload.body).issues, [12]);
+  assert.doesNotMatch(withoutIssue.output.payload.body, /Linked issues/);
+  assert.deepEqual(trailer(withoutIssue.output.payload.body).issues, []);
+  assert.equal(withIssue.output.key, withoutIssue.output.key, 'the idempotency key ignores the block');
+  // An S09-era row has checks without issuesRead, and a row without checks has none: neither claims it read no issues.
+  const older = record(db, { checks: CHECKS }).reviewRunId;
+  assert.equal(runDetail(db, older).checks.issuesRead, undefined);
+  assert.equal(trailer((await computeVerdict(options(db, fakeGitHub(), { policy, runId: older }))).output.payload.body).issues, null);
+  const unrecorded = record(db, { checks: undefined }).reviewRunId;
+  const bare = await computeVerdict(options(db, fakeGitHub(), { policy, runId: unrecorded }));
+  assert.equal(trailer(bare.output.payload.body).issues, null);
+  assert.equal(bare.output.key, withIssue.output.key);
 });
 
 test('AC-8: the ADR amendment, record command and posting documents describe the block', () => {

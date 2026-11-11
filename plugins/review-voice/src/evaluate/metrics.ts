@@ -5,7 +5,7 @@ import { countWords } from '../contract/words.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { hashDiff, storedFamilies } from '../store/runs.ts';
 import { FAMILIES } from '../agents/types.ts';
-import { postedStats } from '../store/outcomes.ts';
+import { postedStats, replyStats } from '../store/outcomes.ts';
 
 export interface Metric {
   name: string;
@@ -438,6 +438,7 @@ export function computeMetrics(db: Database, options: ComputeOptions = {}): Metr
   const posted = postedStats(db);
   const recent = postedStats(db, { since: windowStart(windowDays, options.now) });
   const recentDecided = recent.fixed + recent.dismissed;
+  const replies = replyStats(db);
 
   const metric = (
     name: string,
@@ -625,6 +626,23 @@ export function computeMetrics(db: Database, options: ComputeOptions = {}): Metr
       'no target',
       () => true,
       `${recent.dismissed} dismissed / ${recentDecided} fixed or dismissed from runs created in the last ${windowDays} days; weak outcomes excluded`,
+      'goal',
+    ),
+    // The one reply per thread (docs/adr/0035), and what the author did after it.
+    metric(
+      'posted_replies',
+      replies.replied === 0 ? null : replies.replied,
+      'no target',
+      () => true,
+      'findings this tool replied under once; run `review-voice reply --pr N` to answer a pending question',
+      'goal',
+    ),
+    metric(
+      'replied_fixed_rate',
+      replies.fixedRate,
+      'no target',
+      () => true,
+      `${replies.fixed} fixed / (${replies.fixed + replies.dismissed} fixed or dismissed) of ${replies.replied} replied finding(s); weak outcomes excluded`,
       'goal',
     ),
   ];

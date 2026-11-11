@@ -1024,6 +1024,9 @@ export function scopeBlock(
         : `Symbol context: ${plural(checks.symbolsInconclusive, 'file')} not finished${checks.symbolsBudgetExhausted ? ' (time budget)' : ''}.`;
     if (checks.symbolsInconclusive > 0) notChecked.push('files the symbol search did not finish');
   }
+  // Each number is inline code, so GitHub neither links it nor adds a reference to the issue's timeline.
+  const issuesRead = checks?.issuesRead ?? null;
+  const linkedLine = issuesRead === null || issuesRead.length === 0 ? null : `Linked issues: ${issuesRead.map((n) => code(`#${n}`)).join(', ')} read for intent.`;
 
   const held = heldCounts(run.held);
   // A recorded finding the posting step withheld (no score for it, say) was
@@ -1053,6 +1056,8 @@ export function scopeBlock(
     findings,
     held,
     checks: checks === null ? null : { ran: checks.staticRan.length, didNotRun: checks.staticDidNotRun.length },
+    // Null when not recorded, as `checks` is, so an unrecorded run shows no data and never a zero.
+    issues: issuesRead,
     ...(families !== null && (challengeFamily !== null || families.secondPass !== null)
       ? { families: { secondPass: families.secondPass, challenge: families.challenge } }
       : {}),
@@ -1067,6 +1072,7 @@ export function scopeBlock(
     stagesLine,
     staticLine,
     symbolLine,
+    ...(linkedLine === null ? [] : [linkedLine]),
     `Not posted: ${notPosted.length === 0 ? 'nothing held back' : notPosted.join(', ')}.`,
     `Not checked: ${notChecked.join(', ')}.`,
     '',

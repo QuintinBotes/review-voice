@@ -694,7 +694,7 @@ export interface PostOutput {
 }
 
 /** The candidates the run was recorded with, as `check-candidates` read them; malformed ones are skipped. */
-function recordedCandidates(db: Database, runId: string): Candidate[] {
+export function recordedCandidates(db: Database, runId: string): Candidate[] {
   const row = db.prepare('SELECT candidates_json FROM review_runs WHERE review_run_id = ?').get(runId) as
     | { candidates_json: string | null }
     | undefined;
@@ -798,22 +798,26 @@ async function raisedByOthers(
  * network error or a 5xx), because the review may have been created anyway and
  * a retry is then a second review. A 4xx is GitHub saying no, so another
  * attempt is safe.
+ *
+ * The prefix names the write: `review_post_` for a review, `review_reply_`
+ * for a reply under one of its comments (docs/adr/0035). Both keep the rows
+ * `<prefix>attempted`, `<prefix>sent` and `<prefix>failed`.
  */
-export function keyBlocked(db: Database, key: string): string | null {
+export function keyBlocked(db: Database, key: string, prefix = 'review_post_'): string | null {
   const rows = db
     .prepare(
       `SELECT audit_id, action, metadata_json FROM audit_events
-       WHERE action LIKE 'review_post_%' AND json_extract(metadata_json, '$.key') = ?`,
+       WHERE action LIKE ? AND json_extract(metadata_json, '$.key') = ?`,
     )
-    .all(key) as { audit_id: string; action: string; metadata_json: string }[];
+    .all(`${prefix}%`, key) as { audit_id: string; action: string; metadata_json: string }[];
 
   const parsed = rows.map((row) => ({ id: row.audit_id, action: row.action, meta: JSON.parse(row.metadata_json) as Record<string, unknown> }));
-  if (parsed.some((row) => row.action === 'review_post_sent')) {
-    return 'this exact review of this head was already sent';
+  if (parsed.some((row) => row.action === `${prefix}sent`)) {
+    return prefix === 'review_post_' ? 'this exact review of this head was already sent' : 'a reply on this thread was already sent';
   }
-  for (const attempt of parsed.filter((row) => row.action === 'review_post_attempted')) {
+  for (const attempt of parsed.filter((row) => row.action === `${prefix}attempted`)) {
     const outcome = parsed.find(
-      (row) => (row.action === 'review_post_sent' || row.action === 'review_post_failed') && row.meta['attempt'] === attempt.id,
+      (row) => (row.action === `${prefix}sent` || row.action === `${prefix}failed`) && row.meta['attempt'] === attempt.id,
     );
     if (outcome === undefined || outcome.meta['uncertain'] === true) {
       return 'an earlier attempt with this key got no definite answer from GitHub and may have posted; check the pull request';
@@ -825,17 +829,23 @@ export function keyBlocked(db: Database, key: string): string | null {
 /**
  * Checks the key and records the attempt as one step. Two posts of the same
  * review started together would otherwise both pass the check before either
- * wrote its attempt.
+ * wrote its attempt. The action names the write, as `keyBlocked`'s prefix does.
  */
-function claimKey(db: Database, key: string, subject: { type: string; id: string }, metadata: Record<string, unknown>): string | { blocked: string } {
+export function claimKey(
+  db: Database,
+  key: string,
+  subject: { type: string; id: string },
+  metadata: Record<string, unknown>,
+  action: 'review_post_attempted' | 'review_reply_attempted' = 'review_post_attempted',
+): string | { blocked: string } {
   db.exec('BEGIN IMMEDIATE');
   try {
-    const blocked = keyBlocked(db, key);
+    const blocked = keyBlocked(db, key, action.slice(0, -'attempted'.length));
     if (blocked !== null) {
       db.exec('ROLLBACK');
       return { blocked };
     }
-    const attempt = recordAudit(db, 'review_post_attempted', subject, { key, ...metadata });
+    const attempt = recordAudit(db, action, subject, { key, ...metadata });
     db.exec('COMMIT');
     return attempt;
   } catch (error) {
