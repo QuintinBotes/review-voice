@@ -132,7 +132,9 @@ only a full review (`review --full`) ends the hold. It reads the whole pull
 request and inherits nothing, and it does not treat the hold as a conclusion.
 The finding, raised again, is verified and challenged again, so it holds
 again while the runner cannot run and is judged once it can. A full review is
-what re-checks such a finding once the runner works. This hold is the
-one held finding that changes the event; every other held
-finding still leaves it alone, and a Claude challenger that fails twice keeps
-its `challenger failed:` reason and its event as before.
+what re-checks such a finding once the runner works. This hold changes the
+event whatever its severity. Of the run's other held entries only a finding
+above a nit held below the confidence gate does, since 2026-11-11
+([0016](0016-what-the-verifier-could-not-check.md), amended). Every other held
+entry still leaves the event alone, and a Claude challenger that fails twice
+keeps its `challenger failed:` reason and its event as before.

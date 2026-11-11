@@ -202,6 +202,23 @@ export function challengeNotRun(entry: HeldFinding): boolean {
   return typeof entry.reason === 'string' && entry.reason.startsWith('challenger not run:');
 }
 
+/**
+ * A finding above a nit that the verifier confirmed and the floor on its own
+ * confidence alone stopped. Nothing refuted it, so it caps the verdict like an
+ * unverified finding and a narrowed review keeps it (docs/adr/0016, amended).
+ * A hold by the final-score gate never does: that score carries the owner's
+ * precedent, and a preference must not block an approval. A question under its
+ * gate is one the verifier judged more likely moot.
+ */
+export function heldBelowConfidenceGate(entry: HeldFinding): boolean {
+  return (
+    entry.verdict === 'below-gate' &&
+    typeof entry.reason === 'string' &&
+    entry.reason.startsWith('below the confidence gate') &&
+    (entry.severity === 'blocking' || entry.severity === 'important' || entry.severity === 'minor')
+  );
+}
+
 /** Null when the entry is well formed, else what is wrong with it. */
 export function heldProblem(entry: unknown): string | null {
   if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return 'not an object';
