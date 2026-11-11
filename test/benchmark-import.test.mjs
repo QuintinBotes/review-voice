@@ -498,7 +498,7 @@ test('exit 1 when every item is refused, with the manifest written; exit 2 for e
     ['an --out that is a file', ['import-benchmark', '--from', setFile, ...FLAGS, '--out', setFile], /not an empty directory/],
     ['an --out under a file', ['import-benchmark', '--from', setFile, ...FLAGS, '--out', join(setFile, 'sub')], /not an empty directory \(.*set\.jsonl is a file\)/],
     ['an --out inside a repository git cannot read', ['import-benchmark', '--from', setFile, ...FLAGS, '--out', join(unreadable, 'out')], /git could not say whether it is inside a working tree \(fatal: .*version/],
-    ['an --out inside a worktree whose gitdir git cannot find', ['import-benchmark', '--from', setFile, ...FLAGS, '--out', join(brokenWorktree, 'out')], /git could not say whether it is inside a working tree \(fatal: not a git repository: /],
+    ['an --out inside a worktree whose gitdir git cannot find', ['import-benchmark', '--from', setFile, ...FLAGS, '--out', join(brokenWorktree, 'out')], /git could not say whether it is inside a working tree \(fatal: (?:not a git repository|gitfile does not point to a valid repository): /],
     ['an --out inside a git working tree', ['import-benchmark', '--from', setFile, ...FLAGS, '--out', join(repo, 'nested', 'out')], /inside a git working tree.*CONTRIBUTING\.md rule 1/],
     ['an --out inside a git directory', ['import-benchmark', '--from', setFile, ...FLAGS, '--out', join(repo, '.git', 'out')], /inside a git working tree/],
     ['an --out that is a dangling link', ['import-benchmark', '--from', setFile, ...FLAGS, '--out', dangling], /--out .*dangling is a symbolic link/],
