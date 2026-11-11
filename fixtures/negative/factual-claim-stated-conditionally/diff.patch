@@ -1,7 +1,7 @@
 diff --git a/config/defaults.ts b/config/defaults.ts
 --- a/config/defaults.ts
 +++ b/config/defaults.ts
-@@ -1,3 +1,5 @@
+@@ -1,3 +1,4 @@
  export const defaultFlags = {
 +  rejectDuplicates: false,
    auditWrites: true,
@@ -9,7 +9,11 @@ diff --git a/config/defaults.ts b/config/defaults.ts
 diff --git a/src/registration.ts b/src/registration.ts
 --- a/src/registration.ts
 +++ b/src/registration.ts
-@@ -1,4 +1,8 @@
+@@ -1,6 +1,11 @@
+ import type { Flags } from '../config/defaults';
++import { DuplicateIdentifierError } from './errors';
+ import { store } from './store';
+ 
  export function register(identifier: string, flags: Flags) {
 +  // Duplicate rejection is enabled only by `rejectDuplicates`.
 +  if (flags.rejectDuplicates && store.has(identifier)) {

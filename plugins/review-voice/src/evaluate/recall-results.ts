@@ -17,9 +17,9 @@ export interface FixtureResult {
   class: RecallClass;
   /** Why the fixture was left out; present means it is in no denominator. */
   skipped?: string;
-  /** Positives: a validated finding sits on the causal line, within the tolerance. Null when the run failed. */
+  /** Positives: a validated finding sits on an accepted anchor, within the tolerance. Null when the run failed. */
   hit?: boolean | null;
-  /** Positives: the smallest line distance of a finding on `expect.path`; null when there is none. */
+  /** Positives: the smallest line distance of a finding from an accepted anchor on its own path; null when no finding is on an anchor's path. */
   lineDelta?: number | null;
   /** Positives: the nearest finding's category equals `expect.category`; null when either side has none. */
   categoryMatch?: boolean | null;
@@ -55,12 +55,20 @@ export interface RecallResults {
   summary: RecallSummary;
 }
 
+/** A place a positive fixture accepts a finding at. */
+export interface Anchor {
+  path: string;
+  line: number;
+}
+
 /** What a fixture's `case.yaml` says the harness needs. */
 export interface Expectation {
   class: RecallClass;
   name: string;
   path: string | null;
   line: number | null;
+  /** The further places the seeded defect can honestly be commented on, from `expect.anchors`. `path` and `line` are the first. */
+  anchors: Anchor[];
   category: string | null;
   /** The reason from `harness_reason`, or a stock one; null when the fixture is scored. */
   skip: string | null;
@@ -85,7 +93,7 @@ export interface RunOutcome {
  * nothing, so a crash is never read as a miss or as silence.
  */
 export function scoreFixture(
-  expectation: Pick<Expectation, 'class' | 'path' | 'line' | 'category'>,
+  expectation: Pick<Expectation, 'class' | 'path' | 'line' | 'category'> & Partial<Pick<Expectation, 'anchors'>>,
   outcome: RunOutcome,
 ): Pick<FixtureResult, 'hit' | 'lineDelta' | 'categoryMatch' | 'silent' | 'findings'> {
   if (expectation.class !== 'positive') {
@@ -94,11 +102,10 @@ export function scoreFixture(
   if (!outcome.completed || expectation.path === null || expectation.line === null) {
     return { hit: null, lineDelta: null, categoryMatch: null, findings: outcome.findings.length };
   }
-  const line = expectation.line;
+  const anchors: Anchor[] = [{ path: expectation.path, line: expectation.line }, ...(expectation.anchors ?? [])];
   // Distance, not equality: an anchor drifts a line or two as a file is edited.
   const onPath = outcome.findings
-    .filter((finding) => finding.path === expectation.path)
-    .map((finding) => ({ finding, delta: Math.abs(finding.line - line) }))
+    .flatMap((finding) => anchors.filter((anchor) => anchor.path === finding.path).map((anchor) => ({ finding, delta: Math.abs(finding.line - anchor.line) })))
     .sort((a, b) => a.delta - b.delta);
   const nearest = onPath[0];
   if (nearest === undefined) return { hit: false, lineDelta: null, categoryMatch: null, findings: outcome.findings.length };
@@ -119,7 +126,7 @@ const failed = (result: FixtureResult): boolean => result.exitCode !== 0 || resu
 export interface RecallTally {
   hits: number;
   completedPositives: number;
-  /** Completed positives with at least one finding on `expect.path`. */
+  /** Completed positives with at least one finding on the path of an accepted anchor. */
   onPath: number;
   silent: number;
   completedClean: number;
@@ -288,8 +295,8 @@ export function recallMetrics(results: RecallResults | null): Metric[] {
     kind: 'goal',
   });
   return [
-    metric('fixture_key_bug_recall', results.summary.keyBugRecall, `${tally.hits}/${tally.completedPositives} completed positives had a finding on the causal line`),
-    metric('fixture_causal_line_hit', results.summary.causalLineHit, `${tally.hits}/${tally.onPath} positives with a finding on the expected file hit the causal line within ${AGREEMENT_LINE_TOLERANCE}`),
+    metric('fixture_key_bug_recall', results.summary.keyBugRecall, `${tally.hits}/${tally.completedPositives} completed positives had a finding on an accepted anchor`),
+    metric('fixture_causal_line_hit', results.summary.causalLineHit, `${tally.hits}/${tally.onPath} positives with a finding on an expected file hit an accepted anchor within ${AGREEMENT_LINE_TOLERANCE}`),
     metric('fixture_clean_silence', results.summary.cleanSilence, `${tally.silent}/${tally.completedClean} completed clean fixtures ended with exactly the no-findings sentence`),
   ];
 }
