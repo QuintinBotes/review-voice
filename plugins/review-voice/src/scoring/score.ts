@@ -745,7 +745,7 @@ export interface ThreadComment {
  * `a.ts:105-110`, with or without backticks. The path needs an extension, so
  * a time (`10:30`) or a ratio does not read as one.
  */
-const CITATION = /(?<![\w./-])`?((?:[\w.-]+\/)*[\w-][\w.-]*\.[A-Za-z0-9]+):(\d+)(?:-\d+)?`?/g;
+export const CITATION = /(?<![\w./-])`?((?:[\w.-]+\/)*[\w-][\w.-]*\.[A-Za-z0-9]+):(\d+)(?:-\d+)?`?/g;
 
 /**
  * The thread with each `path:line` a review body or conversation comment cites

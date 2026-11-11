@@ -66,6 +66,7 @@ Each figure below is reported and never a gate. A figure with no data prints
 | Posted fixed rate and dismissed rate, recent | The same strong-outcome rates over a rolling window; see below |
 | Second-pass drop, downgrade and tie-break rates, per family | Whether a second model family earns its cost; see below |
 | Challenge hold rate, per family | The challenge hold rate over the runs whose challenge ran on that family; see below |
+| Posted replies, replied fixed rate | How many findings got this tool's one reply, and what became of them; see below |
 
 `RV evaluate --json` also carries a top-level `stage_seconds` map of stage name
 to `{ median, p95, runs }`, beside `metrics` and `posted_breakdown`. It is not a
@@ -183,6 +184,24 @@ posted comments carried the evidence block (`verdict.evidence_block`, ADR
 of it recorded the count, which is every post made before the block existed.
 An attempt that was never sent is not counted. The split is reported, not
 scored, and a group with no strong outcome reports `null` rates, never zero.
+
+#### Replies
+
+`RV reply --pr N --confirm` posts one reply under one of this tool's own inline
+comments when someone asked a question there (ADR 0035). Each sent reply is a
+`review_reply_sent` audit row naming its run and finding, joined to the
+finding's stored outcome:
+
+```
+posted_replies     = findings with a sent reply
+replied_fixed_rate = fixed / (fixed + dismissed), over those findings
+```
+
+The rate counts strong outcomes only, as the posted rates do. A replied finding
+with no outcome yet, or a weak one, counts in `posted_replies` and nowhere else.
+Both are `no data` with none. Reply counts never appear on the pull request.
+The scope block takes no reply input, so a reply changes neither the posted body
+nor the review's idempotency key.
 
 #### Candidate set agreement
 
