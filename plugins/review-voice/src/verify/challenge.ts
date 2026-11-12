@@ -305,13 +305,6 @@ export function applyChallenge(
   if (missing.length > 0) problems.push(`no verdict for eligible ${missing.join(', ')}`);
   const unknown = [...byId.keys()].filter((id) => !eligibleIds.includes(id));
   if (unknown.length > 0) problems.push(`verdict for ${unknown.join(', ')}, which is not eligible`);
-  for (const finding of eligible) {
-    const id = idOf(finding);
-    const verdict = id === null ? undefined : byId.get(id);
-    if (verdict?.corrected_line !== undefined && verdict.corrected_line === finding['line']) {
-      problems.push(`${String(id)}: corrected_line ${verdict.corrected_line} is the line it is already anchored on`);
-    }
-  }
   if (problems.length > 0) return { ok: false, problems };
 
   const summary: ChallengeSummary = { confirmed: [], held: [], moved: [] };
@@ -370,7 +363,13 @@ export function applyChallenge(
       summary.confirmed.push(id);
       continue;
     }
-    const moved = reanchorScores(document, id, { path: null, line: verdict.corrected_line }, hunks);
+    // The challenger said the line is wrong and named the same line, so it
+    // settled nothing about where the finding belongs: held like any refused
+    // move, rather than failing the whole review.
+    const moved =
+      verdict.corrected_line === finding['line']
+        ? { ok: false as const, refused: `${id} names line ${verdict.corrected_line}, the line it is already anchored on` }
+        : reanchorScores(document, id, { path: null, line: verdict.corrected_line }, hunks);
     if (moved.ok) {
       document = moved.updated;
       summary.confirmed.push(id);

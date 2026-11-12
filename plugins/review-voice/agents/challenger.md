@@ -84,7 +84,8 @@ that did not run says nothing either way.
    the claim is about: the declaration, condition or call that is wrong, not a
    neighbour, a closing brace or the comment above it. When it is off, give
    `corrected_line`, the right line in the same file. It must be a line the
-   diff added or a deletion site, or the move is refused.
+   diff added or a deletion site, and not the line it is already on, or the
+   move is refused and the finding is held.
 
 Name the lines your verdict turns on in `decisive_evidence`, as `path:line`.
 These are the lines that settle it either way: the guard that refutes it, or
