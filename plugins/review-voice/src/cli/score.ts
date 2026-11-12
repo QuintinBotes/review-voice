@@ -35,7 +35,6 @@ import {
   type MissingContext,
   type Verification,
   ownerRaiseCeiling,
-  QUESTION_GAP_FLOOR,
   matchingSuppression,
   POLICY_SUPPRESSED_PREFIX,
 } from '../scoring/score.ts';
@@ -354,6 +353,9 @@ export function scoreCommand(argv: string[]): number {
     technicalConfidence: Number(
       flag(argv, '--min-confidence') ?? configured.technicalConfidence ?? DEFAULT_THRESHOLDS.technicalConfidence,
     ),
+    minorConfidence: Number(
+      flag(argv, '--min-minor-confidence') ?? configured.minorConfidence ?? DEFAULT_THRESHOLDS.minorConfidence,
+    ),
     analystOnlyConfidence: Number(
       flag(argv, '--min-analyst-confidence') ?? DEFAULT_THRESHOLDS.analystOnlyConfidence,
     ),
@@ -579,8 +581,8 @@ export function scoreCommand(argv: string[]): number {
       });
       const verification = verifications.get(candidate.candidateId);
       const lane = laneNamed(lanes, candidate.lane);
-      const breakdown = scoreCandidate(candidate, precedents, kept, thresholds, verification, lane);
       const override = severityOverrides.get(candidate.candidateId);
+      const breakdown = scoreCandidate(candidate, precedents, kept, thresholds, verification, lane, override);
       if (override !== undefined) {
         const problem = applyOwnerSeverityOverride(breakdown, override, ownerRaiseCeiling(breakdown.severity, candidate, verification, lane));
         if (problem !== null) {
@@ -778,7 +780,7 @@ export function scoreCommand(argv: string[]): number {
             ? { finalScore: r.finalScore, threshold: thresholds.finalScore }
             : {
                 technicalConfidence: r.technicalConfidence,
-                threshold: r.severity.severity === 'question' ? QUESTION_GAP_FLOOR : thresholds.technicalConfidence,
+                threshold: r.confidenceFloor,
               }),
         });
       });

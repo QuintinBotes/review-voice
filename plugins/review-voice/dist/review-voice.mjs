@@ -8809,6 +8809,7 @@ function admitsUnverifiable(candidate) {
 var QUESTION_GAP_FLOOR = 0.5;
 var DEFAULT_THRESHOLDS = {
   technicalConfidence: 0.8,
+  minorConfidence: 0.7,
   analystOnlyConfidence: 0.7,
   finalScore: 0.68
 };
@@ -9263,7 +9264,17 @@ function withLegacyTierHint(severity, candidate, verification2, lane) {
     reason: `${severity.reason}; reach is unknown, so the requested ${severity.requested} was not applied. If it breaks things for the whole repository, raise it with \`--severity ${candidate.candidateId}=${ceiling}\``
   };
 }
-function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification2, lane) {
+function verifiedFloor(category, tier, thresholds) {
+  const main2 = thresholds.technicalConfidence;
+  if (isSuppressionExempt(category ?? "")) {
+    return { floor: main2, names: `the floor for every tier in the ${canonicalCategory(category)} category` };
+  }
+  if (tier !== "minor" && tier !== "nit") {
+    return { floor: main2, names: `the floor for ${tier === "important" ? "an" : "a"} ${tier} finding` };
+  }
+  return { floor: Math.min(thresholds.minorConfidence ?? main2, main2), names: `the floor for a ${tier} finding` };
+}
+function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESHOLDS, verification2, lane, ownerTier) {
   const analystConfidence = candidate.technicalConfidence;
   const verifiedConfidence = verification2 === void 0 ? null : verifierConfidence(verification2.technicalConfidence, verification2.evidenceQuality);
   let confidence = verifiedConfidence ?? analystConfidence;
@@ -9277,7 +9288,10 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     confidenceSource = "unverifiable-cap";
   }
   const unverifiableBecause = confidenceSource !== "unverifiable-cap" ? null : missingContext ? `the verifier listed required_context_missing the claim depends on: ${missing.join("; ")}` : "the analyst's evidence says the claim could not be checked, and the verifier gave no technical_confidence of its own";
-  const confidenceFloor = confidenceSource === "verifier" ? thresholds.technicalConfidence : thresholds.analystOnlyConfidence;
+  const derivedSeverity = deriveSeverity(candidate.category, candidate.severity, verification2?.reach);
+  const isQuestion = derivedSeverity.severity === "question";
+  const verified = verifiedFloor(candidate.category, ownerTier ?? derivedSeverity.severity, thresholds);
+  const confidenceFloor = confidenceSource === "verifier" ? verified.floor : thresholds.analystOnlyConfidence;
   const alreadySaid = duplicatePrecedent(candidate, precedents);
   const forAlignment = alreadySaid === null ? precedents : precedents.filter((p2) => !sameLocation(candidate, p2));
   const ownerPrecedents = forAlignment.filter((p2) => p2.role === "owner");
@@ -9291,8 +9305,6 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const score2 = (owner, repository) => 0.35 * confidence + 0.25 * owner + 0.15 * repository + 0.15 * quality + 0.1 * novel;
   const finalScore = score2(ownerAlignment, repositoryAlignment);
   const anchoredFinalScore = score2(anchoredOwnerAlignment, anchoredRepositoryAlignment);
-  const derivedSeverity = deriveSeverity(candidate.category, candidate.severity, verification2?.reach);
-  const isQuestion = derivedSeverity.severity === "question";
   let rejectedBecause = null;
   if (!Number.isFinite(finalScore) || !Number.isFinite(confidence)) {
     rejectedBecause = "score could not be computed from this candidate";
@@ -9319,7 +9331,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   } else if (verification2?.verified === false) {
     rejectedBecause = "the verifier did not verify this claim (verified: false)";
   } else if (confidence < confidenceFloor) {
-    rejectedBecause = `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` + (confidenceSource === "analyst" ? ". No verification was supplied, so this is the analyst's opinion of its own output." : "");
+    rejectedBecause = `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` + (confidenceSource === "analyst" ? ". No verification was supplied, so this is the analyst's opinion of its own output." : `, ${verified.names}`);
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
@@ -9352,6 +9364,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     verifiedConfidence,
     confidenceSource,
     unverifiableBecause,
+    confidenceFloor: isQuestion ? QUESTION_GAP_FLOOR : confidenceFloor,
     ownerAlignment,
     repositoryAlignment,
     evidenceQuality: quality,
@@ -15914,6 +15927,7 @@ var CONFIG_KEYS = {
     "mode",
     "models",
     "confidence_threshold",
+    "minor_confidence_threshold",
     "final_score_threshold",
     "lanes",
     "suggestions",
@@ -16719,8 +16733,18 @@ function readThresholds(review2, result) {
     return void 0;
   };
   const confidence = read("confidence_threshold");
+  const minor = read("minor_confidence_threshold");
   const score2 = read("final_score_threshold");
   if (confidence !== void 0) result.thresholds.technicalConfidence = confidence;
+  if (minor !== void 0) {
+    const main2 = confidence ?? DEFAULT_THRESHOLDS.technicalConfidence;
+    if (minor > main2) {
+      result.warnings.push(
+        `review.minor_confidence_threshold ${minor} is above review.confidence_threshold ${main2}; using ${main2} for minor and nit too, since a lower tier never needs more confidence.`
+      );
+    }
+    result.thresholds.minorConfidence = Math.min(minor, main2);
+  }
   if (score2 !== void 0) result.thresholds.finalScore = score2;
 }
 function readReviewers(identity2, result) {
@@ -20237,7 +20261,11 @@ var COMMAND_HELP = {
       "  --base <ref>              Reviewed tree for absence checks",
       "  --verification <path>     Verifier output for confidence and fix rendering",
       "  --exclude-pull <n>        Exclude precedents from this pull request",
-      "  --min-confidence <n>      Verifier confidence gate (default 0.8)",
+      "  --min-confidence <n>      Verifier confidence gate at blocking or important, and for a security,",
+      "                            authorization, authentication, data integrity or trust boundary",
+      "                            finding at every tier (default 0.8; review.confidence_threshold)",
+      "  --min-minor-confidence <n>  Verifier confidence gate at minor or nit, never above --min-confidence",
+      "                            (default 0.7; review.minor_confidence_threshold)",
       "  --min-analyst-confidence <n>  Analyst-only gate (default 0.7)",
       "  --thread <path>           Existing pull-request comments",
       "  --diff-file <path>        Diff for reach and anchor checks",
@@ -21052,7 +21080,9 @@ var COMMAND_HELP = {
       "  important or minor finding that the verifier confirmed under the confidence gate is held as",
       "  below-gate, keeps the review from approving and is kept the same way, until a full review, the",
       "  file leaving the pull request or `decline` ends it; a nit or a question held that way does",
-      "  neither (docs/adr/0016). A finding raised at the held path and line, or a claim held there as",
+      "  neither (docs/adr/0016). The confidence gate is review.confidence_threshold (0.8) at blocking or",
+      "  important and for a security or trust finding, and review.minor_confidence_threshold (0.7) at",
+      "  minor or nit. A finding raised at the held path and line, or a claim held there as",
       "  unverified, refuted or partly, does not end either hold. In thorough mode, with a",
       "  reproduction block in the configuration, the verifier writes a reproduction for each blocking or",
       "  important finding and `reproduce` runs it (Linux only); one that does not fail holds its finding",
@@ -32517,6 +32547,9 @@ function scoreCommand(argv) {
     technicalConfidence: Number(
       flag(argv, "--min-confidence") ?? configured.technicalConfidence ?? DEFAULT_THRESHOLDS.technicalConfidence
     ),
+    minorConfidence: Number(
+      flag(argv, "--min-minor-confidence") ?? configured.minorConfidence ?? DEFAULT_THRESHOLDS.minorConfidence
+    ),
     analystOnlyConfidence: Number(
       flag(argv, "--min-analyst-confidence") ?? DEFAULT_THRESHOLDS.analystOnlyConfidence
     ),
@@ -32686,8 +32719,8 @@ function scoreCommand(argv) {
       });
       const verification2 = verifications.get(candidate.candidateId);
       const lane = laneNamed(lanes2, candidate.lane);
-      const breakdown = scoreCandidate(candidate, precedents, kept, thresholds, verification2, lane);
       const override = severityOverrides.get(candidate.candidateId);
+      const breakdown = scoreCandidate(candidate, precedents, kept, thresholds, verification2, lane, override);
       if (override !== void 0) {
         const problem2 = applyOwnerSeverityOverride(breakdown, override, ownerRaiseCeiling(breakdown.severity, candidate, verification2, lane));
         if (problem2 !== null) {
@@ -32803,7 +32836,7 @@ function scoreCommand(argv) {
         gate,
         ...gate === "score" ? { finalScore: r.finalScore, threshold: thresholds.finalScore } : {
           technicalConfidence: r.technicalConfidence,
-          threshold: r.severity.severity === "question" ? QUESTION_GAP_FLOOR : thresholds.technicalConfidence
+          threshold: r.confidenceFloor
         }
       });
     });

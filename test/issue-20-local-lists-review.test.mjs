@@ -113,14 +113,14 @@ test('verified must be a boolean', () =>
 
 test('a verifier-confirmed candidate below the confidence floor is below the gate with gate: confidence', () =>
   withDir((dir) => {
-    const out = score(dir, [candidate('c4')], [{ candidate_id: 'c4', verified: true, technical_confidence: 0.7 }]);
-    assert.match(out.scores[0].rejectedBecause, /^technical confidence 0\.70 \(verifier\) is below 0\.8$/);
+    const out = score(dir, [candidate('c4')], [{ candidate_id: 'c4', verified: true, technical_confidence: 0.65 }]);
+    assert.match(out.scores[0].rejectedBecause, /^technical confidence 0\.65 \(verifier\) is below 0\.7, the floor for a minor finding$/);
     assert.equal(out.belowGate.length, 1);
     const [entry] = out.belowGate;
     assert.equal(entry.candidateId, 'c4');
     assert.equal(entry.gate, 'confidence');
-    assert.equal(entry.technicalConfidence, 0.7);
-    assert.equal(entry.threshold, 0.8);
+    assert.equal(entry.technicalConfidence, 0.65);
+    assert.equal(entry.threshold, 0.7);
   }));
 
 test('a final-score entry says gate: score', () =>
@@ -146,7 +146,7 @@ test('a candidate the thread already states is on neither list, and the reason s
       [candidate('c1'), candidate('c4', { line: 2 })],
       [
         { candidate_id: 'c1', technical_confidence: 0.9, required_context_missing: ['a sibling service'] },
-        { candidate_id: 'c4', technical_confidence: 0.7 },
+        { candidate_id: 'c4', technical_confidence: 0.65 },
       ],
       ['--thread', thread],
     );
@@ -169,7 +169,7 @@ test('a candidate citing a file that does not exist is on neither list', () =>
       [candidate('c1'), candidate('c4', { line: 3 })],
       [
         { candidate_id: 'c1', technical_confidence: 0.9, required_context_missing: ['a sibling service'] },
-        { candidate_id: 'c4', technical_confidence: 0.7 },
+        { candidate_id: 'c4', technical_confidence: 0.65 },
       ],
       [],
       { diff: false },
@@ -188,7 +188,7 @@ test('an untraced stale consumer stopped by the cap or the floor is on neither l
       [stale('c1', 10), stale('c4', 20)],
       [
         { candidate_id: 'c1', technical_confidence: 0.9, required_context_missing: ['a sibling service'] },
-        { candidate_id: 'c4', technical_confidence: 0.7 },
+        { candidate_id: 'c4', technical_confidence: 0.65 },
       ],
     );
     assert.deepEqual(out.unverified, []);
