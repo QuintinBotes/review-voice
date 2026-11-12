@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { unquoteGitPath } from '../diff/hunks.ts';
 
 /**
  * Turns a fixture directory into a two-commit git repository, so the real
@@ -221,6 +222,24 @@ function parsePatchFiles(normalised: string): PatchFile[] {
   return files;
 }
 
+/**
+ * The renames and copies a patch records: a `diff --git` section's `rename
+ * from` and `rename to` pair, or its `copy` pair. One that changes nothing has
+ * no hunk and no `---` header, so `parsePatchFiles` never sees it, and its old
+ * path would be missing from the base git applies the patch to. A hunk body
+ * line always starts with a marker, so none is read as one of these.
+ */
+function patchMoves(normalised: string): { from: string; to: string }[] {
+  const moves: { from: string; to: string }[] = [];
+  for (const section of normalised.split(/^diff --git /m).slice(1)) {
+    const from = /^(rename|copy) from (.+)$/m.exec(section);
+    const to = from === null ? null : new RegExp(`^${from[1]} to (.+)$`, 'm').exec(section);
+    if (from === null || to === null) continue;
+    moves.push({ from: unquoteGitPath(withoutCarriageReturn(from[2] as string)), to: unquoteGitPath(withoutCarriageReturn(to[1] as string)) });
+  }
+  return moves;
+}
+
 /** A line of text a fixture's reconstructed file gets where the patch shows none. */
 function fillerFor(path: string): string {
   const extension = basename(path).includes('.') ? (basename(path).split('.').pop() as string).toLowerCase() : '';
@@ -348,7 +367,13 @@ function gitEnvironment(): NodeJS.ProcessEnv {
 
 function git(cwd: string, label: string, args: string[]): string {
   try {
-    return execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.autocrlf=false', ...args], {
+    // A commit otherwise leaves `git maintenance` running detached, and it
+    // writes into `.git` while a caller that is done with the repository
+    // removes it, which then fails on a directory that is no longer empty.
+    // A name keeps the spelling the patch gives it: macOS would store a
+    // decomposed name precomposed, and the index apply then looks for a file
+    // the base does not hold, where Linux builds it.
+    return execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.autocrlf=false', '-c', 'maintenance.auto=false', '-c', 'core.precomposeunicode=false', ...args], {
       cwd,
       env: gitEnvironment(),
       encoding: 'utf8',
@@ -406,6 +431,11 @@ export function materializeFixture(fixtureDir: string, targetDir: string, option
     if (file.newPath !== null) confinedPath(file.newPath, label);
   }
   const images = reconstruct(files, label);
+  const moves = patchMoves(normalised);
+  for (const move of moves) {
+    confinedPath(move.from, label);
+    confinedPath(move.to, label);
+  }
 
   const contextDir = join(fixtureDir, 'context');
   const supplied = new Map<string, string>();
@@ -436,6 +466,11 @@ export function materializeFixture(fixtureDir: string, targetDir: string, option
     const text = content.length === 0 ? '' : content.join('\n') + (image.noFinalNewline ? '' : '\n');
     writeInside(targetDir, path, text, label);
   }
+  // A file moved unchanged shows none of its lines, so it is filler throughout.
+  // One moved with a hunk, or changed in its own section, is already an image.
+  for (const { from } of moves) {
+    if (!images.has(from) && !supplied.has(from)) writeInside(targetDir, from, `${fillerFor(from)}\n`, label);
+  }
   for (const [path, text] of supplied) writeInside(targetDir, path, text, label);
 
   const configPath = join(fixtureDir, 'config.yaml');
@@ -458,16 +493,25 @@ export function materializeFixture(fixtureDir: string, targetDir: string, option
     const copy = join(scratch, 'normalised.patch');
     writeFileSync(copy, normalised);
     try {
-      git(targetDir, label, ['apply', '--whitespace=nowarn', copy]);
+      // Applied to the index alone: on a file system that folds case, the
+      // working directory answers that the new name of a rename differing only
+      // by case already exists, and git refuses the patch.
+      git(targetDir, label, ['apply', '--cached', '--whitespace=nowarn', copy]);
     } catch (error) {
       throw new Error(`${(error as Error).message} (the patch does not apply to its reconstructed pre-image)`);
     }
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
-  git(targetDir, label, ['add', '-A']);
   git(targetDir, label, ['commit', '-q', '-m', `head: ${label}`]);
   const head = git(targetDir, label, ['rev-parse', 'HEAD']).trim();
+  // The working directory still holds the base. It is emptied before the head
+  // is written out, so a file the patch removed or renamed does not stay behind
+  // and every name on disk has the case the head gives it.
+  for (const entry of readdirSync(targetDir)) {
+    if (entry !== '.git') rmSync(join(targetDir, entry), { recursive: true, force: true });
+  }
+  git(targetDir, label, ['reset', '-q', '--hard', head]);
 
   const changed: string[] = [];
   for (const file of files) {

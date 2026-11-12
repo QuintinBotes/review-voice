@@ -136,7 +136,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: QuintinBotes/review-voice@review-voice--v1.24.0
+      - uses: QuintinBotes/review-voice@review-voice--v1.24.1
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           post: false

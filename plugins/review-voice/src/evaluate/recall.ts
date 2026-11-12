@@ -9,12 +9,16 @@ import { pluginVersion } from '../version.ts';
 import { materializeFixture } from './fixtures.ts';
 import {
   RECALL_CLASSES,
+  combineAttempts,
+  lostAt,
   scoreFixture,
   summariseResults,
+  type Anchor,
   type Expectation,
   type FixtureResult,
   type RecallClass,
   type RecallResults,
+  type RunTrail,
 } from './recall-results.ts';
 
 /**
@@ -38,6 +42,9 @@ const CANNED_OUTPUT = /^[a-z][a-z0-9-]*\.\d+\.json$/;
 /** A bad invocation, which the command reports as exit 2 rather than as a crash. */
 export class RecallUsageError extends Error {}
 
+/** The most runs one invocation takes: every run is a store on disk and an entry under each fixture in the results. */
+export const MAX_RUNS = 1000;
+
 export interface RecallOptions {
   /** The directory holding `<class>/<name>/` fixtures. */
   fixtures: string;
@@ -48,6 +55,8 @@ export interface RecallOptions {
   only: string | null;
   /** Keep the temporary store and repositories instead of removing them. */
   keep: boolean;
+  /** How many times every fixture is run, from 1 to `MAX_RUNS`; 1 when absent. */
+  runs?: number | undefined;
 }
 
 export interface RecallDeps {
@@ -61,8 +70,10 @@ export interface RecallDeps {
 
 export interface RecallRun {
   results: RecallResults;
-  /** The temporary store the runs were recorded in; removed unless `kept`. */
+  /** The temporary store the first run was recorded in; removed unless `kept`. */
   dataDir: string;
+  /** Every run's store, in run order. */
+  dataDirs: string[];
   kept: boolean;
 }
 
@@ -80,10 +91,32 @@ function scalar(raw: string): string {
 }
 
 /**
+ * Reads `expect.anchors` from the lines of the `expect:` block, as one
+ * `- { path: <path>, line: <number> }` entry per line under the key. That is
+ * the one form the fixtures write, so any other is refused instead of guessed at.
+ */
+function readAnchors(label: string, block: readonly string[]): Anchor[] {
+  const start = block.findIndex((line) => /^  anchors:/.test(line));
+  if (start === -1) return [];
+  const form = '`- { path: <path>, line: <number> }`';
+  if (!/^  anchors:\s*$/.test(block[start] as string)) throw new RecallUsageError(`${label}: expect.anchors is a list with one ${form} entry per line.`);
+  const anchors: Anchor[] = [];
+  for (const line of block.slice(start + 1)) {
+    if (line.trim() === '') continue;
+    if (!/^ {3}/.test(line)) break;
+    const entry = /^\s+-\s*\{\s*path:\s*(.+?)\s*,\s*line:\s*([1-9]\d*)\s*\}\s*$/.exec(line);
+    if (entry === null) throw new RecallUsageError(`${label}: expect.anchors entry ${JSON.stringify(line.trim())} is not ${form}.`);
+    anchors.push({ path: scalar(entry[1] as string), line: Number(entry[2]) });
+  }
+  if (anchors.length === 0) throw new RecallUsageError(`${label}: expect.anchors is empty.`);
+  return anchors;
+}
+
+/**
  * Reads the few keys the harness needs from a fixture's `case.yaml` by line
  * matching, since the plugin ships no YAML parser: top-level `harness` and
- * `harness_reason`, and the two-space indented `path`, `line` and `category`
- * of the `expect:` block.
+ * `harness_reason`, and the two-space indented `path`, `line`, `category` and
+ * `anchors` of the `expect:` block.
  */
 function readExpectation(cls: RecallClass, name: string, caseText: string): Expectation {
   const lines = caseText.split('\n');
@@ -110,6 +143,7 @@ function readExpectation(cls: RecallClass, name: string, caseText: string): Expe
     name,
     path: inExpect('path'),
     line,
+    anchors: readAnchors(`${cls}/${name}`, block),
     category: inExpect('category'),
     skip: top('harness') === 'skip' ? (reason === null || reason === '' ? 'harness: skip' : reason) : null,
   };
@@ -256,6 +290,37 @@ function reviewIsSilent(report: ReviewReport): boolean {
   }
 }
 
+/**
+ * What each stage did with the run's candidates, read from the files the run
+ * wrote. A file a stage never wrote (nothing reached it) reads as empty.
+ */
+function trailOf(report: ReviewReport): RunTrail {
+  const entries = (file: string, key: string): Record<string, unknown>[] => {
+    // Without a run directory the bare file name would be read from the working directory.
+    if (report.runDir === null) return [];
+    try {
+      const list = (JSON.parse(readFileSync(join(report.runDir, file), 'utf8')) as Record<string, unknown>)[key];
+      return Array.isArray(list) ? list.filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null) : [];
+    } catch {
+      return [];
+    }
+  };
+  const idOf = (entry: Record<string, unknown>): string => String(entry['candidate_id'] ?? entry['candidateId'] ?? '');
+  const candidates = entries('candidates.json', 'candidates');
+  const questions = new Set(candidates.filter((candidate) => candidate['severity'] === 'question').map(idOf));
+  return {
+    candidates: candidates.map((candidate) => ({ id: idOf(candidate), path: String(candidate['path']), line: Number(candidate['line']) })),
+    kept: entries('checked.json', 'kept').map(idOf),
+    // The driver's own rule for what the verifier let through, under which a question goes on when its premises hold.
+    verified: entries('verification.json', 'verifications')
+      .filter((entry) => entry['verified'] === true || (questions.has(idOf(entry)) && entry['premises_verified'] === true))
+      .map(idOf),
+    held: report.held.map((hold) => ({ candidateId: hold.candidateId, verdict: hold.verdict })),
+    eligible: entries('scores.challenged.json', 'eligible').map((entry) => ({ id: idOf(entry), path: String(entry['path']), line: Number(entry['line']) })),
+    posted: report.findings.map((finding) => ({ path: finding.path, line: finding.line })),
+  };
+}
+
 function checkoutBase(repoDir: string): void {
   // The clone a reviewer would have is on the base branch, with the head only
   // a commit in it. `feature` stays checked out after materialising.
@@ -343,10 +408,14 @@ async function runFixture(fixture: Fixture, index: number, context: Context): Pr
     silent: reviewIsSilent(report),
   };
   const error = report.error ?? (report.exitCode !== 0 ? `the run exited ${report.exitCode}` : report.runId === null ? 'the run recorded nothing' : undefined);
+  const scored = scoreFixture(expectation, outcome);
+  const event = typeof report.verdict === 'object' && report.verdict !== null ? (report.verdict as Record<string, unknown>)['event'] : null;
   return {
     name,
     class: expectation.class,
-    ...scoreFixture(expectation, outcome),
+    ...scored,
+    ...(completed && expectation.class === 'positive' ? { lostAt: scored.hit === true ? null : lostAt(expectation, trailOf(report)) } : {}),
+    ...(completed ? { event: typeof event === 'string' ? event : null } : {}),
     lanes: lanesRun(report),
     seconds: report.seconds,
     costUsd: report.costUsd,
@@ -362,10 +431,16 @@ async function runFixture(fixture: Fixture, index: number, context: Context): Pr
  * from the dependencies the driver is given.
  */
 export async function runRecall(options: RecallOptions, deps: RecallDeps): Promise<RecallRun> {
+  const runs = options.runs ?? 1;
+  if (!Number.isInteger(runs) || runs < 1 || runs > MAX_RUNS) throw new RecallUsageError(`--runs takes a positive whole number up to ${MAX_RUNS}; ${runs} is not one.`);
   const fixtures = selectFixtures(options);
   const root = mkdtempSync(join(tmpdir(), 'rv-recall-'));
-  const dataDir = join(root, 'data');
-  mkdirSync(dataDir, { recursive: true });
+  // Each run has a store of its own. In one store the first run of a fixture
+  // is an earlier run of the same pull request to the second, and a finding
+  // the first held is dropped from the second at the candidate check, so the
+  // runs would not be independent samples.
+  const roots = runs === 1 ? [root] : Array.from({ length: runs }, (_, run) => join(root, `run-${run + 1}`));
+  const dataDirs = roots.map((dir) => join(dir, 'data'));
 
   // The base checkout, the shim's diffs and every git command the driver runs
   // in a fixture repository read process.env. An exported GIT_DIR or
@@ -380,16 +455,22 @@ export async function runRecall(options: RecallOptions, deps: RecallDeps): Promi
   const cwd = process.cwd();
   const fixtureResults: FixtureResult[] = [];
   try {
+    for (const dir of dataDirs) mkdirSync(dir, { recursive: true });
     for (const key of gitKeys) delete process.env[key];
     Object.assign(process.env, quiet);
-    process.env['REVIEW_VOICE_DATA_DIR'] = dataDir;
     // The base commit of each fixture supplies its configuration; the operator's must not beat it.
     delete process.env['REVIEW_VOICE_CONFIG'];
     const hasToken = [process.env['GITHUB_TOKEN'], process.env['GH_TOKEN']].some((value) => value !== undefined && value !== '');
     if (!hasToken) process.env['GITHUB_TOKEN'] = PLACEHOLDER_TOKEN;
 
     for (const [index, fixture] of fixtures.entries()) {
-      const result = await runFixture(fixture, index, { root, options, deps });
+      const attempts: FixtureResult[] = [];
+      for (const [run, runRoot] of roots.entries()) {
+        process.env['REVIEW_VOICE_DATA_DIR'] = dataDirs[run];
+        attempts.push(await runFixture(fixture, index, { root: runRoot, options, deps }));
+        if (fixture.expectation.skip !== null) break;
+      }
+      const result = attempts.length === 1 ? (attempts[0] as FixtureResult) : combineAttempts(attempts);
       fixtureResults.push(result);
       deps.onResult?.(result);
     }
@@ -409,9 +490,10 @@ export async function runRecall(options: RecallOptions, deps: RecallDeps): Promi
       mode: options.mode ?? 'auto',
       runner: options.runner,
       fixtures: fixtureResults,
-      summary: summariseResults(fixtureResults),
+      summary: summariseResults(fixtureResults, runs),
     },
-    dataDir,
+    dataDir: dataDirs[0] as string,
+    dataDirs,
     kept: options.keep,
   };
 }

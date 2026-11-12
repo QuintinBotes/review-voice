@@ -1,7 +1,12 @@
 diff --git a/src/orders/shadow.ts b/src/orders/shadow.ts
 --- a/src/orders/shadow.ts
 +++ b/src/orders/shadow.ts
-@@ -1,7 +1,28 @@
+@@ -1,10 +1,32 @@
+-import { auth, backend, metrics } from '../platform';
++import { auth, backend, flags, logger, metrics } from '../platform';
++import { cache, checks, mapResult } from './checks';
+ import type { Order } from './order';
+ 
  export async function submitOrder(order: Order, ct: AbortSignal) {
    const startedAt = performance.now();
    const token = await auth.getToken(ct);

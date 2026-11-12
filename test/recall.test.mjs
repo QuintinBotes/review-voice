@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInProcess } from '../plugins/review-voice/src/cli.ts';
-import { runRecall, RecallUsageError } from '../plugins/review-voice/src/evaluate/recall.ts';
+import { runRecall, selectFixtures, RecallUsageError } from '../plugins/review-voice/src/evaluate/recall.ts';
 import { readRecallResults, recallMetrics, scoreFixture, summariseResults } from '../plugins/review-voice/src/evaluate/recall-results.ts';
 import { AGREEMENT_LINE_TOLERANCE } from '../plugins/review-voice/src/evaluate/metrics.ts';
 import { pluginVersion } from '../plugins/review-voice/src/version.ts';
@@ -53,6 +53,9 @@ function recall(overrides = {}, requests = []) {
 
 const byName = (run, name) => run.results.fixtures.find((fixture) => fixture.name === name);
 
+/** The loss counts of a summary (issue 338), zero everywhere but where given. */
+const lost = (counts = {}) => ({ 'not-raised': 0, 'dropped-at-check': 0, 'verifier-rejected': 0, 'held-other': 0, challenge: 0, 'below-gate': 0, 'posted-elsewhere': 0, ...counts });
+
 test('canned fixtures: the hit is a hit, the miss is a miss, the clean one is silent', async (t) => {
   const before = snapshot(canned);
   const { results } = await recall();
@@ -88,6 +91,9 @@ test('canned fixtures: the hit is a hit, the miss is a miss, the clean one is si
     skipped: 1,
     cleanFixtures: 1,
     failedRuns: 0,
+    completedPositives: 2,
+    approved: 0,
+    lost: lost({ 'posted-elsewhere': 1 }),
   });
   assert.deepEqual(snapshot(canned), before, 'nothing is written under the fixtures');
 });
@@ -196,10 +202,87 @@ test('scoring: the tolerance edge, a wrong path, no finding, a failed run, and a
     skipped: 1,
     cleanFixtures: 2,
     failedRuns: 2,
+    completedPositives: 2,
+    approved: 0,
+    lost: lost(),
   });
   const empty = summariseResults([{ name: 'positive/x', class: 'positive', skipped: 'r' }]);
   assert.equal(empty.keyBugRecall, null, 'no denominator is no data, not zero');
   assert.equal(empty.cleanSilence, null);
+});
+
+test('accepted anchors: a finding near any anchor hits, the smallest distance is reported, and any anchor path is on the path', () => {
+  const positive = {
+    class: 'positive',
+    path: 'src/a.ts',
+    line: 10,
+    category: 'correctness',
+    anchors: [{ path: 'src/a.ts', line: 40 }, { path: 'docs/a.md', line: 3 }],
+  };
+  const outcome = (findings) => ({ completed: true, findings, silent: false });
+  const first = scoreFixture(positive, outcome([{ path: 'src/a.ts', line: 11, category: 'correctness' }]));
+  assert.deepEqual(first, { hit: true, lineDelta: 1, categoryMatch: true, findings: 1 }, 'expect.path and expect.line stay the first anchor once others are listed');
+  const second = scoreFixture(positive, outcome([{ path: 'src/a.ts', line: 38, category: 'correctness' }]));
+  assert.deepEqual(second, { hit: true, lineDelta: 2, categoryMatch: true, findings: 1 }, 'the second anchor of the same file counts');
+  const other = scoreFixture(positive, outcome([{ path: 'docs/a.md', line: 3 }]));
+  assert.equal(other.hit, true, 'an anchor in another file counts');
+  assert.equal(other.lineDelta, 0);
+  const between = scoreFixture(positive, outcome([{ path: 'src/a.ts', line: 25 }]));
+  assert.equal(between.hit, false, 'the tolerance is per anchor, not the span between two');
+  assert.equal(between.lineDelta, 15, 'the smallest distance over every anchor');
+  const far = scoreFixture(positive, outcome([{ path: 'docs/a.md', line: 9 }]));
+  assert.equal(far.hit, false);
+  assert.equal(far.lineDelta, 6, 'a finding on an anchor path is on the path, whichever anchor names it');
+  const nearest = scoreFixture(positive, outcome([{ path: 'src/a.ts', line: 14, category: 'style' }, { path: 'docs/a.md', line: 4, category: 'correctness' }]));
+  assert.deepEqual(nearest, { hit: true, lineDelta: 1, categoryMatch: true, findings: 2 }, 'the nearest finding over every anchor decides');
+  const elsewhere = scoreFixture(positive, outcome([{ path: 'src/b.ts', line: 10 }]));
+  assert.equal(elsewhere.hit, false);
+  assert.equal(elsewhere.lineDelta, null, 'a path no anchor names is not on the path');
+  assert.equal(scoreFixture({ ...positive, anchors: [] }, outcome([{ path: 'docs/a.md', line: 3 }])).hit, false, 'without the anchor the same finding misses');
+
+  const summary = summariseResults([
+    { name: 'positive/a', class: 'positive', ...other, exitCode: 0 },
+    { name: 'positive/b', class: 'positive', ...far, exitCode: 0 },
+    { name: 'positive/c', class: 'positive', ...elsewhere, exitCode: 0 },
+  ]);
+  assert.equal(summary.keyBugRecall, 1 / 3);
+  assert.equal(summary.causalLineHit, 0.5, 'two of the three were on an anchor path, and one of those hit');
+});
+
+/** A fixtures directory holding one positive whose `expect` block ends with the given lines. */
+function anchoredFixtures(t, anchorLines) {
+  const fixtures = scratch(t);
+  cpSync(join(canned, 'positive/miss'), join(fixtures, 'positive/miss'), { recursive: true });
+  const casePath = join(fixtures, 'positive/miss/case.yaml');
+  writeFileSync(casePath, `${readFileSync(casePath, 'utf8').trimEnd()}\n${anchorLines.join('\n')}\n`);
+  return fixtures;
+}
+
+test('expect.anchors is read beside expect.path and expect.line, and a malformed entry is refused before any run', (t) => {
+  const select = (lines) => selectFixtures({ fixtures: anchoredFixtures(t, lines), classes: ['positive'], only: null })[0].expectation;
+  const read = select(['  anchors:', '    - { path: src/app.ts, line: 8 }', '    - { path: "docs/app.md", line: 3 }']);
+  assert.equal(read.path, 'src/app.ts', 'expect.path is still the first anchor');
+  assert.equal(read.line, 2);
+  assert.deepEqual(read.anchors, [{ path: 'src/app.ts', line: 8 }, { path: 'docs/app.md', line: 3 }]);
+  assert.deepEqual(selectFixtures({ fixtures: canned, classes: ['positive'], only: 'miss' })[0].expectation.anchors, [], 'a fixture without the key has no further anchors');
+  for (const bad of [
+    ['  anchors:', '    - { path: src/app.ts }'],
+    ['  anchors:', '    - { path: src/app.ts, line: eight }'],
+    ['  anchors:', '    - src/app.ts:8'],
+    ['  anchors: [{ path: src/app.ts, line: 8 }]'],
+    ['  anchors:'],
+  ]) {
+    assert.throws(() => select(bad), (error) => error instanceof RecallUsageError && /positive\/miss: expect\.anchors/.test(error.message), bad.join(' | '));
+  }
+});
+
+test('a canned finding six lines from expect.line is a hit once its own line is an accepted anchor', async (t) => {
+  const run = await recall({ fixtures: anchoredFixtures(t, ['  anchors:', '    - { path: src/app.ts, line: 8 }']), classes: ['positive'] });
+  const [result] = run.results.fixtures;
+  assert.equal(result.exitCode, 0, result.error);
+  assert.equal(result.hit, true);
+  assert.equal(result.lineDelta, 0);
+  assert.equal(run.results.summary.keyBugRecall, 1);
 });
 
 test('a fixture that cannot be materialised is a failed run, counted and left out of the figures', async (t) => {
@@ -450,7 +533,7 @@ test('a fixture record that cannot be true as written is refused, even with a su
     { name: 'positive/c', class: 'positive', skipped: 'r' },
     { name: 'no-findings/d', class: 'no-findings', silent: true, findings: 0, exitCode: 0 },
   ]);
-  assert.deepEqual(readRecallResults(sound).summary, { keyBugRecall: 0, causalLineHit: 0, cleanSilence: 1, positives: 2, skipped: 1, cleanFixtures: 1, failedRuns: 1 });
+  assert.deepEqual(readRecallResults(sound).summary, { keyBugRecall: 0, causalLineHit: 0, cleanSilence: 1, positives: 2, skipped: 1, cleanFixtures: 1, failedRuns: 1, completedPositives: 1, approved: 0, lost: lost() });
 });
 
 test('a miss that names a distance but no finding is refused', (t) => {

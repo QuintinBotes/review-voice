@@ -117,6 +117,38 @@ and `carry` cannot be used until a run id is found, for example in
 Do not make a claim about earlier changes from an `interdiff` or `incremental`
 patch. If the user asks for a complete review, pass `--full` to `RV diff`.
 
+**If `exclusions` is not null, print its `note` on its own line after the
+findings, just as `truncationNote` is printed:**
+
+```
+Excluded 10 of 12 changed files: 10 vendored dependency.
+```
+
+It counts the changed files of this scope that the diff left out (lock files,
+generated output, vendored code, binaries, deleted files) and the count for
+each reason. `diff` prints the same line on stderr, where only you see it, so
+it is yours to pass on. This is a permitted exception to findings-only output,
+and it is not optional, including after `No actionable findings.` and after a
+carried review. A review that read two of twelve files and said nothing about
+the other ten reads as a review of the change. Print the line as it is. Do not
+list the files, do not comment on them, and do not review them. When the
+excluded files are the repository's own code, the person can name them in
+`review.first_party_paths` or pass `--include-generated`; say so only if they
+ask.
+
+The cases below are for a scope other than `unchanged`, which carries the
+earlier run as described above.
+
+**If every changed file was left out, say so and record it.** That is
+`reviewedFileCount` `0` and `structure.removedControls` empty with `exclusions`
+not null, and the rule after this one does not apply to it. Skip the steps up
+to step 6. The output is `No actionable findings.` followed by the `exclusions`
+note on its own line. Record it, so that `/review-voice:explain` can show what
+was left out, by running
+`RV record --repository <owner/repo> --base <ref> --head <sha> --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json --origin interactive`
+with exactly `No actionable findings.` on stdin, and stop.
+
+Otherwise `exclusions` is null, and no changed file was left out.
 If `reviewedFileCount` is `0` and `structure.removedControls` is empty, output
 exactly this and stop:
 
@@ -130,13 +162,11 @@ stop: a deleted check is what this review exists to catch. Continue with the
 steps below; the diff is empty, the leads are in `files.json`, and a finding
 about a deleted file posts in the review body.
 
-Do not explain that the diff was empty. Silence is the answer.
+Do not explain that the diff was empty beyond the `exclusions` note.
 
-Note `excludedFileCount`. Excluded files are lock files, generated output,
-vendored code and binaries. Do not comment on them, and do not mention their
-exclusion unless the user asks. The exception is `handEditSuspected` in the
-summary: a generated file whose header says not to edit it, changed alone in
-its directory. It is kept in the diff because a hand edit is a real change, so
+The exception among excluded files is `handEditSuspected` in the summary: a
+generated file whose header says not to edit it, changed alone in its
+directory. It is kept in the diff because a hand edit is a real change, so
 review it like source and say once that it was edited by hand.
 
 **If `truncated` is true, say so.** Print `truncationNote` on its own line
@@ -970,14 +1000,23 @@ stray directory and another project's notes took the reviewed count from 11 to
   review silently reads the whole pull request again.
 
   `--stages` takes `[{"name","seconds","toolCalls","filesRead","tokens"}]`, one
-  entry per agent stage you ran. Write what you observed; omit a field you do
-  not know rather than estimating it. `record` refuses an entry without `name`
-  and a numeric `seconds`, and stores an entry with a field it does not know
-  without that field, naming what it dropped. `toolCalls` and `filesRead` for the
+  entry per agent stage you ran. Only `name` is required. Give a number only
+  when it was measured, by you or reported by the stage itself, and leave the
+  field out otherwise; never estimate one. A stage you handed to a subagent
+  comes back as its answer, without its time, tool calls, files read or tokens,
+  so its entry is often the name alone, and that is the right record. A figure
+  left out is stored as not measured, and `explain` shows it so. `evaluate`
+  reads only `seconds`, and counts a stage recorded without it as unmeasured
+  instead of counting a guess. `record` refuses an entry without `name`, or
+  with a figure that is present and is not a number of zero or more, and stores
+  an entry with a field it does not know without that field, naming what it
+  dropped. `toolCalls` and `filesRead` for the
   `analyst` are how `explain` shows what it actually read, and `record` prints
   a `warnings` entry when a run with no findings came from a very shallow
   analyst pass for the size of the diff, or one that read under half of the
-  changed files. Show that warning to the person, and
+  changed files. When the `analyst` entry has no `filesRead`, `record` raises
+  no files warning and says on stderr that the read could not be judged, which
+  is not a pass. Show that warning to the person, and
   never post it or put it in the review. A review measured once took about twenty-five
   minutes against a sweep that runs every ten, and whether that holds is a
   distribution nobody has yet.
@@ -1113,3 +1152,8 @@ bar, the entire output is:
 ```
 No actionable findings.
 ```
+
+The lines step 1 tells you to print after the findings still follow it, the
+`exclusions` note among them. A count of the changed files the diff left out
+is not a description of the process. Without it the person cannot tell that
+part of the change was never read.

@@ -126,6 +126,11 @@ export interface LoadedConfig {
   thresholds: { technicalConfidence?: number; finalScore?: number };
   /** `review.linked_issues`: whether `thread` also reads the same-repository issues the description closes. Off by default. */
   linkedIssues: boolean;
+  /**
+   * `review.first_party_paths`: globs for paths that are never classified as
+   * a vendored dependency (issue 351). None by default.
+   */
+  firstPartyPaths: string[];
   layers: PolicyLayer[];
   /**
    * The structured suppressions of every layer, as `resolvePolicy` resolves
@@ -168,7 +173,7 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
   repositories: ['include'],
   review: [
     'human_review', 'structure', 'mode', 'models', 'confidence_threshold', 'final_score_threshold', 'lanes', 'suggestions',
-    'linked_issues', 'max_findings', 'max_words_per_finding', 'max_total_words',
+    'linked_issues', 'max_findings', 'max_words_per_finding', 'max_total_words', 'first_party_paths',
   ],
   'review.human_review': [
     'max_decision_points', 'max_hunk_decision_points', 'sensitive_paths', 'sensitive_exempt_paths', 'test_paths',
@@ -1309,6 +1314,7 @@ export function readConfigDocument(value: unknown, repositoryRoot: string, resul
     const linkedIssues = review['linked_issues'];
     if (typeof linkedIssues === 'boolean') result.linkedIssues = linkedIssues;
     else if (linkedIssues !== undefined) result.warnings.push('review.linked_issues must be true or false; using false.');
+    result.firstPartyPaths = readFirstPartyPaths(review['first_party_paths'], result.warnings);
     result.layers.push({
       scope: { type: 'repository', key: repositoryRoot },
       source: '.review-voice/config.yaml',
@@ -1324,6 +1330,40 @@ export function readConfigDocument(value: unknown, repositoryRoot: string, resul
         : { maxTotalWords: positiveInt(review['max_total_words'])! }),
     });
   }
+}
+
+/**
+ * `review.first_party_paths`. A value that is not a list, or an entry that is
+ * not a glob, is left out with a warning that names it: the files it was meant
+ * to name stay excluded, which is the default, and the warning says why.
+ */
+function readFirstPartyPaths(value: unknown, warnings: string[]): string[] {
+  if (value === undefined) return [];
+  const isGlob = (entry: unknown): entry is string => {
+    if (typeof entry !== 'string' || entry.trim() === '') return false;
+    try {
+      globToRegExp(entry);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const globs: string[] = [];
+  for (const entry of Array.isArray(value) ? value : [value]) {
+    if (Array.isArray(value) && isGlob(entry)) {
+      globs.push(entry);
+      continue;
+    }
+    // A YAML alias can make the list refer to itself, which JSON.stringify cannot show.
+    let shown: string;
+    try {
+      shown = JSON.stringify(entry);
+    } catch {
+      shown = 'a value that refers to itself';
+    }
+    warnings.push(`review.first_party_paths must be a list of globs; ${shown} is not one, so the files it names stay excluded as vendored.`);
+  }
+  return globs;
 }
 
 /**
@@ -1366,6 +1406,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     lanes: [DIFF_LANE],
     thresholds: {},
     linkedIssues: false,
+    firstPartyPaths: [],
     layers: [],
     suppressions: [],
     activePolicyVersions: [],

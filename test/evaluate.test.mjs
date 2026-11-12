@@ -308,8 +308,8 @@ test('stageSeconds reports median, p95 and run count per stage', () => {
     recordWith(db, { stages: [{ name: 'analyst', seconds: 20 }, { name: 'verifier', seconds: 15 }] });
     recordWith(db, { stages: [{ name: 'analyst', seconds: 30 }] });
     assert.deepEqual(stageSeconds(db), {
-      analyst: { median: 20, p95: 30, runs: 3 },
-      verifier: { median: 15, p95: 15, runs: 2 },
+      analyst: { median: 20, p95: 30, runs: 3, unmeasured: 0 },
+      verifier: { median: 15, p95: 15, runs: 2, unmeasured: 0 },
     });
   });
 });
@@ -575,7 +575,7 @@ test('evaluate --json carries stage_seconds beside metrics, and the text does no
       const result = cli(['evaluate', '--json'], dir);
       assert.equal(result.code, 0, result.stderr);
       const parsed = JSON.parse(result.stdout);
-      assert.deepEqual(parsed.stage_seconds, { analyst: { median: 12, p95: 12, runs: 1 } });
+      assert.deepEqual(parsed.stage_seconds, { analyst: { median: 12, p95: 12, runs: 1, unmeasured: 0 } });
       assert.ok(Array.isArray(parsed.metrics));
       assert.ok(parsed.posted_breakdown);
       assert.equal(parsed.metrics.some((m) => m.name === 'stage_seconds'), false);

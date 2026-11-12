@@ -51,6 +51,13 @@ const STAGE_FIELDS: Record<keyof StageTiming, true> = {
 };
 
 /**
+ * The figures a stage may leave out (#352). A coordinator that hands a stage to
+ * a subagent gets its answer back and none of these, and a required figure it
+ * could not see was a figure it made up.
+ */
+const FIGURES = ['seconds', 'toolCalls', 'filesRead', 'tokens'] as const;
+
+/**
  * The stages of a `--stages` file, or an error naming what it does not know.
  * Refused rather than filtered (#316): a stage dropped in silence left the run
  * with an empty list that looked like a run with no stages.
@@ -67,9 +74,11 @@ export function parseStagesFile(parsed: unknown, warn: (message: string) => void
       // An extra field costs only itself: the stage is kept and the drop is named, so a stray note never fails a record.
       const unknown = Object.keys(stage).filter((key) => !Object.hasOwn(STAGE_FIELDS, key));
       if (unknown.length > 0) warn(`entry ${index}: unknown field${unknown.length === 1 ? '' : 's'} ${unknown.map((key) => JSON.stringify(key)).join(', ')} not stored`);
-      const { name, seconds } = stage as Record<string, unknown>;
-      if (typeof name !== 'string' || name === '') return 'name must be a non-empty string';
-      return Number.isFinite(seconds) ? null : 'seconds must be a number';
+      const given = stage as Record<string, unknown>;
+      if (typeof given['name'] !== 'string' || given['name'] === '') return 'name must be a non-empty string';
+      // Left out or null is not measured. A value that is there and is no measurement is a mistake, and storing it as not measured would hide it.
+      const bad = FIGURES.find((key) => given[key] !== undefined && given[key] !== null && count(given[key]) === undefined);
+      return bad === undefined ? null : `${bad} must be a number, zero or more, when it is given`;
     })();
     if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
   });
@@ -86,6 +95,7 @@ export function cleanStages(stages: StageTiming[], diff: string | null): StageTi
   // Files with a hunk at the head, as acquire counts them: parseHunks keeps a hunkless file only when it ends the patch.
   const diffFiles = diff === null ? undefined : [...parseHunks(diff).values()].filter((file) => file.ranges.length > 0).length;
   return stages.map((stage) => {
+    const seconds = count(stage.seconds);
     const toolCalls = count(stage.toolCalls);
     const tokens = count(stage.tokens);
     const filesRead = count(stage.filesRead);
@@ -98,7 +108,7 @@ export function cleanStages(stages: StageTiming[], diff: string | null): StageTi
     const family = (FAMILIES as readonly unknown[]).includes(stage.family) ? stage.family : undefined;
     return {
       name: stage.name,
-      seconds: stage.seconds,
+      ...(seconds === undefined ? {} : { seconds }),
       ...(model === undefined ? {} : { model }),
       ...(models.length === 0 ? {} : { models }),
       ...(family === undefined ? {} : { family }),
@@ -114,10 +124,15 @@ export function cleanStages(stages: StageTiming[], diff: string | null): StageTi
 
 /** One line per stage, for `explain`. */
 export function describeStage(stage: StageTiming): string {
-  const parts = [`${Math.round(stage.seconds)}s`];
-  if (stage.toolCalls !== undefined) parts.push(`${stage.toolCalls} tool call${stage.toolCalls === 1 ? '' : 's'}`);
-  if (stage.filesRead !== undefined) parts.push(`${stage.filesRead} file${stage.filesRead === 1 ? '' : 's'} read`);
-  if (stage.tokens !== undefined) parts.push(`${stage.tokens} tokens`);
+  // Not `=== undefined`: a row from the store may hold null where a figure is missing.
+  const figure = (value: number | undefined, label: string, measured: (value: number) => string): string =>
+    typeof value === 'number' ? measured(value) : `${label} not measured`;
+  const parts = [
+    figure(stage.seconds, 'seconds', (value) => `${Math.round(value)}s`),
+    figure(stage.toolCalls, 'tool calls', (value) => `${value} tool call${value === 1 ? '' : 's'}`),
+    figure(stage.filesRead, 'files read', (value) => `${value} file${value === 1 ? '' : 's'} read`),
+    figure(stage.tokens, 'tokens', (value) => `${value} tokens`),
+  ];
   if (stage.diffLines !== undefined) parts.push(`on ${stage.diffLines} changed lines`);
   return `${stage.name}: ${parts.join(', ')}`;
 }
@@ -129,10 +144,11 @@ export function shallowPassWarning(stages: StageTiming[], findingCount: number):
   if (analyst === undefined) return null;
   const { toolCalls, diffLines, filesRead, diffFiles } = analyst;
   const reasons: string[] = [];
-  if (toolCalls !== undefined && diffLines !== undefined && diffLines >= SHALLOW_MIN_DIFF_LINES && toolCalls * SHALLOW_LINES_PER_CALL < diffLines) {
+  // As describeStage reads them: a null from the store is not measured, and judged as a number it would be zero.
+  if (typeof toolCalls === 'number' && diffLines !== undefined && diffLines >= SHALLOW_MIN_DIFF_LINES && toolCalls * SHALLOW_LINES_PER_CALL < diffLines) {
     reasons.push(`made ${toolCalls} tool call(s) on ${diffLines} changed lines`);
   }
-  if (filesRead !== undefined && diffFiles !== undefined && filesRead < diffFiles * SHALLOW_MIN_FILES_READ_SHARE) {
+  if (typeof filesRead === 'number' && diffFiles !== undefined && filesRead < diffFiles * SHALLOW_MIN_FILES_READ_SHARE) {
     reasons.push(`read ${filesRead} of ${diffFiles} changed files`);
   }
   if (reasons.length === 0) return null;
@@ -140,4 +156,15 @@ export function shallowPassWarning(stages: StageTiming[], findingCount: number):
     `The analyst ${reasons.join(', ')} and found nothing. ` +
     'That is a shallow pass for this size; consider re-running it, on a stronger model if need be, before trusting a clean result.'
   );
+}
+
+/**
+ * What `record` says when a clean run gave the files check nothing to judge
+ * (#352): no warning is not the same as a read that passed.
+ */
+export function unjudgedRead(stages: StageTiming[], findingCount: number): string | null {
+  if (findingCount > 0) return null;
+  const analyst = stages.find((stage) => stage.name === 'analyst');
+  if (analyst === undefined || typeof analyst.filesRead === 'number' || !analyst.diffFiles) return null;
+  return `Whether the analyst read enough of the ${analyst.diffFiles} changed files could not be judged, because the stage recorded no file count.`;
 }

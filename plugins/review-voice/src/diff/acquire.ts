@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { classify, findHandEdited, isReviewable, languageOf, type FileClass } from './classify.ts';
+import { classify, findHandEdited, firstPartyMatcher, isReviewable, languageOf, type FileClass } from './classify.ts';
+import { excludedReason, FILE_DELETED, summariseExclusions, type ExclusionSummary } from './exclusions.ts';
 
 export interface ChangedFile {
   path: string;
@@ -41,6 +42,8 @@ export interface DiffResult {
    */
   hunkFileCount: number;
   excludedFileCount: number;
+  /** How many changed files the review leaves out and why; null when it reads them all. */
+  exclusions: ExclusionSummary | null;
   /** Unified diff restricted to reviewable files. Empty when nothing qualifies. */
   diff: string;
 }
@@ -195,25 +198,18 @@ function parseNameStatus(raw: string): { status: string; path: string; previousP
   return out;
 }
 
-function excludedReason(cls: FileClass): string {
-  switch (cls) {
-    case 'lockfile': return 'lock file; use --include-generated if the dependency change is the point';
-    case 'vendored': return 'vendored dependency';
-    case 'generated': return 'generated or minified';
-    case 'binary': return 'binary';
-    default: return '';
-  }
-}
-
 export interface AcquireOptions {
   cwd: string;
   staged: boolean;
   base: string | null;
   includeGenerated: boolean;
+  /** `review.first_party_paths`: globs for paths that are never a vendored dependency. */
+  firstPartyPaths?: readonly string[] | undefined;
 }
 
 export function acquireDiff(options: AcquireOptions): DiffResult {
   const root = repositoryRoot(options.cwd);
+  const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
 
   const range: string[] = options.base !== null
     ? [`${options.base}...HEAD`]
@@ -239,11 +235,24 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
 
   // Only the working tree can have untracked files; --staged and --base both
   // describe content git already knows about.
-  if (mode === 'worktree') {
-    for (const path of untrackedFiles(root)) {
-      entries.push({ status: 'A', path });
-    }
+  const untracked = new Set(mode === 'worktree' ? untrackedFiles(root) : []);
+  for (const path of untracked) entries.push({ status: 'A', path });
+
+  // What git itself calls binary, whatever the name says, since git gives no
+  // hunk for it. With -z, so a renamed or quoted path is found under its new name.
+  const binary = new Set<string>();
+  const stats = git(['diff', '--numstat', '-z', ...range], root).split('\0');
+  for (let i = 0; i < stats.length; i += 1) {
+    const match = /^(-|\d+)\t(-|\d+)\t([^]*)$/.exec(stats[i]!);
+    if (match === null) continue;
+    // A rename leaves the path empty and gives the old and the new one next.
+    const path = match[3] !== '' ? match[3] : stats[(i += 2)];
+    if (match[1] === '-' && path !== undefined) binary.add(path);
   }
+  const isBinary = (path: string): boolean =>
+    untracked.has(path)
+      ? gitAllowingDifference(['diff', '--numstat', '--no-index', '--', '/dev/null', path], root).startsWith('-\t-\t')
+      : binary.has(path);
 
   // Head content of a generated file, read from where the compared side lives.
   const readHead = (path: string): string | null => {
@@ -257,15 +266,20 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
   const handEdited = findHandEdited(
     entries.filter((entry) => entry.status !== 'D').map((entry) => entry.path),
     readHead,
+    firstParty,
   );
 
   const files: ChangedFile[] = entries.map((entry) => {
-    const cls = classify(entry.path);
+    const cls = classify(entry.path, firstParty);
     // A deleted file has no content to review; its removal shows up in the
     // diff of whatever referenced it.
     const deleted = entry.status === 'D';
     const suspected = handEdited.has(entry.path);
-    const reviewed = !deleted && (suspected || isReviewable(entry.path, options.includeGenerated));
+    const wanted = !deleted && (suspected || isReviewable(entry.path, options.includeGenerated, firstParty));
+    // Whatever its class, the key or the flag say. "Binary files differ" is
+    // no content to review, and counting it read hides that (issue 351).
+    const unreadable = wanted && isBinary(entry.path);
+    const reviewed = wanted && !unreadable;
     return {
       path: entry.path,
       ...(entry.previousPath === undefined ? {} : { previousPath: entry.previousPath }),
@@ -276,13 +290,12 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
       deletions: numstat.get(entry.path)?.deletions ?? 0,
       reviewed,
       ...(suspected ? { handEditSuspected: true } : {}),
-      ...(reviewed ? {} : { excludedBecause: deleted ? 'file deleted' : excludedReason(cls) }),
+      ...(reviewed ? {} : { excludedBecause: deleted ? FILE_DELETED : excludedReason(unreadable ? 'binary' : cls) }),
     };
   });
 
   const reviewable = files.filter((file) => file.reviewed).map((file) => file.path);
 
-  const untracked = new Set(mode === 'worktree' ? untrackedFiles(root) : []);
   const trackedReviewable = reviewable.filter((path) => !untracked.has(path));
   const untrackedReviewable = reviewable.filter((path) => untracked.has(path));
 
@@ -315,6 +328,7 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
     // reviewable, present and empty.
     hunkFileCount: reviewable.filter((path) => hunkPaths.has(path)).length,
     excludedFileCount: files.length - reviewable.length,
+    exclusions: summariseExclusions(files),
     diff,
   };
 }

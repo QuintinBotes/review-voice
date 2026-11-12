@@ -23,7 +23,7 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0009](0009-severity-from-computed-reach.md) | Severity from category and computed reach | Accepted, amended 2026-10-06 |
 | [0010](0010-review-verdict-posting.md) | Posting a review with its verdict | Accepted, amended by 0012, 0013, 0017, 0018 and 0028, amended 2026-11-09 by 0035 (a second checked write path, the reply) |
 | [0011](0011-severity-escalation-needs-traced-impact.md) | Severity escalation needs traced impact | Accepted |
-| [0012](0012-complex-changes-need-human-approval.md) | Complex changes are raised for a human's approval | Accepted, amended 2026-10-06 (posted body; production-source count; would-have verdict and stale request for changes), amended 2026-11-07 (config read from the base commit), and by 0020 and 0028 |
+| [0012](0012-complex-changes-need-human-approval.md) | Complex changes are raised for a human's approval | Accepted, amended 2026-10-06 (posted body; production-source count; would-have verdict and stale request for changes), amended 2026-11-07 (config read from the base commit), amended 2026-11-11 (`review.first_party_paths`), and by 0020 and 0028 |
 | [0013](0013-ci-needs-rerun.md) | CI that needs a rerun holds every event | Accepted, amended 2026-10-06 and by 0028 |
 | [0014](0014-verifier-tie-break.md) | A tie-break settles a disputed traced impact | Accepted, amended 2026-10-06 and by 0019 |
 | [0015](0015-untraced-document-consumers.md) | A stale document may be reported untraced at nit | Accepted |
@@ -39,7 +39,7 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0025](0025-cost-modes-choose-stages-and-models.md) | Cost modes choose stages and models | Accepted, amended 2026-11-08 (`auto` and a removed control), amended 2026-11-09 (reproductions) |
 | [0026](0026-the-queue-reads-github-search-inside-the-allowlist.md) | The queue reads GitHub search, inside the allowlist | Accepted, amended 2026-11-09 by 0036 (revert search) |
 | [0027](0027-one-watcher-remembers-every-head.md) | One watcher remembers every head | Accepted, amended 2026-11-07 (failure statuses, retention) |
-| [0028](0028-verdict-policies-are-configurable.md) | Verdict policies for CI and complexity are configurable | Accepted, amended 2026-11-07 (`never_approve`), amended 2026-11-08 (scope block), amended 2026-11-08 (evidence block), amended 2026-11-09 (`never_approve_paths` and `only_approve_paths`), amended 2026-11-09 (`min_posted_tier`, `reading_guide`) |
+| [0028](0028-verdict-policies-are-configurable.md) | Verdict policies for CI and complexity are configurable | Accepted, amended 2026-11-07 (`never_approve`), amended 2026-11-08 (scope block), amended 2026-11-08 (evidence block), amended 2026-11-09 (`never_approve_paths` and `only_approve_paths`), amended 2026-11-09 (`min_posted_tier`, `reading_guide`), amended 2026-11-11 (files left out) |
 | [0029](0029-posted-findings-are-followed-to-an-outcome.md) | Posted findings are followed to an outcome | Accepted, amended 2026-11-08, and by 0033 (applied suggestions), amended 2026-11-09 by 0036 (approvals), amended 2026-11-10 by 0035 (replies: questions, the reply row and two metrics) |
 | [0030](0030-team-profiles-and-cold-start.md) | Team profiles pool reviewers, and a new install starts from a baseline | Accepted |
 | [0031](0031-a-github-action-runs-one-review-per-pull-request-event.md) | A GitHub Action runs one review per pull request event | Accepted, amended 2026-11-07 (config read from the base commit), amended 2026-11-10 (`held_queue` in the job summary) |

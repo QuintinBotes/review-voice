@@ -29,6 +29,13 @@ review:
   # Also read the issues the description closes (`Closes #12`; same repository,
   # at most five). A quote from an issue is checked like one from the description.
   linked_issues: false
+  # Paths that are this repository's own code although a directory in them
+  # has a name that dependency directories use (vendor, third_party,
+  # node_modules). Globs, as for sensitive_paths, e.g. "packages/vendor/**".
+  # A matching file is never left out as a vendored dependency; a lock file,
+  # generated output or a binary under it still is. `review --pr` reads this
+  # from the base commit, so a pull request cannot set it for itself.
+  first_party_paths: []
   # Set the model for a stage in every mode; an override never turns a stage
   # on or off. Keys: intent, analyst (the diff lane), lanes, verify, tie-break,
   # challenge, edit. Defaults are sonnet, or opus where the mode calls for it.

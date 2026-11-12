@@ -14,5 +14,5 @@
 +  return raw
 +    .split(',')
 +    .filter(Boolean)
-+    .reduce((value, name) => value | parseScope(name), Scope.None);
++    .reduce<ScopeValue>((value, name) => value | parseScope(name), Scope.None);
 +}

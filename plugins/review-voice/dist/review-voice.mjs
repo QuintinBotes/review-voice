@@ -235,7 +235,114 @@ import { execFileSync as execFileSync2 } from "node:child_process";
 import { readFileSync as readFileSync2 } from "node:fs";
 import { join as join2 } from "node:path";
 
+// plugins/review-voice/src/conventions/globs.ts
+function frontmatterPaths(content) {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
+  if (match === null) return [];
+  const block = match[1] ?? "";
+  const paths = [];
+  let inPaths = false;
+  for (const raw of block.split(/\r?\n/)) {
+    const line3 = raw.trimEnd();
+    if (/^paths\s*:/.test(line3)) {
+      inPaths = true;
+      const inline = line3.slice(line3.indexOf(":") + 1).trim();
+      if (inline.startsWith("[")) {
+        for (const item of inline.slice(1, -1).split(",")) paths.push(unquote(item));
+        inPaths = false;
+      }
+      continue;
+    }
+    if (!inPaths) continue;
+    if (/^\s*-\s+/.test(line3)) {
+      paths.push(unquote(line3.replace(/^\s*-\s+/, "")));
+      continue;
+    }
+    if (/^\S/.test(line3)) inPaths = false;
+  }
+  return paths.filter((glob) => glob.length > 0);
+}
+function unquote(value) {
+  return value.trim().replace(/^["']|["']$/g, "").trim();
+}
+function globToRegExp(glob) {
+  let source = "";
+  for (let i = 0; i < glob.length; i += 1) {
+    const char = glob[i];
+    if (char === "*") {
+      if (glob[i + 1] === "*") {
+        if (glob[i + 2] === "/") {
+          source += "(?:.*/)?";
+          i += 2;
+        } else {
+          source += ".*";
+          i += 1;
+        }
+        continue;
+      }
+      source += "[^/]*";
+      continue;
+    }
+    if (char === "?") {
+      source += "[^/]";
+      continue;
+    }
+    source += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${source}$`, "su");
+}
+function governsCount(globs, changedPaths) {
+  if (globs.length === 0 || changedPaths.length === 0) return 0;
+  const normalised2 = changedPaths.map((path) => path.split("\\").join("/"));
+  const compiled = globs.flatMap((glob) => {
+    try {
+      const exact = globToRegExp(glob);
+      return glob.includes("/") ? [exact] : [exact, globToRegExp(`**/${glob}`)];
+    } catch {
+      return [];
+    }
+  });
+  return normalised2.filter((path) => compiled.some((pattern) => pattern.test(path))).length;
+}
+function governsAny(globs, changedPaths) {
+  if (globs.length === 0 || changedPaths.length === 0) return false;
+  const normalised2 = changedPaths.map((path) => path.split("\\").join("/"));
+  return globs.some((glob) => {
+    let pattern;
+    try {
+      pattern = globToRegExp(glob);
+    } catch {
+      return false;
+    }
+    const loose = glob.includes("/") ? null : globToRegExp(`**/${glob}`);
+    return normalised2.some((path) => pattern.test(path) || loose !== null && loose.test(path));
+  });
+}
+function pointerTargets(content) {
+  const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---/, "").trim();
+  if (body.length === 0) return [];
+  const targets = [];
+  for (const raw of body.split(/\r?\n/)) {
+    const line3 = raw.trim();
+    if (line3.length === 0 || line3.startsWith("<!--") || line3.startsWith("#")) continue;
+    const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(line3);
+    if (match?.[1] === void 0) return [];
+    targets.push(match[1]);
+  }
+  return targets;
+}
+
 // plugins/review-voice/src/diff/classify.ts
+function firstPartyMatcher(globs) {
+  const matchers = globs.flatMap((glob) => {
+    try {
+      return [globToRegExp(glob)];
+    } catch {
+      return [];
+    }
+  });
+  return (path) => matchers.some((matcher) => matcher.test(path));
+}
 var LOCKFILES = /* @__PURE__ */ new Set([
   "package-lock.json",
   "npm-shrinkwrap.json",
@@ -372,11 +479,11 @@ function languageOf(path) {
   if (name === "makefile") return "make";
   return LANGUAGES[extensionOf(path)] ?? null;
 }
-function classify(path) {
+function classify(path, firstParty) {
   const name = path.split("/").pop() ?? "";
   if (LOCKFILES.has(name)) return "lockfile";
   const segments = path.split("/");
-  if (segments.slice(0, -1).some((segment) => VENDOR_SEGMENTS.has(segment))) return "vendored";
+  if (segments.slice(0, -1).some((segment) => VENDOR_SEGMENTS.has(segment)) && firstParty?.(path) !== true) return "vendored";
   if (BINARY_EXTENSIONS.has(extensionOf(path))) return "binary";
   if (GENERATED_PATTERNS.some((pattern) => pattern.test(path))) return "generated";
   return "source";
@@ -425,8 +532,8 @@ function isDocumentation(path) {
   if (extension !== "" || !DOCUMENTATION_NAMES.has(name)) return false;
   return segments.length === 0 || segments.some((segment) => segment === "docs" || segment === "doc");
 }
-function isReviewable(path, includeGenerated) {
-  return includeGenerated || classify(path) === "source";
+function isReviewable(path, includeGenerated, firstParty) {
+  return includeGenerated || classify(path, firstParty) === "source";
 }
 var DO_NOT_EDIT = /@generated|do not edit|don'?t edit|auto-?generated|automatically generated/i;
 var HEADER_LINES = 20;
@@ -440,8 +547,8 @@ function generatedRoot(path) {
   const slash = path.lastIndexOf("/");
   return slash < 0 ? "" : path.slice(0, slash + 1);
 }
-function findHandEdited(changedPaths, readHeader) {
-  const generated = changedPaths.filter((path) => classify(path) === "generated");
+function findHandEdited(changedPaths, readHeader, firstParty) {
+  const generated = changedPaths.filter((path) => classify(path, firstParty) === "generated");
   const perRoot = /* @__PURE__ */ new Map();
   for (const path of generated) {
     const root = generatedRoot(path);
@@ -454,6 +561,71 @@ function findHandEdited(changedPaths, readHeader) {
     if (header !== null && hasDoNotEditHeader(header)) suspected.add(path);
   }
   return suspected;
+}
+
+// plugins/review-voice/src/diff/exclusions.ts
+var FILE_DELETED = "file deleted";
+var NO_PATCH = "no patch returned (binary or too large)";
+var SAME_AS_BASE_TIP = "identical to the base branch tip (already merged there)";
+var COVERED_EARLIER = "unchanged since the last review";
+function leftOutPaths(files2) {
+  return files2.filter((file2) => file2.reviewed === false && !String(file2.excludedBecause ?? "").startsWith(COVERED_EARLIER)).map((file2) => file2.path);
+}
+function excludedReason(cls) {
+  switch (cls) {
+    case "lockfile":
+      return "lock file; use --include-generated if the dependency change is the point";
+    case "vendored":
+      return "vendored dependency";
+    case "generated":
+      return "generated or minified";
+    case "binary":
+      return "binary";
+    default:
+      return "";
+  }
+}
+var short = (reason2) => reason2.split(";")[0].trim();
+var KNOWN_REASONS = new Set(
+  [...["lockfile", "vendored", "generated", "binary"].map(excludedReason), FILE_DELETED, NO_PATCH, SAME_AS_BASE_TIP].map(short)
+);
+var OTHER_REASON = "other reason";
+var plural = (count4) => `${count4} changed file${count4 === 1 ? "" : "s"}`;
+function summary(changedFiles2, counts) {
+  const reasons = [...counts].map(([reason2, files2]) => ({ reason: reason2, files: files2 })).sort((a, b) => b.files - a.files);
+  const excludedFiles = reasons.reduce((sum, entry) => sum + entry.files, 0);
+  if (excludedFiles === 0) return null;
+  return {
+    changedFiles: changedFiles2,
+    excludedFiles,
+    reasons,
+    note: `Excluded ${excludedFiles} of ${plural(changedFiles2)}: ${reasons.map((entry) => `${entry.files} ${entry.reason}`).join(", ")}.`
+  };
+}
+function summariseExclusions(files2) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const file2 of files2) {
+    if (file2.reviewed) continue;
+    const reason2 = short(file2.excludedBecause ?? "") || OTHER_REASON;
+    counts.set(reason2, (counts.get(reason2) ?? 0) + 1);
+  }
+  return summary(files2.length, counts);
+}
+function parseExclusions(raw) {
+  if (typeof raw !== "object" || raw === null) return null;
+  const value = raw;
+  const whole = (count4) => Number.isInteger(count4) && count4 > 0;
+  if (!whole(value["changedFiles"]) || !whole(value["excludedFiles"]) || !Array.isArray(value["reasons"])) return null;
+  const counts = /* @__PURE__ */ new Map();
+  for (const entry of value["reasons"]) {
+    const reason2 = entry?.reason;
+    const files2 = entry?.files;
+    if (typeof reason2 !== "string" || !whole(files2)) return null;
+    const known = KNOWN_REASONS.has(reason2) ? reason2 : OTHER_REASON;
+    counts.set(known, (counts.get(known) ?? 0) + files2);
+  }
+  const parsed2 = summary(value["changedFiles"], counts);
+  return parsed2 !== null && parsed2.excludedFiles === value["excludedFiles"] && parsed2.excludedFiles <= parsed2.changedFiles ? parsed2 : null;
 }
 
 // plugins/review-voice/src/diff/acquire.ts
@@ -558,22 +730,9 @@ function parseNameStatus(raw) {
   }
   return out;
 }
-function excludedReason(cls) {
-  switch (cls) {
-    case "lockfile":
-      return "lock file; use --include-generated if the dependency change is the point";
-    case "vendored":
-      return "vendored dependency";
-    case "generated":
-      return "generated or minified";
-    case "binary":
-      return "binary";
-    default:
-      return "";
-  }
-}
 function acquireDiff(options) {
   const root = repositoryRoot(options.cwd);
+  const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
   const range = options.base !== null ? [`${options.base}...HEAD`] : options.staged ? ["--cached"] : [];
   const mode = options.base !== null ? "base" : options.staged ? "staged" : "worktree";
   const entries = parseNameStatus(git(["diff", "--name-status", "-z", ...range], root));
@@ -586,11 +745,17 @@ function acquireDiff(options) {
       deletions: match[2] === "-" ? 0 : Number(match[2])
     });
   }
-  if (mode === "worktree") {
-    for (const path of untrackedFiles(root)) {
-      entries.push({ status: "A", path });
-    }
+  const untracked = new Set(mode === "worktree" ? untrackedFiles(root) : []);
+  for (const path of untracked) entries.push({ status: "A", path });
+  const binary2 = /* @__PURE__ */ new Set();
+  const stats = git(["diff", "--numstat", "-z", ...range], root).split("\0");
+  for (let i = 0; i < stats.length; i += 1) {
+    const match = /^(-|\d+)\t(-|\d+)\t([^]*)$/.exec(stats[i]);
+    if (match === null) continue;
+    const path = match[3] !== "" ? match[3] : stats[i += 2];
+    if (match[1] === "-" && path !== void 0) binary2.add(path);
   }
+  const isBinary = (path) => untracked.has(path) ? gitAllowingDifference(["diff", "--numstat", "--no-index", "--", "/dev/null", path], root).startsWith("-	-	") : binary2.has(path);
   const readHead3 = (path) => {
     try {
       if (mode === "worktree") return readFileSync2(join2(root, path), "utf8");
@@ -601,13 +766,16 @@ function acquireDiff(options) {
   };
   const handEdited = findHandEdited(
     entries.filter((entry) => entry.status !== "D").map((entry) => entry.path),
-    readHead3
+    readHead3,
+    firstParty
   );
   const files2 = entries.map((entry) => {
-    const cls = classify(entry.path);
+    const cls = classify(entry.path, firstParty);
     const deleted = entry.status === "D";
     const suspected = handEdited.has(entry.path);
-    const reviewed = !deleted && (suspected || isReviewable(entry.path, options.includeGenerated));
+    const wanted = !deleted && (suspected || isReviewable(entry.path, options.includeGenerated, firstParty));
+    const unreadable = wanted && isBinary(entry.path);
+    const reviewed = wanted && !unreadable;
     return {
       path: entry.path,
       ...entry.previousPath === void 0 ? {} : { previousPath: entry.previousPath },
@@ -618,11 +786,10 @@ function acquireDiff(options) {
       deletions: numstat.get(entry.path)?.deletions ?? 0,
       reviewed,
       ...suspected ? { handEditSuspected: true } : {},
-      ...reviewed ? {} : { excludedBecause: deleted ? "file deleted" : excludedReason(cls) }
+      ...reviewed ? {} : { excludedBecause: deleted ? FILE_DELETED : excludedReason(unreadable ? "binary" : cls) }
     };
   });
   const reviewable = files2.filter((file2) => file2.reviewed).map((file2) => file2.path);
-  const untracked = new Set(mode === "worktree" ? untrackedFiles(root) : []);
   const trackedReviewable = reviewable.filter((path) => !untracked.has(path));
   const untrackedReviewable = reviewable.filter((path) => untracked.has(path));
   const parts = [];
@@ -649,6 +816,7 @@ function acquireDiff(options) {
     // reviewable, present and empty.
     hunkFileCount: reviewable.filter((path) => hunkPaths.has(path)).length,
     excludedFileCount: files2.length - reviewable.length,
+    exclusions: summariseExclusions(files2),
     diff
   };
 }
@@ -1296,103 +1464,6 @@ function openDatabase(path = databasePath()) {
   return db;
 }
 
-// plugins/review-voice/src/conventions/globs.ts
-function frontmatterPaths(content) {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
-  if (match === null) return [];
-  const block = match[1] ?? "";
-  const paths = [];
-  let inPaths = false;
-  for (const raw of block.split(/\r?\n/)) {
-    const line3 = raw.trimEnd();
-    if (/^paths\s*:/.test(line3)) {
-      inPaths = true;
-      const inline = line3.slice(line3.indexOf(":") + 1).trim();
-      if (inline.startsWith("[")) {
-        for (const item of inline.slice(1, -1).split(",")) paths.push(unquote(item));
-        inPaths = false;
-      }
-      continue;
-    }
-    if (!inPaths) continue;
-    if (/^\s*-\s+/.test(line3)) {
-      paths.push(unquote(line3.replace(/^\s*-\s+/, "")));
-      continue;
-    }
-    if (/^\S/.test(line3)) inPaths = false;
-  }
-  return paths.filter((glob) => glob.length > 0);
-}
-function unquote(value) {
-  return value.trim().replace(/^["']|["']$/g, "").trim();
-}
-function globToRegExp(glob) {
-  let source = "";
-  for (let i = 0; i < glob.length; i += 1) {
-    const char = glob[i];
-    if (char === "*") {
-      if (glob[i + 1] === "*") {
-        if (glob[i + 2] === "/") {
-          source += "(?:.*/)?";
-          i += 2;
-        } else {
-          source += ".*";
-          i += 1;
-        }
-        continue;
-      }
-      source += "[^/]*";
-      continue;
-    }
-    if (char === "?") {
-      source += "[^/]";
-      continue;
-    }
-    source += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  }
-  return new RegExp(`^${source}$`, "su");
-}
-function governsCount(globs, changedPaths) {
-  if (globs.length === 0 || changedPaths.length === 0) return 0;
-  const normalised2 = changedPaths.map((path) => path.split("\\").join("/"));
-  const compiled = globs.flatMap((glob) => {
-    try {
-      const exact = globToRegExp(glob);
-      return glob.includes("/") ? [exact] : [exact, globToRegExp(`**/${glob}`)];
-    } catch {
-      return [];
-    }
-  });
-  return normalised2.filter((path) => compiled.some((pattern) => pattern.test(path))).length;
-}
-function governsAny(globs, changedPaths) {
-  if (globs.length === 0 || changedPaths.length === 0) return false;
-  const normalised2 = changedPaths.map((path) => path.split("\\").join("/"));
-  return globs.some((glob) => {
-    let pattern;
-    try {
-      pattern = globToRegExp(glob);
-    } catch {
-      return false;
-    }
-    const loose = glob.includes("/") ? null : globToRegExp(`**/${glob}`);
-    return normalised2.some((path) => pattern.test(path) || loose !== null && loose.test(path));
-  });
-}
-function pointerTargets(content) {
-  const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---/, "").trim();
-  if (body.length === 0) return [];
-  const targets = [];
-  for (const raw of body.split(/\r?\n/)) {
-    const line3 = raw.trim();
-    if (line3.length === 0 || line3.startsWith("<!--") || line3.startsWith("#")) continue;
-    const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(line3);
-    if (match?.[1] === void 0) return [];
-    targets.push(match[1]);
-  }
-  return targets;
-}
-
 // plugins/review-voice/src/diff/complexity.ts
 var DEFAULT_SENSITIVE_PATHS = [
   ".github/workflows/**",
@@ -1690,8 +1761,8 @@ function assessComplexity(diff, files2, partial, markedGenerated2 = /* @__PURE__
   };
 }
 var MAX_STRUCTURE_LISTED = 3;
-function listedStructure(items, describe) {
-  const shown = items.slice(0, MAX_STRUCTURE_LISTED).map(describe).join(", ");
+function listedStructure(items, describe2) {
+  const shown = items.slice(0, MAX_STRUCTURE_LISTED).map(describe2).join(", ");
   const more = items.length - Math.min(items.length, MAX_STRUCTURE_LISTED);
   return `${shown}${more > 0 ? `, +${more} more` : ""}`;
 }
@@ -1725,18 +1796,18 @@ function applyStructureHumanReviewCap(assessment, signals, partial) {
   if (reasons.length === assessment.reasons.length) return assessment;
   return { ...assessment, level: "high", reasons };
 }
-var plural = (count4, noun) => `${count4} ${noun}${count4 === 1 ? "" : "s"}`;
+var plural2 = (count4, noun) => `${count4} ${noun}${count4 === 1 ? "" : "s"}`;
 function notCounted(excluded) {
   const parts = [];
   if (excluded.generatedFiles > 0) {
     parts.push(
-      `${plural(excluded.generatedFiles, "generated file")} (${plural(excluded.generatedDecisionPoints, "decision point")})`
+      `${plural2(excluded.generatedFiles, "generated file")} (${plural2(excluded.generatedDecisionPoints, "decision point")})`
     );
   }
   if (excluded.testFiles > 0) {
-    parts.push(`${plural(excluded.testFiles, "test file")} (${plural(excluded.testDecisionPoints, "decision point")})`);
+    parts.push(`${plural2(excluded.testFiles, "test file")} (${plural2(excluded.testDecisionPoints, "decision point")})`);
   }
-  if (excluded.documentationFiles > 0) parts.push(plural(excluded.documentationFiles, "documentation file"));
+  if (excluded.documentationFiles > 0) parts.push(plural2(excluded.documentationFiles, "documentation file"));
   return parts.length === 0 ? "" : ` Left out of the decision-point count: ${parts.join(", ")}.`;
 }
 function exemptedClause(exempted) {
@@ -8432,15 +8503,15 @@ function deriveSeverity(category, requested, reach = null) {
     };
   }
   const varies = new Set(Object.values(tiers ?? {})).size > 1;
-  const describe = resolved === normalised2 ? `${resolved} at ${resolvedReach} reach carries ${severity}` : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`;
+  const describe2 = resolved === normalised2 ? `${resolved} at ${resolvedReach} reach carries ${severity}` : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`;
   if (!varies) {
-    return { severity, requested, reach: reach ?? null, reason: describe };
+    return { severity, requested, reach: reach ?? null, reason: describe2 };
   }
   return boundToRequest(
     severity,
     requested,
     reach ?? null,
-    describe
+    describe2
   );
 }
 
@@ -11125,6 +11196,19 @@ function ownDiffFiles(patch) {
   return files2;
 }
 function planScope(options) {
+  const planned = narrowestScope(options);
+  if (planned.scope.kind === "full") return planned;
+  const leftOutBefore = new Set(options.priorLeftOut ?? []);
+  const notRead = new Set(options.reviewedFiles.map((file2) => file2.path).filter((path) => leftOutBefore.has(path)));
+  for (const [from, to] of patchRenames(planned.interdiffPatch ?? "")) {
+    if (leftOutBefore.has(from) || !isReviewable(from, false)) notRead.add(to);
+  }
+  const unread = notRead.size;
+  if (unread === 0) return planned;
+  const detail = `${unread} file${unread === 1 ? "" : "s"} the earlier review is not known to have read ${unread === 1 ? "is" : "are"} read now`;
+  return { scope: full("not-read-before", options.priorRun, detail), interdiffPatch: null };
+}
+function narrowestScope(options) {
   const prior = options.priorRun;
   const only = (scope) => ({ scope, interdiffPatch: null });
   if (options.forceFull) return only(full("requested", prior));
@@ -11150,12 +11234,14 @@ function planScope(options) {
     }
     if (!ancestor) return only(full("history-rewritten", prior));
     if (merged) return only(full("base-merged", prior));
-    const files2 = changedReviewedFiles(
-      options.reviewedFiles,
-      git6.changedPaths(prior.headRef, options.head, options.cwd)
-    );
+    const changed = git6.changedPaths(prior.headRef, options.head, options.cwd);
+    const files2 = changedReviewedFiles(options.reviewedFiles, changed);
     if (files2.length === 0) return only(full("base-sync-only", prior));
-    return only(incremental(options, prior, git6, files2));
+    return {
+      scope: incremental(options, prior, git6, files2),
+      interdiffPatch: null,
+      leftOutChanged: changedReviewedFiles(options.leftOutFiles ?? [], changed)
+    };
   } catch (error) {
     return only(full("compare-unavailable", prior, firstLine(error)));
   }
@@ -11404,7 +11490,8 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
   ].filter((note) => note !== null);
   const detail = notes.length === 0 ? {} : { detail: notes.join("; ") };
   let absorbedList = [];
-  const candidates = withdrawn.filter((path) => !own.has(path) && isReviewable(path, options.includeGenerated === true));
+  const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
+  const candidates = withdrawn.filter((path) => !own.has(path) && isReviewable(path, options.includeGenerated === true, firstParty));
   if (from !== prior.headRef && candidates.length > 0) {
     const differs2 = new Set(git6.changedPaths(from, options.head, options.cwd));
     absorbedList = candidates.filter((path) => !differs2.has(path)).sort();
@@ -11413,9 +11500,11 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
     ...absorbedList.length === 0 ? {} : { absorbedByBase: absorbedList },
     ...dropped.length === 0 ? {} : { noLongerChanged: dropped.sort() }
   };
+  const leftOut = options.leftOutFiles ?? [];
+  const leftOutChanged = leftOut.length === 0 ? [] : changedReviewedFiles(leftOut, git6.changedPaths(from, options.head, options.cwd));
   const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
   if (patch.trim().length === 0) {
-    return { scope: { kind: "unchanged", ...common, reason: unchangedReason, ...absorbed }, interdiffPatch: null };
+    return { scope: { kind: "unchanged", ...common, reason: unchangedReason, ...absorbed }, interdiffPatch: null, leftOutChanged };
   }
   const reviewed = /* @__PURE__ */ new Map();
   for (const file2 of options.reviewedFiles) {
@@ -11430,7 +11519,8 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
   }
   return {
     scope: { kind: "interdiff", ...common, files: [...files2].sort(), hunks, ...detail, ...absorbed },
-    interdiffPatch: patch
+    interdiffPatch: patch,
+    leftOutChanged
   };
 }
 
@@ -12520,7 +12610,9 @@ function recordRun(db, input) {
         ...input.followUps === void 0 || input.followUps.length === 0 ? {} : { followUps: input.followUps },
         ...input.checks === void 0 ? {} : { checks: input.checks },
         ...input.reproductions === void 0 ? {} : { reproductions: markHeld(input.reproductions, input.held ?? []) },
-        ...input.structure === void 0 ? {} : { structure: input.structure }
+        ...input.structure === void 0 ? {} : { structure: input.structure },
+        ...input.exclusions === void 0 ? {} : { exclusions: input.exclusions },
+        ...input.leftOut === void 0 ? {} : { leftOut: input.leftOut }
       }),
       (/* @__PURE__ */ new Date()).toISOString(),
       JSON.stringify(input.stages ?? []),
@@ -12608,6 +12700,8 @@ function runDetail(db, reviewRunId) {
     checks: storedChecks(parsed2.checks),
     reproductions: storedReproductions(parsed2.reproductions),
     structure: storedStructure(parsed2.structure),
+    exclusions: parseExclusions(parsed2.exclusions),
+    leftOut: Array.isArray(parsed2.leftOut) && parsed2.leftOut.every((path) => typeof path === "string") ? parsed2.leftOut : null,
     // Older rows predate the column, so absence is normal rather than an error.
     stages: (() => {
       const raw = row["stages_json"];
@@ -13377,44 +13471,44 @@ function decide(input) {
   }
   return done({ event: input.mapped, action: "post", reasons, exitCode: 0, cappedByCi: false }, annotations);
 }
-function plural2(count4, word) {
+function plural3(count4, word) {
   return `${count4} ${word}${count4 === 1 ? "" : "s"}`;
 }
 function summaryLine(event, posted, cappedBy) {
   const count4 = posted.length;
   const highest = [...posted].map((finding) => finding.severity).sort((a, b) => RANK[a] - RANK[b])[0];
   if (cappedBy === "ci") {
-    return count4 === 0 ? "No problems found, but not approving while CI is red." : `${plural2(count4, "nit")}; not approving while CI is red.`;
+    return count4 === 0 ? "No problems found, but not approving while CI is red." : `${plural3(count4, "nit")}; not approving while CI is red.`;
   }
   if (cappedBy === "held") {
-    return count4 === 0 ? "Not approving yet." : `${plural2(count4, "nit")}; not approving yet.`;
+    return count4 === 0 ? "Not approving yet." : `${plural3(count4, "nit")}; not approving yet.`;
   }
   if (cappedBy === "complexity" || cappedBy === "policy") {
-    return count4 === 0 ? "No problems found." : `${plural2(count4, "nit")}.`;
+    return count4 === 0 ? "No problems found." : `${plural3(count4, "nit")}.`;
   }
   if (event === "APPROVE") {
-    return count4 === 0 ? "No problems found." : `Approved, with ${plural2(count4, "nit")}.`;
+    return count4 === 0 ? "No problems found." : `Approved, with ${plural3(count4, "nit")}.`;
   }
   if (event === "REQUEST_CHANGES") {
-    return `Changes requested: ${plural2(count4, "comment")}, the highest ${highest}.`;
+    return `Changes requested: ${plural3(count4, "comment")}, the highest ${highest}.`;
   }
-  return `${plural2(count4, "comment")}, the highest ${highest}.`;
+  return `${plural3(count4, "comment")}, the highest ${highest}.`;
 }
 function wouldHaveSummary(planned) {
   const posted = [...planned.inline, ...planned.unanchored];
   const count4 = posted.length;
   const highest = posted.map((finding) => finding.severity).sort((a, b) => RANK[a] - RANK[b])[0];
   if (planned.mapped === "APPROVE") {
-    return count4 === 0 ? "Would have approved: no problems found." : `Would have approved, with ${plural2(count4, "nit")}.`;
+    return count4 === 0 ? "Would have approved: no problems found." : `Would have approved, with ${plural3(count4, "nit")}.`;
   }
   if (planned.mapped === "REQUEST_CHANGES") {
-    return `Would have requested changes: ${plural2(count4, "comment")}, the highest ${highest}.`;
+    return `Would have requested changes: ${plural3(count4, "comment")}, the highest ${highest}.`;
   }
   if (planned.heldBackApproval) {
-    const nits = count4 === 0 ? "" : `, with ${plural2(count4, "nit")}`;
+    const nits = count4 === 0 ? "" : `, with ${plural3(count4, "nit")}`;
     return `Would have commented: a finding above a nit was held back, unverified, below the posting tier or below the confidence gate${nits}.`;
   }
-  return `Would have commented: ${plural2(count4, "comment")}, the highest ${highest}.`;
+  return `Would have commented: ${plural3(count4, "comment")}, the highest ${highest}.`;
 }
 function suggestionBlock(replacement) {
   return replacement === "" ? "```suggestion\n```" : `\`\`\`suggestion
@@ -13506,13 +13600,18 @@ function scopeBlock(run, planned, policy) {
   if (checks !== null) {
     const parts = [
       ...checks.staticRan.map(
-        (check) => `${code3(safeCheckName(check.name))} ran (exit ${check.exitCode ?? "none"}, ${plural2(check.signals, "signal")})`
+        (check) => `${code3(safeCheckName(check.name))} ran (exit ${check.exitCode ?? "none"}, ${plural3(check.signals, "signal")})`
       ),
       ...checks.staticDidNotRun.map((check) => `${code3(safeCheckName(check.name))} did not run (${code3(safeCheckName(check.reason))})`)
     ];
     staticLine = `Static checks: ${parts.length === 0 ? "none configured" : parts.join("; ")}.`;
-    symbolLine = checks.symbolsInconclusive === 0 ? "Symbol context: every changed file finished." : `Symbol context: ${plural2(checks.symbolsInconclusive, "file")} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}.`;
+    symbolLine = checks.symbolsInconclusive === 0 ? "Symbol context: every changed file finished." : `Symbol context: ${plural3(checks.symbolsInconclusive, "file")} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}.`;
     if (checks.symbolsInconclusive > 0) notChecked.push("files the symbol search did not finish");
+  }
+  const excluded = run.exclusions ?? null;
+  if (excluded !== null) {
+    const reasons = excluded.reasons.map((entry) => `${entry.files} ${entry.reason}`).join(", ");
+    notChecked.push(`${excluded.excludedFiles} of ${plural3(excluded.changedFiles, "changed file")} left out (${reasons})`);
   }
   const issuesRead = checks?.issuesRead ?? null;
   const linkedLine = issuesRead === null || issuesRead.length === 0 ? null : `Linked issues: ${issuesRead.map((n) => code3(`#${n}`)).join(", ")} read for intent.`;
@@ -13520,7 +13619,7 @@ function scopeBlock(run, planned, policy) {
   held.other += planned.held.length;
   held.belowTier = planned.belowTier.length;
   const notPosted = [
-    held.unverified > 0 ? plural2(held.unverified, "unverified claim") : null,
+    held.unverified > 0 ? plural3(held.unverified, "unverified claim") : null,
     held.belowGate > 0 ? `${held.belowGate} below the gate` : null,
     held.challenge > 0 ? `${held.challenge} held by the challenger` : null,
     held.restatesTool > 0 ? `${held.restatesTool} restating a static check` : null,
@@ -13579,16 +13678,16 @@ function readingGuide(run) {
       const removed = sum(file2.removedControls);
       const risks = sum(file2.riskMarkers);
       const parts = [
-        removed > 0 ? `${plural2(removed, "removed control")} (${kinds(file2.removedControls, REMOVED_CONTROL_ORDER)})` : null,
-        risks > 0 ? `${plural2(risks, "risk marker")} (${kinds(file2.riskMarkers, RISK_MARKER_ORDER)})` : null,
+        removed > 0 ? `${plural3(removed, "removed control")} (${kinds(file2.removedControls, REMOVED_CONTROL_ORDER)})` : null,
+        risks > 0 ? `${plural3(risks, "risk marker")} (${kinds(file2.riskMarkers, RISK_MARKER_ORDER)})` : null,
         file2.sizeCrossing === null ? null : `crossed ${file2.sizeCrossing.threshold} lines (now ${file2.sizeCrossing.headLines})`,
-        file2.branchGrowth > 0 ? `${plural2(file2.branchGrowth, "function")} grew past the branch threshold` : null,
-        file2.typeEscapes > 0 ? plural2(file2.typeEscapes, "type escape") : null
+        file2.branchGrowth > 0 ? `${plural3(file2.branchGrowth, "function")} grew past the branch threshold` : null,
+        file2.typeEscapes > 0 ? plural3(file2.typeEscapes, "type escape") : null
       ].filter((part) => part !== null);
       lines2.push(`${index + 1}. \`${safeCheckName(file2.path)}\`${file2.deletedFile ? " (deleted file)" : ""}: ${parts.join("; ")}`);
     });
-    if (files2.length > MAX_GUIDE_FILES) lines2.push(`and ${plural2(files2.length - MAX_GUIDE_FILES, "more file")} with a signal.`);
-    if (structure.unmeasured > 0) lines2.push(`${plural2(structure.unmeasured, "production file")} could not be measured.`);
+    if (files2.length > MAX_GUIDE_FILES) lines2.push(`and ${plural3(files2.length - MAX_GUIDE_FILES, "more file")} with a signal.`);
+    if (structure.unmeasured > 0) lines2.push(`${plural3(structure.unmeasured, "production file")} could not be measured.`);
   }
   return [...lines2, "", "</details>"].join("\n");
 }
@@ -15820,7 +15919,8 @@ var CONFIG_KEYS = {
     "linked_issues",
     "max_findings",
     "max_words_per_finding",
-    "max_total_words"
+    "max_total_words",
+    "first_party_paths"
   ],
   "review.human_review": [
     "max_decision_points",
@@ -16713,10 +16813,10 @@ function readConfigDocument(value, repositoryRoot2, result, honourRunners) {
     const gate = section(entry, `ci.gate_checks[${index}]`, result.warnings);
     const name = gate?.["name"];
     if (typeof name !== "string" || name.length === 0) continue;
-    const summary = gate?.["summary"];
+    const summary2 = gate?.["summary"];
     result.ciGateChecks.push({
       name,
-      ...typeof summary === "string" && summary.length > 0 ? { summary } : {}
+      ...typeof summary2 === "string" && summary2.length > 0 ? { summary: summary2 } : {}
     });
   }
   readCiRules(ci, result);
@@ -16797,6 +16897,7 @@ function readConfigDocument(value, repositoryRoot2, result, honourRunners) {
     const linkedIssues = review2["linked_issues"];
     if (typeof linkedIssues === "boolean") result.linkedIssues = linkedIssues;
     else if (linkedIssues !== void 0) result.warnings.push("review.linked_issues must be true or false; using false.");
+    result.firstPartyPaths = readFirstPartyPaths(review2["first_party_paths"], result.warnings);
     result.layers.push({
       scope: { type: "repository", key: repositoryRoot2 },
       source: ".review-voice/config.yaml",
@@ -16806,6 +16907,33 @@ function readConfigDocument(value, repositoryRoot2, result, honourRunners) {
       ...positiveInt(review2["max_total_words"]) === void 0 ? {} : { maxTotalWords: positiveInt(review2["max_total_words"]) }
     });
   }
+}
+function readFirstPartyPaths(value, warnings) {
+  if (value === void 0) return [];
+  const isGlob = (entry) => {
+    if (typeof entry !== "string" || entry.trim() === "") return false;
+    try {
+      globToRegExp(entry);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const globs = [];
+  for (const entry of Array.isArray(value) ? value : [value]) {
+    if (Array.isArray(value) && isGlob(entry)) {
+      globs.push(entry);
+      continue;
+    }
+    let shown;
+    try {
+      shown = JSON.stringify(entry);
+    } catch {
+      shown = "a value that refers to itself";
+    }
+    warnings.push(`review.first_party_paths must be a list of globs; ${shown} is not one, so the files it names stay excluded as vendored.`);
+  }
+  return globs;
 }
 function loadConfig(repositoryRoot2, baselinePath, path, db, source) {
   const result = {
@@ -16837,6 +16965,7 @@ function loadConfig(repositoryRoot2, baselinePath, path, db, source) {
     lanes: [DIFF_LANE],
     thresholds: {},
     linkedIssues: false,
+    firstPartyPaths: [],
     layers: [],
     suppressions: [],
     activePolicyVersions: [],
@@ -17615,8 +17744,7 @@ function parseStages(raw) {
     const cost = record3["costUsd"];
     return {
       name: typeof record3["name"] === "string" ? record3["name"] : null,
-      // A non-finite duration contributes nothing, as it always has.
-      seconds: typeof seconds === "number" && Number.isFinite(seconds) ? seconds : 0,
+      seconds: typeof seconds === "number" && Number.isFinite(seconds) ? seconds : null,
       cost: typeof cost === "number" && Number.isFinite(cost) ? cost : null
     };
   });
@@ -17632,14 +17760,19 @@ function stageSeconds(db) {
     const inRun = /* @__PURE__ */ new Map();
     for (const stage of stages) {
       if (stage.name === null) continue;
-      inRun.set(stage.name, (inRun.get(stage.name) ?? 0) + stage.seconds);
+      const before = inRun.get(stage.name);
+      inRun.set(stage.name, stage.seconds === null || before === null ? null : (before ?? 0) + stage.seconds);
     }
     for (const [name, total] of inRun) {
-      if (total > 0) byName.set(name, [...byName.get(name) ?? [], total]);
+      if (total !== null && total <= 0) continue;
+      const entry = byName.get(name) ?? { values: [], unmeasured: 0 };
+      if (total === null) entry.unmeasured += 1;
+      else entry.values.push(total);
+      byName.set(name, entry);
     }
   }
   return Object.fromEntries(
-    [...byName.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, values]) => [name, { median: median(values), p95: percentile(values, 95), runs: values.length }])
+    [...byName.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, { values, unmeasured }]) => [name, { median: median(values), p95: percentile(values, 95), runs: values.length, unmeasured }])
   );
 }
 function runCosts(db) {
@@ -17856,11 +17989,14 @@ function computeMetrics(db, options = {}) {
   const runs = db.prepare("SELECT output_json FROM review_runs").all();
   const windowDays = options.windowDays ?? DEFAULT_WINDOW_DAYS;
   const runSeconds = [];
+  let untimed = 0;
   for (const stages of storedStages(db)) {
     if (stages === null) continue;
-    const total = stages.reduce((sum, stage) => sum + stage.seconds, 0);
-    if (total > 0) runSeconds.push(total);
+    const total = stages.reduce((sum, stage) => sum === null || stage.seconds === null ? null : sum + stage.seconds, 0);
+    if (total === null) untimed += 1;
+    else if (total > 0) runSeconds.push(total);
   }
+  const secondsBasis = runSeconds.length === 0 && untimed === 0 ? "no run has recorded stage timings; pass `record --stages`" : `${runSeconds.length} run(s) with recorded stages${untimed === 0 ? "" : `, ${untimed} excluded (a stage not measured)`}`;
   const { costs, excluded: uncosted } = runCosts(db);
   const costBasis = `${costs.length} costed run(s), ${uncosted} excluded (no cost recorded)`;
   const challenge2 = challengeCounts(db);
@@ -17927,7 +18063,7 @@ function computeMetrics(db, options = {}) {
       median(runSeconds),
       "no target",
       () => true,
-      runSeconds.length === 0 ? "no run has recorded stage timings; pass `record --stages`" : `${runSeconds.length} run(s) with recorded stages`,
+      secondsBasis,
       "goal"
     ),
     metric(
@@ -17935,7 +18071,7 @@ function computeMetrics(db, options = {}) {
       percentile(runSeconds, 95),
       "no target",
       () => true,
-      runSeconds.length === 0 ? "no run has recorded stage timings; pass `record --stages`" : `${runSeconds.length} run(s) with recorded stages`,
+      secondsBasis,
       "goal"
     ),
     metric(
@@ -19221,9 +19357,9 @@ async function runPass(options, json2) {
     const counts = /* @__PURE__ */ new Map();
     for (const entry of queue.entries) {
       const outcome = terminalSafeDeep(await handle(options, client, db, entry));
-      const summary = `${entry.repository}#${entry.pull}: ${entry.action.kind}`;
+      const summary2 = `${entry.repository}#${entry.pull}: ${entry.action.kind}`;
       if (outcome.row === null) {
-        lines2.push(`${summary} (no row: ${outcome.detail})`);
+        lines2.push(`${summary2} (no row: ${outcome.detail})`);
         counts.set("retried", (counts.get("retried") ?? 0) + 1);
         continue;
       }
@@ -19231,7 +19367,7 @@ async function runPass(options, json2) {
       rows.push(row);
       counts.set(row.status, (counts.get(row.status) ?? 0) + 1);
       const event = row.event === null ? "" : ` ${row.event}`;
-      lines2.push(`${summary}${event} (${row.status} ${row.reviewUrl ?? row.detail ?? ""})`.replace(/ \)$/, ")"));
+      lines2.push(`${summary2}${event} (${row.status} ${row.reviewUrl ?? row.detail ?? ""})`.replace(/ \)$/, ")"));
       const listed = (outcome.held ?? []).map((line3) => `  ${line3}`);
       lines2.push(...listed);
       held.push(...listed);
@@ -19642,8 +19778,26 @@ var COMMAND_HELP = {
       "  --full                 On --pr, review the complete pull request again",
       "  --since <sha>          On --pr, the head last reviewed (overrides the record)",
       "  --repository <name>    owner/repo for --pr (default: the git remote)",
-      "  --include-generated    Include lock files, generated, vendored and binary files",
+      "  --include-generated    Include lock files, generated and vendored files",
       "  --out <dir>            Write diff.patch and files.json, print a summary",
+      "Excluded files: a changed file the diff leaves out (a lock file, generated or minified output,",
+      "  a vendored dependency, a binary, a deleted file) is counted in `exclusions`, with the count",
+      "  for each reason, in the JSON, in files.json and in the --out summary, and one line goes to",
+      "  stderr, for example `Excluded 10 of 12 changed files: 10 vendored dependency.`. Nothing is",
+      "  printed when every changed file is read. On --pr the count is over the files of the scope",
+      "  being reviewed: on a follow-up, the files that changed since the earlier review. A follow-up",
+      "  that would read a file the earlier review left out, or is not known to have read, whether or",
+      "  not it changed since, or a file renamed since out of a path that review did not read, reads the",
+      "  whole pull request instead (scope full, cause not-read-before), so no file is called unchanged",
+      "  since a review that never read it. An earlier review with no record of what it left out (a run",
+      "  from before that list was kept, or a head from --since or from GitHub) is taken to have left",
+      "  out every file the default rules leave out, so a lock file read now under --include-generated",
+      "  is read in full. A path matching review.first_party_paths (globs, in",
+      "  .review-voice/config.yaml) is never a vendored dependency; a lock file, generated output or a",
+      "  binary under it is still left out. --include-generated reads the lock files, the generated",
+      "  output and the vendored files. A file git reports as binary, or one GitHub serves no patch",
+      "  for, has no lines to read, so it is left out and counted whatever its name, the key or the",
+      "  flag say.",
       "Reads: nothing on stdin (--pr reads the pull request from GitHub, read-only).",
       "Writes: the diff as JSON on stdout, or with --out, diff.patch and files.json in <dir>.",
       "Exit codes: 0 ok, 2 bad invocation or unreadable input."
@@ -20114,10 +20268,14 @@ var COMMAND_HELP = {
       "                         approval outcomes by mode, complexity, independence and origin",
       "  --html                 Emit the same report as an HTML fragment a job summary renders (exclusive with --json)",
       "  --out <path>           With --html, write a complete static page to the file, or evaluation.html in the directory",
-      "  --recall <results.json>  Also report the fixture recall figures from a file `review-voice recall` wrote",
+      "  --recall <results.json>  Also report the fixture recall figures from a file `review-voice recall` wrote.",
+      "                         A file from `recall --runs` gives each figure as the mean over its runs, and the",
+      "                         basis states the number of runs and the range from the lowest to the highest run",
       "  --since <Nd>           Window in days for posted_fixed_rate_recent and posted_dismissed_rate_recent (default 30d)",
       "Reads: nothing on stdin; the local store, and the results file with --recall.",
-      "Writes: text (or JSON) on stdout; --json also carries stage_seconds, the median and p95 seconds per stage,",
+      "Writes: text (or JSON) on stdout; --json also carries stage_seconds, the median and p95 seconds per stage",
+      "  over the runs that measured it (null when none did) beside unmeasured, the runs that recorded the stage",
+      "  without its seconds; a run with an unmeasured stage is left out of the review seconds;",
       "  and by_family, which gives per model family the second pass's verdicts, drop, downgrade and tie-break",
       "  rates and the challenge's judged, held and hold rate, plus runs_without_families. The text prints it as a",
       "  by family block. --html writes the fragment to stdout, or with --out the page file and nothing on stdout.",
@@ -20140,9 +20298,24 @@ var COMMAND_HELP = {
       "  --mode <mode>          Review mode, as for `review`",
       "  --only <name>          Score one fixture, by name or <class>/<name>",
       "  --out <file>           Where to write the results (default results.json; never inside the fixtures)",
-      "  --keep                 Keep the temporary store and repositories and print where they are",
+      "  --runs <n>             Run every fixture n times, each run in a store of its own (a positive whole",
+      "                         number up to 1000, default 1). One run cannot tell a regression from chance, so",
+      "                         a figure is stated with its number of runs and its range",
+      "  --keep                 Keep the temporary store of every run, and the repositories, and print where they are",
       "Reads: the fixtures; with the claude runner, the model through the agent runner.",
       "Writes: the results file and one line per fixture on stdout; a temporary directory, removed unless --keep.",
+      "  Every completed fixture records event, the verdict its run reached. Every completed positive records",
+      "  lostAt, null on a hit and otherwise where the expected finding was lost, read from the run with no",
+      "  model call. With no candidate on an accepted anchor it is posted-elsewhere when the review posted a",
+      "  finding and not-raised when it posted none. Otherwise it is the furthest stage such a candidate reached:",
+      "  dropped-at-check (the candidate check dropped it), verifier-rejected (the verifier did not verify it),",
+      "  held-other (held by neither a gate nor the challenger, or left out by the editor), challenge (held by",
+      "  the challenger, or because the challenger did not run) or below-gate (verified, then held under a gate).",
+      "  One the challenger moved off the anchor, which then posted, is posted-elsewhere. The summary gains lost,",
+      "  a count per value over the misses, and approved, the positives that ended in APPROVE, beside",
+      "  completedPositives. With --runs above 1 a fixture carries runs, hits (silentRuns when clean) and",
+      "  attempts, one entry per run, in place of the single-run fields. Each summary rate is then the mean of",
+      "  the runs, and ranges gives its lowest and highest run and the value of every run.",
       "Exit codes: 0 ok, 1 a run failed (the file is still written), 2 bad invocation."
     )
   },
@@ -20495,9 +20668,12 @@ var COMMAND_HELP = {
       "  --thread <path>        thread.json; a follow-up whose comment thread is resolved is settled,",
       "                         and with --carried-from, findings `carry --thread` held back stay out",
       "  --follow-ups <path>    The verifier's follow_ups rulings on the open follow-ups",
-      "  --stages <path>        Per-stage timings as",
-      '                         [{"name","seconds","toolCalls","filesRead","tokens"}]; a clean',
-      "                         result from a shallow analyst pass is warned about",
+      "  --stages <path>        Per-stage effort as",
+      '                         [{"name","seconds","toolCalls","filesRead","tokens"}]; only "name" is required.',
+      "                         A figure left out or null is stored as not measured, never as zero; one",
+      "                         that is given must be a number of zero or more, or the file is refused.",
+      "                         A clean result from a shallow analyst pass is warned about; when the",
+      "                         analyst recorded no filesRead, stderr says the read could not be judged",
       "  --evidence <path>      evidence.json from `evidence`; needs --symbols. With it, stores which",
       "                         static checks ran and which did not, for `explain` and the scope block,",
       "                         and on each finding the first static signal at its exact path and line",
@@ -20808,6 +20984,14 @@ var COMMAND_HELP = {
       "  (the built-in defaults when the base has none, or is not in the clone). The runners: block",
       "  is honoured only from --config or an operator REVIEW_VOICE_CONFIG (no REVIEW_VOICE_CONFIG_SOURCE",
       "  beside it, or flag or env there, as watch states it), never from the base commit or a checkout.",
+      "Excluded files: the diff stage counts the changed files it leaves out, by reason, for example",
+      "  `Excluded 10 of 12 changed files: 10 vendored dependency.`. The line is a note of the report,",
+      "  the counts are recorded with the run, `explain` prints them, and under verdict.scope_block the",
+      "  `Not checked` line names them, never a path. A follow-up counts the files that changed since",
+      "  the earlier review, and reads the whole pull request when it would read a file that review",
+      "  left out. review.first_party_paths lists paths that are",
+      "  never a vendored dependency. It is read from the config named above, so a pull request cannot",
+      "  set it for its own review.",
       "Reads: GitHub (read-only), the clone, the local store and the config named above;",
       "  REVIEW_VOICE_FAKE_AGENTS selects the fake agent backend; REVIEW_VOICE_NO_COMMANDS=1 skips",
       "  the static evidence commands, the reproductions, the second-pass verification command and every",
@@ -21722,7 +21906,6 @@ function ensureRefs(options) {
     `The ${missing.join(" and ")} commit could not be made available locally. Reading code at that ref will fail, so evidence from it is unavailable rather than absent.`
   );
 }
-var SAME_AS_BASE_TIP = "identical to the base branch tip (already merged there)";
 function differingFromBaseTip(base, head, cwd) {
   try {
     const args = ["diff", "--no-ext-diff", "--no-relative", "--ignore-submodules=none", "--no-renames", "--name-only", "-z", base, head];
@@ -21763,7 +21946,7 @@ function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = 
   } catch (error) {
     throw new Error(gitFailure(args, error));
   }
-}, interdiffPatch = null) {
+}, interdiffPatch = null, leftOutChanged = []) {
   if (scope.kind === "full") return fullScopeResult(result, pullNumber, scope);
   const fallBack = (detail) => fullScopeResult(result, pullNumber, {
     kind: "full",
@@ -21789,7 +21972,7 @@ function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = 
     }
     included = new Set(scope.files);
   }
-  const excludedBecause = `unchanged since the last review (${scope.since.slice(0, 7)})`;
+  const excludedBecause = `${COVERED_EARLIER} (${scope.since.slice(0, 7)})`;
   const files2 = result.files.map((file2) => {
     if (file2.reviewed && !included.has(file2.path)) return { ...file2, reviewed: false, excludedBecause };
     if (scope.kind === "interdiff" && file2.status === "deleted" && included.has(file2.path)) {
@@ -21799,6 +21982,7 @@ function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = 
     return file2;
   });
   const hunkPaths = pathsWithHunks(diff);
+  const changedLeftOut = new Set(leftOutChanged);
   const reviewedFileCount = files2.filter((file2) => file2.reviewed).length;
   return {
     ...result,
@@ -21809,6 +21993,8 @@ function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = 
     reviewedFileCount,
     hunkFileCount: files2.filter((file2) => file2.reviewed && hunkPaths.has(file2.path)).length,
     excludedFileCount: files2.length - reviewedFileCount,
+    // Counted over this scope: the files it reads, and those left out that changed since the earlier review.
+    exclusions: summariseExclusions(files2.filter((file2) => file2.reviewed || changedLeftOut.has(file2.path))),
     diff
   };
 }
@@ -21859,6 +22045,7 @@ async function acquirePullRequestDiff(options) {
   const cwd = options.cwd ?? process.cwd();
   const headLocal = hasCommit(pull.head.sha, cwd);
   const byName = new Map(rawFiles.map((file2) => [file2.filename, file2]));
+  const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
   const handEdited = findHandEdited(
     rawFiles.filter((file2) => file2.status !== "removed" && file2.patch !== void 0).map((file2) => file2.filename),
     (path) => {
@@ -21871,7 +22058,8 @@ async function acquirePullRequestDiff(options) {
       }
       const added = (byName.get(path)?.patch ?? "").split("\n").filter((line3) => line3.startsWith("+")).map((line3) => line3.slice(1));
       return added.join("\n");
-    }
+    },
+    firstParty
   );
   const refs = ensureRefs({
     repository: options.repository,
@@ -21883,17 +22071,17 @@ async function acquirePullRequestDiff(options) {
   const differing = refs.base.available && refs.head.available ? differingFromBaseTip(pull.base.sha, pull.head.sha, cwd) : null;
   const sameAsBaseTip = (file2) => differing !== null && !differing.has(file2.filename) && (file2.previous_filename === void 0 || !differing.has(file2.previous_filename));
   const files2 = rawFiles.map((file2) => {
-    const cls = classify(file2.filename);
+    const cls = classify(file2.filename, firstParty);
     const deleted = file2.status === "removed";
     const suspected = handEdited.has(file2.filename);
     const merged = sameAsBaseTip(file2);
-    const reviewed = !merged && !deleted && (suspected || isReviewable(file2.filename, options.includeGenerated)) && file2.patch !== void 0;
+    const reviewed = !merged && !deleted && (suspected || isReviewable(file2.filename, options.includeGenerated, firstParty)) && file2.patch !== void 0;
     let excludedBecause;
     if (!reviewed) {
       if (merged) excludedBecause = SAME_AS_BASE_TIP;
-      else if (deleted) excludedBecause = "file deleted";
-      else if (file2.patch === void 0) excludedBecause = "no patch returned (binary or too large)";
-      else excludedBecause = `${cls} file`;
+      else if (deleted) excludedBecause = FILE_DELETED;
+      else if (file2.patch === void 0) excludedBecause = NO_PATCH;
+      else excludedBecause = excludedReason(cls);
     }
     return {
       path: file2.filename,
@@ -21921,6 +22109,7 @@ async function acquirePullRequestDiff(options) {
     // file here carries a hunk by construction.
     hunkFileCount: files2.filter((file2) => file2.reviewed).length,
     excludedFileCount: files2.filter((file2) => !file2.reviewed).length,
+    exclusions: summariseExclusions(files2),
     diff,
     totalChangedFiles: pull.changed_files,
     additions: pull.additions,
@@ -22408,12 +22597,12 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
     }
   }
   if (problems.length > 0) return { ok: false, problems };
-  const summary = { confirmed: [], held: [], moved: [] };
+  const summary2 = { confirmed: [], held: [], moved: [] };
   const held = [];
   const holdReasons = /* @__PURE__ */ new Map();
   const hold = (finding, id, verdict2, reason2) => {
     holdReasons.set(id, { verdict: verdict2, reason: reason2 });
-    summary.held.push({ candidate_id: id, verdict: verdict2, reason: reason2 });
+    summary2.held.push({ candidate_id: id, verdict: verdict2, reason: reason2 });
     const candidate = candidates.get(id);
     const claim = text3(candidate?.["claim"]) ?? text3(finding["claim"]);
     const severity = text3(finding["severity"]);
@@ -22453,14 +22642,14 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
     const verdict2 = byId.get(id);
     if (verdict2.verdict !== "confirmed") continue;
     if (verdict2.corrected_line === void 0) {
-      summary.confirmed.push(id);
+      summary2.confirmed.push(id);
       continue;
     }
     const moved = reanchorScores(document, id, { path: null, line: verdict2.corrected_line }, hunks);
     if (moved.ok) {
       document = moved.updated;
-      summary.confirmed.push(id);
-      summary.moved.push({ candidate_id: id, from: moved.from, to: moved.to });
+      summary2.confirmed.push(id);
+      summary2.moved.push({ candidate_id: id, from: moved.from, to: moved.to });
       continue;
     }
     const reason2 = `corrected line refused: ${moved.refused}`;
@@ -22475,8 +22664,8 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
   const order = new Map(eligibleIds.map((id, index) => [id, index]));
   const rank2 = (id) => order.get(id ?? "") ?? 0;
   held.sort((a, b) => rank2(a.candidateId) - rank2(b.candidateId));
-  summary.held.sort((a, b) => rank2(a.candidate_id) - rank2(b.candidate_id));
-  return { ok: true, document: { ...document, challengeHeld: held, challenge: summary }, summary };
+  summary2.held.sort((a, b) => rank2(a.candidate_id) - rank2(b.candidate_id));
+  return { ok: true, document: { ...document, challengeHeld: held, challenge: summary2 }, summary: summary2 };
 }
 
 // plugins/review-voice/src/verify/reconcile.ts
@@ -23216,7 +23405,7 @@ async function prep(run) {
     if (typeof run.summary[key2] === "string") run.notes.push(run.summary[key2]);
   }
   noteConfigChange(run);
-  for (const key2 of ["suspectedWrongBase", "squashedParentSuspected"]) {
+  for (const key2 of ["suspectedWrongBase", "squashedParentSuspected", "exclusions"]) {
     const note = isRecord5(run.summary[key2]) ? run.summary[key2]["note"] : null;
     if (typeof note === "string") run.notes.push(note);
   }
@@ -23317,6 +23506,8 @@ async function carry(run) {
 async function reviewInFull(run, why) {
   run.notes.push(`${why}, so the whole pull request is reviewed.`);
   skip(run, "carry", why);
+  const abandoned = isRecord5(run.summary["exclusions"]) ? run.summary["exclusions"]["note"] : null;
+  run.notes = run.notes.filter((note) => note !== abandoned);
   run.options = { ...run.options, full: true };
   await prep(run);
 }
@@ -25793,8 +25984,8 @@ function renderEvaluationHtml(report) {
     h3("Seconds by stage"),
     tableOrNone(
       "no run has recorded stage timings",
-      ["stage", "median", "p95", "runs"],
-      Object.entries(report.stage_seconds).map(([stage, s]) => [stage, rate(s.median), rate(s.p95), count2(s.runs)])
+      ["stage", "median", "p95", "runs", "unmeasured"],
+      Object.entries(report.stage_seconds).map(([stage, s]) => [stage, rate(s.median), rate(s.p95), count2(s.runs), count2(s.unmeasured)])
     ),
     h3("Posted findings"),
     anyPosted ? p("Rates count strong outcomes only; a weak outcome is tracked and not counted.") + postedTable("severity", posted.by_severity) + postedTable("lane", posted.by_lane) + postedTable("rule", posted.by_rule) + table(["evidence block", ...POSTED_HEADERS], ["with", "without", "unknown"].map((key2) => postedRow(key2, blocks[key2]))) : p("no data; no posted finding has a recorded outcome"),
@@ -25842,16 +26033,39 @@ function htmlDocument(fragment, title) {
 
 // plugins/review-voice/src/evaluate/recall-results.ts
 import { readFileSync as readFileSync18 } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 var RECALL_CLASSES = ["positive", "negative", "no-findings"];
+var LOST_AT = ["not-raised", "dropped-at-check", "verifier-rejected", "held-other", "challenge", "below-gate", "posted-elsewhere"];
+var RUN_FIELDS = ["hit", "silent", "lineDelta", "categoryMatch", "findings", "lostAt", "event", "seconds", "costUsd", "exitCode", "error"];
+var RATES = ["keyBugRecall", "causalLineHit", "cleanSilence"];
+function acceptedAnchors(expectation) {
+  if (expectation.path === null || expectation.line === null) return [];
+  return [{ path: expectation.path, line: expectation.line }, ...expectation.anchors ?? []];
+}
+function lostAt(expectation, trail) {
+  const anchors = acceptedAnchors(expectation);
+  const near = trail.candidates.filter((candidate) => anchors.some((anchor) => anchor.path === candidate.path && Math.abs(candidate.line - anchor.line) <= AGREEMENT_LINE_TOLERANCE));
+  if (near.length === 0) return trail.posted.length > 0 ? "posted-elsewhere" : "not-raised";
+  const furthest = (stages) => stages.reduce((a, b) => LOST_AT.indexOf(b) > LOST_AT.indexOf(a) ? b : a);
+  const stage = (id) => {
+    if (!trail.kept.includes(id)) return "dropped-at-check";
+    const holds = trail.held.filter((hold) => hold.candidateId === id).map((hold) => hold.verdict === "below-gate" ? "below-gate" : hold.verdict.startsWith("challenge-") ? "challenge" : "held-other");
+    if (holds.length > 0) return furthest(holds);
+    if (!trail.verified.includes(id)) return "verifier-rejected";
+    const left = trail.eligible.find((entry) => entry.id === id);
+    return left !== void 0 && trail.posted.some((finding) => finding.path === left.path && finding.line === left.line) ? "posted-elsewhere" : "held-other";
+  };
+  return furthest(near.map((candidate) => stage(candidate.id)));
+}
 function scoreFixture(expectation, outcome) {
   if (expectation.class !== "positive") {
     return { silent: outcome.completed ? outcome.silent : null, findings: outcome.findings.length };
   }
-  if (!outcome.completed || expectation.path === null || expectation.line === null) {
+  const anchors = acceptedAnchors(expectation);
+  if (!outcome.completed || anchors.length === 0) {
     return { hit: null, lineDelta: null, categoryMatch: null, findings: outcome.findings.length };
   }
-  const line3 = expectation.line;
-  const onPath = outcome.findings.filter((finding) => finding.path === expectation.path).map((finding) => ({ finding, delta: Math.abs(finding.line - line3) })).sort((a, b) => a.delta - b.delta);
+  const onPath = outcome.findings.flatMap((finding) => anchors.filter((anchor) => anchor.path === finding.path).map((anchor) => ({ finding, delta: Math.abs(finding.line - anchor.line) }))).sort((a, b) => a.delta - b.delta);
   const nearest = onPath[0];
   if (nearest === void 0) return { hit: false, lineDelta: null, categoryMatch: null, findings: outcome.findings.length };
   const category = nearest.finding.category;
@@ -25865,7 +26079,8 @@ function scoreFixture(expectation, outcome) {
 var ratio = (numerator, denominator) => denominator === 0 ? null : numerator / denominator;
 var failed = (result) => result.exitCode !== 0 || result.error !== void 0;
 function tallyResults(results) {
-  const tally = { hits: 0, completedPositives: 0, onPath: 0, silent: 0, completedClean: 0, positives: 0, skipped: 0, cleanFixtures: 0, failedRuns: 0 };
+  const lost = Object.fromEntries(LOST_AT.map((stage) => [stage, 0]));
+  const tally = { hits: 0, completedPositives: 0, onPath: 0, silent: 0, completedClean: 0, positives: 0, skipped: 0, cleanFixtures: 0, failedRuns: 0, approved: 0, lost };
   for (const result of results) {
     if (result.skipped !== void 0) {
       tally.skipped += 1;
@@ -25879,6 +26094,8 @@ function tallyResults(results) {
       tally.completedPositives += 1;
       if (result.hit === true) tally.hits += 1;
       if (result.lineDelta !== void 0 && result.lineDelta !== null) tally.onPath += 1;
+      if (result.event === "APPROVE") tally.approved += 1;
+      if (result.hit === false && result.lostAt !== void 0 && result.lostAt !== null) tally.lost[result.lostAt] += 1;
     } else {
       tally.cleanFixtures += 1;
       if (broken) continue;
@@ -25888,24 +26105,86 @@ function tallyResults(results) {
   }
   return tally;
 }
-function summariseResults(results) {
-  const tally = tallyResults(results);
+function combineAttempts(attempts) {
+  const first = attempts[0];
   return {
-    keyBugRecall: ratio(tally.hits, tally.completedPositives),
-    causalLineHit: ratio(tally.hits, tally.onPath),
-    cleanSilence: ratio(tally.silent, tally.completedClean),
-    positives: tally.positives,
-    skipped: tally.skipped,
-    cleanFixtures: tally.cleanFixtures,
-    failedRuns: tally.failedRuns
+    name: first.name,
+    class: first.class,
+    runs: attempts.length,
+    ...first.class === "positive" ? { hits: attempts.filter((attempt) => attempt.hit === true).length } : { silentRuns: attempts.filter((attempt) => attempt.silent === true).length },
+    // The lanes follow from the diff and the mode, not from the run; a failed run names none.
+    lanes: attempts.find((attempt) => (attempt.lanes ?? []).length > 0)?.lanes ?? [],
+    attempts: attempts.map((attempt) => Object.fromEntries(RUN_FIELDS.filter((key2) => attempt[key2] !== void 0).map((key2) => [key2, attempt[key2]])))
+  };
+}
+function runView(results, run) {
+  return results.map((result) => result.attempts === void 0 ? result : { ...result.attempts[run], name: result.name, class: result.class });
+}
+function summariseResults(results, runs = 1) {
+  const one = (run) => {
+    const tally = tallyResults(run);
+    return {
+      keyBugRecall: ratio(tally.hits, tally.completedPositives),
+      causalLineHit: ratio(tally.hits, tally.onPath),
+      cleanSilence: ratio(tally.silent, tally.completedClean),
+      positives: tally.positives,
+      skipped: tally.skipped,
+      cleanFixtures: tally.cleanFixtures,
+      failedRuns: tally.failedRuns,
+      completedPositives: tally.completedPositives,
+      approved: tally.approved,
+      lost: tally.lost
+    };
+  };
+  if (runs === 1) return one(results);
+  const each = Array.from({ length: runs }, (_, run) => one(runView(results, run)));
+  const first = each[0];
+  const total = (pick) => each.reduce((sum, summary2) => sum + pick(summary2), 0);
+  const range = (rate2) => {
+    const values = each.map((summary2) => summary2[rate2]);
+    const known = values.filter((value) => value !== null);
+    return { lowest: known.length === 0 ? null : Math.min(...known), highest: known.length === 0 ? null : Math.max(...known), runs: values };
+  };
+  const ranges = { keyBugRecall: range("keyBugRecall"), causalLineHit: range("causalLineHit"), cleanSilence: range("cleanSilence") };
+  const mean = (rate2) => {
+    const known = ranges[rate2].runs.filter((value) => value !== null);
+    return known.length === 0 ? null : known.reduce((sum, value) => sum + value, 0) / known.length;
+  };
+  return {
+    keyBugRecall: mean("keyBugRecall"),
+    causalLineHit: mean("causalLineHit"),
+    cleanSilence: mean("cleanSilence"),
+    positives: first.positives,
+    skipped: first.skipped,
+    cleanFixtures: first.cleanFixtures,
+    failedRuns: total((summary2) => summary2.failedRuns),
+    completedPositives: total((summary2) => summary2.completedPositives),
+    approved: total((summary2) => summary2.approved),
+    lost: Object.fromEntries(LOST_AT.map((stage) => [stage, total((summary2) => summary2.lost[stage])])),
+    runs,
+    ranges
   };
 }
 var isRecord6 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var MULTI_RUN_FIELDS = ["runs", "hits", "silentRuns", "attempts"];
+function fieldProblem(entry) {
+  for (const key2 of ["hit", "silent"]) {
+    if (entry[key2] !== void 0 && entry[key2] !== null && typeof entry[key2] !== "boolean") return `${key2} is not true, false or null`;
+  }
+  if (entry["lineDelta"] !== void 0 && entry["lineDelta"] !== null && typeof entry["lineDelta"] !== "number") return "lineDelta is not a number";
+  if (entry["exitCode"] !== void 0 && entry["exitCode"] !== null && typeof entry["exitCode"] !== "number") return "exitCode is not a number";
+  for (const key2 of ["skipped", "error"]) {
+    if (entry[key2] !== void 0 && typeof entry[key2] !== "string") return `${key2} is not a string`;
+  }
+  if (entry["lostAt"] !== void 0 && entry["lostAt"] !== null && !LOST_AT.some((stage) => stage === entry["lostAt"])) return `lostAt is not null or one of ${LOST_AT.join(", ")}`;
+  if (entry["event"] !== void 0 && entry["event"] !== null && typeof entry["event"] !== "string") return "event is not a string or null";
+  return null;
+}
 var isFigure = (value) => value === null || typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 function recordProblem(entry) {
   const count4 = (key2) => entry[key2] === void 0 || entry[key2] === null || Number.isInteger(entry[key2]) && entry[key2] >= 0 ? null : `${key2} is not a whole number`;
   if (entry["skipped"] !== void 0) {
-    const carried = ["hit", "silent", "lineDelta", "findings", "exitCode", "error"].filter((key2) => entry[key2] !== void 0);
+    const carried = ["hit", "silent", "lineDelta", "findings", "exitCode", "error", ...MULTI_RUN_FIELDS].filter((key2) => entry[key2] !== void 0);
     return carried.length === 0 ? null : `a skipped fixture carries no result, but this one has ${carried.join(", ")}`;
   }
   const badCount = count4("findings") ?? count4("lineDelta");
@@ -25919,6 +26198,7 @@ function recordProblem(entry) {
     if (typeof delta === "number" && entry["findings"] === 0) return "lineDelta is set but findings is 0";
     const within = typeof delta === "number" && delta <= AGREEMENT_LINE_TOLERANCE;
     if (entry["hit"] !== within) return `hit is ${String(entry["hit"])} but lineDelta is ${delta === void 0 || delta === null ? "absent" : String(delta)} against a tolerance of ${AGREEMENT_LINE_TOLERANCE}`;
+    if (entry["lostAt"] !== void 0 && entry["lostAt"] === null !== entry["hit"]) return `lostAt is ${String(entry["lostAt"])} but hit is ${String(entry["hit"])}`;
     return null;
   }
   if (typeof entry["silent"] !== "boolean") return "a completed clean fixture has no silent value";
@@ -25945,28 +26225,55 @@ function readRecallResults(path) {
   }
   const fixtures = document["fixtures"];
   if (!Array.isArray(fixtures)) throw bad("fixtures is not a list");
-  for (const [index, entry] of fixtures.entries()) {
-    if (!isRecord6(entry) || typeof entry["name"] !== "string") throw bad(`fixtures[${index}] has no name`);
-    if (!RECALL_CLASSES.some((known) => known === entry["class"])) throw bad(`fixtures[${index}] has no known class`);
-    for (const key2 of ["hit", "silent"]) {
-      if (entry[key2] !== void 0 && entry[key2] !== null && typeof entry[key2] !== "boolean") throw bad(`fixtures[${index}].${key2} is not true, false or null`);
-    }
-    if (entry["lineDelta"] !== void 0 && entry["lineDelta"] !== null && typeof entry["lineDelta"] !== "number") throw bad(`fixtures[${index}].lineDelta is not a number`);
-    if (entry["exitCode"] !== void 0 && entry["exitCode"] !== null && typeof entry["exitCode"] !== "number") throw bad(`fixtures[${index}].exitCode is not a number`);
-    for (const key2 of ["skipped", "error"]) {
-      if (entry[key2] !== void 0 && typeof entry[key2] !== "string") throw bad(`fixtures[${index}].${key2} is not a string`);
-    }
+  const summary2 = document["summary"];
+  if (!isRecord6(summary2)) throw bad("summary is not an object");
+  const runs = summary2["runs"] === void 0 ? 1 : summary2["runs"];
+  if (typeof runs !== "number" || !Number.isInteger(runs) || runs < (summary2["runs"] === void 0 ? 1 : 2)) throw bad("summary.runs is not a whole number above 1");
+  const checked = (entry, label2) => {
+    const field2 = fieldProblem(entry);
+    if (field2 !== null) throw bad(`${label2}.${field2}`);
     const problem = recordProblem(entry);
-    if (problem !== null) throw bad(`fixtures[${index}]: ${problem}`);
+    if (problem !== null) throw bad(`${label2}: ${problem}`);
+  };
+  for (const [index, entry] of fixtures.entries()) {
+    const label2 = `fixtures[${index}]`;
+    if (!isRecord6(entry) || typeof entry["name"] !== "string") throw bad(`${label2} has no name`);
+    if (!RECALL_CLASSES.some((known) => known === entry["class"])) throw bad(`${label2} has no known class`);
+    if (runs === 1 || entry["skipped"] !== void 0) {
+      const several = MULTI_RUN_FIELDS.filter((key2) => entry[key2] !== void 0);
+      if (several.length > 0 && entry["skipped"] === void 0) throw bad(`${label2} carries ${several.join(", ")}, but the summary records one run`);
+      checked(entry, label2);
+      continue;
+    }
+    const attempts = entry["attempts"];
+    if (!Array.isArray(attempts) || attempts.length !== runs || entry["runs"] !== runs) throw bad(`${label2} does not carry the ${runs} attempts the summary records`);
+    const single = RUN_FIELDS.filter((key2) => entry[key2] !== void 0);
+    if (single.length > 0) throw bad(`${label2} carries ${single.join(", ")} beside its attempts, and one run is not the answer`);
+    for (const [run, attempt] of attempts.entries()) {
+      if (!isRecord6(attempt) || attempt["skipped"] !== void 0) throw bad(`${label2}.attempts[${run}] is not one run's result`);
+      const foreign = Object.keys(attempt).filter((key2) => !RUN_FIELDS.some((field2) => field2 === key2));
+      if (foreign.length > 0) throw bad(`${label2}.attempts[${run}] carries ${foreign.join(", ")}, which one run does not record`);
+      checked({ ...attempt, class: entry["class"] }, `${label2}.attempts[${run}]`);
+    }
+    const [counted, scored, other] = entry["class"] === "positive" ? ["hits", "hit", "silentRuns"] : ["silentRuns", "silent", "hits"];
+    const count4 = attempts.filter((attempt) => attempt[scored] === true).length;
+    if (entry[counted] !== count4) throw bad(`${label2}.${counted} is ${JSON.stringify(entry[counted])} but its attempts give ${count4}`);
+    if (entry[other] !== void 0) throw bad(`${label2} is a ${String(entry["class"])} fixture and carries ${other}`);
   }
-  const summary = document["summary"];
-  if (!isRecord6(summary)) throw bad("summary is not an object");
-  for (const key2 of ["keyBugRecall", "causalLineHit", "cleanSilence"]) {
-    if (!isFigure(summary[key2])) throw bad(`summary.${key2} is not a number from 0 to 1, or null`);
+  for (const key2 of RATES) {
+    if (!isFigure(summary2[key2])) throw bad(`summary.${key2} is not a number from 0 to 1, or null`);
   }
-  const recomputed = summariseResults(fixtures);
+  const ranges = summary2["ranges"];
+  if (runs > 1 && !RATES.every((rate2) => isRecord6(ranges) && isRecord6(ranges[rate2]) && Array.isArray(ranges[rate2]["runs"]) && ranges[rate2]["runs"].length === runs)) {
+    throw bad(`summary.ranges does not give every rate a value for each of the ${runs} runs`);
+  }
+  if (runs === 1 && ranges !== void 0) throw bad("summary.ranges is given, but the summary records one run");
+  const recomputed = summariseResults(fixtures, runs);
+  const lossCounts = ["completedPositives", "approved", "lost"];
+  const optional = runs === 1 && lossCounts.every((key2) => summary2[key2] === void 0) ? lossCounts : [];
   for (const key2 of Object.keys(recomputed)) {
-    if (summary[key2] !== recomputed[key2]) throw bad(`summary.${key2} is ${JSON.stringify(summary[key2])} but the fixtures give ${JSON.stringify(recomputed[key2])}`);
+    if (summary2[key2] === void 0 && optional.includes(key2)) continue;
+    if (!isDeepStrictEqual(summary2[key2], recomputed[key2])) throw bad(`summary.${key2} is ${JSON.stringify(summary2[key2])} but the fixtures give ${JSON.stringify(recomputed[key2])}`);
   }
   return document;
 }
@@ -25976,9 +26283,9 @@ function recallMetrics(results) {
   if (results === null) {
     return names.map((name) => ({ name, value: null, target: "no target", meets: null, basis: NO_RECALL_BASIS, kind: "goal" }));
   }
-  const tally = tallyResults(results.fixtures);
+  const { summary: summary2 } = results;
   const where = `plugin ${results.pluginVersion}, runner ${results.runner}, mode ${results.mode}`;
-  const left = `${tally.skipped} skipped, ${tally.failedRuns} failed run(s) excluded`;
+  const left = `${summary2.skipped} skipped, ${summary2.failedRuns} failed run(s) excluded`;
   const metric = (name, value, basis) => ({
     name,
     value,
@@ -25987,10 +26294,21 @@ function recallMetrics(results) {
     basis: `${basis}; ${left} (${where})`,
     kind: "goal"
   });
+  const { runs, ranges } = summary2;
+  if (runs !== void 0 && ranges !== void 0) {
+    const figure = (value) => value === null ? "no data" : value.toFixed(2);
+    const over = (rate2, what) => `mean of ${runs} runs, lowest ${figure(ranges[rate2].lowest)}, highest ${figure(ranges[rate2].highest)}, of ${what}`;
+    return [
+      metric("fixture_key_bug_recall", summary2.keyBugRecall, over("keyBugRecall", "completed positives with a finding on an accepted anchor")),
+      metric("fixture_causal_line_hit", summary2.causalLineHit, over("causalLineHit", `positives with a finding on an expected file that hit an accepted anchor within ${AGREEMENT_LINE_TOLERANCE}`)),
+      metric("fixture_clean_silence", summary2.cleanSilence, over("cleanSilence", "completed clean fixtures that ended with exactly the no-findings sentence"))
+    ];
+  }
+  const tally = tallyResults(results.fixtures);
   return [
-    metric("fixture_key_bug_recall", results.summary.keyBugRecall, `${tally.hits}/${tally.completedPositives} completed positives had a finding on the causal line`),
-    metric("fixture_causal_line_hit", results.summary.causalLineHit, `${tally.hits}/${tally.onPath} positives with a finding on the expected file hit the causal line within ${AGREEMENT_LINE_TOLERANCE}`),
-    metric("fixture_clean_silence", results.summary.cleanSilence, `${tally.silent}/${tally.completedClean} completed clean fixtures ended with exactly the no-findings sentence`)
+    metric("fixture_key_bug_recall", summary2.keyBugRecall, `${tally.hits}/${tally.completedPositives} completed positives had a finding on an accepted anchor`),
+    metric("fixture_causal_line_hit", summary2.causalLineHit, `${tally.hits}/${tally.onPath} positives with a finding on an expected file hit an accepted anchor within ${AGREEMENT_LINE_TOLERANCE}`),
+    metric("fixture_clean_silence", summary2.cleanSilence, `${tally.silent}/${tally.completedClean} completed clean fixtures ended with exactly the no-findings sentence`)
   ];
 }
 
@@ -26804,6 +27122,16 @@ function parsePatchFiles(normalised2) {
   }
   return files2;
 }
+function patchMoves(normalised2) {
+  const moves = [];
+  for (const section2 of normalised2.split(/^diff --git /m).slice(1)) {
+    const from = /^(rename|copy) from (.+)$/m.exec(section2);
+    const to = from === null ? null : new RegExp(`^${from[1]} to (.+)$`, "m").exec(section2);
+    if (from === null || to === null) continue;
+    moves.push({ from: unquoteGitPath(withoutCarriageReturn(from[2])), to: unquoteGitPath(withoutCarriageReturn(to[1])) });
+  }
+  return moves;
+}
 function fillerFor(path) {
   const extension = basename6(path).includes(".") ? basename6(path).split(".").pop().toLowerCase() : "";
   const hash2 = ["yml", "yaml", "tf", "py", "rb", "sh", "toml", "ini", "cfg", "conf", "md", "txt"];
@@ -26895,7 +27223,7 @@ function gitEnvironment() {
 }
 function git3(cwd, label2, args) {
   try {
-    return execFileSync14("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", ...args], {
+    return execFileSync14("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", "-c", "maintenance.auto=false", "-c", "core.precomposeunicode=false", ...args], {
       cwd,
       env: gitEnvironment(),
       encoding: "utf8",
@@ -26926,6 +27254,11 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
     if (file2.newPath !== null) confinedPath(file2.newPath, label2);
   }
   const images = reconstruct(files2, label2);
+  const moves = patchMoves(normalised2);
+  for (const move of moves) {
+    confinedPath(move.from, label2);
+    confinedPath(move.to, label2);
+  }
   const contextDir = join23(fixtureDir, "context");
   const supplied = /* @__PURE__ */ new Map();
   if (existsSync15(contextDir)) {
@@ -26953,6 +27286,10 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
     const text5 = content.length === 0 ? "" : content.join("\n") + (image.noFinalNewline ? "" : "\n");
     writeInside(targetDir, path, text5, label2);
   }
+  for (const { from } of moves) {
+    if (!images.has(from) && !supplied.has(from)) writeInside(targetDir, from, `${fillerFor(from)}
+`, label2);
+  }
   for (const [path, text5] of supplied) writeInside(targetDir, path, text5, label2);
   const configPath = join23(fixtureDir, "config.yaml");
   let config2 = DEFAULT_CONFIG;
@@ -26970,16 +27307,19 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
     const copy = join23(scratch, "normalised.patch");
     writeFileSync9(copy, normalised2);
     try {
-      git3(targetDir, label2, ["apply", "--whitespace=nowarn", copy]);
+      git3(targetDir, label2, ["apply", "--cached", "--whitespace=nowarn", copy]);
     } catch (error) {
       throw new Error(`${error.message} (the patch does not apply to its reconstructed pre-image)`);
     }
   } finally {
     rmSync7(scratch, { recursive: true, force: true });
   }
-  git3(targetDir, label2, ["add", "-A"]);
   git3(targetDir, label2, ["commit", "-q", "-m", `head: ${label2}`]);
   const head = git3(targetDir, label2, ["rev-parse", "HEAD"]).trim();
+  for (const entry of readdirSync5(targetDir)) {
+    if (entry !== ".git") rmSync7(join23(targetDir, entry), { recursive: true, force: true });
+  }
+  git3(targetDir, label2, ["reset", "-q", "--hard", head]);
   const changed = [];
   for (const file2 of files2) {
     const path = file2.newPath ?? file2.oldPath;
@@ -26995,11 +27335,28 @@ var PLACEHOLDER_TOKEN = "recall-placeholder-token";
 var CANNED_OUTPUT = /^[a-z][a-z0-9-]*\.\d+\.json$/;
 var RecallUsageError = class extends Error {
 };
+var MAX_RUNS = 1e3;
 function scalar(raw) {
   const text5 = raw.trim();
   const quoted = /^(["'])(.*)\1$/.exec(text5);
   if (quoted !== null) return quoted[2];
   return text5.replace(/\s+#.*$/, "");
+}
+function readAnchors(label2, block) {
+  const start = block.findIndex((line3) => /^  anchors:/.test(line3));
+  if (start === -1) return [];
+  const form = "`- { path: <path>, line: <number> }`";
+  if (!/^  anchors:\s*$/.test(block[start])) throw new RecallUsageError(`${label2}: expect.anchors is a list with one ${form} entry per line.`);
+  const anchors = [];
+  for (const line3 of block.slice(start + 1)) {
+    if (line3.trim() === "") continue;
+    if (!/^ {3}/.test(line3)) break;
+    const entry = /^\s+-\s*\{\s*path:\s*(.+?)\s*,\s*line:\s*([1-9]\d*)\s*\}\s*$/.exec(line3);
+    if (entry === null) throw new RecallUsageError(`${label2}: expect.anchors entry ${JSON.stringify(line3.trim())} is not ${form}.`);
+    anchors.push({ path: scalar(entry[1]), line: Number(entry[2]) });
+  }
+  if (anchors.length === 0) throw new RecallUsageError(`${label2}: expect.anchors is empty.`);
+  return anchors;
 }
 function readExpectation(cls, name, caseText) {
   const lines2 = caseText.split("\n");
@@ -27026,6 +27383,7 @@ function readExpectation(cls, name, caseText) {
     name,
     path: inExpect("path"),
     line: line3,
+    anchors: readAnchors(`${cls}/${name}`, block),
     category: inExpect("category"),
     skip: top("harness") === "skip" ? reason2 === null || reason2 === "" ? "harness: skip" : reason2 : null
   };
@@ -27134,6 +27492,29 @@ function reviewIsSilent(report) {
     return false;
   }
 }
+function trailOf(report) {
+  const entries = (file2, key2) => {
+    if (report.runDir === null) return [];
+    try {
+      const list3 = JSON.parse(readFileSync23(join24(report.runDir, file2), "utf8"))[key2];
+      return Array.isArray(list3) ? list3.filter((entry) => typeof entry === "object" && entry !== null) : [];
+    } catch {
+      return [];
+    }
+  };
+  const idOf4 = (entry) => String(entry["candidate_id"] ?? entry["candidateId"] ?? "");
+  const candidates = entries("candidates.json", "candidates");
+  const questions = new Set(candidates.filter((candidate) => candidate["severity"] === "question").map(idOf4));
+  return {
+    candidates: candidates.map((candidate) => ({ id: idOf4(candidate), path: String(candidate["path"]), line: Number(candidate["line"]) })),
+    kept: entries("checked.json", "kept").map(idOf4),
+    // The driver's own rule for what the verifier let through, under which a question goes on when its premises hold.
+    verified: entries("verification.json", "verifications").filter((entry) => entry["verified"] === true || questions.has(idOf4(entry)) && entry["premises_verified"] === true).map(idOf4),
+    held: report.held.map((hold) => ({ candidateId: hold.candidateId, verdict: hold.verdict })),
+    eligible: entries("scores.challenged.json", "eligible").map((entry) => ({ id: idOf4(entry), path: String(entry["path"]), line: Number(entry["line"]) })),
+    posted: report.findings.map((finding) => ({ path: finding.path, line: finding.line }))
+  };
+}
 function checkoutBase(repoDir) {
   execFileSync15("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"] });
 }
@@ -27201,10 +27582,14 @@ async function runFixture(fixture, index, context2) {
     silent: reviewIsSilent(report)
   };
   const error = report.error ?? (report.exitCode !== 0 ? `the run exited ${report.exitCode}` : report.runId === null ? "the run recorded nothing" : void 0);
+  const scored = scoreFixture(expectation, outcome);
+  const event = typeof report.verdict === "object" && report.verdict !== null ? report.verdict["event"] : null;
   return {
     name,
     class: expectation.class,
-    ...scoreFixture(expectation, outcome),
+    ...scored,
+    ...completed && expectation.class === "positive" ? { lostAt: scored.hit === true ? null : lostAt(expectation, trailOf(report)) } : {},
+    ...completed ? { event: typeof event === "string" ? event : null } : {},
     lanes: lanesRun(report),
     seconds: report.seconds,
     costUsd: report.costUsd,
@@ -27213,10 +27598,12 @@ async function runFixture(fixture, index, context2) {
   };
 }
 async function runRecall(options, deps) {
+  const runs = options.runs ?? 1;
+  if (!Number.isInteger(runs) || runs < 1 || runs > MAX_RUNS) throw new RecallUsageError(`--runs takes a positive whole number up to ${MAX_RUNS}; ${runs} is not one.`);
   const fixtures = selectFixtures(options);
   const root = mkdtempSync5(join24(tmpdir4(), "rv-recall-"));
-  const dataDir = join24(root, "data");
-  mkdirSync9(dataDir, { recursive: true });
+  const roots = runs === 1 ? [root] : Array.from({ length: runs }, (_, run) => join24(root, `run-${run + 1}`));
+  const dataDirs = roots.map((dir) => join24(dir, "data"));
   const quiet = { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" };
   const gitKeys = [.../* @__PURE__ */ new Set([...Object.keys(process.env).filter((key2) => key2.startsWith("GIT_")), ...Object.keys(quiet)])];
   const touched = ["REVIEW_VOICE_DATA_DIR", "GITHUB_TOKEN", "REVIEW_VOICE_CONFIG", ...gitKeys];
@@ -27224,14 +27611,20 @@ async function runRecall(options, deps) {
   const cwd = process.cwd();
   const fixtureResults = [];
   try {
+    for (const dir of dataDirs) mkdirSync9(dir, { recursive: true });
     for (const key2 of gitKeys) delete process.env[key2];
     Object.assign(process.env, quiet);
-    process.env["REVIEW_VOICE_DATA_DIR"] = dataDir;
     delete process.env["REVIEW_VOICE_CONFIG"];
     const hasToken = [process.env["GITHUB_TOKEN"], process.env["GH_TOKEN"]].some((value) => value !== void 0 && value !== "");
     if (!hasToken) process.env["GITHUB_TOKEN"] = PLACEHOLDER_TOKEN;
     for (const [index, fixture] of fixtures.entries()) {
-      const result = await runFixture(fixture, index, { root, options, deps });
+      const attempts = [];
+      for (const [run, runRoot] of roots.entries()) {
+        process.env["REVIEW_VOICE_DATA_DIR"] = dataDirs[run];
+        attempts.push(await runFixture(fixture, index, { root: runRoot, options, deps }));
+        if (fixture.expectation.skip !== null) break;
+      }
+      const result = attempts.length === 1 ? attempts[0] : combineAttempts(attempts);
       fixtureResults.push(result);
       deps.onResult?.(result);
     }
@@ -27250,17 +27643,32 @@ async function runRecall(options, deps) {
       mode: options.mode ?? "auto",
       runner: options.runner,
       fixtures: fixtureResults,
-      summary: summariseResults(fixtureResults)
+      summary: summariseResults(fixtureResults, runs)
     },
-    dataDir,
+    dataDir: dataDirs[0],
+    dataDirs,
     kept: options.keep
   };
 }
 
 // plugins/review-voice/src/cli/recall.ts
+function describe(result) {
+  if (result.skipped !== void 0) return `skipped: ${result.skipped}`;
+  if (result.attempts !== void 0) {
+    const failed2 = result.attempts.filter((attempt) => attempt.exitCode !== 0 || attempt.error !== void 0).length;
+    const lost = /* @__PURE__ */ new Map();
+    for (const { lostAt: lostAt2 } of result.attempts) if (lostAt2 != null) lost.set(lostAt2, (lost.get(lostAt2) ?? 0) + 1);
+    return (result.class === "positive" ? `${result.hits}/${result.runs} runs hit` : `${result.silentRuns}/${result.runs} runs silent`) + (lost.size === 0 ? "" : `; lost at ${[...lost].map(([stage, count4]) => `${stage} ${count4}`).join(", ")}`) + (failed2 === 0 ? "" : `; ${failed2} failed`);
+  }
+  if (result.error !== void 0) return `failed: ${result.error.split("\n")[0]}`;
+  if (result.class !== "positive") return result.silent === true ? "silent" : `not silent (${result.findings} finding(s))`;
+  if (result.hit === true) return `hit (line delta ${result.lineDelta})`;
+  const where = result.lineDelta === null || result.lineDelta === void 0 ? "no finding on an expected file" : `line delta ${result.lineDelta}`;
+  return `miss (${where}), lost at ${result.lostAt}`;
+}
 async function recallCommand(argv, runInProcess2) {
-  const known = /* @__PURE__ */ new Set(["--fixtures", "--class", "--runner", "--mode", "--out", "--only", "--keep"]);
-  const valued = /* @__PURE__ */ new Set(["--fixtures", "--class", "--runner", "--mode", "--out", "--only"]);
+  const known = /* @__PURE__ */ new Set(["--fixtures", "--class", "--runner", "--mode", "--out", "--only", "--keep", "--runs"]);
+  const valued = /* @__PURE__ */ new Set(["--fixtures", "--class", "--runner", "--mode", "--out", "--only", "--runs"]);
   for (const [index, arg] of argv.entries()) {
     if (arg.startsWith("--") ? !known.has(arg) : !valued.has(argv[index - 1] ?? "")) {
       console.error(`Unexpected argument ${arg}.`);
@@ -27299,6 +27707,11 @@ async function recallCommand(argv, runInProcess2) {
     console.error(`--mode takes one of ${MODES.join(", ")}.`);
     return 2;
   }
+  const runsText = flag(argv, "--runs") ?? "1";
+  if (!/^[1-9]\d*$/.test(runsText) || Number(runsText) > MAX_RUNS) {
+    console.error(`--runs takes a positive whole number up to ${MAX_RUNS}; ${runsText} is not one.`);
+    return 2;
+  }
   const out = resolve9(flag(argv, "--out") ?? "results.json");
   let linked = false;
   try {
@@ -27323,13 +27736,10 @@ async function recallCommand(argv, runInProcess2) {
   try {
     mkdirSync10(dirname16(out), { recursive: true });
     run = await runRecall(
-      { fixtures, classes, runner, mode, only: flag(argv, "--only"), keep: argv.includes("--keep") },
+      { fixtures, classes, runner, mode, only: flag(argv, "--only"), keep: argv.includes("--keep"), runs: Number(runsText) },
       {
         commandWith: (fetchImpl) => (args, stdin) => runInProcess2(args, { stdin, fetchImpl }),
-        onResult: (result) => {
-          const verdict2 = result.skipped !== void 0 ? `skipped: ${result.skipped}` : result.error !== void 0 ? `failed: ${result.error.split("\n")[0]}` : result.class === "positive" ? result.hit === true ? `hit (line delta ${result.lineDelta})` : result.lineDelta === null || result.lineDelta === void 0 ? "miss (no finding on the expected file)" : `miss (line delta ${result.lineDelta})` : result.silent === true ? "silent" : `not silent (${result.findings} finding(s))`;
-          console.log(`${result.name.padEnd(48)} ${verdict2}`);
-        }
+        onResult: (result) => console.log(`${result.name.padEnd(48)} ${describe(result)}`)
       }
     );
   } catch (error) {
@@ -27344,14 +27754,15 @@ async function recallCommand(argv, runInProcess2) {
   writeFileSync10(staging, `${JSON.stringify(run.results, null, 2)}
 `, { flag: "wx" });
   renameSync3(staging, out);
-  const { summary } = run.results;
+  const { summary: summary2 } = run.results;
   const figure = (value) => value === null ? "no data" : value.toFixed(2);
+  const rate2 = (key2) => figure(summary2[key2]) + (summary2.ranges === void 0 ? "" : ` (${figure(summary2.ranges[key2].lowest)} to ${figure(summary2.ranges[key2].highest)})`);
   console.log(
-    `key-bug recall ${figure(summary.keyBugRecall)}, causal-line hit ${figure(summary.causalLineHit)}, clean silence ${figure(summary.cleanSilence)}; ${summary.positives} positive(s), ${summary.cleanFixtures} clean, ${summary.skipped} skipped, ${summary.failedRuns} failed run(s)`
+    `key-bug recall ${rate2("keyBugRecall")}, causal-line hit ${rate2("causalLineHit")}, clean silence ${rate2("cleanSilence")}; ` + (summary2.runs === void 0 ? "" : `mean of ${summary2.runs} runs with the lowest and highest run; `) + `${summary2.positives} positive(s), ${summary2.cleanFixtures} clean, ${summary2.skipped} skipped, ${summary2.failedRuns} failed run(s)`
   );
   console.log(`Results: ${out}`);
-  if (run.kept) console.log(`Kept: ${run.dataDir}`);
-  return summary.failedRuns > 0 ? 1 : 0;
+  if (run.kept) for (const dir of run.dataDirs) console.log(`Kept: ${dir}`);
+  return summary2.failedRuns > 0 ? 1 : 0;
 }
 
 // plugins/review-voice/src/cli/import-benchmark.ts
@@ -27988,10 +28399,13 @@ async function pullRequestDiffCommand(argv) {
       return 2;
     }
   }
+  const firstPartyPaths = repositoryConfig()?.firstPartyPaths ?? [];
+  const firstParty = firstPartyMatcher(firstPartyPaths);
   const result = await acquirePullRequestDiff({
     repository,
     pullNumber,
     includeGenerated: argv.includes("--include-generated"),
+    firstPartyPaths,
     cwd: process.cwd(),
     client: githubClient([repository])
   });
@@ -28019,6 +28433,7 @@ async function pullRequestDiffCommand(argv) {
   if (uncoveredPrior !== null && since === null) {
     console.error(`Run ${uncoveredPrior} carried candidates without reviewing the commits before it, so the whole pull request is read.`);
   }
+  const priorLeftOut = prior === null ? [] : (prior.reviewRunId === null ? null : leftOutBy(prior.reviewRunId)) ?? result.files.filter((file2) => !isReviewable(file2.path, false)).map((file2) => file2.path);
   let planned;
   try {
     planned = planScope({
@@ -28028,13 +28443,16 @@ async function pullRequestDiffCommand(argv) {
       reviewedFiles: result.files.filter((file2) => file2.reviewed),
       // Deletions are never reviewed, but a follow-up must still show one. A
       // deleted lock file or generated output stays out, as it would anyway.
-      deletedFiles: result.files.filter((file2) => file2.status === "deleted" && isReviewable(file2.path, argv.includes("--include-generated"))).map((file2) => file2.path),
+      deletedFiles: result.files.filter((file2) => file2.status === "deleted" && isReviewable(file2.path, argv.includes("--include-generated"), firstParty)).map((file2) => file2.path),
       cwd: process.cwd(),
       truncated: result.truncated,
       forceFull: argv.includes("--full"),
       base: result.refs.base.available && result.base !== null ? result.base : void 0,
       fetchPriorHead: (sha) => fetchPriorHead(sha, repository, process.cwd()),
-      includeGenerated: argv.includes("--include-generated")
+      includeGenerated: argv.includes("--include-generated"),
+      firstPartyPaths,
+      leftOutFiles: result.files.filter((file2) => !file2.reviewed),
+      priorLeftOut
     });
   } catch (error) {
     planned = {
@@ -28048,8 +28466,20 @@ async function pullRequestDiffCommand(argv) {
       interdiffPatch: null
     };
   }
-  const scoped = applyReviewScope(result, pullNumber, planned.scope, process.cwd(), void 0, planned.interdiffPatch);
+  const scoped = applyReviewScope(result, pullNumber, planned.scope, process.cwd(), void 0, planned.interdiffPatch, planned.leftOutChanged);
   return emitDiff({ ...scoped, repository, prior: resolution }, flag(argv, "--out"));
+}
+function leftOutBy(runId) {
+  try {
+    const db = openDatabase();
+    try {
+      return runDetail(db, runId)?.leftOut ?? null;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
 }
 function diffSummary(result) {
   const scope = result.scope === void 0 ? null : {
@@ -28079,6 +28509,7 @@ function diffSummary(result) {
     reviewedFileCount: result.reviewedFileCount,
     hunkFileCount: result.hunkFileCount,
     excludedFileCount: result.excludedFileCount,
+    exclusions: result.exclusions ?? null,
     handEditSuspected: (result.files ?? []).filter((file2) => file2.handEditSuspected === true).map((file2) => file2.path),
     refs: result.refs === void 0 ? null : { base: result.refs.base, head: result.refs.head, mergeBase: result.refs.mergeBase },
     prior: result.prior === void 0 ? null : {
@@ -28101,6 +28532,7 @@ function markedGenerated(acquired) {
 function emitDiff(acquired, outDir) {
   const config2 = repositoryConfig();
   for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
+  if (acquired.exclusions != null) console.error(acquired.exclusions.note);
   const generated = markedGenerated(acquired);
   const scope = acquired.scope;
   const narrowed = scope !== void 0 && (scope.kind === "interdiff" || scope.kind === "incremental") ? scope.files : null;
@@ -28151,7 +28583,8 @@ function diffCommand(argv) {
       cwd: process.cwd(),
       staged: argv.includes("--staged"),
       base,
-      includeGenerated: argv.includes("--include-generated")
+      includeGenerated: argv.includes("--include-generated"),
+      firstPartyPaths: repositoryConfig()?.firstPartyPaths ?? []
     });
     return emitDiff(result, flag(argv, "--out"));
   } catch (error) {
@@ -28736,12 +29169,12 @@ function directoryCount(paths) {
   return new Set([...paths].map(directoryOf)).size;
 }
 var PROSE_EXTENSIONS = /* @__PURE__ */ new Set(["md", "markdown", "mdx", "txt", "rst", "adoc"]);
-function isCode(path) {
+function isCode(path, firstParty) {
   const name = normalisePath3(path).split("/").pop() ?? "";
   const dot = name.lastIndexOf(".");
   const extension = dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
   if (PROSE_EXTENSIONS.has(extension)) return false;
-  return classify(normalisePath3(path)) === "source";
+  return classify(normalisePath3(path), firstParty) === "source";
 }
 var NON_DISCRIMINATING_DIRECTORIES = 12;
 var IMPORT_LINE = [
@@ -28779,7 +29212,8 @@ function isRepositoryWideToolchainPath(path) {
   const normalised2 = normalisePath3(path);
   return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised2));
 }
-function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
+function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null, firstParty) {
+  const isCodePath = (path) => isCode(path, firstParty);
   const searchedRef = ref ?? "working tree";
   const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
   const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
@@ -28792,7 +29226,7 @@ function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths
   const normalisedChangedPath = normalisePath3(changedPath);
   const changedDirectory = directoryOf(changedPath);
   const result = (reach, inconclusive) => {
-    const counted2 = [...hits].filter(isCode).sort();
+    const counted2 = [...hits].filter(isCodePath).sort();
     const outside = counted2.filter(
       (path) => normalisePath3(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
     );
@@ -28820,7 +29254,7 @@ function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths
     } catch {
       return result(null, true);
     }
-    const code3 = found2.filter(isCode);
+    const code3 = found2.filter(isCodePath);
     if (source !== "diff" && !code3.some((path) => normalisePath3(path) === normalisedChangedPath)) {
       ignored.push(symbol);
       continue;
@@ -28832,7 +29266,7 @@ function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths
     for (const path of found2) hits.add(path);
   }
   if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
-  let counted = [...hits].filter(isCode);
+  let counted = [...hits].filter(isCodePath);
   if (counted.length === 0 && source !== "claim") {
     const moduleName = normalisePath3(changedPath).split("/").pop()?.replace(/\.[^.]+$/, "");
     if (moduleName !== void 0 && moduleName.length >= 4) {
@@ -28842,7 +29276,7 @@ function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths
       } catch {
         return result(null, true);
       }
-      counted = [...hits].filter(isCode);
+      counted = [...hits].filter(isCodePath);
       usedModuleFallback = counted.length > 0;
     }
   }
@@ -28905,11 +29339,11 @@ function declarationsByPath(declarations) {
   }
   return { addedNames, byPath };
 }
-function possibleExisting(declaration, hits, addedNames, isTestPath) {
+function possibleExisting(declaration, hits, addedNames, isTestPath, isCodePath) {
   const matches = [];
   for (const hit of hits) {
     const path = normalisePath4(hit.path);
-    if (!isCode(path) || isTestPath(path)) continue;
+    if (!isCodePath(path) || isTestPath(path)) continue;
     const name = declarationName(hit.text);
     if (name === null || addedNames.has(name)) continue;
     const hitTokens = new Set(declarationTokens(name));
@@ -28973,7 +29407,7 @@ function pathsWithHunks2(diff) {
   keepCurrent();
   return paths;
 }
-function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declarations, addedNames, head, headSearch, isTestPath) {
+function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declarations, addedNames, head, headSearch, isTestPath, isCodePath) {
   const allSymbols = symbolsFromHunks(diff, path);
   const omitted = Math.max(0, allSymbols.length - MAX_SYMBOLS_PER_FILE);
   const symbols = [];
@@ -29001,7 +29435,7 @@ function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declara
       incomplete = true;
       break;
     }
-    const code3 = new Set(found2.filter(isCode).map(normalisePath4));
+    const code3 = new Set(found2.filter(isCodePath).map(normalisePath4));
     if (directoryCount2(code3) > NON_DISCRIMINATING_DIRECTORIES) {
       symbols.push({ symbol, common: true });
       continue;
@@ -29033,7 +29467,7 @@ function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declara
       const entry = {
         name: declaration.name,
         line: declaration.line,
-        possibleExisting: possibleExisting(declaration, hits, addedNames, isTestPath)
+        possibleExisting: possibleExisting(declaration, hits, addedNames, isTestPath, isCodePath)
       };
       declared.push(entry);
       if (head === null) {
@@ -29045,7 +29479,7 @@ function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declara
         try {
           const callers = [
             ...new Set(
-              headSearch(declaration.name, cwd, head, remaining()).filter(isCode).map(normalisePath4).filter((candidate) => candidate !== normalisedPath && !isTestPath(candidate))
+              headSearch(declaration.name, cwd, head, remaining()).filter(isCodePath).map(normalisePath4).filter((candidate) => candidate !== normalisedPath && !isTestPath(candidate))
             )
           ].sort();
           entry.callers = callers.slice(0, MAX_CALLERS_PER_DECLARATION);
@@ -29074,6 +29508,8 @@ function collectSymbolContext(options) {
   const headSearch = options.headSearch ?? gitGrepWordPaths;
   const head = options.head ?? null;
   const isTestPath = testPathMatcher(options.testPaths ?? DEFAULT_TEST_PATHS);
+  const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
+  const isCodePath = (path) => isCode(path, firstParty);
   const now = options.now ?? Date.now;
   const maxMs = options.maxMs ?? DEFAULT_MAX_MS;
   const started = now();
@@ -29094,7 +29530,8 @@ function collectSymbolContext(options) {
       declarationContext.addedNames,
       head,
       headSearch,
-      isTestPath
+      isTestPath,
+      isCodePath
     );
   });
   const changed = new Set(paths.map(normalisePath4));
@@ -29162,8 +29599,9 @@ function symbolsCommand(argv) {
       return 2;
     }
   }
-  const testPaths = repositoryConfig()?.humanReview.testPaths ?? DEFAULT_TEST_PATHS;
-  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, head, testPaths, maxMs });
+  const config2 = repositoryConfig();
+  const testPaths = config2?.humanReview.testPaths ?? DEFAULT_TEST_PATHS;
+  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, head, testPaths, firstPartyPaths: config2?.firstPartyPaths ?? [], maxMs });
   const out = flag(argv, "--out");
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));
@@ -30821,6 +31259,7 @@ var STAGE_FIELDS = {
   costUsd: true,
   family: true
 };
+var FIGURES = ["seconds", "toolCalls", "filesRead", "tokens"];
 function parseStagesFile(parsed2, warn2 = () => void 0) {
   const keyed = typeof parsed2 === "object" && parsed2 !== null && !Array.isArray(parsed2) ? Object.keys(parsed2).filter((key2) => key2 !== "stages") : [];
   const list3 = Array.isArray(parsed2) ? parsed2 : parsed2?.stages;
@@ -30832,9 +31271,10 @@ function parseStagesFile(parsed2, warn2 = () => void 0) {
       if (typeof stage !== "object" || stage === null || Array.isArray(stage)) return "not an object";
       const unknown = Object.keys(stage).filter((key2) => !Object.hasOwn(STAGE_FIELDS, key2));
       if (unknown.length > 0) warn2(`entry ${index}: unknown field${unknown.length === 1 ? "" : "s"} ${unknown.map((key2) => JSON.stringify(key2)).join(", ")} not stored`);
-      const { name, seconds } = stage;
-      if (typeof name !== "string" || name === "") return "name must be a non-empty string";
-      return Number.isFinite(seconds) ? null : "seconds must be a number";
+      const given = stage;
+      if (typeof given["name"] !== "string" || given["name"] === "") return "name must be a non-empty string";
+      const bad = FIGURES.find((key2) => given[key2] !== void 0 && given[key2] !== null && count3(given[key2]) === void 0);
+      return bad === void 0 ? null : `${bad} must be a number, zero or more, when it is given`;
     })();
     if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
   });
@@ -30844,6 +31284,7 @@ function cleanStages(stages, diff) {
   const diffLines = diff === null ? void 0 : changedLineCount(diff);
   const diffFiles = diff === null ? void 0 : [...parseHunks(diff).values()].filter((file2) => file2.ranges.length > 0).length;
   return stages.map((stage) => {
+    const seconds = count3(stage.seconds);
     const toolCalls = count3(stage.toolCalls);
     const tokens = count3(stage.tokens);
     const filesRead = count3(stage.filesRead);
@@ -30854,7 +31295,7 @@ function cleanStages(stages, diff) {
     const family = FAMILIES.includes(stage.family) ? stage.family : void 0;
     return {
       name: stage.name,
-      seconds: stage.seconds,
+      ...seconds === void 0 ? {} : { seconds },
       ...model === void 0 ? {} : { model },
       ...models.length === 0 ? {} : { models },
       ...family === void 0 ? {} : { family },
@@ -30868,10 +31309,13 @@ function cleanStages(stages, diff) {
   });
 }
 function describeStage(stage) {
-  const parts = [`${Math.round(stage.seconds)}s`];
-  if (stage.toolCalls !== void 0) parts.push(`${stage.toolCalls} tool call${stage.toolCalls === 1 ? "" : "s"}`);
-  if (stage.filesRead !== void 0) parts.push(`${stage.filesRead} file${stage.filesRead === 1 ? "" : "s"} read`);
-  if (stage.tokens !== void 0) parts.push(`${stage.tokens} tokens`);
+  const figure = (value, label2, measured) => typeof value === "number" ? measured(value) : `${label2} not measured`;
+  const parts = [
+    figure(stage.seconds, "seconds", (value) => `${Math.round(value)}s`),
+    figure(stage.toolCalls, "tool calls", (value) => `${value} tool call${value === 1 ? "" : "s"}`),
+    figure(stage.filesRead, "files read", (value) => `${value} file${value === 1 ? "" : "s"} read`),
+    figure(stage.tokens, "tokens", (value) => `${value} tokens`)
+  ];
   if (stage.diffLines !== void 0) parts.push(`on ${stage.diffLines} changed lines`);
   return `${stage.name}: ${parts.join(", ")}`;
 }
@@ -30881,14 +31325,20 @@ function shallowPassWarning(stages, findingCount) {
   if (analyst === void 0) return null;
   const { toolCalls, diffLines, filesRead, diffFiles } = analyst;
   const reasons = [];
-  if (toolCalls !== void 0 && diffLines !== void 0 && diffLines >= SHALLOW_MIN_DIFF_LINES && toolCalls * SHALLOW_LINES_PER_CALL < diffLines) {
+  if (typeof toolCalls === "number" && diffLines !== void 0 && diffLines >= SHALLOW_MIN_DIFF_LINES && toolCalls * SHALLOW_LINES_PER_CALL < diffLines) {
     reasons.push(`made ${toolCalls} tool call(s) on ${diffLines} changed lines`);
   }
-  if (filesRead !== void 0 && diffFiles !== void 0 && filesRead < diffFiles * SHALLOW_MIN_FILES_READ_SHARE) {
+  if (typeof filesRead === "number" && diffFiles !== void 0 && filesRead < diffFiles * SHALLOW_MIN_FILES_READ_SHARE) {
     reasons.push(`read ${filesRead} of ${diffFiles} changed files`);
   }
   if (reasons.length === 0) return null;
   return `The analyst ${reasons.join(", ")} and found nothing. That is a shallow pass for this size; consider re-running it, on a stronger model if need be, before trusting a clean result.`;
+}
+function unjudgedRead(stages, findingCount) {
+  if (findingCount > 0) return null;
+  const analyst = stages.find((stage) => stage.name === "analyst");
+  if (analyst === void 0 || typeof analyst.filesRead === "number" || !analyst.diffFiles) return null;
+  return `Whether the analyst read enough of the ${analyst.diffFiles} changed files could not be judged, because the stage recorded no file count.`;
 }
 
 // plugins/review-voice/src/cli/explain.ts
@@ -30923,6 +31373,7 @@ function explainCommand(argv) {
     if (detail.pullNumber !== null) console.log(`Pull request #${detail.pullNumber}`);
     const recordedScope = describeReviewScope(detail.scope);
     if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
+    if (detail.exclusions !== null) console.log(detail.exclusions.note);
     console.log(describeProvenance(detail.provenance));
     console.log(describeChecks(detail.checks));
     console.log(describeStructure(detail.structure));
@@ -31714,6 +32165,7 @@ function deletedFileCheck(argv) {
   const head = flag(argv, "--head");
   const cwd = process.cwd();
   if (base === null || head === null || !refExists(base, cwd) || !refExists(head, cwd)) return () => false;
+  const firstParty = firstPartyMatcher(repositoryConfig()?.firstPartyPaths ?? []);
   const git6 = (args) => execFileSync23("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
   let deleted;
   const deletions = () => {
@@ -31745,7 +32197,7 @@ function deletedFileCheck(argv) {
   return (candidate, anchor) => {
     if (anchor.ok || anchor.kind !== "file-not-in-diff") return false;
     const path = candidate.path.replace(/^\.\/+/, "");
-    if (path === "" || path.startsWith("/") || path.split(/[\\/]/).includes("..") || !isReviewable(path, false)) return false;
+    if (path === "" || path.startsWith("/") || path.split(/[\\/]/).includes("..") || !isReviewable(path, false, firstParty)) return false;
     const found2 = deletions();
     if (found2 === null || !found2.paths.has(path)) return false;
     const count4 = baseLines(found2.from, path);
@@ -31996,6 +32448,7 @@ function scoreCommand(argv) {
     }
   }
   if (searchRoot !== null) {
+    const firstParty = firstPartyMatcher(repositoryConfig()?.firstPartyPaths ?? []);
     for (const candidate of candidates) {
       const verification2 = verifications.get(candidate.candidateId);
       verifications.set(candidate.candidateId, {
@@ -32007,7 +32460,8 @@ function scoreCommand(argv) {
           searchRoot,
           baseRef,
           void 0,
-          reachDiff
+          reachDiff,
+          firstParty
         )
       });
     }
@@ -32822,6 +33276,8 @@ function recordCommand(argv) {
   let scope;
   let complexity = null;
   let structure;
+  let exclusions;
+  let leftOut;
   const knownPaths = /* @__PURE__ */ new Set();
   const pullFiles = /* @__PURE__ */ new Set();
   let pullFilesListed = false;
@@ -32836,6 +33292,7 @@ function recordCommand(argv) {
           pullFiles.add(plainPath2(file2.path));
           if (typeof file2.previousPath === "string") pullFiles.add(plainPath2(file2.previousPath));
         }
+        if (pullFilesListed) leftOut = leftOutPaths(manifest.files);
       }
       if (Number.isInteger(manifest.pullNumber) && manifest.pullNumber > 0) {
         pullNumber = manifest.pullNumber;
@@ -32852,6 +33309,10 @@ function recordCommand(argv) {
       if (manifest.structure !== void 0 && manifest.structure !== null) {
         structure = recordedStructure(manifest.structure) ?? void 0;
         if (structure === void 0) console.error(`The structure signals in ${filesFile} are malformed; recording without them.`);
+      }
+      if (manifest.exclusions !== void 0 && manifest.exclusions !== null) {
+        exclusions = parseExclusions(manifest.exclusions) ?? void 0;
+        if (exclusions === void 0) console.error(`The excluded file counts in ${filesFile} are malformed; recording without them.`);
       }
     } catch {
       console.error(`Cannot read ${filesFile}; recording without pull-request scope.`);
@@ -33179,6 +33640,8 @@ function recordCommand(argv) {
       ...checks === void 0 ? {} : { checks },
       ...reproductions === void 0 ? {} : { reproductions },
       ...structure === void 0 ? {} : { structure },
+      ...exclusions === void 0 ? {} : { exclusions },
+      ...leftOut === void 0 ? {} : { leftOut },
       toolSignals,
       conventions,
       provenance: {
@@ -33191,6 +33654,8 @@ function recordCommand(argv) {
       }
     });
     const warning = shallowPassWarning(stages, findings.length);
+    const notJudged = unjudgedRead(stages, findings.length);
+    if (notJudged !== null) console.error(notJudged);
     console.log(
       JSON.stringify(
         {

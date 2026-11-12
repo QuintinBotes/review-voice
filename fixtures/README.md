@@ -30,7 +30,7 @@ expect:
   findings: 1
   severity: blocking
   path: src/auth/session.ts
-  line: 66
+  line: 16
   category: correctness
 ```
 
@@ -44,6 +44,61 @@ A positive whose pass is not driven
 by `runReview` carries `harness: skip` and a one-line `harness_reason` instead,
 and stays outside the recall harness. Clean and absence fixtures never name a
 line.
+
+A defect can have more than one honest place to comment, such as the setup
+and the assertion of one short test. Such a positive lists the other places
+under `expect.anchors`, beside `expect.path` and `expect.line`, which stay the
+first anchor:
+
+```yaml
+expect:
+  path: test/catalog/PageReaderTests.cs
+  line: 12
+  anchors:
+    - { path: test/catalog/PageReaderTests.cs, line: 18 }
+```
+
+Each entry is one `- { path: <path>, line: <number> }` line, the only form the
+harness reads, and its path may be another file of the patch. A finding is a
+hit when it is on an anchor's path within the line tolerance of that anchor's
+line. The distance reported is the smallest over all anchors, and a positive
+counts as on the path when a finding is on any anchor's path. Every anchor is
+held to the same two checks as `expect.line`, and both tests read it with the
+harness's own reader, so an `anchors` key the harness does not read fails them.
+The harness ends the `expect:` block at the first line that is not indented, a
+comment included. An anchor is added only where the
+fixture's own `asserts` text names that place as part of the defect. A line
+that is merely near the defect is not one, and the tolerance is not widened to
+make room for it.
+
+## Context
+
+A fixture reads as a small real change to a repository, because a careful
+reviewer reads the repository and reports what is missing from it. On a clean
+fixture such a report is true and still counts against silence, and on a
+positive a verifier that cannot find a type or a caller rejects the seeded
+defect. So:
+
+- Every symbol a patch uses is defined in the patch, in a file under
+  `context/`, or by the language's standard library or a framework the code
+  names.
+- Every file a patch names in an import, a build step or a CI step exists once
+  the fixture is built.
+- The code is valid for its language. A test method sits in a class, a web
+  project has an entry point, and a hunk that starts below line 1 comes with
+  the `context/` file that holds the lines above it.
+- A positive carries what shows its defect from the repository, such as the
+  type and the callers that make a fallback unreachable, or the stated contract
+  an input breaks.
+
+Context files are part of the base commit, so they are what the reviewer's
+checkout holds. `test/fixture-consistency.test.mjs` builds every scored fixture
+and checks the part of this that can be checked exactly, which is that each
+relative import of a TypeScript or JavaScript file resolves, that each file a
+`run:` step added to a YAML file names exists, and that no TypeScript source
+declares a value with `declare`, which passes a type check and defines nothing.
+Whether any other symbol is defined needs a compiler, so that part is kept by
+whoever writes the fixture.
 
 The recall harness builds each fixture into a two-commit repository: a base
 reconstructed from the patch's context and removed lines (filler where the
