@@ -1,3 +1,4 @@
+import type { Status } from '../shared/status';
 import { statusLabel } from '../shared/status-label';
 
 export function emailSubject(status: Status): string {

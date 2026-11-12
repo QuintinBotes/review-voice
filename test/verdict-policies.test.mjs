@@ -748,10 +748,15 @@ test('config: each setting is read', () => {
       '  carry_approval_on_unchanged: true',
       '  recheck_thread_before_post: true',
       '  never_approve: false',
+      '  never_approve_paths: ["db/migrate/**"]',
+      '  only_approve_paths: ["docs/**", "*.md"]',
       '  scope_block: true',
       '  scope_block_models: true',
       '  evidence_block: true',
       '  evidence_block_precedents: true',
+      '  held_queue: true',
+      '  min_posted_tier: important',
+      '  reading_guide: true',
       'review:',
       '  suggestions: true',
       '  human_review:',
@@ -767,11 +772,17 @@ test('config: each setting is read', () => {
     carryApprovalOnUnchanged: true,
     recheckThreadBeforePost: true,
     neverApprove: false,
+    neverApprovePaths: ['db/migrate/**'],
+    onlyApprovePaths: ['docs/**', '*.md'],
+    malformedApprovalPaths: null,
     scopeBlock: true,
     scopeBlockModels: true,
     suggestions: true,
     evidenceBlock: true,
     evidenceBlockPrecedents: true,
+    heldQueue: true,
+    minPostedTier: 'important',
+    readingGuide: true,
   });
   assert.deepEqual(config.warnings, []);
 });
@@ -789,6 +800,8 @@ test('config: an invalid value warns and keeps that setting\'s default', () => {
       '  scope_block_models: 3',
       '  evidence_block: sometimes',
       '  evidence_block_precedents: 3',
+      '  min_posted_tier: critical',
+      '  reading_guide: 3',
       'review:',
       '  suggestions: maybe',
       '  human_review:',
@@ -797,7 +810,7 @@ test('config: an invalid value warns and keeps that setting\'s default', () => {
     ].join('\n'),
   );
   assert.deepEqual(config.verdictPolicy, { ...DEFAULT_VERDICT_POLICY, ciRed: 'annotate' });
-  assert.equal(config.warnings.length, 10);
+  assert.equal(config.warnings.length, 12);
   assert.ok(config.warnings.some((w) => w.startsWith('verdict.ci_pending must be one of wait, proceed')));
   assert.ok(config.warnings.some((w) => w.startsWith('review.human_review.cap_approval must be true or false')));
   assert.deepEqual(configFrom('verdict: annotate\n').warnings, ['verdict must be a mapping; using the defaults.']);
@@ -806,7 +819,7 @@ test('config: an invalid value warns and keeps that setting\'s default', () => {
 test('help for verdict and post names the settings and exit 8', () => {
   const help = (command) => execFileSync(process.execPath, [bundle, command, '--help'], { encoding: 'utf8' });
   const verdictHelp = help('verdict');
-  for (const key of ['ci_pending', 'ci_red', 'ci_needs_rerun', 'cap_approval', 'carry_approval_on_unchanged', 'never_approve', 'scope_block', 'scope_block_models', 'evidence_block', 'evidence_block_precedents']) {
+  for (const key of ['ci_pending', 'ci_red', 'ci_needs_rerun', 'cap_approval', 'carry_approval_on_unchanged', 'never_approve', 'never_approve_paths', 'only_approve_paths', 'scope_block', 'scope_block_models', 'evidence_block', 'evidence_block_precedents', 'held_queue', 'min_posted_tier', 'reading_guide']) {
     // With its dot and colon, since evidence_block is a prefix of evidence_block_precedents.
     assert.ok(verdictHelp.includes(`.${key}:`), `verdict --help: ${key}`);
   }

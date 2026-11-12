@@ -2,6 +2,7 @@ import { openDatabase } from '../store/db.ts';
 import { GLOBAL_SCOPE } from '../policy/compile.ts';
 import { approvePolicy, rollbackTo, listPolicies, type PolicyScope } from '../policy/versions.ts';
 import { flag } from './shared.ts';
+import { terminalSafeDeep } from '../terminal.ts';
 
 /**
  * `--scope path:<glob>` or `--scope global`. Null when the flag is absent; the
@@ -30,7 +31,8 @@ export function policyCommand(argv: string[]): number {
     switch (action) {
       case undefined:
       case 'show':
-        console.log(JSON.stringify({ policies: scope === null ? listPolicies(db) : listPolicies(db, scope) }, null, 2));
+        // Shown, not changed: a stored rule still matches the category it was proposed from.
+        console.log(JSON.stringify(terminalSafeDeep({ policies: scope === null ? listPolicies(db) : listPolicies(db, scope) }), null, 2));
         return 0;
 
       case 'approve': {

@@ -1,4 +1,5 @@
 import type { Database } from './db.ts';
+import { terminalSafe } from '../terminal.ts';
 
 /** What the watcher did with one head (docs/adr/0027). */
 export type HeadStatus =
@@ -54,7 +55,8 @@ const fromRow = (row: Row): WatchHead => ({
   event: row.event,
   reviewUrl: row.review_url,
   status: row.status,
-  detail: row.detail,
+  // Rows written before details were cleaned can hold a review's stderr or a check name as it came.
+  detail: row.detail === null ? null : terminalSafe(row.detail),
   attempts: row.attempts,
   updatedAt: row.updated_at,
 });
@@ -124,7 +126,7 @@ export function watchSummary(db: Database): string[] {
     .all() as unknown as Row[];
   return [
     `watcher          ${counts.map((row) => `${row.n} ${row.status}`).join(', ')}`,
-    ...recent.map((row) => `  ${row.repository}#${row.pull_number} ${row.head_sha.slice(0, 7)} ${row.status}${row.detail === null ? '' : ` ${row.detail}`}`),
+    ...recent.map((row) => `  ${row.repository}#${row.pull_number} ${row.head_sha.slice(0, 7)} ${row.status}${row.detail === null ? '' : ` ${terminalSafe(row.detail)}`}`),
   ];
 }
 

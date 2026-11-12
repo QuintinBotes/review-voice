@@ -1,6 +1,7 @@
 import { spawn as spawnChild } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
-import { parseOutput } from './parsers.ts';
+import { cleaner, cut, isSarif, memo, parseOutput, replaced } from './parsers.ts';
+import { terminalSafe } from '../terminal.ts';
 import type { CommandOutcome, EvidenceReport } from './types.ts';
 
 export interface ConfiguredCommand {
@@ -16,6 +17,8 @@ export interface ConfiguredCommand {
 
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const MAX_VERSION_POINTS = 80;
+/** A signal's claim and each evidence line, so one diagnostic cannot fill the report. */
+const MAX_SIGNAL_TEXT_POINTS = 4096;
 /** The shell's own answer when the command is missing (127) or not executable (126). */
 export const SHELL_UNAVAILABLE_EXIT_CODES: readonly number[] = [126, 127];
 
@@ -42,16 +45,23 @@ const MIN_MASKED_LENGTH = 8;
  * often a token, and a tool that prints it (a version banner, a debug line, a
  * verifier quoting its request) would otherwise carry it into the stored
  * report and the agents' prompts. The base variables are not secrets and are
- * left alone; a value shorter than MIN_MASKED_LENGTH is too.
+ * left alone; a value shorter than MIN_MASKED_LENGTH is too. A value is masked
+ * as listed and as each of its lines reads once trimmed, since a text adapter
+ * reads a tool's output by line and trims it, where a value saved with a
+ * newline or a space at its edge would no longer be found.
  */
 export function maskPassthrough(text: string, source: NodeJS.ProcessEnv, passthrough: readonly string[]): string {
+  const names = new Map<string, string>();
+  for (const name of passthrough) {
+    const value = source[name];
+    if (typeof value !== 'string') continue;
+    for (const form of [value, ...value.split('\n').map((line) => line.trim())]) {
+      if (form.length >= MIN_MASKED_LENGTH && !names.has(form)) names.set(form, name);
+    }
+  }
   let masked = text;
   // Longest first, so a value containing another listed value is masked whole.
-  const values = passthrough
-    .map((name) => [name, source[name]] as const)
-    .filter((entry): entry is readonly [string, string] => typeof entry[1] === 'string' && entry[1].length >= MIN_MASKED_LENGTH)
-    .sort((a, b) => b[1].length - a[1].length);
-  for (const [name, value] of values) masked = masked.split(value).join(`[redacted:${name}]`);
+  for (const [value, name] of [...names].sort((a, b) => b[0].length - a[0].length)) masked = masked.split(value).join(`[redacted:${name}]`);
   return masked;
 }
 
@@ -95,19 +105,40 @@ export function notRunReport(names: readonly string[], skipped?: string): Eviden
 
 /**
  * A version line comes from a tool run on a repository whose contents are
- * untrusted, and lands in a stored record. Control, bidi and zero-width
- * characters can reorder or hide text, so they go; the cap is by code point so
- * a surrogate pair is never split.
+ * untrusted, and lands in a stored record. Terminal sequences, control, bidi
+ * and zero-width characters can reorder or hide text, so they go; the cap is by code point so
+ * a surrogate pair is never split. It is masked and redacted before its first
+ * line is taken, so a multiline value does not leave that line behind, and again once
+ * stripped, since removing an invisible character can join a secret the text
+ * split. A tool can also wrap a value at the end of the first line, where it
+ * matches only once the break is a space, so the line is cleaned once more
+ * with the text after it, their white space collapsed, and what that
+ * replaces in the line, or from the line into the next, goes whole. All of it
+ * comes before the cap, since a cut value no longer matches.
  */
-function sanitisedVersion(stdout: string): string | undefined {
-  const firstLine = stdout.split('\n')[0] ?? '';
-  const clean = firstLine
-    // Control (Cc) and format (Cf) characters: the format class holds the bidi
-    // controls and the zero-width characters, and line and paragraph separators
-    // would break the one-line record.
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '')
-    .trim();
-  const capped = [...clean].slice(0, MAX_VERSION_POINTS).join('').trim();
+function sanitisedVersion(stdout: string, clean: (text: string) => string): string | undefined {
+  // As printed first, where a terminal sequence beside a value is its word
+  // boundary, then without its sequences, each taken whole so no parameter
+  // byte is left, where one inside a value no longer splits it.
+  const printed = clean(stdout);
+  const safe = terminalSafe(printed);
+  const whole = safe === printed ? printed : clean(safe);
+  const end = whole.indexOf('\n');
+  // Control (Cc) and format (Cf) characters: the format class holds the bidi
+  // controls and the zero-width characters, and line and paragraph separators
+  // would break the one-line record.
+  const stripped = clean((end === -1 ? whole : whole.slice(0, end)).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ''));
+  const spaced = `${stripped}${end === -1 ? '' : whole.slice(end)}`.replace(/\s+/g, ' ');
+  const first = stripped.replace(/\s+/g, ' ').length;
+  let line = '';
+  let copied = 0;
+  for (const part of replaced(spaced, clean(spaced))) {
+    if (part.start >= first) break;
+    line += spaced.slice(copied, part.start) + part.marker;
+    copied = part.end;
+  }
+  line += spaced.slice(copied, first);
+  const capped = cut(line.trim(), MAX_VERSION_POINTS).trim();
   return capped === '' ? undefined : capped;
 }
 
@@ -175,16 +206,47 @@ export async function collectEvidence(
     }
 
     const mask = (text: string): string => maskPassthrough(text, process.env, options.envPassthrough ?? []);
-    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-    const version = command.version === undefined ? undefined : await readVersion(spawn, command.version, options.cwd, timeoutMs, env, mask);
-    // Parsed from the true output, so a passed-through directory in a path does
-    // not break the location; then the text a reader sees is masked. The path
-    // and line stay as printed, because matching a finding to a signal reads them.
-    const signals = parseOutput(command.name, command.run, output).map((signal) => ({
+    // A tool's text can quote a secret it read, and every adapter's signals
+    // pass here, so this is where they are cleaned. Text is masked and
+    // redacted whole and only then cut, since a secret the cut splits no
+    // longer matches its pattern. Both read the text as printed, since
+    // either applied to what the other left would miss what it changed.
+    const clean = cleaner(mask);
+    const printed = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+    // Without its terminal sequences, so none hides a diagnostic from an adapter
+    // or reaches a text adapter's signal. Text is cleaned whole and as printed
+    // before they go and before an adapter takes a line of it, since a
+    // sequence beside a secret is the word boundary its pattern needs, and a
+    // key block ends on a later line than it starts. A SARIF document is not,
+    // since a replacement inside a string can break it. Its controls are JSON
+    // escapes here, and each field is cleaned, and loses its own, once parsed.
+    // The document is told by what the adapters are given, so no sequence can
+    // make a document of text that then reaches a text adapter uncleaned.
+    const safe = terminalSafe(printed);
+    const output = isSarif(safe) ? safe : terminalSafe(clean(printed));
+    const configuredVersion = command.version === undefined ? undefined : await readVersion(spawn, command.version, options.cwd, timeoutMs, env, clean);
+    // A path is a location, so it is kept as printed or dropped with its line,
+    // since a rewritten path would name another file. It is dropped when
+    // masking, redaction or the removal of terminal sequences would change it,
+    // because it then carries a secret, a value the repository listed as one,
+    // or a sequence. An adapter that reads a line in parts, or rewrites the
+    // tool's text, cleans it whole first.
+    const parsed = parseOutput(command.name, command.run, output, options.cwd, clean);
+    // Checked once per path, since every diagnostic in an eslint file or a SARIF artifact shares it.
+    // Cleaned, two file names can read as one. So when cleaning changed the
+    // output, a path keeps its place only if the output as printed names it too.
+    const named = output === printed ? null : new Set(parseOutput(command.name, command.run, printed, options.cwd, clean).signals.map((signal) => signal.path));
+    const keeps = memo((path) => clean(path) === path && terminalSafe(path) === path && (named === null || named.has(path)));
+    const cleanCut = (text: string): string => cut(clean(text), MAX_SIGNAL_TEXT_POINTS);
+    const signals = parsed.signals.map((signal) => ({
       ...signal,
-      claim: mask(signal.claim),
-      evidence: signal.evidence.map(mask),
+      ...(signal.path !== null && !keeps(signal.path) ? { path: null, line: null } : {}),
+      claim: cleanCut(signal.claim),
+      evidence: signal.evidence.map(cleanCut),
     }));
+    // A version the output itself states (a SARIF document names its producer)
+    // is recorded like a version command's line; a command the user wrote wins.
+    const version = configuredVersion ?? (parsed.version === undefined ? undefined : sanitisedVersion(parsed.version, clean));
     outcomes.push({
       name: command.name,
       command: command.run,
@@ -214,13 +276,11 @@ async function readVersion(
   cwd: string,
   timeout: number,
   env: NodeJS.ProcessEnv,
-  mask: (text: string) => string,
+  clean: (text: string) => string,
 ): Promise<string | undefined> {
   const result = await spawnInGroup(spawn, run, cwd, timeout, env);
   if (result.error !== undefined || result.status !== 0) return undefined;
-  // Masked whole, before the first line is taken and capped: a cut value no
-  // longer matches, and a multiline one would leave its first line behind.
-  return sanitisedVersion(mask(String(result.stdout ?? '')));
+  return sanitisedVersion(String(result.stdout ?? ''), clean);
 }
 
 /**

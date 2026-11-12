@@ -18,6 +18,7 @@ import { repositoryRoot } from '../diff/acquire.ts';
 import { normaliseCandidate, assertUniqueCandidateIds, type Candidate, type RawCandidate } from '../scoring/score.ts';
 import { recordAudit } from '../store/audit.ts';
 import { inferRepository, remoteRepositories, flag, VERDICT_KEYS, verificationProblem } from './shared.ts';
+import { terminalSafe } from '../terminal.ts';
 
 /**
  * Runs the carry for one stored run against the repository in the working
@@ -163,7 +164,10 @@ export function carryCommand(argv: string[]): number {
       );
       return 1;
     }
-    process.stdout.write(`${result.output}\n`);
+    // Stored as the model wrote it. Plain text has no escape to keep a control as data, so it goes.
+    const text = terminalSafe(result.output);
+    if (text !== result.output) console.error(`Terminal control characters were removed from the text carried from ${from}.`);
+    process.stdout.write(`${text}\n`);
     return 0;
   } catch (error) {
     if (error instanceof CarryError) {

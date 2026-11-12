@@ -47,7 +47,8 @@ with the same gates it applies today.
 - **Organisation-wide policy authority.** ADR 0006 still applies. A team
   profile pools history, and the owner still approves policy.
 - **Auto-merge, dismissing reviews, or writes other than the one review.** The
-  writer's single endpoint is unchanged.
+  watcher makes no write but the review. The writer's second path, the reply
+  (ADR 0035), is reached only by `reply --confirm`.
 
 ## Who uses it, and how
 
@@ -192,8 +193,11 @@ verdict:                             # ADR 0028
   ci_red: cap                        # cap | annotate
   ci_needs_rerun: hold               # hold | annotate
   never_approve: false               # true turns every APPROVE into COMMENT
+  never_approve_paths: []            # globs; a change touching one leaves approval to a person
+  only_approve_paths: []             # globs; a change outside them all leaves approval to a person
   carry_approval_on_unchanged: true
   recheck_thread_before_post: true
+  held_queue: false                  # true lists each review's held findings under its report line
 
 queue:                               # ADR 0026
   sources: [requested, assigned, follow-up, dismissed]
@@ -252,7 +256,9 @@ review-voice review --pr <n> [--repository owner/repo] [--mode M] [--post]
   verdict, posted, reviewUrl, costUsd, seconds, stages[], failure }`; `failure` is
   null unless the review could not complete, and then holds `{ code, stage,
   mode, risk, reasons, humanReviewNote, facts }` with `mode` `failed_open` or
-  `failed_closed`.
+  `failed_closed`. Under `verdict.held_queue` it also carries `heldQueue`,
+  one entry per `held` entry; inside GitHub Actions the same list is appended
+  to the job summary.
 - Exit codes follow `verdict` and `post`: 0 done, 2 refused or bad invocation,
   3 head moved, 4 waiting on CI, 6 CI needs a rerun, 7 an agent failed twice.
 
@@ -269,7 +275,7 @@ The stage graph, in order. A stage the plan turns off is recorded as skipped.
 | 7 | `second-pass` (`verify` with the configured command) | CLI | as today |
 | 8 | `tie-break`, once per `reconcile` dispute | agent | dispute stays unsettled |
 | 9 | `score`, then lane severity rules | CLI | stop |
-| 10 | `challenge`, one challenger per eligible finding | agent | the finding is held |
+| 10 | `challenge`, one challenger per eligible finding, on the plan's challenge family | agent | the finding is held; a configured family that cannot run, or a `runners.use` value that names no family, holds every challenged finding and caps the event at COMMENT. No incremental or interdiff review releases that hold, whether or not it read the file. A full review (`review --full`) checks the finding again once the runner works |
 | 11 | `edit` (concise-editor), `validate-output` (one retry) | agent | relaunch once, then exit 7 |
 | 12 | `record`, then `verdict` | CLI | stop |
 | 13 | `post`, only with `--post` and posting enabled | CLI | per `post` exit codes |
@@ -286,8 +292,20 @@ GitHub search and the local store. It writes nothing.
 ### `watch`
 
 ```
-review-voice watch [--once] [--interval 2h] [--post] [--mode M] [--max N] [--json]
+review-voice watch [--once] [--interval 2h] [--post] [--mode M] [--max N] [--config <path>] [--json]
 ```
+
+The watcher reads the file `--config` names, else an absolute
+`REVIEW_VOICE_CONFIG`, else the checkout's `.review-voice/config.yaml`.
+Outside a repository only `--config` names a file. It copies that file to
+`<data directory>/watch-config.yaml` and hands each review the copy through
+`REVIEW_VOICE_CONFIG`, with `REVIEW_VOICE_CONFIG_SOURCE` beside it naming
+where the file came from: `flag` for `--config`, `env` for an
+absolute `REVIEW_VOICE_CONFIG` (or the source a `REVIEW_VOICE_CONFIG_SOURCE`
+beside it states), `checkout` otherwise. The `runners:` block is honoured only
+for `flag` and `env`, the operator's own configuration (ADR 0034), in the
+watcher and in every review it starts; a checkout's block is ignored with one
+warning.
 
 Each pass runs `queue`, then for every entry:
 - `review`: syncs the workspace clone and runs `review` (with `--post` when
@@ -303,11 +321,23 @@ in the format `owner/repo#n: <summary> (<status> <url>)`, where `<status>` is
 one of the `HeadStatus` values: a review that reported `failure.mode` shows
 `failed-open` or `failed-closed`, and one with no report shows `failed`. All
 three count toward `watch.max_attempts_per_head`, appear in `queue --settled`
-and make `--once` exit 1. After the outcomes step the pass applies the
+and make `--once` exit 1. With `verdict.held_queue: true` in the watcher's
+config, a `review` entry whose run held findings prints them two spaces in
+under its line. They are a `Held by Review Voice (N), run <id>` line, a note
+that a promoted finding still goes through the challenge, then one line per held
+finding with its location, severity, verdict and reason in inline code, and
+for a `below-gate` or `policy-suppressed` one the `score --promote` command
+that re-scores the run from its directory (through stderr with `--json`). A
+`verdict-only` or `recheck-ci` entry prints none, since its run was listed
+when it was reviewed. The commands are printed, never run. After the outcomes step the pass applies the
 `retention` block and prints one line such as `removed 2 run directories, 15
 audit events` (through stderr with `--json`). A second watcher on
 the same data directory exits at once (a lock file). `--once` runs one pass for
 cron, launchd or a scheduled workflow.
+
+`watch` never replies under a comment. It has no reply setting and no code path
+to the reply write (ADR 0035), so a question under one of its posted comments
+waits for a person to run `reply --pr N --confirm`.
 
 ### `challenge`
 
@@ -350,9 +380,18 @@ request's later commits, and records a `FindingOutcome` for each. `evaluate`
 reports the totals. `watch` runs it once per pass for the pull requests it
 touched.
 
+In text mode, a thread awaiting this tool's one reply (ADR 0035) prints one
+more line, `<repo>#<pr> <findingId> <path>:<line> question from <login>
+awaiting a reply; run reply --pr <pr>`. A thread awaits it when it is open, no
+reply under it is by the poster, and the newest reply from someone other than
+the poster, the owner or a bot asks something (a `?` outside a blockquote). A
+disagreement that asks nothing is an outcome and gets no reply. An
+acknowledgement gets none, even with a question mark. `--json` stays an array
+of outcomes.
+
 ## Verdict policy
 
-ADR 0028 makes six verdict behaviours configurable. The defaults keep today's
+ADR 0028 makes seven verdict behaviours configurable. The defaults keep today's
 behaviour.
 
 | Situation | Default | Opt-in |
@@ -362,6 +401,7 @@ behaviour.
 | CI needs a rerun | hold every event (exit 6) | `ci_needs_rerun: annotate` posts the code verdict, body adds `Heads up: <checks> need a rerun.` |
 | APPROVE, high complexity | post COMMENT (ADR 0012) | `human_review.cap_approval: false` approves; the local note stays |
 | Any APPROVE | approve when the guards pass | `never_approve: true` posts COMMENT instead; approval is left to a person, pending CI does not make the head wait, and a head queued for a CI recheck before it was turned on is settled, not retried |
+| APPROVE, the pull request changes a guarded path | approve when the guards pass | `never_approve_paths: [<globs>]` posts COMMENT when a changed path (a rename by either name, a deleted file too) matches; `only_approve_paths: [<globs>]` when one is outside every glob. The summary ends with a fixed sentence naming the setting, the reasons name the paths, and `--recheck` refuses as under `never_approve`. Cheaper than `sensitive_paths`, which also buys a thorough review and a note. A list that does not load holds every approval |
 | Unchanged scope, owner's approval still stands | post again | `carry_approval_on_unchanged: true` records `carried` and posts nothing |
 
 `recheck_thread_before_post` re-reads the thread immediately before `post` and
@@ -379,7 +419,7 @@ claim during the run. That is the same repeat rule `check-candidates` applies.
 | reproduce | off | off | when configured |
 | second-pass | off | when configured | when configured |
 | tie-break | sonnet | opus | opus |
-| challenge | off | sonnet; opus for important or above | opus |
+| challenge | off | sonnet; opus for important or above; the `runners.<family>` label on a configured family | opus; the `runners.<family>` label on a configured family |
 | edit | sonnet | sonnet | sonnet |
 
 `auto` picks `fast` when no production source changed (documentation, tests,
@@ -404,7 +444,8 @@ ADR 0029. For each posted inline comment:
   label (ADR 0004).
 
 `evaluate` adds `posted_fixed_rate`, `posted_dismissed_rate` and
-`posted_findings_tracked`. Only strong outcomes count toward rates.
+`posted_findings_tracked`, and since ADR 0035 `posted_replies` and
+`replied_fixed_rate`. Only strong outcomes count toward rates.
 `owner_accepted_precision` keeps reading explicit feedback first.
 
 ## Security
@@ -420,9 +461,11 @@ The threat model's boundaries do not move.
 - **Search is a read outside one repository.** ADR 0026 allows exactly one
   search endpoint, and every result is filtered against the allowlist before
   anything else reads it.
-- **The writer is unchanged.** It still makes one request, to one endpoint.
-  `watch` and the Action reach it only through `post`, with its idempotency key,
-  head re-read and CI guards.
+- **The writer has two paths, both checked in code.** It creates a review, or
+  replies under one of this tool's own inline comments (ADR 0035), and refuses
+  every other method and path before the network. `watch` and the Action reach
+  it only through `post`, with its idempotency key, head re-read and CI guards.
+  Neither replies, since only `reply --confirm` sends the reply.
 - **The Action** runs on `pull_request`, never `pull_request_target` with a
   checkout of the head. Fork pull requests get no secrets, so the Action
   reviews without posting there unless the maintainer opts in.

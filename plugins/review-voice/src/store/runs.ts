@@ -7,15 +7,20 @@ import { ruleIdFor } from '../policy/rules.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { parseReviewScope, type ReviewScope } from '../diff/incremental.ts';
 import { parseComplexity, type ComplexityAssessment } from '../diff/complexity.ts';
+import { parseExclusions, type ExclusionSummary } from '../diff/exclusions.ts';
 import { matchCarried, type CarriedFinding } from '../diff/carry.ts';
+import type { RemovedControlKind } from '../diff/removed-controls.ts';
+import type { RiskMarkerKind } from '../diff/risk-markers.ts';
 import type { TieBreak } from '../verify/reconcile.ts';
 import type { FollowUpState } from './follow-ups.ts';
 import type { VerifiedSimplification } from '../simplification.ts';
 import { suggestedPatchOf, type SuggestedPatch } from '../scoring/score.ts';
 import { redact } from '../redact/redact.ts';
+import { terminalSafe } from '../terminal.ts';
 import type { EvidenceSignal } from '../evidence/types.ts';
 import type { ReproductionRecord, ReproductionRun } from '../evidence/reproduce.ts';
 import { flatten, MACHINE_PATH } from '../publish/evidence-block.ts';
+import { FAMILIES, type Family } from '../agents/types.ts';
 
 export interface StoredFinding {
   findingId: string;
@@ -190,6 +195,31 @@ export const HELD_VERDICTS: readonly HeldVerdict[] = [
   'reproduction-did-not-fail',
 ];
 
+/**
+ * A hold for a challenge the configuration asked for and did not get. Nothing
+ * judged the finding, so the hold caps the verdict and a carry keeps it (docs/adr/0024).
+ */
+export function challengeNotRun(entry: HeldFinding): boolean {
+  return typeof entry.reason === 'string' && entry.reason.startsWith('challenger not run:');
+}
+
+/**
+ * A finding above a nit that the verifier confirmed and the floor on its own
+ * confidence alone stopped. Nothing refuted it, so it caps the verdict like an
+ * unverified finding and a narrowed review keeps it (docs/adr/0016, amended).
+ * A hold by the final-score gate never does: that score carries the owner's
+ * precedent, and a preference must not block an approval. A question under its
+ * gate is one the verifier judged more likely moot.
+ */
+export function heldBelowConfidenceGate(entry: HeldFinding): boolean {
+  return (
+    entry.verdict === 'below-gate' &&
+    typeof entry.reason === 'string' &&
+    entry.reason.startsWith('below the confidence gate') &&
+    (entry.severity === 'blocking' || entry.severity === 'important' || entry.severity === 'minor')
+  );
+}
+
 /** Null when the entry is well formed, else what is wrong with it. */
 export function heldProblem(entry: unknown): string | null {
   if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return 'not an object';
@@ -303,6 +333,66 @@ export interface RunProvenance {
 /** The caller supplies everything but the policy rows, which `recordRun` reads itself. */
 export type RunProvenanceInput = Omit<RunProvenance, 'independence' | 'policyVersions'> &
   Partial<Pick<RunProvenance, 'independence' | 'policyVersions'>>;
+
+/**
+ * Which model family ran each cross-checking stage (docs/adr/0021, amended).
+ * Stored beside the provenance, not in it: the independence label keeps its
+ * two values, and a family is a separate recorded fact.
+ */
+export interface RunFamilies {
+  /** `unknown` when verdicts exist without a family; null when there was no second pass. */
+  secondPass: Family | 'unknown' | null;
+  /** Null when no challenge stage ran. */
+  challenge: Family | null;
+}
+
+const isFamily = (value: unknown): value is Family => (FAMILIES as readonly unknown[]).includes(value);
+
+/** The `Families` line the driver report and `explain` print. */
+export function describeFamilies(families: RunFamilies | null): string {
+  if (families === null) return 'Families not recorded';
+  return `Families second-pass ${families.secondPass ?? 'none'}, challenge ${families.challenge ?? 'none'}`;
+}
+
+/**
+ * Derived from the record, never trusted: the first second-pass verdict's
+ * family, and the challenge stage's, `claude` when it names none (the only
+ * runner before families were recorded).
+ */
+function familiesOf(verdicts: unknown, stages: readonly StageTiming[]): RunFamilies {
+  const list = Array.isArray(verdicts) ? verdicts : [];
+  const first = list.length === 0 ? undefined : (asRecord(list[0])?.['family'] as unknown);
+  const challenge = stages.find((stage) => stage.name === 'challenge');
+  return {
+    secondPass: list.length === 0 ? null : isFamily(first) ? first : 'unknown',
+    challenge: challenge === undefined ? null : isFamily(challenge.family) ? challenge.family : 'claude',
+  };
+}
+
+const reportedFamilies = new Set<string>();
+
+/** The stored families, or null for a row without the key; a malformed value is null too, said once on stderr. */
+export function storedFamilies(raw: unknown, reviewRunId: string): RunFamilies | null {
+  if (typeof raw !== 'string') return null;
+  let value: unknown;
+  try {
+    value = asRecord(JSON.parse(raw))?.['families'];
+  } catch {
+    return null;
+  }
+  if (value === undefined) return null;
+  const v = asRecord(value);
+  const secondPass = v?.['secondPass'];
+  const challenge = v?.['challenge'];
+  if (v !== null && (secondPass === null || secondPass === 'unknown' || isFamily(secondPass)) && (challenge === null || isFamily(challenge))) {
+    return { secondPass: secondPass as RunFamilies['secondPass'], challenge: challenge as Family | null };
+  }
+  if (!reportedFamilies.has(reviewRunId)) {
+    reportedFamilies.add(reviewRunId);
+    console.error(`The families recorded for run ${reviewRunId} are malformed; reading them as not recorded.`);
+  }
+  return null;
+}
 
 /**
  * The `Provenance` line `explain` and the driver report print, and `status`
@@ -460,6 +550,12 @@ export interface RecordRunInput {
   provenance?: RunProvenanceInput | undefined;
   /** What the static checks and the symbol search did; see `recordedChecks`. Absent for a run that was not given them. */
   checks?: RecordedChecks | undefined;
+  /** The manifest's structural signals as per-file counts; see `recordedStructure`. Absent for a run recorded without them. */
+  structure?: RecordedStructure | undefined;
+  /** The manifest's count of changed files the review left out, by reason. Absent when it read them all. */
+  exclusions?: ExclusionSummary | undefined;
+  /** The manifest's files the review left out by its own rules, so a follow-up does not call them covered. */
+  leftOut?: readonly string[] | undefined;
   /** The static signals of `evidence.json`, with repository-relative paths, for each finding's `toolSignal`. */
   toolSignals?: readonly EvidenceSignal[] | undefined;
   /** The convention documents `conventions` returned, for each finding's `conventionQuotes`. */
@@ -548,6 +644,12 @@ export interface RecordedChecks {
   symbolsInconclusive: number;
   /** True when the symbol search stopped on its time budget. */
   symbolsBudgetExhausted: boolean;
+  /**
+   * The linked issues the thread read for intent (`review.linked_issues`), by
+   * number; `[]` when the thread read none. Absent on a row recorded before
+   * the thread said, which never claims it read no issues.
+   */
+  issuesRead?: number[];
 }
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
@@ -630,11 +732,13 @@ function storedChecks(raw: unknown): RecordedChecks | null {
     if (c === null || typeof c['name'] !== 'string' || typeof c['reason'] !== 'string') return null;
     didNot.push({ name: c['name'], reason: c['reason'] });
   }
+  const issuesRead = value['issuesRead'];
   return {
     staticRan: ran,
     staticDidNotRun: didNot,
     symbolsInconclusive: value['symbolsInconclusive'] as number,
     symbolsBudgetExhausted: value['symbolsBudgetExhausted'] as boolean,
+    ...(Array.isArray(issuesRead) ? { issuesRead: issuesRead.filter((n): n is number => Number.isInteger(n)) } : {}),
   };
 }
 
@@ -648,13 +752,163 @@ export function describeChecks(checks: RecordedChecks | null): string {
     checks.symbolsInconclusive === 0
       ? 'every symbol file finished'
       : `${checks.symbolsInconclusive} symbol file${checks.symbolsInconclusive === 1 ? '' : 's'} not finished${checks.symbolsBudgetExhausted ? ' (time budget)' : ''}`;
-  return `Checks ${staticParts.length === 0 ? 'no static checks' : staticParts.join('; ')}; ${symbols}`;
+  const issues =
+    checks.issuesRead === undefined ? '' : `; linked issues ${checks.issuesRead.length === 0 ? 'none' : checks.issuesRead.map((n) => `#${n}`).join(', ')}`;
+  return `Checks ${staticParts.length === 0 ? 'no static checks' : staticParts.join('; ')}; ${symbols}${issues}`;
+}
+
+/**
+ * The order the reading guide names kinds in. A `Record` keyed by each closed
+ * union, so a kind added to the scanners without a place here fails the
+ * typecheck; an array checked with `satisfies` would not.
+ */
+export const REMOVED_CONTROL_ORDER: Readonly<Record<RemovedControlKind, number>> = { guard: 0, refusal: 1, decorator: 2, middleware: 3, 'allowlist-entry': 4 };
+export const RISK_MARKER_ORDER: Readonly<Record<RiskMarkerKind, number>> = { 'new-route': 0, 'lock-or-async': 1, 'string-built-query': 2, unsafe: 3 };
+
+export interface RecordedFileSignals {
+  path: string;
+  /** True when every entry for the path came from a deleted file (`removedControls[].deletedFile`). */
+  deletedFile: boolean;
+  removedControls: Partial<Record<RemovedControlKind, number>>;
+  riskMarkers: Partial<Record<RiskMarkerKind, number>>;
+  /** The first crossing recorded for the path, or null. */
+  sizeCrossing: { headLines: number; threshold: number } | null;
+  /** Functions whose added decision points crossed the threshold. */
+  branchGrowth: number;
+  typeEscapes: number;
+}
+
+/**
+ * A manifest's structural signals as per-file counts, kept with the run so the
+ * reading guide (docs/adr/0028) is built from the record. Counts and not the
+ * signals themselves: the store keeps no source text beyond a finding's own
+ * words, `removedControls[].text` is a removed source line, and the guide needs
+ * none of it.
+ */
+export interface RecordedStructure {
+  /** Every changed path with at least one signal, sorted by path. Counts only; no source text. */
+  files: RecordedFileSignals[];
+  /** `StructureSignals.unmeasured.count`. */
+  unmeasured: number;
+}
+
+const STRUCTURE_LISTS = ['sizeCrossings', 'branchGrowth', 'typeEscapes', 'removedControls', 'riskMarkers'] as const;
+
+/** A manifest's `structure` aggregated per path; null for a value that is not an object with its five lists. */
+/**
+ * A path as the repository names it. An absolute, home-relative, drive or
+ * parent-climbing path can only come from a machine's own layout, and the
+ * reading guide posts paths, so such an entry is dropped rather than shown.
+ */
+export const repositoryPath = (path: string): boolean => path !== '' && !/^[\\/]/u.test(path) && !MACHINE_PATH.test(path);
+
+export function recordedStructure(raw: unknown): RecordedStructure | null {
+  const value = asRecord(raw);
+  if (value === null || !STRUCTURE_LISTS.every((list) => Array.isArray(value[list]))) return null;
+  const files = new Map<string, RecordedFileSignals>();
+  // Entries per path, and how many of them a deleted file produced; only a
+  // removed control can say so, since every other signal is on an added line.
+  const entries = new Map<string, number>();
+  const deleted = new Map<string, number>();
+  const entryOf = (entry: unknown): Record<string, unknown> | null => {
+    const record = asRecord(entry);
+    return record !== null && typeof record['path'] === 'string' && repositoryPath(record['path']) ? record : null;
+  };
+  // Called only for an entry that counts, so a path with no signal is never listed.
+  const fileOf = (record: Record<string, unknown>): RecordedFileSignals => {
+    const path = record['path'] as string;
+    let file = files.get(path);
+    if (file === undefined) {
+      file = { path, deletedFile: false, removedControls: {}, riskMarkers: {}, sizeCrossing: null, branchGrowth: 0, typeEscapes: 0 };
+      files.set(path, file);
+    }
+    entries.set(path, (entries.get(path) ?? 0) + 1);
+    return file;
+  };
+  // Own-property checks: `in` would admit `constructor` and the other prototype names.
+  for (const entry of value['removedControls'] as unknown[]) {
+    const record = entryOf(entry);
+    const kind = record?.['kind'];
+    if (record === null || typeof kind !== 'string' || !Object.hasOwn(REMOVED_CONTROL_ORDER, kind)) continue;
+    const file = fileOf(record);
+    file.removedControls[kind as RemovedControlKind] = (file.removedControls[kind as RemovedControlKind] ?? 0) + 1;
+    if (record['deletedFile'] === true) deleted.set(file.path, (deleted.get(file.path) ?? 0) + 1);
+  }
+  for (const entry of value['riskMarkers'] as unknown[]) {
+    const record = entryOf(entry);
+    const kind = record?.['kind'];
+    if (record === null || typeof kind !== 'string' || !Object.hasOwn(RISK_MARKER_ORDER, kind)) continue;
+    const file = fileOf(record);
+    file.riskMarkers[kind as RiskMarkerKind] = (file.riskMarkers[kind as RiskMarkerKind] ?? 0) + 1;
+  }
+  for (const entry of value['typeEscapes'] as unknown[]) {
+    const record = entryOf(entry);
+    if (record !== null) fileOf(record).typeEscapes += 1;
+  }
+  for (const entry of value['branchGrowth'] as unknown[]) {
+    const record = entryOf(entry);
+    if (record !== null) fileOf(record).branchGrowth += 1;
+  }
+  for (const entry of value['sizeCrossings'] as unknown[]) {
+    const record = entryOf(entry);
+    if (record === null || !Number.isInteger(record['headLines']) || !Number.isInteger(record['threshold'])) continue;
+    const file = fileOf(record);
+    // The first crossing per path counts; a second is ignored, not summed.
+    if (file.sizeCrossing === null) file.sizeCrossing = { headLines: record['headLines'] as number, threshold: record['threshold'] as number };
+  }
+  for (const file of files.values()) file.deletedFile = (deleted.get(file.path) ?? 0) === entries.get(file.path);
+  const unmeasured = asRecord(value['unmeasured'])?.['count'];
+  return {
+    files: [...files.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+    unmeasured: Number.isInteger(unmeasured) ? (unmeasured as number) : 0,
+  };
+}
+
+/** The stored structure, or null for a row recorded before it existed or one that does not hold it. */
+function storedStructure(raw: unknown): RecordedStructure | null {
+  const value = asRecord(raw);
+  if (value === null || !Array.isArray(value['files']) || !Number.isInteger(value['unmeasured'])) return null;
+  // A kind outside its table is as malformed as a non-integer count: the guide prints kinds as text.
+  const counts = (table: unknown, order: Readonly<Record<string, number>>): Partial<Record<string, number>> | null => {
+    const record = asRecord(table);
+    return record !== null && Object.entries(record).every(([kind, count]) => Object.hasOwn(order, kind) && Number.isInteger(count))
+      ? (record as Partial<Record<string, number>>)
+      : null;
+  };
+  const files: RecordedFileSignals[] = [];
+  for (const entry of value['files']) {
+    const file = asRecord(entry);
+    if (file === null || typeof file['path'] !== 'string' || typeof file['deletedFile'] !== 'boolean') return null;
+    const removedControls = counts(file['removedControls'], REMOVED_CONTROL_ORDER);
+    const riskMarkers = counts(file['riskMarkers'], RISK_MARKER_ORDER);
+    const crossing = file['sizeCrossing'] === null ? null : asRecord(file['sizeCrossing']);
+    if (removedControls === null || riskMarkers === null || !Number.isInteger(file['branchGrowth']) || !Number.isInteger(file['typeEscapes'])) return null;
+    if (crossing !== null && !(Number.isInteger(crossing['headLines']) && Number.isInteger(crossing['threshold']))) return null;
+    files.push({
+      path: file['path'],
+      deletedFile: file['deletedFile'],
+      removedControls: removedControls as Partial<Record<RemovedControlKind, number>>,
+      riskMarkers: riskMarkers as Partial<Record<RiskMarkerKind, number>>,
+      sizeCrossing: crossing === null ? null : { headLines: crossing['headLines'] as number, threshold: crossing['threshold'] as number },
+      branchGrowth: file['branchGrowth'] as number,
+      typeEscapes: file['typeEscapes'] as number,
+    });
+  }
+  return { files, unmeasured: value['unmeasured'] as number };
+}
+
+/** The `Structure` line `explain` prints. */
+export function describeStructure(structure: RecordedStructure | null): string {
+  if (structure === null) return 'Structure not recorded';
+  const count = structure.files.length;
+  return `Structure ${count} file${count === 1 ? '' : 's'} with a signal, ${structure.unmeasured} unmeasured`;
 }
 
 export interface StageTiming {
   /** `analyst`, `verifier`, `editor`, and so on. */
   name: string;
-  seconds: number;
+  /** Left out, as any of the four figures may be, when nobody measured it (#352); never a zero or an estimate. */
+  seconds?: number | undefined;
   toolCalls?: number | undefined;
   tokens?: number | undefined;
   /** Distinct files the stage read, as the stage itself counted them. */
@@ -668,6 +922,8 @@ export interface StageTiming {
   /** One model per agent call, in order: the challenge stage picks one per finding. */
   models?: string[] | undefined;
   costUsd?: number | undefined;
+  /** The model family the stage ran on; `claude` unless a configured runner ran it. */
+  family?: Family | undefined;
 }
 
 /**
@@ -885,7 +1141,7 @@ export function hashDiff(diff: string): string {
 export function recordRun(
   db: Database,
   input: RecordRunInput,
-): { reviewRunId: string; findings: StoredFinding[]; provenance: RunProvenance | null } {
+): { reviewRunId: string; findings: StoredFinding[]; provenance: RunProvenance | null; families: RunFamilies | null } {
   if ((input.bodyFindings?.length ?? 0) > 1) {
     throw new Error('A review may record at most one body-only simplification finding.');
   }
@@ -919,6 +1175,8 @@ export function recordRun(
           mode: input.provenance.mode,
           policyVersions,
         };
+  // A run recorded without provenance has no families either.
+  const families = provenance === null ? null : familiesOf(input.verdicts, input.stages ?? []);
 
   // The run row and its audit event land together or not at all: a row left by
   // a failed audit write would read as a recorded review while the caller saw
@@ -953,13 +1211,17 @@ export function recordRun(
         ...(input.followUps === undefined || input.followUps.length === 0 ? {} : { followUps: input.followUps }),
         ...(input.checks === undefined ? {} : { checks: input.checks }),
         ...(input.reproductions === undefined ? {} : { reproductions: markHeld(input.reproductions, input.held ?? []) }),
+        ...(input.structure === undefined ? {} : { structure: input.structure }),
+        ...(input.exclusions === undefined ? {} : { exclusions: input.exclusions }),
+        ...(input.leftOut === undefined ? {} : { leftOut: input.leftOut }),
       }),
       new Date().toISOString(),
       JSON.stringify(input.stages ?? []),
       input.pullNumber ?? null,
       input.scope === undefined ? null : JSON.stringify(input.scope),
       input.complexity === undefined || input.complexity === null ? null : JSON.stringify(input.complexity),
-      provenance === null ? null : JSON.stringify(provenance),
+      // Beside the provenance in its column, no migration; storedProvenance reads only the keys it knows.
+      provenance === null ? null : JSON.stringify({ ...provenance, families }),
     );
 
     recordAudit(db, 'review_run_recorded', { type: 'review_run', id: reviewRunId }, {
@@ -974,7 +1236,7 @@ export function recordRun(
     throw error;
   }
 
-  return { reviewRunId, findings, provenance };
+  return { reviewRunId, findings, provenance, families };
 }
 
 export interface RunDetail {
@@ -989,6 +1251,8 @@ export interface RunDetail {
   complexity: ComplexityAssessment | null;
   /** Null for rows recorded before provenance existed, and for a malformed value. */
   provenance: RunProvenance | null;
+  /** Null for rows recorded before families were stored, without provenance, or with a malformed value. */
+  families: RunFamilies | null;
   /** The commit reviewed. Null for runs recorded without `--head`. */
   headRef: string | null;
   createdAt: string;
@@ -1011,6 +1275,12 @@ export interface RunDetail {
   checks: RecordedChecks | null;
   /** Null for rows recorded before reproductions were kept, or recorded without `--reproductions`. */
   reproductions: RecordedReproduction[] | null;
+  /** Null for rows recorded before the structure was kept, or from a manifest without one. */
+  structure: RecordedStructure | null;
+  /** Null when the review read every changed file, and for rows recorded before the count was kept. */
+  exclusions: ExclusionSummary | null;
+  /** The paths the review left out by its own rules. Null for rows recorded before the list was kept, or without a file list. */
+  leftOut: string[] | null;
 }
 
 function storedComplexity(raw: unknown): ComplexityAssessment | null {
@@ -1049,7 +1319,9 @@ export function declineHeld(
   if (row === undefined) return { ok: false, error: `No recorded run ${reviewRunId}.` };
   const parsed = JSON.parse(row.output_json) as { held?: unknown };
   const held = Array.isArray(parsed.held) ? (parsed.held as HeldFinding[]) : [];
-  const matching = held.filter((entry) => entry.path === at.path && entry.line === at.line);
+  const exact = held.filter((entry) => entry.path === at.path && entry.line === at.line);
+  // A person passes the path as `explain` showed it, which is the stored one without what a terminal acts on.
+  const matching = exact.length > 0 ? exact : held.filter((entry) => terminalSafe(entry.path) === terminalSafe(at.path) && entry.line === at.line);
   if (matching.length === 0) {
     const anchors = held.map((entry) => `${entry.path}:${entry.line}`);
     return {
@@ -1092,6 +1364,9 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     bodyFindings?: unknown;
     checks?: unknown;
     reproductions?: unknown;
+    structure?: unknown;
+    exclusions?: unknown;
+    leftOut?: unknown;
   };
 
   return {
@@ -1101,6 +1376,7 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     scope: storedScope(row['scope_json']),
     complexity: storedComplexity(row['complexity_json']),
     provenance: storedProvenance(row['provenance_json'], row['review_run_id'] as string),
+    families: storedFamilies(row['provenance_json'], row['review_run_id'] as string),
     headRef: typeof row['head_ref'] === 'string' ? row['head_ref'] : null,
     createdAt: row['created_at'] as string,
     output: parsed.output,
@@ -1114,6 +1390,9 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     bodyFindings: Array.isArray(parsed.bodyFindings) ? (parsed.bodyFindings as VerifiedSimplification[]) : [],
     checks: storedChecks(parsed.checks),
     reproductions: storedReproductions(parsed.reproductions),
+    structure: storedStructure(parsed.structure),
+    exclusions: parseExclusions(parsed.exclusions),
+    leftOut: Array.isArray(parsed.leftOut) && parsed.leftOut.every((path) => typeof path === 'string') ? (parsed.leftOut as string[]) : null,
     // Older rows predate the column, so absence is normal rather than an error.
     stages: ((): StageTiming[] => {
       const raw = row['stages_json'];

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { SEVERITY_ORDER, type Severity } from '../contract/limits.ts';
-import { isReviewable } from '../diff/classify.ts';
+import { firstPartyMatcher, isReviewable } from '../diff/classify.ts';
 import { parseHunks, reason, type AnchorCheck, type FileHunks } from '../diff/hunks.ts';
 import type { ThreadComment } from '../diff/thread.ts';
 import { openDatabase } from '../store/db.ts';
@@ -103,6 +103,8 @@ export function deletedFileCheck(argv: string[]): (candidate: { path: string; li
   const cwd = process.cwd();
   // refExists asks for a commit, which is what both refs must name.
   if (base === null || head === null || !refExists(base, cwd) || !refExists(head, cwd)) return () => false;
+  // The list the diff was read with, so a deleted file is one a review would read here exactly when it is there.
+  const firstParty = firstPartyMatcher(repositoryConfig()?.firstPartyPaths ?? []);
   const git = (args: string[]): string => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
   // What this change deleted, measured from where it forked: a file the base
   // branch added later is not one, and neither is a rename's old path, which
@@ -141,7 +143,7 @@ export function deletedFileCheck(argv: string[]): (candidate: { path: string; li
   return (candidate, anchor) => {
     if (anchor.ok || anchor.kind !== 'file-not-in-diff') return false;
     const path = candidate.path.replace(/^\.\/+/, '');
-    if (path === '' || path.startsWith('/') || path.split(/[\\/]/).includes('..') || !isReviewable(path, false)) return false;
+    if (path === '' || path.startsWith('/') || path.split(/[\\/]/).includes('..') || !isReviewable(path, false, firstParty)) return false;
     const found = deletions();
     if (found === null || !found.paths.has(path)) return false;
     const count = baseLines(found.from, path);
@@ -487,6 +489,7 @@ export function scoreCommand(argv: string[]): number {
   }
 
   if (searchRoot !== null) {
+    const firstParty = firstPartyMatcher(repositoryConfig()?.firstPartyPaths ?? []);
     for (const candidate of candidates) {
       const verification = verifications.get(candidate.candidateId);
       verifications.set(candidate.candidateId, {
@@ -499,6 +502,7 @@ export function scoreCommand(argv: string[]): number {
           baseRef,
           undefined,
           reachDiff,
+          firstParty,
         ),
       });
     }

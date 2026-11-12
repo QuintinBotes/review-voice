@@ -1,10 +1,10 @@
 
-import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { format } from 'node:util';
 import { suppressSqliteExperimentalWarning } from './warnings.ts';
 import { pluginVersion } from './version.ts';
+import { outputSafe, terminalSafe } from './terminal.ts';
 import { OPTIONAL_CHECKS, runDoctor } from './doctor.ts';
 import { splitFindings, parseFinding } from './contract/parse.ts';
 import { GitError } from './diff/acquire.ts';
@@ -16,18 +16,19 @@ import {
 import { openDatabase } from './store/db.ts';
 import { dataDirectory } from './store/paths.ts';
 import { MODES } from './review/plan.ts';
-import { configFile, loadConfig } from './policy/load.ts';
+import { loadConfig } from './policy/load.ts';
 import { repositoryRoot } from './diff/acquire.ts';
 import { stopCommandsOnSignal } from './evidence/run.ts';
 import { GitHubClient, NotAllowlisted, ReadOnlyViolation } from './github/client.ts';
 import { AuthError } from './github/auth.ts';
 import { queueCommand } from './queue/command.ts';
-import { CONFIG_COPY, watchCommand } from './watch/command.ts';
+import { reviewSpawnOptions, watchCommand, watchConfigSource } from './watch/command.ts';
 import { spawnReview } from './watch/review.ts';
 import { gitPrepareClone } from './watch/workspace.ts';
 import { ReviewWriter, WriteViolation } from './github/writer.ts';
 import { commandHelp, topLevelHelp } from './help.ts';
 import { runReview, reportText } from './review/driver.ts';
+import { writeJobSummary } from './review/held-queue.ts';
 import {
   inProcessState,
   setInProcess,
@@ -56,6 +57,7 @@ import { evaluateCommand } from './cli/evaluate.ts';
 import { conventionsCommand } from './cli/conventions.ts';
 import { checkIntentCommand } from './cli/check-intent.ts';
 import { recallCommand } from './cli/recall.ts';
+import { importBenchmarkCommand } from './cli/import-benchmark.ts';
 import { worktreeCommand } from './cli/worktree.ts';
 import { pullRequestDiffCommand, diffCommand } from './cli/diff.ts';
 import { threadCommand } from './cli/thread.ts';
@@ -64,6 +66,7 @@ import { planCommand, lanesCommand } from './cli/plan.ts';
 import { verdictCommand, postCommand } from './cli/verdict.ts';
 import { consentPlanCommand, syncCommand } from './cli/sync.ts';
 import { outcomesCommand } from './cli/outcomes.ts';
+import { replyCommand } from './cli/reply.ts';
 import { checkVerificationCommand } from './cli/check-verification.ts';
 import { checkSimplificationCommand } from './cli/check-simplification.ts';
 import { verifyCommand } from './cli/verify.ts';
@@ -81,6 +84,15 @@ export { diffSummary, emitDiff } from './cli/diff.ts';
 export { resolveOutPath, verificationProblem } from './cli/shared.ts';
 
 async function main(argv: string[]): Promise<number> {
+  // This process's own streams, past the capture `runInProcess` makes. A
+  // diagnostic can quote a file name, a tool, a model or GitHub, and nothing
+  // parses it. Standard output may be JSON a later stage reads, which keeps
+  // its data.
+  const { log, error } = console;
+  console.error = (...args: unknown[]) => error(terminalSafe(format(...args)));
+  // The bundled YAML parser reports a warning through this, quoting the line of the repository's file it read.
+  console.warn = console.error;
+  console.log = (...args: unknown[]) => log(outputSafe(format(...args)));
   const exit = await dispatch(argv);
   const command = argv[0];
   // Said once here, not at every call site that rejects its flags.
@@ -201,8 +213,14 @@ async function dispatch(argv: string[]): Promise<number> {
     case 'recall':
       return await recallCommand(argv.slice(1), runInProcess);
 
+    case 'import-benchmark':
+      return importBenchmarkCommand(argv.slice(1));
+
     case 'outcomes':
       return outcomesCommand(argv.slice(1));
+
+    case 'reply':
+      return await replyCommand(argv.slice(1));
 
     case 'draft':
       return draftCommand(argv.slice(1));
@@ -231,13 +249,19 @@ async function dispatch(argv: string[]): Promise<number> {
       try {
         root = repositoryRoot(process.cwd());
       } catch {
-        // Not in a repository: there is no config, and watch refuses to start.
+        // Not in a repository: only --config names a config, and without it watch refuses to start.
+      }
+      const config = watchConfigSource(argv.slice(1), root);
+      if (typeof config === 'string') {
+        console.error(config);
+        return 2;
       }
       const dataDir = dataDirectory();
-      const review = spawnReview(fileURLToPath(import.meta.url), { configPath: join(dataDir, CONFIG_COPY) });
+      const review = spawnReview(fileURLToPath(import.meta.url), reviewSpawnOptions(dataDir, config));
       return await watchCommand(argv.slice(1), {
-        configSource: root === null ? null : configFile(root),
-        loadSettings: (path) => loadConfig(root ?? process.cwd(), undefined, path),
+        configSource: config?.path ?? null,
+        // The copy keeps the source of the file it was taken from.
+        loadSettings: (path) => loadConfig(root ?? process.cwd(), undefined, path, undefined, config?.source),
         client: (allowlist) => new GitHubClient({ allowlist, allowGlobs: true }),
         // Built from the recorded run's repository by post, as for the post command.
         writerFor: (allowlist) => new ReviewWriter({ allowlist }),
@@ -461,8 +485,15 @@ async function reviewCommand(argv: string[]): Promise<number> {
       config: flag(argv, '--config'),
       origin: reviewOrigin,
     },
-    { command: (args, stdin) => runInProcess(args, { stdin }), client: githubClient([repository]) },
+    {
+      command: (args, stdin) => runInProcess(args, { stdin }),
+      client: githubClient([repository]),
+      // The bundle `watch` spawns too; each promote command in the held queue names it.
+      cli: fileURLToPath(import.meta.url),
+    },
   );
+  const summaryWarning = writeJobSummary(report, process.env);
+  if (summaryWarning !== null) console.error(summaryWarning);
   if (argv.includes('--json')) console.log(JSON.stringify(report, null, 2));
   else console.log(reportText(report));
   return report.exitCode;

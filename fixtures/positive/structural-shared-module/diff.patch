@@ -1,8 +1,9 @@
 --- a/src/shared/status-label.ts
 +++ b/src/shared/status-label.ts
-@@ -1,3 +1,9 @@
+@@ -1,5 +1,10 @@
 +import { checkoutBannerFor } from '../checkout/banner';
-+
+ import { labels, type Status } from './status';
+ 
  export function statusLabel(status: Status): string {
 +  const checkoutBanner = checkoutBannerFor(status);
 +  if (checkoutBanner !== null) {

@@ -205,3 +205,17 @@ request's base commit (or `--config`, or an absolute `REVIEW_VOICE_CONFIG`),
 so a change cannot set `cap_approval: false` or empty `sensitive_paths` for its
 own review. `.review-voice/**` and `.github/workflows/**` are also sensitive
 whatever `sensitive_paths` says, listed once. The decision itself is unchanged.
+
+## Amendment - 2026-11-11
+
+The classifier the counts above follow called every path with a directory
+named `vendor` a vendored dependency, so a first-party package of that name
+was never read and never counted (issue 351). `review.first_party_paths` lists
+globs for paths that are never classified that way. A file it names is source
+like any other: it is reviewed, its decision points count as production
+source, and the production line count of `plan` and the lanes includes it. A
+lock file, generated output or a binary under such a path keeps its own rule.
+The key is read as the limits are, from the pull request's base commit (or
+`--config`, or an absolute `REVIEW_VOICE_CONFIG`), so a change cannot name its
+own files first-party, and a value that is not a list of globs is ignored with
+a warning. Sensitive-path matching is unchanged.

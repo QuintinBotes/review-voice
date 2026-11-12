@@ -311,7 +311,9 @@ test('explain prints the exact Provenance line after the scope line, for each fo
   assert.match(lines[at - 1], /^Scope /, 'the scope line comes first');
   // S09 records what the checks did and prints it after the provenance.
   assert.match(lines[at + 1], /^Checks /, 'the checks line follows');
-  assert.match(lines[at + 2], /^Effort analyst/, 'the effort lines follow');
+  // S24 records the structural signals and prints them after the checks.
+  assert.match(lines[at + 2], /^Structure /, 'the structure line follows');
+  assert.match(lines[at + 3], /^Effort analyst/, 'the effort lines follow');
 
   // The unknown forms.
   const interactive = recordedBy(data).reviewRunId;

@@ -1,3 +1,5 @@
+import type { Family } from '../agents/types.ts';
+
 export type Verdict = 'confirmed' | 'rejected' | 'uncertain';
 
 /** What an external verifier is expected to emit on stdout, as JSON. */
@@ -41,6 +43,8 @@ export interface FindingVerdict {
   finalSeverity: string;
   /** Which verifier produced this, so a bad one can be identified later. */
   verifier: string;
+  /** The verifier's model family, when the configuration knows it, so verdicts can be grouped by family. */
+  family?: Family | undefined;
   /** Where the verdict's reason can be checked. Absent when it named none. */
   decisiveEvidence?: DecisiveEvidence[] | undefined;
   /**
@@ -54,6 +58,8 @@ export interface FindingVerdict {
 export interface VerificationReport {
   enabled: boolean;
   verifier: string | null;
+  /** The verifier's model family, when the configuration knows it. */
+  family?: Family | undefined;
   verdicts: FindingVerdict[];
   /** Verifiers that could not run. Never treated as confirmation. */
   didNotRun: string[];

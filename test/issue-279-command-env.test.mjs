@@ -208,7 +208,8 @@ test('a passed-through value is masked after decoding, before the version is cut
     static_evidence: { enabled: true, env_passthrough: ['SRC_ROOT'], commands: [{ name: 'tsc', run: 'printf "%s/src/app.ts(3,1): error TS2345: bad\\n" "$SRC_ROOT"' }] },
   });
   const pathEnv = { ...env, SRC_ROOT: pathDir };
-  const signal = JSON.parse(execFileSync(process.execPath, [bundle, 'evidence'], { cwd: pathDir, encoding: 'utf8', env: pathEnv })).signals[0];
-  assert.equal(signal.path, `${pathDir}/src/app.ts`, 'the path a finding is matched against stays as the tool printed it');
-  assert.equal(signal.line, 3);
+  const signals = JSON.parse(execFileSync(process.execPath, [bundle, 'evidence'], { cwd: pathDir, encoding: 'utf8', env: pathEnv })).signals;
+  assert.deepEqual([signals[0].path, signals[0].line], [null, null], 'a path carrying a passed-through value is dropped with its line, since a masked one would name another file');
+  assert.equal(signals[0].evidence[0], '[redacted:SRC_ROOT]/src/app.ts(3,1): error TS2345: bad');
+  assert.equal(JSON.stringify(signals).includes(pathDir), false);
 });

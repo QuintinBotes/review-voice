@@ -3,6 +3,7 @@ import { loadConfig } from '../policy/load.ts';
 import { repositoryRoot } from '../diff/acquire.ts';
 import { compileProposals } from '../policy/compile.ts';
 import { proposePolicy, type PolicyScope } from '../policy/versions.ts';
+import { terminalSafeDeep } from '../terminal.ts';
 
 /** A scope as `--scope` and `calibrate` write it: `global`, or `path:<glob>`. */
 function scopeLabel(scope: { type: string; key: string }): string {
@@ -48,7 +49,8 @@ export function calibrateCommand(): number {
     const blocked = proposals
       .filter((proposal) => !proposal.activatable)
       .map((proposal) => ({ ruleId: proposal.ruleId, scope: scopeLabel(proposal.scope), blockedBecause: proposal.blockedBecause }));
-    console.log(JSON.stringify({ policies, blocked, proposals }, null, 2));
+    // A rule id holds the analyst's category and a scope the pull request's directory, neither checked against a list.
+    console.log(JSON.stringify(terminalSafeDeep({ policies, blocked, proposals }), null, 2));
     return 0;
   } finally {
     db.close();

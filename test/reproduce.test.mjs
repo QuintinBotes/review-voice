@@ -520,6 +520,32 @@ test('on Linux the wrapper is unshare with the listed flags, a read-only root an
   assert.ok(!alone.some((line) => line.includes('.git-credentials')), 'one that does not exist needs no cover');
 });
 
+test('on Linux the sandbox gets a /dev of its own, with no terminal and no other device of the host', async (t) => {
+  const { repo, fake } = await runOne(t, [failing, failing]);
+  const lines = fake.runs()[0].options.args.at(-1).split('\n');
+  const dev = `${join(reproDir(repo), 'stage')}/root/dev`;
+  const at = (text) => {
+    const index = lines.indexOf(text);
+    assert.ok(index >= 0, `missing: ${text}`);
+    return index;
+  };
+  // A device node takes a write on a read-only mount, so the host's /dev, with /dev/pts in it, is covered whole.
+  const cover = at(`mount -t tmpfs -o mode=0755 rv-hidden ${shellQuote(dev)}`);
+  const sealed = at(`mount -o remount,bind,ro ${shellQuote(dev)}`);
+  assert.ok(lines.findIndex((line) => line.startsWith('mount --rbind / ')) < cover, 'covered after the host is bound in');
+  assert.ok(sealed < lines.findIndex((line) => /pivot_root \. \.$/.test(line)), 'sealed before the sandbox enters it');
+  const filled = lines.slice(cover + 1, sealed);
+  const bound = filled.map((line) => /^mount --bind (\S+) (.*)$/.exec(line)).filter(Boolean);
+  assert.deepEqual(bound.map(([, source, target]) => [source, target]), ['null', 'zero', 'full', 'random', 'urandom'].map((name) => [`/dev/${name}`, shellQuote(`${dev}/${name}`)]));
+  for (const [name, target] of [['fd', '/proc/self/fd'], ['stdin', '/proc/self/fd/0'], ['stdout', '/proc/self/fd/1'], ['stderr', '/proc/self/fd/2']]) {
+    assert.ok(filled.includes(`ln -s ${target} ${shellQuote(`${dev}/${name}`)}`), name);
+  }
+  // Nothing else is put in it, and nothing is mounted in it once it is sealed.
+  assert.ok(filled.every((line) => /^(touch|mount --bind \/dev\/\w+|ln -s \/proc\/self\/fd\S*) /.test(line)), filled.join('\n'));
+  assert.ok(!lines.slice(sealed + 1).some((line) => line.includes(dev)), 'nothing reaches into it after the seal');
+  assert.ok(!lines.some((line) => /\/dev\/(pts|tty|ptmx|console)/.test(line)), 'no terminal device is named');
+});
+
 test('a reproduction gets only the allowlisted environment, with no token and no REVIEW_VOICE_* variable', async (t) => {
   // The whole ambient environment and more, so an allowlist that grows by any name, or loses LC_ALL, is seen.
   const env = {
@@ -1557,9 +1583,14 @@ test('the probe tries every escape, and a connection it does not admit still fai
     // Only macOS has cfprefsd and notifyd, and only the macOS probe tries them.
     const preference = platform === 'darwin' && process.platform === 'darwin' ? ', preference' : '';
     const notified = platform === 'darwin' && process.platform === 'darwin' ? ', notify' : '';
+    // Only a Linux host has /dev/pts, which the probe looks for and never opens.
+    const terminal = process.platform === 'linux' ? ', terminal' : '';
     const ctx = context(repo, { platform, spawn: unconfined });
-    assert.deepEqual(await probeSandbox(ctx), { platform, mechanism: 'none', probe: `escaped by write, read, connect, profile${signal}${preference}${notified}` });
+    assert.deepEqual(await probeSandbox(ctx), { platform, mechanism: 'none', probe: `escaped by write, read, connect, profile${terminal}${signal}${preference}${notified}` });
   }
+  // A sandbox that still shows the host's terminals is named as an escape, whatever else the probe found.
+  const sees = fakeSpawn([], { probe: { status: 0, stdout: 'escaped by terminal\n', stderr: '' } });
+  assert.deepEqual(await probeSandbox(context(repo, { spawn: sees.spawn })), { platform: 'linux', mechanism: 'none', probe: 'escaped by terminal' });
   const liar = async (command, options) => {
     const port = Number(/"port":(\d+)/.exec(options.args.at(-1))[1]);
     await new Promise((done) => {
@@ -1777,6 +1808,9 @@ test('the runner confines a real reproduction, or names why it cannot and runs n
     // This test process stands for any process of the user outside the sandbox.
     "  try { process.kill(t.pid, 0); tried.signal = 'succeeded'; } catch (e) { tried.signal = e.code; }",
     "  try { fs.writeFileSync(t.head, 'x'); tried.head = 'succeeded'; } catch (e) { tried.head = e.code; }",
+    // Listed and never opened: a terminal of the host among these would take a write on a read-only mount.
+    "  try { tried.dev = fs.readdirSync('/dev').sort().join(' '); } catch (e) { tried.dev = e.code; }",
+    "  try { fs.writeFileSync('/dev/null', 'x'); tried.sink = 'succeeded'; } catch (e) { tried.sink = e.code; }",
     "  if (process.platform === 'darwin') {",
     "    fs.writeFileSync(process.env.TMPDIR + '/flagged', 'x');",
     "    const r = spawnSync('/usr/bin/chflags', ['nodump', process.env.TMPDIR + '/flagged']);",
@@ -1830,6 +1864,8 @@ test('the runner confines a real reproduction, or names why it cannot and runs n
     assert.ok(tried.git && tried.git !== 'succeeded', `git: ${tried.git}`);
     assert.ok(tried.signal && tried.signal !== 'succeeded', `signal: ${tried.signal}`);
     assert.ok(tried.head && tried.head !== 'succeeded', `head: ${tried.head}`);
+    if (process.platform === 'linux') assert.equal(tried.dev, 'fd full null random stderr stdin stdout urandom zero', 'no terminal and no other device of the host is in /dev');
+    assert.equal(tried.sink, 'succeeded', '/dev/null still takes a write');
     if (process.platform === 'darwin') assert.equal(tried.flags, 'refused', 'a file flag cannot be set');
     if (process.platform === 'darwin') assert.equal(tried.preference, 'refused', 'no preference domain is written through cfprefsd');
     assert.ok(tried.connect && tried.connect !== 'succeeded', `connect: ${tried.connect}`);

@@ -89,3 +89,52 @@ absolute path. Applying the verdicts drops an entry that names the
 reproduction file by its worktree path or its basename, since that file exists
 only in the copy and the block would otherwise post it. A reproduction that did not fail reaches the challenger only for
 a category no suppression may reach, since there it does not hold the finding.
+
+## Amendment - 2026-11-10
+
+The challenger may run on a configured model family
+([0034](0034-a-cross-family-runner-is-configured-never-detected-into-use.md)).
+`runners.use.challenge` names the family every challenge runs on (`claude` by
+default), and `runners.use.agent_authored_challenge` names the family a change
+is challenged on when an agent of that same family wrote it, read from its
+`Co-authored-by` trailers and a `Bot` author. The challenger's inputs, its
+verdict and the rule that only `confirmed` with the line confirmed or moved
+passes are unchanged.
+
+A challenge the configuration required and could not get holds the finding.
+When the configured family cannot run (`REVIEW_VOICE_NO_COMMANDS=1`, or no
+usable `runners.<family>` block, a rejected one included, since the selection
+keeps the family named and never becomes Claude), every challenged finding is
+held as `challenge-partly` with a reason starting `challenger not run:`. A runner that
+starts and fails twice on a finding holds that finding the same way, and a
+finding it judged keeps its verdict. Nothing falls back to another family on
+its own. A `runners.use` value that names no family (a misspelling, a list,
+or a `use` that is not a mapping) is held the same way and never read as
+Claude. An unreadable `runners.use.challenge` or `use` holds every challenged
+finding, and an unreadable `runners.use.agent_authored_challenge` holds the
+findings of a change an agent of the base family wrote.
+Such a held finding keeps the review from approving, so the event is COMMENT
+at most. The hold outlives every review narrower than the pull request. A
+carry to an unchanged scope keeps it. An incremental or interdiff review
+inherits it from the prior run its scope links, whether or not it read the
+hold's file, so a clean review of a later commit cannot approve past it. Such
+a review saw only its own hunks, which may be far from the held line, and a
+finding it does not raise again is never challenged. Either drops the hold
+when the pull request no longer changes the file. The pull request's file
+list in `files.json` says so, a renamed file counting under both names, and
+so do `scope.noLongerChanged` and `scope.absorbedByBase`, a file whose change
+the new base already makes included. A hold on a file the review's own patch
+renames moves to the new name, so a file renamed a second time is not read as
+one that left the pull request. A finding the review holds again at the same
+path and line is recorded once. Paths are compared as the diff spells them,
+so a hold written as `./src/app.ts` counts as one on `src/app.ts`. Otherwise
+only a full review (`review --full`) ends the hold. It reads the whole pull
+request and inherits nothing, and it does not treat the hold as a conclusion.
+The finding, raised again, is verified and challenged again, so it holds
+again while the runner cannot run and is judged once it can. A full review is
+what re-checks such a finding once the runner works. This hold changes the
+event whatever its severity. Of the run's other held entries only a finding
+above a nit held below the confidence gate does, since 2026-11-11
+([0016](0016-what-the-verifier-could-not-check.md), amended). Every other held
+entry still leaves the event alone, and a Claude challenger that fails twice
+keeps its `challenger failed:` reason and its event as before.
