@@ -42,6 +42,7 @@ import {
   type PolicyVersionRef,
 } from '../store/runs.ts';
 import { seriousNotCarried, type CarriedFinding } from '../diff/carry.ts';
+import { leftOutPaths, parseExclusions, type ExclusionSummary } from '../diff/exclusions.ts';
 import { resolveCommit } from '../diff/prior.ts';
 import { parseTieBreaks, type TieBreak } from '../verify/reconcile.ts';
 import { cleanStages, parseStagesFile, shallowPassWarning } from '../store/effort.ts';
@@ -204,6 +205,8 @@ export function recordCommand(argv: string[]): number {
   let scope: ReviewScope | undefined;
   let complexity: ComplexityAssessment | null = null;
   let structure: RecordedStructure | undefined;
+  let exclusions: ExclusionSummary | undefined;
+  let leftOut: string[] | undefined;
   const knownPaths = new Set<string>();
   // The pull request's own file list, a rename under both names; empty when the manifest carries none.
   const pullFiles = new Set<string>();
@@ -221,6 +224,7 @@ export function recordCommand(argv: string[]): number {
           pullFiles.add(plainPath(file.path));
           if (typeof file.previousPath === 'string') pullFiles.add(plainPath(file.previousPath));
         }
+        if (pullFilesListed) leftOut = leftOutPaths(manifest.files);
       }
       if (Number.isInteger(manifest.pullNumber) && (manifest.pullNumber as number) > 0) {
         pullNumber = manifest.pullNumber as number;
@@ -237,6 +241,10 @@ export function recordCommand(argv: string[]): number {
       if (manifest.structure !== undefined && manifest.structure !== null) {
         structure = recordedStructure(manifest.structure) ?? undefined;
         if (structure === undefined) console.error(`The structure signals in ${filesFile} are malformed; recording without them.`);
+      }
+      if (manifest.exclusions !== undefined && manifest.exclusions !== null) {
+        exclusions = parseExclusions(manifest.exclusions) ?? undefined;
+        if (exclusions === undefined) console.error(`The excluded file counts in ${filesFile} are malformed; recording without them.`);
       }
     } catch {
       // The review text and patch remain enough to record a useful run. Losing
@@ -675,6 +683,8 @@ export function recordCommand(argv: string[]): number {
       ...(checks === undefined ? {} : { checks }),
       ...(reproductions === undefined ? {} : { reproductions }),
       ...(structure === undefined ? {} : { structure }),
+      ...(exclusions === undefined ? {} : { exclusions }),
+      ...(leftOut === undefined ? {} : { leftOut }),
       toolSignals,
       conventions,
       provenance: {

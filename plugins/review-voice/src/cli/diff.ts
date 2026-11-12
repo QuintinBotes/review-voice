@@ -23,8 +23,9 @@ import {
   type SquashedParentSuspected,
   type SuspectedWrongBase,
 } from '../diff/pull-request.ts';
-import { isReviewable } from '../diff/classify.ts';
-import { planScope, type ReviewScope } from '../diff/incremental.ts';
+import { classify, firstPartyMatcher, isReviewable } from '../diff/classify.ts';
+import type { ExclusionSummary } from '../diff/exclusions.ts';
+import { planScope, type PlannedScope, type ReviewScope } from '../diff/incremental.ts';
 import { openDatabase } from '../store/db.ts';
 import { recordedRunsForPull, runDetail } from '../store/runs.ts';
 import {
@@ -65,10 +66,16 @@ export async function pullRequestDiffCommand(argv: string[]): Promise<number> {
     }
   }
 
+  // One list for every place that asks whether a path is reviewed, so a path
+  // cannot be read by the diff and vendored to the scope planner (issue 351).
+  const firstPartyPaths = repositoryConfig()?.firstPartyPaths ?? [];
+  const firstParty = firstPartyMatcher(firstPartyPaths);
+
   const result = await acquirePullRequestDiff({
     repository,
     pullNumber,
     includeGenerated: argv.includes('--include-generated'),
+    firstPartyPaths,
     cwd: process.cwd(),
     client: githubClient([repository]),
   });
@@ -106,7 +113,18 @@ export async function pullRequestDiffCommand(argv: string[]): Promise<number> {
     console.error(`Run ${uncoveredPrior} carried candidates without reviewing the commits before it, so the whole pull request is read.`);
   }
 
-  let planned: { scope: ReviewScope; interdiffPatch: string | null };
+  // What the review at the previous head left out by its own rules, so that
+  // a file no review read is not called unchanged since it. A run recorded
+  // before that list was kept predates review.first_party_paths, and a
+  // previous head with no recorded run may, so neither is taken to have read
+  // a file that only the key brings into the review.
+  const priorLeftOut =
+    prior === null
+      ? []
+      : ((prior.reviewRunId === null ? null : leftOutBy(prior.reviewRunId)) ??
+        result.files.filter((file) => file.class !== 'vendored' && classify(file.path) === 'vendored').map((file) => file.path));
+
+  let planned: PlannedScope;
   try {
     planned = planScope({
       priorRun: prior,
@@ -116,7 +134,7 @@ export async function pullRequestDiffCommand(argv: string[]): Promise<number> {
       // Deletions are never reviewed, but a follow-up must still show one. A
       // deleted lock file or generated output stays out, as it would anyway.
       deletedFiles: result.files
-        .filter((file) => file.status === 'deleted' && isReviewable(file.path, argv.includes('--include-generated')))
+        .filter((file) => file.status === 'deleted' && isReviewable(file.path, argv.includes('--include-generated'), firstParty))
         .map((file) => file.path),
       cwd: process.cwd(),
       truncated: result.truncated,
@@ -124,6 +142,9 @@ export async function pullRequestDiffCommand(argv: string[]): Promise<number> {
       base: result.refs.base.available && result.base !== null ? result.base : undefined,
       fetchPriorHead: (sha) => fetchPriorHead(sha, repository, process.cwd()),
       includeGenerated: argv.includes('--include-generated'),
+      firstPartyPaths,
+      leftOutFiles: result.files.filter((file) => !file.reviewed),
+      priorLeftOut,
     });
   } catch (error) {
     planned = {
@@ -138,8 +159,22 @@ export async function pullRequestDiffCommand(argv: string[]): Promise<number> {
     };
   }
 
-  const scoped = applyReviewScope(result, pullNumber, planned.scope, process.cwd(), undefined, planned.interdiffPatch);
+  const scoped = applyReviewScope(result, pullNumber, planned.scope, process.cwd(), undefined, planned.interdiffPatch, planned.leftOutChanged);
   return emitDiff({ ...scoped, repository, prior: resolution }, flag(argv, '--out'));
+}
+
+/** The paths a recorded run left out by its own rules, or null when it kept no such list or cannot be read. */
+function leftOutBy(runId: string): string[] | null {
+  try {
+    const db = openDatabase();
+    try {
+      return runDetail(db, runId)?.leftOut ?? null;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -155,6 +190,7 @@ interface EmittedDiff {
   reviewedFileCount: number;
   hunkFileCount: number;
   excludedFileCount: number;
+  exclusions?: ExclusionSummary | null;
   files?: ChangedFile[];
   pullNumber?: number;
   scope?: ReviewScope;
@@ -220,6 +256,8 @@ export function diffSummary(result: EmittedDiff): {
   reviewedFileCount: number;
   hunkFileCount: number;
   excludedFileCount: number;
+  /** How many changed files of the scope the review leaves out, by reason; null when it reads them all. */
+  exclusions: ExclusionSummary | null;
   handEditSuspected: string[];
   refs: {
     base: { sha: string; available: boolean };
@@ -275,6 +313,7 @@ export function diffSummary(result: EmittedDiff): {
     reviewedFileCount: result.reviewedFileCount,
     hunkFileCount: result.hunkFileCount,
     excludedFileCount: result.excludedFileCount,
+    exclusions: result.exclusions ?? null,
     handEditSuspected: (result.files ?? []).filter((file) => file.handEditSuspected === true).map((file) => file.path),
     refs:
       result.refs === undefined
@@ -314,6 +353,9 @@ export function emitDiff(acquired: EmittedDiff, outDir: string | null): number {
   // the summary say the same thing and `record --files` carries it forward.
   const config = repositoryConfig();
   for (const warning of config?.warnings ?? []) console.error(`Warning: ${warning}`);
+  // Said on every diff that leaves a file out, since a manifest entry is not a
+  // signal, and ten of twelve files once went unread with no word (issue 351).
+  if (acquired.exclusions != null) console.error(acquired.exclusions.note);
   const generated = markedGenerated(acquired);
   // A narrowed review is flagged for what it reads: files earlier commits
   // changed are not this run's. The pull request stays flagged through the
@@ -374,6 +416,7 @@ export function diffCommand(argv: string[]): number {
       staged: argv.includes('--staged'),
       base,
       includeGenerated: argv.includes('--include-generated'),
+      firstPartyPaths: repositoryConfig()?.firstPartyPaths ?? [],
     });
     // An empty diff is a valid answer, not an error: the caller should say so
     // rather than invent something to review.

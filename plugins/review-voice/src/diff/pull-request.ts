@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { GitHubClient } from '../github/client.ts';
-import { classify, findHandEdited, isReviewable, languageOf } from './classify.ts';
+import { classify, findHandEdited, firstPartyMatcher, isReviewable, languageOf } from './classify.ts';
+import { COVERED_EARLIER, excludedReason, FILE_DELETED, NO_PATCH, SAME_AS_BASE_TIP, summariseExclusions } from './exclusions.ts';
 import type { ChangedFile, DiffResult } from './acquire.ts';
 import { gitFailure, topPathspecs, type ReviewScope } from './incremental.ts';
 import { parseHunks } from './hunks.ts';
@@ -237,8 +238,6 @@ export interface SquashedParentSuspected {
   note: string;
 }
 
-const SAME_AS_BASE_TIP = 'identical to the base branch tip (already merged there)';
-
 /**
  * Listed paths whose head content differs from the base branch tip, or null
  * when that cannot be read. The files endpoint diffs from the merge base, and
@@ -343,6 +342,8 @@ export function applyReviewScope(
       }
     },
   interdiffPatch: string | null = null,
+  /** The files the full read leaves out that changed since the earlier review, as the planner found them. */
+  leftOutChanged: readonly string[] = [],
 ): ScopedPullRequestDiff {
   if (scope.kind === 'full') return fullScopeResult(result, pullNumber, scope);
 
@@ -378,7 +379,7 @@ export function applyReviewScope(
     included = new Set(scope.files);
   }
 
-  const excludedBecause = `unchanged since the last review (${scope.since.slice(0, 7)})`;
+  const excludedBecause = `${COVERED_EARLIER} (${scope.since.slice(0, 7)})`;
   const files = result.files.map((file) => {
     if (file.reviewed && !included.has(file.path)) return { ...file, reviewed: false, excludedBecause };
     // A full read skips a deletion, but an interdiff that holds one is the
@@ -391,6 +392,7 @@ export function applyReviewScope(
     return file;
   });
   const hunkPaths = pathsWithHunks(diff);
+  const changedLeftOut = new Set(leftOutChanged);
   const reviewedFileCount = files.filter((file) => file.reviewed).length;
 
   return {
@@ -402,6 +404,8 @@ export function applyReviewScope(
     reviewedFileCount,
     hunkFileCount: files.filter((file) => file.reviewed && hunkPaths.has(file.path)).length,
     excludedFileCount: files.length - reviewedFileCount,
+    // Counted over this scope: the files it reads, and those left out that changed since the earlier review.
+    exclusions: summariseExclusions(files.filter((file) => file.reviewed || changedLeftOut.has(file.path))),
     diff,
   };
 }
@@ -460,6 +464,8 @@ export async function acquirePullRequestDiff(options: {
   repository: string;
   pullNumber: number;
   includeGenerated: boolean;
+  /** `review.first_party_paths`: globs for paths that are never a vendored dependency. */
+  firstPartyPaths?: readonly string[] | undefined;
   maxFiles?: number;
   /** Where to check for, and fetch, the pull request's commits. */
   cwd?: string;
@@ -492,6 +498,7 @@ export async function acquirePullRequestDiff(options: {
   const cwd = options.cwd ?? process.cwd();
   const headLocal = hasCommit(pull.head.sha, cwd);
   const byName = new Map(rawFiles.map((file) => [file.filename, file]));
+  const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
   const handEdited = findHandEdited(
     rawFiles.filter((file) => file.status !== 'removed' && file.patch !== undefined).map((file) => file.filename),
     (path) => {
@@ -508,6 +515,7 @@ export async function acquirePullRequestDiff(options: {
         .map((line) => line.slice(1));
       return added.join('\n');
     },
+    firstParty,
   );
 
   const refs = ensureRefs({
@@ -523,19 +531,19 @@ export async function acquirePullRequestDiff(options: {
     differing !== null && !differing.has(file.filename) && (file.previous_filename === undefined || !differing.has(file.previous_filename));
 
   const files: ChangedFile[] = rawFiles.map((file) => {
-    const cls = classify(file.filename);
+    const cls = classify(file.filename, firstParty);
     const deleted = file.status === 'removed';
     const suspected = handEdited.has(file.filename);
     const merged = sameAsBaseTip(file);
     const reviewed =
-      !merged && !deleted && (suspected || isReviewable(file.filename, options.includeGenerated)) && file.patch !== undefined;
+      !merged && !deleted && (suspected || isReviewable(file.filename, options.includeGenerated, firstParty)) && file.patch !== undefined;
 
     let excludedBecause: string | undefined;
     if (!reviewed) {
       if (merged) excludedBecause = SAME_AS_BASE_TIP;
-      else if (deleted) excludedBecause = 'file deleted';
-      else if (file.patch === undefined) excludedBecause = 'no patch returned (binary or too large)';
-      else excludedBecause = `${cls} file`;
+      else if (deleted) excludedBecause = FILE_DELETED;
+      else if (file.patch === undefined) excludedBecause = NO_PATCH;
+      else excludedBecause = excludedReason(cls);
     }
 
     return {
@@ -569,6 +577,7 @@ export async function acquirePullRequestDiff(options: {
     // file here carries a hunk by construction.
     hunkFileCount: files.filter((file) => file.reviewed).length,
     excludedFileCount: files.filter((file) => !file.reviewed).length,
+    exclusions: summariseExclusions(files),
     diff,
     totalChangedFiles: pull.changed_files,
     additions: pull.additions,
