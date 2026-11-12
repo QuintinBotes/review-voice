@@ -5,6 +5,46 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.1] - 2026-11-12
+
+### Added
+
+- `recall --runs <n>` runs every fixture n times, each in a store of its own,
+  and reports each rate as the mean with its lowest and highest run. Every
+  positive that missed records `lostAt`, the stage that lost its finding, and
+  every fixture records the verdict its run reached. `evaluate --recall` reads
+  both shapes of the results file. (#356, closes #338, #339)
+
+- `review.first_party_paths`, a list of globs read from the trusted
+  configuration, names paths that are never classified as a vendored
+  dependency. It lifts only that class. (#358, closes #351)
+
+### Fixed
+
+- The diff no longer leaves changed files out silently. It reports how many of
+  the changed files were excluded and the count for each reason, on stderr, in
+  the stored run, in `explain` and in the scope block's `Not checked` line,
+  which names no path. A file git reports as binary is left out as binary
+  whatever its name, and a follow-up never calls a file covered that no
+  earlier review read. (#358, closes #351)
+
+- `record --stages` accepts a stage without the figures nobody measured.
+  `seconds`, `toolCalls`, `filesRead` and `tokens` may each be left out and
+  are stored as not measured; `evaluate` leaves an unmeasured stage out of its
+  median and p95 and counts it, and the shallow-read warning is not raised on
+  a file count nobody recorded. A figure that is given must be a number of
+  zero or more. (#354, closes #352)
+
+- A fixture or benchmark item whose patch renames a file without changing it,
+  or by case only, builds. (#359, closes #355)
+
+### Changed
+
+- The recall fixtures carry the context a reviewer needs and may name more
+  than one accepted anchor for a finding, so a correct finding is not scored
+  as a miss and a careful reviewer has nothing true to report about the
+  fixture itself. (#353, closes #340, #341)
+
 ## [1.24.0] - 2026-11-11
 
 ### Security
