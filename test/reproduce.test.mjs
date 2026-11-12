@@ -2200,18 +2200,19 @@ test('ADR 0003 names the rules the profile needs because (deny default) does not
   assert.doesNotMatch(text, /IOKit and NVRAM stay denied by default/);
 });
 
-test('the threat model and ADR 0003 say a run can create a System V IPC object, which the CLI removes, though it cannot stop a run using them up, and never that all IPC is denied', () => {
+test('the threat model and ADR 0003 say a run can create a System V IPC object, which the CLI names and leaves in place, though it cannot stop a run using them up, and never that all IPC is denied', () => {
   for (const file of ['docs/THREAT-MODEL.md', 'docs/adr/0003-static-analysis-adapters.md']) {
     const text = readFileSync(join(root, file), 'utf8').replace(/\s+/g, ' ');
-    // The kernel creates one without asking the sandbox, and no profile rule stops it, so the CLI removes what a run made and the run does not count.
+    // The kernel creates one without asking the sandbox, and no profile rule stops it, so the CLI names what appeared during a run, leaves it, and the run does not count.
     const facts = [
       'The kernel does not ask the sandbox before it creates a System V IPC object',
-      'the CLI removes it by its id',
+      'the CLI removes none of them',
       'records the run as not run with a reason naming System V IPC',
       'does not stop a run from using up, while it lasts,',
+      'macOS reproductions should stay off until runs execute under an identity or environment of their own',
     ];
     for (const fact of facts) assert.ok(text.includes(fact), `${file}: ${fact}`);
-    assert.doesNotMatch(text, /the CLI does not remove it/, file);
+    assert.doesNotMatch(text, /the CLI removes it by its id/, file);
     assert.doesNotMatch(text, /\bno IPC\b|, IPC,/, file);
   }
 });
@@ -2282,11 +2283,11 @@ test('on macOS a real listener held still for the whole probe still shows the es
 /** The System V IPC objects macOS lists for this user, as `<type> <id> <key>`. */
 const ipcListed = () => spawnSync('/usr/bin/ipcs', ['-c'], { encoding: 'utf8' }).stdout.split('\n').map((line) => /^([qms])\s+(\d+)\s+(0x[0-9a-f]+)\s+\S+\s+(\S+)/.exec(line)).filter((match) => match !== null && match[4] === userInfo().username).map((match) => `${match[1]} ${match[2]} ${match[3]}`);
 
-test('on macOS a System V IPC object a reproduction creates is removed by its id, the run is not run, and one from before is left alone', async (t) => {
+test('on macOS a System V IPC object a reproduction creates is left in place and named, the run is not run, and one from before is left alone', async (t) => {
   if (!onMacOS(t)) return;
   const runner = { name: 'node', run: 'node {file}', extension: '.mjs', timeout_seconds: 60 };
   const repo = scratchRepository(t, { config: { reproduction: { enabled: true, runners: [runner] } } });
-  // Random keys of the test's own, so the clean-up below can only ever reach these two objects.
+  // Random keys of the test's own, so the clean-up below, the test's and never the CLI's, can only ever reach these two objects.
   const [mine, theirs] = [randomInt(0x10000000, 0x7fffffff), randomInt(0x10000000, 0x7fffffff)].map((key) => `0x${key.toString(16)}`);
   const make = (key) => `my $id = shmget(${key}, 4096, 0600 | 01000); print defined $id ? "$id\\n" : "refused\\n";`;
   t.after(() => {
@@ -2311,9 +2312,9 @@ test('on macOS a System V IPC object a reproduction creates is removed by its id
   const [record] = JSON.parse(readFileSync(out, 'utf8')).reproductions;
   const made = /made (\d+)/.exec(record.runs[0]?.output ?? '')?.[1];
   assert.ok(made !== undefined, record.runs.map((run) => run.output).join('\n'));
-  assert.deepEqual([record.outcome, record.reason, record.runs.length], ['did-not-run', `the reproduction left System V IPC objects behind, removed by id: m ${made}`, 1]);
+  assert.deepEqual([record.outcome, record.reason, record.runs.length], ['did-not-run', `System V IPC objects appeared during the run and were left in place: m ${made}`, 1]);
   const after = ipcListed();
-  assert.ok(!after.some((listed) => listed.endsWith(` ${theirs}`)), 'the object the run made is gone');
+  assert.ok(after.includes(`m ${made} ${theirs}`), 'the object the run made is still there');
   for (const listed of before) assert.ok(after.includes(listed), `${listed} is still there`);
   assertHeadUntouched(repo);
 });

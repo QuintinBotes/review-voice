@@ -2,14 +2,15 @@
  * Issue 321. Two checks of the macOS reproduction sandbox made from outside it.
  * The notify probe reads the state of its escape key as well as the lines its
  * listener prints, so its answer does not rest on the order notifyd delivers
- * in. And a reproduction run is bracketed by listings of the System V IPC
- * objects of the user: one the run made is removed by its id, and the run
- * counts as not run. Everything here runs through a fake spawner, on every host.
+ * in, and it passes only when its own notification attempt ran. And a
+ * reproduction run is bracketed by listings of the System V IPC objects of the
+ * user: one that appears during the run is left in place and named, and the
+ * run counts as not run. Everything here runs through a fake spawner, on every host.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { probeSandbox, reproduce } from '../plugins/review-voice/src/evidence/reproduce.ts';
@@ -43,7 +44,7 @@ function scratchRepository(t) {
   git(clone, 'worktree', 'add', '-q', '--detach', worktree, 'HEAD');
   const home = join(dir, 'home');
   mkdirSync(home, { recursive: true });
-  return { clone, dataDir, runDir, worktree, home };
+  return { dir, clone, dataDir, runDir, worktree, home };
 }
 
 const context = (repo, spawn, platform = 'darwin') => ({
@@ -117,7 +118,8 @@ function fakeNotifyd() {
 /**
  * ipcs -c and ipcrm as macOS prints and takes them, over a list of objects
  * (type q, m or s, id, owner, creator). `fail` answers a listing (by its
- * number, from 1) or the removal in place of the fake.
+ * number, from 1) in place of the fake. ipcrm is there only to record a call
+ * the CLI must never make.
  */
 function fakeIpc(objects = [], fail = {}) {
   const removals = [];
@@ -133,7 +135,6 @@ function fakeIpc(objects = [], fail = {}) {
       return { status: 0, stdout: `${text.join('\n')}\n`, stderr: '' };
     }
     removals.push(args);
-    if (fail.remove !== undefined) return fail.remove;
     for (let at = 0; at < args.length; at += 2) {
       const index = objects.findIndex((object) => `-${object.type}` === args[at] && String(object.id) === args[at + 1]);
       assert.ok(index >= 0, `ipcrm ${args[at]} ${args[at + 1]} names an object that exists`);
@@ -243,9 +244,88 @@ test('on macOS the probe passes with the escape key unset, read once the last ke
   assert.equal(host.notifyd.listening(), 0, 'and the listener is killed after');
 });
 
+test('on macOS an escape line the listener prints while the state is being read is the escape notify', async (t) => {
+  const repo = scratchRepository(t);
+  const host = fakeHost();
+  // The probe left the state at 0, and its post reaches the listener only after the last key, while the CLI reads the state.
+  let key;
+  const spawn = (command, options) => {
+    if (options.args.at(-1).includes('RV_PROBE_OK')) key = notifyKey(options);
+    if (command === NOTIFYUTIL && options.args[0] === '-g') host.notifyd.notify(['-p', key]);
+    return host.spawn(command, options);
+  };
+  assert.deepEqual(await probeSandbox(context(repo, spawn)), { platform: 'darwin', mechanism: 'none', probe: 'escaped by notify' });
+  assert.equal(host.notifyd.listening(), 0, 'no listener is left');
+});
+
+// The notification attempt of the probe itself, which must have run for the probe to pass.
+
+/**
+ * Runs the probe script the CLI wrote with node, outside any sandbox, with
+ * every target but the notification one pointed at nothing, as the profile
+ * would refuse it, and `fake` in place of notifyutil.
+ */
+function runProbeScript(repo, fake) {
+  const written = readFileSync(join(repo.runDir, 'reproductions', 'probe', 'probe.js'), 'utf8');
+  const nowhere = join(repo.dir, 'nowhere');
+  const swaps = [
+    [/^const t = (.+);$/m, (_, json) => `const t = ${JSON.stringify({ ...JSON.parse(json), port: 0, escape: join(nowhere, 'escape'), canary: join(nowhere, 'canary'), overwrite: join(nowhere, 'overwrite'), pid: null, domain: null })};`],
+    ["'/dev/pts'", () => JSON.stringify(join(nowhere, 'pts'))],
+    [JSON.stringify(NOTIFYUTIL), () => JSON.stringify(fake)],
+  ];
+  let script = written;
+  for (const [from, to] of swaps) {
+    assert.ok(typeof from === 'string' ? script.includes(from) : from.test(script), `the probe script holds ${from}`);
+    script = script.replace(from, to);
+  }
+  const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+/** A notifyutil of the test's own, which does only what `body` says. */
+function fakeNotifyutil(repo, name, body) {
+  const path = join(repo.dir, name);
+  writeFileSync(path, `#!/bin/sh\n${body}\n`);
+  chmodSync(path, 0o755);
+  return path;
+}
+
+test('on macOS a probe whose notification attempt did not run, or did not end as a refused one does, fails closed with the reason', async (t) => {
+  const repo = scratchRepository(t);
+  const absent = join(repo.dir, 'absent');
+  const cases = [
+    [absent, `spawnSync ${absent} ENOENT`],
+    [fakeNotifyutil(repo, 'killed', 'kill -KILL $$'), 'notifyutil was killed by SIGKILL'],
+    [fakeNotifyutil(repo, 'odd', 'exit 3'), 'notifyutil exited 3'],
+    // Past the time the probe gives it, which ends it.
+    [fakeNotifyutil(repo, 'slow', 'exec sleep 60'), `spawnSync ${join(repo.dir, 'slow')} ETIMEDOUT`],
+  ];
+  for (const [fake, why] of cases) {
+    const host = fakeHost();
+    const spawn = (command, options) => (options.args.at(-1).includes('RV_PROBE_OK') ? runProbeScript(repo, fake) : host.spawn(command, options));
+    assert.deepEqual(await probeSandbox(context(repo, spawn)), { platform: 'darwin', mechanism: 'none', probe: `could not test notifications: ${why}` }, why);
+    assert.equal(host.notifyd.listening(), 0, `${why}: no listener is left`);
+  }
+});
+
+test('on macOS a probe whose notification attempt ran and exited 0, as a refused one does, still passes', async (t) => {
+  const repo = scratchRepository(t);
+  const called = join(repo.dir, 'called');
+  const fake = fakeNotifyutil(repo, 'refused', `printf '%s\\n' "$*" > '${called}'`);
+  const host = fakeHost();
+  let key;
+  const spawn = (command, options) => {
+    if (!options.args.at(-1).includes('RV_PROBE_OK')) return host.spawn(command, options);
+    key = notifyKey(options);
+    return runProbeScript(repo, fake);
+  };
+  assert.deepEqual(await probeSandbox(context(repo, spawn)), PASSED);
+  assert.equal(readFileSync(called, 'utf8'), `-s ${key} 1 -p ${key}\n`, 'the attempt sets and posts the escape key');
+});
+
 // System V IPC objects a run leaves behind.
 
-test('on macOS a System V IPC object created during a run is removed by its id, and the run is recorded as not run', async (t) => {
+test('on macOS a System V IPC object created during a run is left in place and named, and the run is recorded as not run', async (t) => {
   const repo = scratchRepository(t);
   const ipc = fakeIpc([{ type: 's', id: 7 }]);
   // Two made during the run: one the user owns, and one created by the user and now owned by another.
@@ -254,13 +334,15 @@ test('on macOS a System V IPC object created during a run is removed by its id, 
   const report = await reproduce(verification, blocking, context(repo, host.spawn));
   assert.deepEqual(report.sandbox, PASSED);
   const [record] = report.reproductions;
-  assert.deepEqual([record.outcome, record.reason, record.runs.length], ['did-not-run', 'the reproduction left System V IPC objects behind, removed by id: q 131072, m 65536', 1]);
-  assert.deepEqual(ipc.removals, [['-q', '131072', '-m', '65536']], 'only the objects the run made, by id');
-  assert.deepEqual(ipc.objects, [{ type: 's', id: 7 }], 'the one from before is still there');
+  assert.deepEqual([record.outcome, record.reason, record.runs.length], ['did-not-run', 'System V IPC objects appeared during the run and were left in place: q 131072, m 65536', 1]);
+  assert.doesNotMatch(record.reason, /\bs 7\b/, 'the one from before is not mentioned');
+  assert.deepEqual(ipc.removals, [], 'nothing is removed');
+  assert.ok(!host.calls.some((call) => call.command === IPCRM), 'ipcrm is never called');
+  assert.deepEqual(ipc.objects, [{ type: 's', id: 7 }, { type: 'm', id: 65536 }, { type: 'q', id: 131072, owner: 'nobody', creator: USER }], 'every object is still there');
   assert.equal(host.runs().length, 1, 'run 2 never starts');
 });
 
-test('on macOS a System V IPC object a run made is removed even when the run also changed its copy', async (t) => {
+test('on macOS a System V IPC object a run made is named even when the run also changed its copy', async (t) => {
   const repo = scratchRepository(t);
   const ipc = fakeIpc();
   const onRun = (options) => {
@@ -270,9 +352,9 @@ test('on macOS a System V IPC object a run made is removed even when the run als
   const host = fakeHost({ runs: [failing, failing], onRun, ipc });
   const report = await reproduce(verification, blocking, context(repo, host.spawn));
   const [record] = report.reproductions;
-  assert.equal(record.outcome, 'did-not-run');
-  assert.deepEqual(ipc.removals, [['-m', '65536']], 'removed before the copy is checked');
-  assert.deepEqual(ipc.objects, []);
+  assert.deepEqual([record.outcome, record.reason], ['did-not-run', 'System V IPC objects appeared during the run and were left in place: m 65536'], 'checked before the copy is');
+  assert.deepEqual(ipc.removals, [], 'nothing is removed');
+  assert.deepEqual(ipc.objects, [{ type: 'm', id: 65536 }]);
   assert.equal(host.runs().length, 1, 'run 2 never starts');
 });
 
@@ -309,9 +391,8 @@ test('on macOS a System V IPC object of another user from before a run that is h
   assert.deepEqual(ipc.objects, [{ type: 'm', id: 4, owner: USER, creator: 'nobody' }]);
 });
 
-test('on macOS a listing or a removal of System V IPC objects that fails records the run as not run', async (t) => {
+test('on macOS a listing of System V IPC objects that fails records the run as not run', async (t) => {
   const missing = Object.assign(new Error(`spawn ${IPCS} ENOENT`), { code: 'ENOENT' });
-  const made = () => [{ type: 'm', id: 65536 }];
   const cases = [
     // Before run 1, so it never starts.
     [{ list: (at) => (at === 1 ? { status: 1, stdout: '', stderr: '' } : undefined) }, [], 'could not list System V IPC objects before the run: ipcs exited 1', 0],
@@ -322,7 +403,6 @@ test('on macOS a listing or a removal of System V IPC objects that fails records
     [{ list: (at) => (at === 2 ? { status: 1, stdout: '', stderr: '' } : undefined) }, [], 'could not list System V IPC objects after the run: ipcs exited 1', 1],
     // Before run 2.
     [{ list: (at) => (at === 3 ? { status: 1, stdout: '', stderr: '' } : undefined) }, [], 'could not list System V IPC objects before the run: ipcs exited 1', 1],
-    [{ remove: { status: 1, stdout: '', stderr: 'ipcrm: shmid(65536): Operation not permitted\n' } }, made(), 'the reproduction left System V IPC objects behind, and they could not be removed (m 65536): ipcrm exited 1', 1],
   ];
   for (const [fail, during, reason, runs] of cases) {
     const ipc = fakeIpc([], fail);
@@ -331,5 +411,6 @@ test('on macOS a listing or a removal of System V IPC objects that fails records
     const [record] = report.reproductions;
     assert.deepEqual([record.outcome, record.reason, record.runs.length], ['did-not-run', reason, runs], reason);
     assert.equal(host.runs().length, runs, `${reason}: what ran`);
+    assert.deepEqual(ipc.removals, [], `${reason}: nothing is removed`);
   }
 });

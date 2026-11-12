@@ -317,7 +317,13 @@ store, outlive the run, or simply pass on purpose.
   is a refusal; and anything else fails the probe: a listener that never
   printed the first or the third within 5 seconds, one that printed the third
   before the CLI posted it, one that ended while it still had the second to
-  wait for, or one that printed any other line. The order of the lines is not
+  wait for, or one that printed any other line. A line the listener prints
+  while the CLI reads the state below still counts, since the CLI decides only
+  after that read. The probe passes only if its own attempt ran: the
+  subprocess that sets and posts the second key must have started and exited
+  0, as a refused attempt does under the real profile. One that could not
+  start, was killed, ran past 5 seconds or exited otherwise has tested
+  nothing, and the probe fails, naming why it could not test notifications. The order of the lines is not
   guaranteed once the listener's port has been full, so a second check rests
   on no order: the probe sets the state of the second key as well as posting
   it, the listener holds that key until it is killed, so the state lasts, and
@@ -357,12 +363,14 @@ store, outlive the run, or simply pass on purpose.
   a semaphore set or a message queue, though it can neither use nor remove one,
   and no profile rule stops that. So before each run and after it ends the CLI
   lists the System V IPC objects (`ipcs`). One the user owns or created that
-  is listed after the run, and was not listed before it under any owner, was
-  made during it: the CLI removes it by its
-  id (`ipcrm`), only those, and records the run as not run with a reason
-  naming System V IPC, so its result neither holds nor clears a finding. An
-  object listed before the run is never touched, and a listing or a removal
-  that fails records the run as not run too.
+  is listed after the run, and was not listed before it under any owner,
+  appeared while the run lasted. The CLI cannot tell one the run made from one
+  another program of the same user made in that window, and removing the
+  latter could destroy that program's state, so the CLI removes none of them.
+  It records the run as not run with a reason naming System V IPC that lists
+  each such object's type and id and says it was left in place, so a person
+  can inspect it, and the run's result neither holds nor clears a finding. A
+  listing that fails records the run as not run too.
 - The environment is an allowlist (`PATH`, `LANG`, `LC_ALL`, `TERM`, a scratch
   `HOME` and `TMPDIR`, `CI`, `NO_COLOR`), so no token and no `REVIEW_VOICE_*`
   variable reaches it.
@@ -402,16 +410,21 @@ handles SIGXCPU or keeps reading its own CPU usage stays until the user logs
 out, and in the last two cases keeps using CPU until then. It stays confined
 by the profile, with no network, no POSIX IPC and no write outside its own copy
 and scratch directory, which are removed, so nothing it writes reaches a later
-stage. The System V IPC check bounds what a run leaves behind on macOS; it
-does not stop a run from using up, while it lasts, the few objects the system
-holds (32 shared memory segments by default), so other programs can fail to
-create one until the run ends. An object a process the run leaves behind
-creates after the listing that follows the run is not seen, and outlives it
-until it is removed with `ipcrm` or the machine restarts. An object another
-program of the same user creates while a run lasts is taken for the run's,
-removed, and the run is recorded as not run. A stop signal that ends the CLI
-during a run leaves what that run made. A reproduction can still spend its
-whole time limit.
+stage. The System V IPC check names what appears during a run on macOS and
+keeps that run from counting; it removes nothing, so an object a run made
+stays until the user removes it or the machine restarts. It does not stop a
+run from using up, while it lasts, the few objects the system holds (32
+shared memory segments by default), so other programs can fail to create one
+until a person removes the objects. An object another program of the same
+user creates while a run lasts is named as if the run had made it, and the
+run is recorded as not run. Two limits remain. A process the run leaves
+behind can create an object after the listing that follows the run, which no
+check sees. And a stop signal that ends the CLI during a run ends it before
+the listing after the run, so what that run made is neither seen nor
+recorded. These limits, with the user identity a run shares with every other
+program of the user, are among the reasons macOS reproductions should stay
+off until runs execute under an identity or environment of their own. A
+reproduction can still spend its whole time limit.
 
 ### 5. Policy drift and poisoning
 

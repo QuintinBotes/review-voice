@@ -114,7 +114,6 @@ const NOTIFYUTIL = '/usr/bin/notifyutil';
 /** How long the listener has to print a key posted from outside before the probe fails. */
 const NOTIFY_READY_MS = 5_000;
 const IPCS = '/usr/bin/ipcs';
-const IPCRM = '/usr/bin/ipcrm';
 const CREDENTIAL_DIRS = ['.ssh', '.gnupg', '.aws', '.config/gh', 'Library/Keychains'];
 const CREDENTIAL_FILES = ['.netrc', '.npmrc', '.git-credentials'];
 /** The devices of the Linux sandbox's /dev: none is a terminal, and none reaches anything of the user's. */
@@ -434,11 +433,14 @@ function probeScript(targets: { port: number; escape: string; canary: string; ov
     "if (fs.existsSync('/dev/pts')) escaped.push('terminal');",
     "if (t.domain !== null) { const cp = require('child_process'); if (cp.spawnSync('/usr/bin/defaults', ['write', t.domain, 'probe', 'escaped']).status === 0) { escaped.push('preference'); cp.spawnSync('/usr/bin/defaults', ['delete', t.domain]); } }",
     // A refused post exits 0 too, so only the listener outside can tell. The
-    // state is set first, so it holds whatever order the lines arrive in.
-    `if (t.notify !== null) require('child_process').spawnSync(${JSON.stringify(NOTIFYUTIL)}, ['-s', t.notify, '1', '-p', t.notify]);`,
+    // state is set first, so it holds whatever order the lines arrive in. An
+    // attempt that did not start and exit 0 tested nothing, and a silent
+    // listener would then pass the probe.
+    'let untested = null;',
+    `if (t.notify !== null) { const r = require('child_process').spawnSync(${JSON.stringify(NOTIFYUTIL)}, ['-s', t.notify, '1', '-p', t.notify], { timeout: ${NOTIFY_READY_MS} }); untested = r.error ? r.error.message : r.signal !== null ? 'notifyutil was killed by ' + r.signal : r.status !== 0 ? 'notifyutil exited ' + r.status : null; }`,
     "const socket = require('net').connect(t.port, '127.0.0.1');",
     'let done = false;',
-    "const finish = (connected) => { if (done) return; done = true; clearTimeout(timer); socket.destroy(); if (connected) escaped.push('connect'); console.log(escaped.length > 0 ? 'escaped by ' + escaped.join(', ') : 'RV_PROBE_OK'); };",
+    "const finish = (connected) => { if (done) return; done = true; clearTimeout(timer); socket.destroy(); if (connected) escaped.push('connect'); console.log(escaped.length > 0 ? 'escaped by ' + escaped.join(', ') : untested !== null ? 'notifications not tested: ' + untested : 'RV_PROBE_OK'); };",
     'const timer = setTimeout(() => finish(false), 2000);',
     "socket.on('connect', () => finish(true));",
     "socket.on('error', () => finish(false));",
@@ -479,6 +481,8 @@ interface NotifyListener {
    * then says whether it has printed the escape key, or why it cannot say.
    */
   hear: (key: 'pre' | 'post') => Promise<boolean | string>;
+  /** Whether the listener has printed the escape key by now. */
+  printedEscape: () => boolean;
   /** Whether the escape key's state was set, read from outside while the listener holds the key, or why it cannot say. */
   state: () => Promise<boolean | string>;
   /** Kills the listener with its group and waits for it to end; called again, does no more. */
@@ -500,10 +504,10 @@ function listenForNotify(spawn: CommandSpawner, cwd: string): NotifyListener {
     (result) => void (ended = result),
     (error: Error) => void (ended = { status: null, stdout: '', stderr: '', error }),
   );
+  // Whole lines only, since the last piece read can stop inside one.
+  const lines = (): string[] => printed.split('\n').slice(0, -1);
   const hear = async (which: 'pre' | 'post'): Promise<boolean | string> => {
     const key = which === 'pre' ? pre : post;
-    // Whole lines only, since the last piece read can stop inside one.
-    const lines = (): string[] => printed.split('\n').slice(0, -1);
     // Printed before this posts it, so it would not show that the listener still heard at this point.
     const early = lines().includes(key);
     const deadline = Date.now() + NOTIFY_READY_MS;
@@ -539,7 +543,7 @@ function listenForNotify(spawn: CommandSpawner, cwd: string): NotifyListener {
     killer.abort();
     await listening;
   };
-  return { escape, hear, state, end };
+  return { escape, hear, printedEscape: () => lines().includes(escape), state, end };
 }
 
 /**
@@ -612,10 +616,13 @@ export async function runProbe(ctx: ReproduceContext, layout: Layout): Promise<S
       write: existsSync(layout.escape),
       connect: connections > 0,
       profile: contentOf(overwrite) !== before,
-      notify: notified === true || set === true,
+      // Read again after the state, so a line that arrived during that read counts.
+      notify: notified === true || set === true || listener?.printedEscape() === true,
     };
     const seen = (['write', 'read', 'connect', 'profile', 'terminal', 'signal', 'preference', 'notify'] as const).filter((name) => said.has(name) || outside[name] === true);
     if (seen.length > 0) return { platform, mechanism: 'none', probe: `escaped by ${seen.join(', ')}` };
+    const untested = /^notifications not tested: (.+)$/m.exec(result.stdout)?.[1];
+    if (untested !== undefined) return { platform, mechanism: 'none', probe: `could not test notifications: ${untested}` };
     if (typeof notified === 'string') return { platform, mechanism: 'none', probe: `could not tell whether the probe posted a notification: ${notified}` };
     if (typeof set === 'string') return { platform, mechanism: 'none', probe: `could not read the state of the notification key: ${set}` };
     if (result.error === undefined && result.status === 0 && result.stdout.trim() === 'RV_PROBE_OK') return { platform, mechanism, probe: 'passed' };
@@ -823,7 +830,7 @@ function stateOf(result: CommandResult, reached: boolean, text: string, timeoutS
 
 /**
  * The System V IPC objects listed, `all` of them and those of the user
- * (`mine`), each as `<type> <id>` (q, m or s, the letter ipcrm takes), or why
+ * (`mine`), each as `<type> <id>` (q, m or s, as ipcs prints it), or why
  * they could not be listed. The creator counts as well as the owner, since an
  * owner can be changed. The profile cannot deny creating one, so a run is
  * bracketed by these listings instead.
@@ -851,22 +858,17 @@ async function ipcObjects(spawn: CommandSpawner, cwd: string): Promise<{ all: Se
 }
 
 /**
- * Removes, by id, the objects of the user listed now that were not listed
- * before the run under any owner; null when there are none. One that existed
- * before and was handed to the user during the run was not made by it.
+ * Why the run counts as not run when the user has objects listed now that
+ * were not listed before the run under any owner; null when there are none.
+ * One that existed before and was handed to the user during the run was not
+ * made by it. None is removed: one another program of the user made in the
+ * same window looks the same, and removing it could destroy that program's state.
  */
-async function removeIpcLeft(spawn: CommandSpawner, cwd: string, before: ReadonlySet<string>): Promise<string | null> {
+async function ipcLeft(spawn: CommandSpawner, cwd: string, before: ReadonlySet<string>): Promise<string | null> {
   const after = await ipcObjects(spawn, cwd);
   if (typeof after === 'string') return `could not list System V IPC objects after the run: ${after}`;
   const made = [...after.mine].filter((object) => !before.has(object));
-  if (made.length === 0) return null;
-  const result = await spawnInGroup(spawn, IPCRM, cwd, PROBE_TIMEOUT_MS, {}, made.flatMap((object) => {
-    const [type, id] = object.split(' ');
-    return [`-${type!}`, id!];
-  }));
-  if (result.error === undefined && result.status === 0) return `the reproduction left System V IPC objects behind, removed by id: ${made.join(', ')}`;
-  const why = result.error?.message ?? `ipcrm exited ${String(result.status ?? 'on a signal')}`;
-  return `the reproduction left System V IPC objects behind, and they could not be removed (${made.join(', ')}): ${why}`;
+  return made.length === 0 ? null : `System V IPC objects appeared during the run and were left in place: ${made.join(', ')}`;
 }
 
 /**
@@ -920,9 +922,9 @@ async function runReproduction(
     const reached = reachedMarker(text, record.candidateId);
     // Recorded before the copy is checked, so the run is kept whatever the check finds.
     record.runs.push({ exitCode: result.status, durationMs, reached, output: recorded(text) });
-    // Before the copy is checked, so what the run made is removed whatever that check finds.
-    const ipcLeft = ipcBefore === null ? null : await removeIpcLeft(ctx.spawn ?? spawnCommand, layout.reproDir, ipcBefore.all);
-    if (ipcLeft !== null) return end('did-not-run', ipcLeft);
+    // Before the copy is checked, so the objects are named whatever that check finds.
+    const leftIpc = ipcBefore === null ? null : await ipcLeft(ctx.spawn ?? spawnCommand, layout.reproDir, ipcBefore.all);
+    if (leftIpc !== null) return end('did-not-run', leftIpc);
     const modified = changedSince();
     if (modified !== null) return end('did-not-run', modified);
     const state = stateOf(result, reached, text, runner.timeoutSeconds, ctx.config.cpuSeconds);

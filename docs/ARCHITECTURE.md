@@ -840,10 +840,14 @@ notification are refused (a listener outside the sandbox must print a key the
 CLI posts before the probe, which shows it hears, and then, only after the CLI
 posts it once the probe is back, a second key, with the probe's key not
 printed, and the state the probe sets on its key, read from outside while the
-listener still holds it, must be unset, or the probe fails). On macOS each run
-is also bracketed by listings of the user's System V IPC objects, which the
-profile cannot deny: one made during the run is removed by its id and the run
-is `did-not-run`, as it is when a listing or a removal fails. Elsewhere there is
+listener still holds it, must be unset, or the probe fails; the verdict is
+taken only after that read, so a line printed during it counts, and the probe
+fails as unable to test notifications unless its own attempt started and
+exited 0, as a refused one does). On macOS each run is also bracketed by
+listings of the user's System V IPC objects, which the profile cannot deny:
+one that appears during the run is left in place, since another program of
+the user may own it, and the run is `did-not-run` with a reason listing each
+object's type and id, as it is when a listing fails. Elsewhere there is
 no mechanism and nothing runs. The environment is an allowlist, never the reviewer's, and CPU,
 memory, file-size and wall-clock limits apply. A run counts only when it printed
 `RV_REPRO_REACHED <candidate id>` before its assertion. Two failing runs are

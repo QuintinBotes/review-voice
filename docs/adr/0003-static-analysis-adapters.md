@@ -242,19 +242,25 @@ though it can neither use nor remove one, and no profile rule, `(deny
 ipc-sysv*)` included, stops that. So the CLI brackets each run instead. Before
 the run and after it ends it lists the System V IPC objects (`ipcs -c`). An
 object the user owns or created that is listed after the run, and was not
-listed before it under any owner, was made while the run lasted, and the CLI removes it by its id (`ipcrm`), and only
-those, and records the run as not run with a reason naming System V IPC, so its
-result neither holds nor clears a finding. An object listed before the run is
-never touched. A listing that fails, or leaves out a facility, and a removal
-that fails also record the run as not run. This bounds what a run leaves
-behind; it does not stop a run from using up, while it lasts, the few objects
-the system holds (32 shared memory segments by default), so other programs can
-fail to create one until the run ends. Three more limits remain. An object a
-process the run leaves behind creates after the listing that follows the run is
-not seen, and outlives the run until `ipcrm` or a restart. An object another
-program of the same user creates while a run lasts is taken for the run's,
-removed, and the run recorded as not run. And a stop signal that ends the CLI
-during a run leaves what that run made. File reads of
+listed before it under any owner, appeared while the run lasted. The CLI
+cannot tell one the run made from one another program of the same user made in
+that window, and removing the latter could destroy that program's state, so
+the CLI removes none of them. It records the run as not run with a reason
+naming System V IPC that lists each such object's type and id and says it was
+left in place, so a person can inspect it, and the run's result neither holds
+nor clears a finding. A listing that fails, or leaves out a facility, also
+records the run as not run. An object a run made stays until the user removes
+it or the machine restarts. The check does not stop a run from using up, while
+it lasts, the few objects the system holds (32 shared memory segments by default), so other
+programs can fail to create one until a person removes them. An object another
+program of the same user creates while a run lasts is named as if the run had
+made it, and the run recorded as not run. Two limits remain. A process the run
+leaves behind can create an object after the listing that follows the run,
+which no check sees. And a stop signal that ends the CLI during a run ends it
+before the listing after the run, so what that run made is neither seen nor
+recorded. These limits, with the user identity a run shares with every other
+program of the user, are among the reasons macOS reproductions should stay off
+until runs execute under an identity or environment of their own. File reads of
 terminal devices (`/dev/tty*`, `/dev/pty*`, `/dev/cu.*` and `/dev/ptmx`) are
 denied after every read the profile allows, since a run, or a process it leaves
 behind, could otherwise take what is typed into another session. The probe
@@ -295,7 +301,14 @@ CLI reads that state from outside (`notifyutil -g <escape>`) while the listener
 still runs, and any value but the default 0 is the escape `notify`, whatever
 the listener printed. A state that cannot be read, a reply that is not
 `<escape>` and a number, and a listener that ended before the read was answered
-fail the probe. Anything else fails the probe:
+fail the probe. The CLI decides only after that read, so an `<escape>` line
+the listener prints while the state is read is the escape `notify` too. The
+probe passes only if its own attempt ran: the subprocess that sets and posts
+`<escape>` must have started and exited 0, the status a refused attempt gives
+under the real profile, where notifyutil prints that the call failed and still
+exits 0. One that could not start, was killed, ran past 5 seconds or exited
+with any other status has tested nothing, and the probe fails with `could not
+test notifications` and the reason. Anything else fails the probe:
 a listener that never prints `<post>`, one that printed `<post>` before the CLI
 posted it, one that has ended, however it ended, while it still had `<escape>`
 to wait for, or one that prints any other line. So no fixed wait decides the
