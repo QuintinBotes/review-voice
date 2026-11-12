@@ -20054,13 +20054,20 @@ var COMMAND_HELP = {
       "  base commit, copied to <dir>/config.yaml with mode 0600, else the built-in defaults (the base has",
       "  no config, or is not in the clone; origin/<base branch> stands in only when origin is the",
       "  repository under review). The checked-out head is never read, since its author wrote it.",
-      "  It also writes <dir>/trusted-config.json, mode 0600, holding the path and source it prints.",
+      "  It also writes <dir>/trusted-config.json, mode 0600, holding the path and source it prints and",
+      "  sha256, the SHA-256 of that file (null for default).",
       "  /review-voice:review --pr and /review-voice:draft-review each run this first and then every stage",
       "  command, verdict and post included, with --trusted-config <dir>. Any command takes that option:",
       "  it reads the file and sets REVIEW_VOICE_CONFIG=<path> and REVIEW_VOICE_CONFIG_SOURCE=<source> for",
       "  that command. Both are needed, because a path with no source beside it is read as the",
       "  operator's own file, whose runners: block is honoured. A missing or malformed file, an unknown",
-      "  source, or a path that is not absolute or names no file refuses the command with exit 2.",
+      "  source, or a path that is not absolute, names no file, is or runs through a symbolic link, or no",
+      "  longer has that SHA-256 (for default, a path where a file now exists) refuses the command with",
+      "  exit 2. The file never confers an operator source by itself, so the source flag is always refused",
+      "  (the slash commands never pass --config), checkout is always refused, and env is accepted only",
+      "  when this process already has REVIEW_VOICE_CONFIG set to that path and no other source stated.",
+      "  Pull request code that runs as the reviewer could rewrite the file, but at most to name another",
+      "  base-like file.",
       "",
       "Flags:",
       "  --pr <n>               the pull request number (required)",
@@ -20072,8 +20079,8 @@ var COMMAND_HELP = {
       "  REVIEW_VOICE_CONFIG_SOURCE stated beside the variable), base or default; ref is the commit or ref",
       "  read, for base and default; notes are for the person, never posted. With default, path names no",
       "  file, which the stage commands read as the built-in defaults.",
-      "Exit codes: 0 ok, 2 bad invocation, --dir is not a directory, --config names no file, GitHub gave",
-      "  no base commit, or a missing credential."
+      "Exit codes: 0 ok, 2 bad invocation, --dir is not a directory, --config or REVIEW_VOICE_CONFIG names",
+      "  no file, GitHub gave no base commit, or a missing credential."
     )
   },
   verify: {
@@ -28315,8 +28322,9 @@ function worktreeCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/config.ts
-import { readFileSync as readFileSync26, rmSync as rmSync14, statSync as statSync11, writeFileSync as writeFileSync13 } from "node:fs";
-import { isAbsolute as isAbsolute6, join as join29, resolve as resolve13 } from "node:path";
+import { createHash as createHash8 } from "node:crypto";
+import { lstatSync as lstatSync9, readFileSync as readFileSync26, realpathSync as realpathSync4, rmSync as rmSync14, statSync as statSync11, writeFileSync as writeFileSync13 } from "node:fs";
+import { dirname as dirname18, isAbsolute as isAbsolute6, join as join29, resolve as resolve13 } from "node:path";
 async function configCommand(argv) {
   const dir = flag(argv, "--dir");
   if (argv[0] !== "resolve" || dir === null) {
@@ -28347,17 +28355,30 @@ async function configCommand(argv) {
   const { data } = await githubClient([repository]).get(`/repos/${repository}/pulls/${pullNumber}`);
   const base = { sha: typeof data.base?.sha === "string" ? data.base.sha : null, ref: typeof data.base?.ref === "string" ? data.base.ref : null };
   const notes = [];
-  const chosen = resolveTrustedConfig({ repository, pullNumber, base, dir: resolve13(dir), flagged }, notes);
+  const chosen = resolveTrustedConfig({ repository, pullNumber, base, dir: realpathSync4(dir), flagged }, notes);
   if (typeof chosen === "string") {
     console.error(chosen);
     return 2;
   }
   const { path, ref } = chosen.source;
-  writeFileSync13(trusted, JSON.stringify({ path, source: chosen.stated }), { mode: 384 });
+  if (chosen.stated !== "default" && (path === void 0 || statSync11(path, { throwIfNoEntry: false })?.isFile() !== true)) {
+    console.error(`The configuration ${path ?? ""} is not a file, so it has no SHA-256 to bind the stages to.`);
+    return 2;
+  }
+  const sha256 = path === void 0 || chosen.stated === "default" ? null : sha256Of(path);
+  writeFileSync13(trusted, JSON.stringify({ path, source: chosen.stated, sha256 }), { mode: 384 });
   console.log(JSON.stringify({ path, source: chosen.stated, ...ref === void 0 ? {} : { ref }, notes }));
   return 0;
 }
 var TRUSTED_CONFIG = "trusted-config.json";
+var sha256Of = (path) => createHash8("sha256").update(readFileSync26(path)).digest("hex");
+function realDirectory(path) {
+  try {
+    return realpathSync4(path);
+  } catch {
+    return null;
+  }
+}
 function withTrustedConfig(argv) {
   const index = argv.indexOf("--trusted-config", 1);
   if (index === -1) return argv;
@@ -28376,15 +28397,32 @@ function withTrustedConfig(argv) {
   } catch {
   }
   const record3 = typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
-  const { path, source } = record3 ?? {};
-  if (record3 === null || Object.keys(record3).length !== 2 || typeof path !== "string" || typeof source !== "string") {
-    return `--trusted-config: ${file2} must hold exactly {"path", "source"}, both strings, as config resolve writes it.`;
+  const { path, source, sha256 } = record3 ?? {};
+  if (record3 === null || Object.keys(record3).length !== 3 || typeof path !== "string" || typeof source !== "string" || typeof sha256 !== "string" && sha256 !== null) {
+    return `--trusted-config: ${file2} must hold exactly {"path", "source", "sha256"}, the first two strings and sha256 a string or null, as config resolve writes it.`;
   }
   const known = CONFIG_SOURCES.find((kind) => kind === source);
   if (known === void 0) return `--trusted-config: ${file2} names the source ${source}, which is not one of ${CONFIG_SOURCES.join(", ")}.`;
   if (!isAbsolute6(path)) return `--trusted-config: ${file2} names the path ${path}, which is not absolute.`;
-  if (known !== "default" && statSync11(path, { throwIfNoEntry: false })?.isFile() !== true) {
-    return `--trusted-config: ${file2} names the path ${path}, which is not a file.`;
+  const entry = lstatSync9(path, { throwIfNoEntry: false });
+  if (entry?.isSymbolicLink() === true || realDirectory(dirname18(path)) !== dirname18(path)) {
+    return `--trusted-config: ${file2} names the path ${path}, which is a symbolic link, runs through one, or lies in no directory.`;
+  }
+  if (known === "default") {
+    if (entry !== void 0) return `--trusted-config: ${file2} names the built-in defaults at ${path}, where something now exists.`;
+    if (sha256 !== null) return `--trusted-config: ${file2} names the built-in defaults, so its sha256 must be null.`;
+  } else {
+    if (entry?.isFile() !== true) return `--trusted-config: ${file2} names the path ${path}, which is not a file.`;
+    if (sha256Of(path) !== sha256) return `--trusted-config: ${path} is not the file config resolve chose, since its SHA-256 differs from the one ${file2} holds.`;
+  }
+  if (known === "flag") {
+    return `--trusted-config: ${file2} names the source flag, which it cannot confer, since the slash commands never pass --config. To review with your own file, set REVIEW_VOICE_CONFIG to its absolute path before config resolve, or run review --pr --config <path>.`;
+  }
+  if (known === "checkout") return `--trusted-config: ${file2} names the source checkout, a file from a checkout, which is never trusted.`;
+  const operator = process.env["REVIEW_VOICE_CONFIG"];
+  const stated = process.env["REVIEW_VOICE_CONFIG_SOURCE"];
+  if (known === "env" && (operator !== path || stated !== void 0 && stated !== "env")) {
+    return `--trusted-config: ${file2} names the source env, which only the operator's own environment confers, and it does not hold REVIEW_VOICE_CONFIG=${path} with no other source stated.`;
   }
   process.env["REVIEW_VOICE_CONFIG"] = path;
   process.env["REVIEW_VOICE_CONFIG_SOURCE"] = known;
@@ -29968,11 +30006,11 @@ function ineligibleReason(input) {
 }
 
 // plugins/review-voice/src/corpus/dedup.ts
-import { createHash as createHash8 } from "node:crypto";
+import { createHash as createHash9 } from "node:crypto";
 function contentKey(parts) {
   const normalised2 = parts.body.replace(/\s+/g, " ").trim().toLowerCase();
   const SEPARATOR = String.fromCharCode(31);
-  return createHash8("sha256").update(
+  return createHash9("sha256").update(
     [
       parts.repository.toLowerCase(),
       parts.reviewerLogin.toLowerCase(),
@@ -31293,7 +31331,7 @@ function reanchorCommand(argv) {
 
 // plugins/review-voice/src/cli/agent.ts
 import { readFileSync as readFileSync35, statSync as statSync13 } from "node:fs";
-import { dirname as dirname18, resolve as resolve15 } from "node:path";
+import { dirname as dirname19, resolve as resolve15 } from "node:path";
 async function agentCommand(argv) {
   const name = flag(argv, "--name");
   const model = flag(argv, "--model");
@@ -31324,7 +31362,7 @@ async function agentCommand(argv) {
     console.error(`The schema ${schemaPath} must be a JSON object.`);
     return 2;
   }
-  const schemaDir = dirname18(resolve15(schemaPath));
+  const schemaDir = dirname19(resolve15(schemaPath));
   try {
     schemaForRunner(schema4, schemaDir);
   } catch (error) {
@@ -31748,7 +31786,7 @@ function statusCommand() {
 
 // plugins/review-voice/src/cli/carry.ts
 import { readFileSync as readFileSync36, writeFileSync as writeFileSync19, mkdirSync as mkdirSync14 } from "node:fs";
-import { dirname as dirname19, join as join31 } from "node:path";
+import { dirname as dirname20, join as join31 } from "node:path";
 
 // plugins/review-voice/src/diff/held.ts
 var QUOTE_LIMIT = 200;
@@ -32024,7 +32062,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
 function partialDiffReason(diffFile) {
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync36(join31(dirname19(diffFile), "files.json"), "utf8"));
+    manifest = JSON.parse(readFileSync36(join31(dirname20(diffFile), "files.json"), "utf8"));
   } catch {
     return null;
   }

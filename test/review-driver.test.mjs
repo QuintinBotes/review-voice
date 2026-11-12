@@ -2393,7 +2393,7 @@ test('issue 357: config resolve chooses the same file and source as the driver, 
     assert.equal(printed.ref, report.configSource.ref, kind);
     // The base copy lands in each caller's own directory; an operator file is the same path for both.
     if (kind === 'flag' || kind === 'env') assert.equal(printed.path, report.configSource.path, kind);
-    else assert.equal(printed.path, join(dir, 'config.yaml'), kind);
+    else assert.equal(printed.path, join(realpathSync(dir), 'config.yaml'), kind);
     const content = (path) => (existsSync(path) ? readFileSync(path, 'utf8') : null);
     assert.equal(content(printed.path), content(report.configSource.path), `${kind}: the stages read the same settings`);
     assert.deepEqual(printed.notes, report.notes.filter((note) => note.startsWith('No .review-voice/config.yaml')), kind);

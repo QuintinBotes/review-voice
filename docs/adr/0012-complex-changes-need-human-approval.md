@@ -237,7 +237,15 @@ source for that command, so a `runners:` block in the base commit's file is
 still ignored. It is an option rather than a variable prefix so that the
 command documents' `Bash(node:*)` rule matches each stage command, and a file
 that is missing, malformed or names an unknown source or no file refuses the
-command with exit 2. `/review-voice:draft-review` runs
+command with exit 2. With repository commands on, pull request code runs as
+the reviewer and can rewrite `trusted-config.json`, so the file also holds the
+SHA-256 of the file it names (`null` for the built-in defaults), and a stage
+refuses a file whose bytes no longer match, a defaults path where a file now
+exists, a path through a symbolic link, and any other shape. The file never
+confers an operator source by itself. `flag` and `checkout` are refused, since
+the slash commands never pass `--config`, and `env` is accepted only beside
+the operator's own absolute `REVIEW_VOICE_CONFIG` for the same path with no
+other source stated. `/review-voice:draft-review` runs
 `verdict` and `post`, the commands that apply this record's cap, so it resolves
 the configuration the same way before either, and a head that sets
 `cap_approval: false`, `verdict.never_approve: false` or

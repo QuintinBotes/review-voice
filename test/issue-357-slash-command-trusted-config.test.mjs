@@ -9,7 +9,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -108,6 +109,7 @@ async function resolveConfig(repo, args, options) {
 
 const variablesOf = (resolved) => ({ REVIEW_VOICE_CONFIG: resolved.path, REVIEW_VOICE_CONFIG_SOURCE: resolved.source });
 const sha7 = (sha) => sha.slice(0, 7);
+const sha256Of = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
 
 test('config resolve copies the base commit file into the run directory when the head changed the config', async (t) => {
   const repo = repository(t);
@@ -449,18 +451,19 @@ test('the help for config and for review say where a pull request review gets it
 const TRUSTED = 'trusted-config.json';
 
 /** `config resolve` from the built bundle, GitHub answered by a module loaded first, as a slash command runs it. */
-function resolveFromBundleRaw(t, repo, dir, extra = []) {
+function resolveFromBundleRaw(t, repo, dir, extra = [], variables = {}) {
   const standIn = join(temporary(t, 'rv-357-fetch-'), 'fetch.mjs');
   const body = JSON.stringify({ number: PR, head: { sha: repo.head, ref: 'feature' }, base: { sha: repo.base, ref: 'main' } });
   writeFileSync(standIn, `globalThis.fetch = async () => new Response(${JSON.stringify(body)}, { status: 200, headers: { 'content-type': 'application/json' } });\n`);
   const env = { ...process.env, GITHUB_TOKEN: 't' };
   for (const name of VARIABLES) delete env[name];
+  Object.assign(env, variables);
   const args = ['--import', pathToFileURL(standIn).href, bundle, 'config', 'resolve', '--pr', String(PR), '--repository', REPO, '--dir', dir, ...extra];
   return spawnSync(process.execPath, args, { cwd: repo.dir, encoding: 'utf8', env });
 }
 
-function resolveFromBundle(t, repo, dir, extra = []) {
-  const result = resolveFromBundleRaw(t, repo, dir, extra);
+function resolveFromBundle(t, repo, dir, extra = [], variables = {}) {
+  const result = resolveFromBundleRaw(t, repo, dir, extra, variables);
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout);
 }
@@ -471,14 +474,14 @@ test('config resolve from the built bundle writes trusted-config.json, private t
   const printed = resolveFromBundle(t, repo, run);
   assert.equal(printed.source, 'base');
   const file = join(run, TRUSTED);
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { path: printed.path, source: printed.source });
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { path: printed.path, source: printed.source, sha256: sha256Of(printed.path) });
   assert.equal(statSync(file).mode & 0o777, 0o600);
 
   // A re-run into the same directory replaces it, and a refused one leaves none behind.
   const own = join(temporary(t, 'rv-357-own-'), 'own.yaml');
   writeFileSync(own, HEAD_CONFIG);
   resolveFromBundle(t, repo, run, ['--config', own]);
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { path: own, source: 'flag' });
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { path: own, source: 'flag', sha256: sha256Of(own) });
   const refused = resolveFromBundleRaw(t, repo, run, ['--config', join(run, 'missing.yaml')]);
   assert.equal(refused.status, 2, refused.stderr);
   assert.equal(existsSync(file), false);
@@ -511,6 +514,7 @@ test('a --trusted-config that cannot be trusted refuses the command with exit 2,
   const repo = repository(t);
   const config = join(temporary(t, 'rv-357-own-'), 'config.yaml');
   writeFileSync(config, BASE_CONFIG);
+  const sha256 = sha256Of(config);
   const holding = (content) => {
     const dir = temporary(t, 'rv-357-run-');
     writeFileSync(join(dir, TRUSTED), typeof content === 'string' ? content : JSON.stringify(content));
@@ -518,7 +522,7 @@ test('a --trusted-config that cannot be trusted refuses the command with exit 2,
   };
   const directory = temporary(t, 'rv-357-run-');
   mkdirSync(join(directory, TRUSTED));
-  const shape = /must hold exactly \{"path", "source"\}, both strings/;
+  const shape = /must hold exactly \{"path", "source", "sha256"\}/;
   for (const [trailing, problem] of [
     [['--trusted-config'], /--trusted-config needs the directory config resolve wrote to\./],
     [['--trusted-config', '--json'], /--trusted-config needs the directory/],
@@ -529,10 +533,10 @@ test('a --trusted-config that cannot be trusted refuses the command with exit 2,
     [['--trusted-config', holding({ path: config })], shape],
     [['--trusted-config', holding({ path: config, source: 'base', ref: 'main' })], shape],
     [['--trusted-config', holding({ path: 7, source: 'base' })], shape],
-    [['--trusted-config', holding({ path: config, source: 'operator' })], /names the source operator, which is not one of flag, env, checkout, base, default\./],
-    [['--trusted-config', holding({ path: 'config.yaml', source: 'base' })], /names the path config\.yaml, which is not absolute\./],
-    [['--trusted-config', holding({ path: join(dirname(config), 'missing.yaml'), source: 'base' })], /missing\.yaml, which is not a file\./],
-    [['--trusted-config', holding({ path: dirname(config), source: 'flag' })], /which is not a file\./],
+    [['--trusted-config', holding({ path: config, source: 'operator', sha256 })], /names the source operator, which is not one of flag, env, checkout, base, default\./],
+    [['--trusted-config', holding({ path: 'config.yaml', source: 'base', sha256 })], /names the path config\.yaml, which is not absolute\./],
+    [['--trusted-config', holding({ path: join(dirname(config), 'missing.yaml'), source: 'base', sha256 })], /missing\.yaml, which is not a file\./],
+    [['--trusted-config', holding({ path: dirname(config), source: 'flag', sha256 })], /which is not a file\./],
   ]) {
     const out = join(temporary(t, 'rv-357-scratch-'), 'out');
     const env = { ...process.env };
@@ -569,4 +573,133 @@ test('a runners block only the head adds is not honoured through --trusted-confi
   const baseRun = temporary(t, 'rv-357-run-');
   resolveFromBundle(t, atBase, baseRun);
   assert.deepEqual(challengeFamily(atBase, temporary(t, 'rv-357-scratch-'), {}, ['--trusted-config', baseRun]), { family: 'claude', ruled: true });
+});
+
+/** `diff` from the built bundle with `trailing`, which must be refused with exit 2 before it writes anything. Returns stderr. */
+function refusedStage(t, repo, trailing, variables = {}) {
+  const out = join(temporary(t, 'rv-357-scratch-'), 'out');
+  const env = { ...process.env };
+  for (const name of VARIABLES) delete env[name];
+  Object.assign(env, variables);
+  const result = spawnSync(process.execPath, [bundle, 'diff', '--base', repo.base, '--out', out, ...trailing], { cwd: repo.dir, encoding: 'utf8', env });
+  assert.equal(result.status, 2, `${trailing.join(' ')}: ${result.stderr}`);
+  assert.equal(result.stdout, '');
+  assert.equal(existsSync(out), false, 'diff never ran');
+  return result.stderr;
+}
+
+const writeManifest = (dir, manifest) => writeFileSync(join(dir, TRUSTED), JSON.stringify(manifest));
+
+test('config resolve binds the base copy to its SHA-256 and the defaults to null, and stages still accept both', (t) => {
+  const repo = repository(t);
+  const run = temporary(t, 'rv-357-run-');
+  const printed = resolveFromBundle(t, repo, run);
+  assert.deepEqual(JSON.parse(readFileSync(join(run, TRUSTED), 'utf8')), { path: join(run, 'config.yaml'), source: 'base', sha256: sha256Of(join(run, 'config.yaml')) });
+  assert.equal(stagesRead(repo, temporary(t, 'rv-357-scratch-'), 'base', {}, ['--trusted-config', run]).mode, 'thorough', printed.source);
+
+  const bare = repository(t, { baseConfig: null });
+  const bareRun = temporary(t, 'rv-357-run-');
+  resolveFromBundle(t, bare, bareRun);
+  assert.deepEqual(JSON.parse(readFileSync(join(bareRun, TRUSTED), 'utf8')), { path: join(bareRun, 'config.yaml'), source: 'default', sha256: null });
+  assert.deepEqual(stagesRead(bare, temporary(t, 'rv-357-scratch-'), 'defaults', {}, ['--trusted-config', bareRun]).gate, []);
+});
+
+test('a manifest swapped to name the checkout file with a runners block as the flag source is refused and runs nothing', (t) => {
+  const repo = repository(t, { headConfig: RUNNERS });
+  const run = temporary(t, 'rv-357-run-');
+  resolveFromBundle(t, repo, run);
+  const checkout = join(repo.dir, CONFIG_FILE);
+  writeManifest(run, { path: checkout, source: 'flag', sha256: sha256Of(checkout) });
+  const stderr = refusedStage(t, repo, ['--trusted-config', run]);
+  assert.match(stderr, /names the source flag, which it cannot confer, since the slash commands never pass --config\./);
+});
+
+test('config resolve with --config still prints the flag file and source, and its manifest is refused by every stage', (t) => {
+  const repo = repository(t);
+  const run = temporary(t, 'rv-357-run-');
+  const own = join(temporary(t, 'rv-357-own-'), 'own.yaml');
+  writeFileSync(own, RUNNERS);
+  assert.deepEqual(resolveFromBundle(t, repo, run, ['--config', own]), { path: own, source: 'flag', notes: [] });
+  assert.match(refusedStage(t, repo, ['--trusted-config', run]), /set REVIEW_VOICE_CONFIG to its absolute path before config resolve, or run review --pr --config <path>\./);
+});
+
+test('a manifest naming the source env is accepted only beside the operator own absolute REVIEW_VOICE_CONFIG for that path', (t) => {
+  const repo = repository(t);
+  const run = temporary(t, 'rv-357-run-');
+  const own = join(temporary(t, 'rv-357-own-'), 'own.yaml');
+  writeFileSync(own, RUNNERS);
+  const other = join(temporary(t, 'rv-357-own-'), 'other.yaml');
+  writeFileSync(other, RUNNERS);
+  assert.equal(resolveFromBundle(t, repo, run, [], { REVIEW_VOICE_CONFIG: own }).source, 'env');
+  const trailing = ['--trusted-config', run];
+  const problem = /names the source env, which only the operator's own environment confers/;
+  assert.match(refusedStage(t, repo, trailing), problem);
+  assert.match(refusedStage(t, repo, trailing, { REVIEW_VOICE_CONFIG: other }), problem);
+  assert.match(refusedStage(t, repo, trailing, { REVIEW_VOICE_CONFIG: own, REVIEW_VOICE_CONFIG_SOURCE: 'checkout' }), problem);
+
+  // The operator's own shell set the variable, so its runners block is honoured.
+  assert.deepEqual(challengeFamily(repo, temporary(t, 'rv-357-scratch-'), { REVIEW_VOICE_CONFIG: own }, trailing), { family: 'codex', ruled: false });
+  assert.equal(challengeFamily(repo, temporary(t, 'rv-357-scratch-'), { REVIEW_VOICE_CONFIG: own, REVIEW_VOICE_CONFIG_SOURCE: 'env' }, trailing).family, 'codex');
+});
+
+test('a manifest naming the source checkout is refused, even with the variables it came from set', (t) => {
+  const repo = repository(t);
+  const run = temporary(t, 'rv-357-run-');
+  const own = join(temporary(t, 'rv-357-own-'), 'own.yaml');
+  writeFileSync(own, RUNNERS);
+  const variables = { REVIEW_VOICE_CONFIG: own, REVIEW_VOICE_CONFIG_SOURCE: 'checkout' };
+  assert.equal(resolveFromBundle(t, repo, run, [], variables).source, 'checkout');
+  assert.match(refusedStage(t, repo, ['--trusted-config', run], variables), /names the source checkout, a file from a checkout, which is never trusted\./);
+});
+
+test('a copy whose bytes changed after config resolve is refused', (t) => {
+  const repo = repository(t);
+  const run = temporary(t, 'rv-357-run-');
+  const { path } = resolveFromBundle(t, repo, run);
+  writeFileSync(path, `${BASE_CONFIG}${RUNNERS}`);
+  assert.match(refusedStage(t, repo, ['--trusted-config', run]), /config\.yaml is not the file config resolve chose, since its SHA-256 differs/);
+});
+
+test('a file created at the path a default manifest names is refused, as is a default manifest with a hash', (t) => {
+  const repo = repository(t, { baseConfig: null });
+  const run = temporary(t, 'rv-357-run-');
+  const { path, source } = resolveFromBundle(t, repo, run);
+  assert.equal(source, 'default');
+  writeFileSync(path, RUNNERS);
+  assert.match(refusedStage(t, repo, ['--trusted-config', run]), /names the built-in defaults at .*config\.yaml, where something now exists\./);
+
+  rmSync(path);
+  writeManifest(run, { path, source: 'default', sha256: sha256Of(join(repo.dir, CONFIG_FILE)) });
+  assert.match(refusedStage(t, repo, ['--trusted-config', run]), /names the built-in defaults, so its sha256 must be null\./);
+});
+
+test('a manifest path that is a symbolic link or runs through one is refused', (t) => {
+  const repo = repository(t);
+  const run = temporary(t, 'rv-357-run-');
+  const { path } = resolveFromBundle(t, repo, run);
+  const sha256 = sha256Of(path);
+  const problem = /which is a symbolic link, runs through one, or lies in no directory\./;
+
+  const alias = join(run, 'alias.yaml');
+  symlinkSync(path, alias);
+  writeManifest(run, { path: alias, source: 'base', sha256 });
+  assert.match(refusedStage(t, repo, ['--trusted-config', run]), problem);
+
+  const linked = join(temporary(t, 'rv-357-link-'), 'run');
+  symlinkSync(run, linked);
+  writeManifest(run, { path: join(linked, 'config.yaml'), source: 'base', sha256 });
+  assert.match(refusedStage(t, repo, ['--trusted-config', run]), problem);
+});
+
+test('a manifest with an extra key, with no sha256 or with a null sha256 for a copy is refused', (t) => {
+  const repo = repository(t);
+  const run = temporary(t, 'rv-357-run-');
+  const { path } = resolveFromBundle(t, repo, run);
+  const shape = /must hold exactly \{"path", "source", "sha256"\}/;
+  writeManifest(run, { path, source: 'base', sha256: sha256Of(path), extra: true });
+  assert.match(refusedStage(t, repo, ['--trusted-config', run]), shape);
+  writeManifest(run, { path, source: 'base' });
+  assert.match(refusedStage(t, repo, ['--trusted-config', run]), shape);
+  writeManifest(run, { path, source: 'base', sha256: null });
+  assert.match(refusedStage(t, repo, ['--trusted-config', run]), /its SHA-256 differs/);
 });
