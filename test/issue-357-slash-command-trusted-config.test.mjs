@@ -452,9 +452,16 @@ const TRUSTED = 'trusted-config.json';
 
 /** `config resolve` from the built bundle, GitHub answered by a module loaded first, as a slash command runs it. */
 function resolveFromBundleRaw(t, repo, dir, extra = [], variables = {}) {
-  const standIn = join(temporary(t, 'rv-357-fetch-'), 'fetch.mjs');
-  const body = JSON.stringify({ number: PR, head: { sha: repo.head, ref: 'feature' }, base: { sha: repo.base, ref: 'main' } });
-  writeFileSync(standIn, `globalThis.fetch = async () => new Response(${JSON.stringify(body)}, { status: 200, headers: { 'content-type': 'application/json' } });\n`);
+  const fetchDir = temporary(t, 'rv-357-fetch-');
+  const standIn = join(fetchDir, 'fetch.mjs');
+  // The answer is data in a file of its own, so no value is spliced into the module's code.
+  writeFileSync(join(fetchDir, 'pull.json'), JSON.stringify({ number: PR, head: { sha: repo.head, ref: 'feature' }, base: { sha: repo.base, ref: 'main' } }));
+  writeFileSync(
+    standIn,
+    "import { readFileSync } from 'node:fs';\n" +
+      "const body = readFileSync(new URL('./pull.json', import.meta.url), 'utf8');\n" +
+      "globalThis.fetch = async () => new Response(body, { status: 200, headers: { 'content-type': 'application/json' } });\n",
+  );
   const env = { ...process.env, GITHUB_TOKEN: 't' };
   for (const name of VARIABLES) delete env[name];
   Object.assign(env, variables);
