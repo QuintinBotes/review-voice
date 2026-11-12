@@ -59,6 +59,7 @@ import { checkIntentCommand } from './cli/check-intent.ts';
 import { recallCommand } from './cli/recall.ts';
 import { importBenchmarkCommand } from './cli/import-benchmark.ts';
 import { worktreeCommand } from './cli/worktree.ts';
+import { configCommand, withTrustedConfig } from './cli/config.ts';
 import { pullRequestDiffCommand, diffCommand } from './cli/diff.ts';
 import { threadCommand } from './cli/thread.ts';
 import { symbolsCommand } from './cli/symbols.ts';
@@ -93,7 +94,9 @@ async function main(argv: string[]): Promise<number> {
   // The bundled YAML parser reports a warning through this, quoting the line of the repository's file it read.
   console.warn = console.error;
   console.log = (...args: unknown[]) => log(outputSafe(format(...args)));
-  const exit = await dispatch(argv);
+  const trusted = withTrustedConfig(argv);
+  if (typeof trusted === 'string') console.error(trusted);
+  const exit = typeof trusted === 'string' ? 2 : await dispatch(trusted);
   const command = argv[0];
   // Said once here, not at every call site that rejects its flags.
   if (exit === 2 && command !== undefined && commandHelp(command) !== null) {
@@ -306,6 +309,9 @@ async function dispatch(argv: string[]): Promise<number> {
 
     case 'worktree':
       return worktreeCommand(argv.slice(1));
+
+    case 'config':
+      return await configCommand(argv.slice(1));
 
     case 'reconcile':
       return reconcileCommand(argv.slice(1));

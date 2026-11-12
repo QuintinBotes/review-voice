@@ -372,7 +372,7 @@ machine's sandbox gives and runs no reproduction.
 ### `outcomes`
 
 ```
-review-voice outcomes [--repository R] [--since 30d] [--json]
+review-voice outcomes [--approvals] [--repository R] [--since 30d] [--json]
 ```
 
 Reads the review threads of findings Review Voice posted, and the pull
@@ -388,6 +388,16 @@ the poster, the owner or a bot asks something (a `?` outside a blockquote). A
 disagreement that asks nothing is an outcome and gets no reply. An
 acknowledgement gets none, even with a question mark. `--json` stays an array
 of outcomes.
+
+With `--approvals` it follows each APPROVE Review Voice sent instead (ADR
+0036): whether the pull request merged at the approved head, whether a person
+then requested changes on that head, and whether a merged pull request in the
+same repository reverted it inside `outcomes.approval_window_days` (default
+14). A merge the window has not closed on is `pending`, never `survived`.
+`watch` follows approvals in the same step as findings, and a failure there
+does not fail the pass. Every read is a GET inside the allowlist; nothing is
+written to GitHub. `docs/EVALUATION.md` documents the figure `evaluate`
+derives from the rows.
 
 ## Verdict policy
 
@@ -447,6 +457,13 @@ ADR 0029. For each posted inline comment:
 `posted_findings_tracked`, and since ADR 0035 `posted_replies` and
 `replied_fixed_rate`. Only strong outcomes count toward rates.
 `owner_accepted_precision` keeps reading explicit feedback first.
+
+ADR 0036 follows the verdict as well as the findings: each sent APPROVE is
+followed to `reverted`, `changes_requested` or `survived` (strong), or to
+`merged_other_head`, `pending`, `closed`, `open` or `unknown` (weak), and
+`evaluate` adds `approvals_tracked` and `approval_escape_rate` with a Wilson
+95% upper bound. The window and the `status` warning threshold are the
+`outcomes` block (`approval_window_days`, `approval_escape_warn`).
 
 ## Security
 

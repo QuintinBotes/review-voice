@@ -191,22 +191,44 @@ function ownerSeverityOverrides(argv: string[], candidates: readonly Candidate[]
 /**
  * Reads repeatable `--promote candidate_id` owner decisions: post a verified
  * finding that the score or confidence gate alone held back, or one an
- * approved suppression held back.
+ * approved suppression held back. `--as-question` ids are read the same way.
  */
-function ownerPromotions(argv: string[], candidates: readonly Candidate[]): Set<string> | string {
+function ownerPromotions(argv: string[], candidates: readonly Candidate[], option: string = '--promote'): Set<string> | string {
   const promotions = new Set<string>();
   const known = new Set(candidates.map((candidate) => candidate.candidateId));
   for (let index = 0; index < argv.length; index += 1) {
-    if (argv[index] !== '--promote') continue;
+    if (argv[index] !== option) continue;
     const candidateId = argv[index + 1];
     if (candidateId === undefined || candidateId.startsWith('--')) {
-      return '--promote needs a candidate_id, for example cand_001.';
+      return `${option} needs a candidate_id, for example cand_001.`;
     }
-    if (!known.has(candidateId)) return `--promote names unknown candidate ${JSON.stringify(candidateId)}.`;
-    if (promotions.has(candidateId)) return `--promote names ${JSON.stringify(candidateId)} more than once.`;
+    if (!known.has(candidateId)) return `${option} names unknown candidate ${JSON.stringify(candidateId)}.`;
+    if (promotions.has(candidateId)) return `${option} names ${JSON.stringify(candidateId)} more than once.`;
     promotions.add(candidateId);
   }
   return promotions;
+}
+
+/**
+ * Why `--as-question` cannot apply to a candidate, or null. Only a verified
+ * minor or nit qualifies: a question still rests on checked facts, and turning
+ * a blocking or important finding into one would soften a request for changes
+ * into a comment (#361).
+ */
+function ownerQuestionProblem(breakdown: ScoreBreakdown, verification: Verification | undefined): string | null {
+  const id = breakdown.candidateId;
+  const tier = breakdown.severity.severity;
+  if (tier === 'question') return `--as-question ${id}: it is already a question.`;
+  if (tier === 'blocking' || tier === 'important') {
+    return (
+      `--as-question ${id}: its tier is ${tier}, and posting it as a question would soften a request for changes into a comment. ` +
+      `Use --promote ${id} to post it at its tier, or lower it with --severity ${id}=<tier> first.`
+    );
+  }
+  if (verification?.verified !== true) {
+    return `--as-question ${id}: the verifier did not verify it (verified is not true), and a question still rests on checked facts.`;
+  }
+  return null;
 }
 
 /**
@@ -214,15 +236,15 @@ function ownerPromotions(argv: string[], candidates: readonly Candidate[]): Set<
  * qualifies: the verifier confirmed it and one gate, which is preference,
  * stopped it. Anything else was stopped by a check of the claim itself.
  */
-function applyOwnerPromotion(breakdown: ScoreBreakdown, ownerNote: string | null): string | null {
+function applyOwnerPromotion(breakdown: ScoreBreakdown, ownerNote: string | null, option: string = '--promote'): string | null {
   const gate = gateOf(breakdown.rejectedBecause);
-  if (breakdown.eligible) return `--promote ${breakdown.candidateId}: it is already eligible.`;
+  if (breakdown.eligible) return `${option} ${breakdown.candidateId}: it is already eligible.`;
   // The unverifiable cap is a check of the claim, not a preference gate, so it
   // only lifts on an explicit owner decision that is recorded with its reason (#163).
   if (breakdown.confidenceSource === 'unverifiable-cap' && breakdown.rejectedBecause === UNVERIFIABLE_REJECTION) {
     if (ownerNote === null) {
       return (
-        `--promote ${breakdown.candidateId}: it is capped as unverifiable (${breakdown.unverifiableBecause}). ` +
+        `${option} ${breakdown.candidateId}: it is capped as unverifiable (${breakdown.unverifiableBecause}). ` +
         'Pass --allow-unverifiable with --owner-note "<why>" to post it on the owner\'s decision.'
       );
     }
@@ -242,7 +264,7 @@ function applyOwnerPromotion(breakdown: ScoreBreakdown, ownerNote: string | null
   }
   if (breakdown.confidenceSource !== 'verifier' || !Number.isFinite(breakdown.finalScore) || gate === null) {
     return (
-      `--promote ${breakdown.candidateId}: only a verified finding held by the score or confidence gate alone ` +
+      `${option} ${breakdown.candidateId}: only a verified finding held by the score or confidence gate alone ` +
       `can be promoted, and this one was rejected because ${breakdown.rejectedBecause}.`
     );
   }
@@ -312,6 +334,11 @@ export function scoreCommand(argv: string[]): number {
   const promotions = ownerPromotions(argv, candidates);
   if (typeof promotions === 'string') {
     console.error(promotions);
+    return 2;
+  }
+  const questions = ownerPromotions(argv, candidates, '--as-question');
+  if (typeof questions === 'string') {
+    console.error(questions);
     return 2;
   }
   const allowUnverifiable = argv.includes('--allow-unverifiable');
@@ -689,12 +716,21 @@ export function scoreCommand(argv: string[]): number {
         }
       }
 
-      if (promotions.has(candidate.candidateId)) {
-        const problem = applyOwnerPromotion(breakdown, unverifiableNote);
-        if (problem !== null) {
-          console.error(problem);
-          return 2;
-        }
+      // --as-question posts a held finding as --promote would, and only changes
+      // the tier of an eligible one, so naming both means --as-question alone.
+      const asQuestion = questions.has(candidate.candidateId);
+      const promote = asQuestion ? !breakdown.eligible : promotions.has(candidate.candidateId);
+      const problem =
+        (asQuestion ? ownerQuestionProblem(breakdown, verification) : null) ??
+        (promote ? applyOwnerPromotion(breakdown, unverifiableNote, asQuestion ? '--as-question' : '--promote') : null);
+      if (problem !== null) {
+        console.error(problem);
+        return 2;
+      }
+      if (asQuestion) {
+        breakdown.ownerQuestionFrom = breakdown.severity.severity as 'minor' | 'nit';
+        breakdown.severity = { ...breakdown.severity, severity: 'question', reason: `${breakdown.severity.reason}, the owner posted this as a question` };
+        breakdown.ownerQuestion = true;
       }
 
       if (breakdown.eligible) kept.push(candidate);

@@ -107,6 +107,8 @@ export interface ScoreLike {
   reanchoredFrom?: { line?: unknown } | null;
   /** The precedents retrieved for the candidate, each with `role` and `polarity`. */
   precedents?: unknown;
+  /** The tier a question had before the owner posted it as one (#361). */
+  ownerQuestionFrom?: unknown;
 }
 
 /**
@@ -331,9 +333,12 @@ export function planFindings(output: string, run: RunDetail, loadRun: RunLoader,
     // derived tier alone does not protect it.
     // A carried finding's own record has no category; the verified origin's record does.
     const category = run.findings.find((stored) => stored.findingId === finding.findingId)?.category ?? result.stored?.category;
-    if (TIER_RANK[finding.severity] > TIER_RANK[minPostedTier] && (category === undefined || !isSuppressionExempt(category))) {
+    // A nit the owner posted as a question is still a nit to the posting floor,
+    // or `--as-question` would post what the repository says never posts (#361).
+    const tier: Severity = result.score?.ownerQuestionFrom === 'nit' ? 'nit' : finding.severity;
+    if (TIER_RANK[tier] > TIER_RANK[minPostedTier] && (category === undefined || !isSuppressionExempt(category))) {
       belowTier.push(finding);
-      heldSeverities.push(finding.severity);
+      heldSeverities.push(tier);
       continue;
     }
     // A stale consumer keeps its `path:line` in the body text: the reader still

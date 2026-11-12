@@ -9,6 +9,7 @@ import { corpusCoverage } from '../corpus/store.ts';
 import { watchSummary } from '../store/watch.ts';
 import { dismissedRateWarning, DEFAULT_WINDOW_DAYS, windowStart } from '../evaluate/metrics.ts';
 import { postedStats } from '../store/outcomes.ts';
+import { approvalEscapeWarning, approvalStats, DEFAULT_OUTCOMES } from '../store/approvals.ts';
 import { lastSync } from '../sync/state.ts';
 import { namedRepositories } from './sync.ts';
 import { describeReviewScope } from './explain.ts';
@@ -26,9 +27,11 @@ export function statusCommand(): number {
     let allowlist: string[] = [];
     let maxRepositoryShare: number | undefined;
     let ownerReviewer: string | null = null;
+    let escapeWarn = DEFAULT_OUTCOMES.approvalEscapeWarn;
     try {
       const config = loadConfig(repositoryRoot(process.cwd()));
       ownerReviewer = config.ownerReviewer;
+      escapeWarn = config.outcomes.approvalEscapeWarn;
       allowlist = namedRepositories(config.allowlist, 'status');
       maxRepositoryShare = scaledRepositoryShare(allowlist.length);
     } catch {
@@ -75,6 +78,10 @@ export function statusCommand(): number {
       windowDays: DEFAULT_WINDOW_DAYS,
     });
     if (dismissalWarning !== null) console.log(dismissalWarning);
+    // Local only, like the dismissal warning: an approval that was reverted or
+    // overruled is the one kind of posted mistake that can unblock a merge.
+    const approvalWarning = approvalEscapeWarning({ ...approvalStats(db), threshold: escapeWarn });
+    if (approvalWarning !== null) console.log(approvalWarning);
     if (last !== null) {
       // The origin goes last so the count and ids keep their position.
       const origin = lastDetail?.provenance == null ? '' : `; ${describeOrigin(lastDetail.provenance)}`;

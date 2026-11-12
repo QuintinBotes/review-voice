@@ -157,3 +157,53 @@ a challenger that did not run.
 The owner can still post the finding with `score --promote`, as before.
 
 This changes a default. Some reviews that approved before now comment.
+
+## Amendment - 2026-11-12
+
+The owner can post a held finding as a question (#361). A reviewer who wanted
+to raise a held minor softly, as a question to the author, had no route:
+`validate-output` checks the tag against the scored tier, `--promote` and
+`--severity` move a finding between tiers only, and a question is not one of
+them. The comment went out tagged `[minor]` with question wording, which
+states a stronger claim than the reviewer made and decides the verdict on it.
+
+**The option.** `score --as-question <candidate_id>`, repeatable, applies to a
+verified candidate whose derived tier, after any owner `--severity` override,
+is `minor` or `nit`. Its severity becomes `question`, the severity reason ends
+"the owner posted this as a question", and its score entry carries
+`ownerQuestion: true`. `record` stores the entry with the finding and
+`explain` shows that the owner posted it as a question.
+
+**It posts the finding.** A candidate held by the score or confidence gate
+alone, or by an approved suppression, posts past that hold exactly as
+`--promote` would, under the same refusals; `--allow-unverifiable` with
+`--owner-note` lifts the unverifiable cap for it as for `--promote`, and
+`ownerPromotion` records the gate either way. An eligible candidate only
+changes tier. Naming one candidate with both `--promote` and `--as-question`
+means `--as-question` alone.
+
+**What it refuses**, with exit 2 and the reason named: a `blocking` or
+`important` tier, since a question would soften a request for changes into a
+comment (the message points to `--promote` or `--severity`); a candidate that
+is already a question; a candidate whose verification is not `verified: true`,
+since a question still rests on checked facts; and an unknown or repeated id.
+
+**The verdict** follows the tag as before: a question comments. A held minor
+raised this way gives COMMENT as it would as a minor, and a nit raised this way
+moves an APPROVE to COMMENT. The evidence block and the scope block need no
+change: neither states a finding's tier from its score, and the scope block
+counts posted findings by the tag they posted with.
+
+**The posting tier still applies.** A question ranks with a minor against
+`verdict.min_posted_tier`, so without care a nit posted as a question would
+clear a `minor` posting tier that a promoted nit does not, and post what the
+repository says never posts. The score entry records the tier the question came
+from in `ownerQuestionFrom`, and the posting tier ranks a nit posted as a
+question as a nit: below a `minor` or higher tier it is listed in `belowTier`,
+not posted, and does not keep the review from approving, as a withheld nit
+would not.
+
+The question cap (`MAX_QUESTIONS`) ranks the analyst's questions only. A
+question the owner posted is the owner's decision, so the cap neither drops it,
+which would hold it silently while `explain` said it was posted, nor counts it
+against the analyst's questions.

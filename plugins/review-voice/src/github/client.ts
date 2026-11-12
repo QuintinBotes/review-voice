@@ -39,6 +39,8 @@ const PATH_ESCAPE = /(^|\/)\.\.?(\/|$)|%2e|%2f|%5c|\\/i;
 
 /** An owner, organisation, team slug or repository name as GitHub spells one. */
 const GITHUB_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/** A repository name, which unlike an owner may start with a dot (an organisation's `.github`), but is never `.` or `..`. */
+const REPOSITORY_NAME = /^(?!\.\.?$)[A-Za-z0-9._-]+$/;
 
 /**
  * Why an allowlist entry is not usable, or null when it is. An entry is
@@ -57,10 +59,12 @@ export function allowlistEntryProblem(entry: string): string | null {
 }
 
 /**
- * The searches the queue may run (docs/adr/0026). The client builds each query
- * itself; no caller text reaches `q`. A team is `team:<org>/<slug>`.
+ * The searches the queue may run (docs/adr/0026), and the one the approval
+ * check runs (docs/adr/0036): `reverts:<owner>/<repo>#<n>` is the merged pull
+ * requests whose body reverts one allowlisted pull request. The client builds
+ * each query itself; no caller text reaches `q`. A team is `team:<org>/<slug>`.
  */
-export type SearchSource = 'requested' | 'assigned' | 'reviewed' | `team:${string}`;
+export type SearchSource = 'requested' | 'assigned' | 'reviewed' | `team:${string}` | `reverts:${string}`;
 
 export interface SearchedPullRequest {
   /** owner/name, from the result's `repository_url`; always inside the allowlist. */
@@ -80,7 +84,7 @@ const SEARCH_BASE = 'is:pr is:open draft:false';
 const SEARCH_PER_PAGE = 100;
 const SEARCH_MAX_PAGES = 5;
 
-function searchQuery(source: SearchSource): string {
+function searchQuery(source: SearchSource, allows: (repository: string) => boolean): string {
   if (source === 'requested') return `${SEARCH_BASE} user-review-requested:@me`;
   if (source === 'assigned') return `${SEARCH_BASE} assignee:@me`;
   if (source === 'reviewed') return `${SEARCH_BASE} reviewed-by:@me`;
@@ -88,6 +92,14 @@ function searchQuery(source: SearchSource): string {
     const [org, slug, ...rest] = source.slice('team:'.length).split('/');
     if (org !== undefined && slug !== undefined && rest.length === 0 && GITHUB_NAME.test(org) && GITHUB_NAME.test(slug)) {
       return `${SEARCH_BASE} team-review-requested:${org}/${slug}`;
+    }
+  }
+  if (typeof source === 'string' && source.startsWith('reverts:')) {
+    const match = /^([^/#]+)\/([^/#]+)#([1-9]\d*)$/.exec(source.slice('reverts:'.length));
+    if (match !== null && GITHUB_NAME.test(match[1]!) && REPOSITORY_NAME.test(match[2]!) && allows(`${match[1]}/${match[2]}`)) {
+      // Not the open base: a revert counts once it has merged. The repository
+      // is checked here too, so the query never names one outside the allowlist.
+      return `is:pr is:merged repo:${match[1]}/${match[2]} "Reverts ${match[1]}/${match[2]}#${match[3]}" in:body`;
     }
   }
   throw new NotAllowlisted(`Refused a search source that is not one Review Voice builds: ${JSON.stringify(source)}.`);
@@ -401,7 +413,8 @@ export class GitHubClient {
   }
 
   /**
-   * Open, non-draft pull requests from one GitHub search (docs/adr/0026).
+   * Open, non-draft pull requests from one GitHub search (docs/adr/0026), or
+   * the merged ones a `reverts:` source names (docs/adr/0036).
    *
    * The only request this client sends outside a repository path. The query is
    * built here from `source`, never from caller text, because a query is the
@@ -412,7 +425,7 @@ export class GitHubClient {
    * at five.
    */
   async searchPullRequests(source: SearchSource): Promise<SearchResult> {
-    const q = encodeURIComponent(searchQuery(source));
+    const q = encodeURIComponent(searchQuery(source, (repository) => this.allows(repository)));
     const pullRequests: SearchedPullRequest[] = [];
     let outsideAllowlist = 0;
     let truncated = false;

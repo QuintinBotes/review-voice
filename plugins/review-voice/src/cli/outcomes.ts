@@ -2,6 +2,7 @@ import { openDatabase } from '../store/db.ts';
 import { loadConfig } from '../policy/load.ts';
 import { repositoryRoot } from '../diff/acquire.ts';
 import { checkOutcomes, type PendingQuestion } from '../store/outcomes.ts';
+import { checkApprovals, DEFAULT_OUTCOMES } from '../store/approvals.ts';
 import { flag, githubClient } from './shared.ts';
 
 /** The one text-mode line per thread awaiting this tool's reply (docs/adr/0035); `--json` stays an array of outcomes. */
@@ -32,9 +33,11 @@ export async function outcomesCommand(argv: string[]): Promise<number> {
   // The config is read even with --repository: the owner's login decides whose
   // reply is an owner signal, whichever repository is named.
   let ownerReviewer: string | null = null;
+  let windowDays = DEFAULT_OUTCOMES.approvalWindowDays;
   try {
     const config = loadConfig(repositoryRoot(process.cwd()));
     ownerReviewer = config.ownerReviewer;
+    windowDays = config.outcomes.approvalWindowDays;
     if (repository === null) allowlist = config.allowlist;
   } catch {
     // Not in a repository: no allowlist, so nothing is read, and no owner.
@@ -42,6 +45,24 @@ export async function outcomesCommand(argv: string[]): Promise<number> {
 
   const db = openDatabase();
   try {
+    if (argv.includes('--approvals')) {
+      // The approvals Review Voice sent, followed to what the pull request shows (docs/adr/0036).
+      const result = await checkApprovals({ db, client: githubClient(allowlist), repository: repository ?? undefined, since, windowDays });
+      for (const warning of result.warnings) console.error(warning);
+      for (const skipped of result.skipped) console.error(`${skipped.repository}#${skipped.pullNumber}: skipped, ${skipped.reason}`);
+      if (argv.includes('--json')) {
+        console.log(JSON.stringify(result.outcomes.map((o) => ({ run: o.reviewRunId, repository: o.repository, pull: o.pullNumber, head: o.head, reviewId: o.reviewId, outcome: o.outcome, strength: o.strength, evidence: o.evidence, checkedAt: o.checkedAt })), null, 2));
+        return 0;
+      }
+      for (const o of result.outcomes) console.log(`${o.repository}#${o.pullNumber} ${o.head.slice(0, 8)} ${o.outcome} (${o.strength}): ${o.evidence.summary}`);
+      const count = (name: string): number => result.outcomes.filter((o) => o.outcome === name).length;
+      console.log(
+        `${result.outcomes.length} approval(s) tracked: ${count('reverted')} reverted, ${count('changes_requested')} changes requested, ` +
+          `${count('survived')} survived, ${count('merged_other_head')} merged at another head, ${count('pending')} pending, ` +
+          `${count('closed')} closed, ${count('open')} open, ${count('unknown')} unknown`,
+      );
+      return 0;
+    }
     const result = await checkOutcomes({
       db,
       client: githubClient(allowlist),

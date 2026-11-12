@@ -874,6 +874,20 @@ to the tier the analyst requested, within its lane's cap and never for a
 question-framed claim or an untraced stale consumer: only the owner can say
 that a broken shared build reaches everyone (#216).
 
+The owner may also post a verified `minor` or `nit` as a question with
+`score --as-question <candidate_id>`, after any `--severity`. A finding held
+by the score or confidence gate alone, or by an approved suppression, posts
+past that hold exactly as with `--promote`, under the same refusals; an
+eligible one changes only its tier. The tier becomes `question`, the severity
+reason ends "the owner posted this as a question", and the entry carries
+`ownerQuestion: true`, which `record` stores and `explain` shows. So the tag
+`validate-output` checks, the score and the verdict agree: a question comments.
+It refuses `blocking` and `important`, an existing question, and a candidate
+whose verification is not `verified: true` (#361). It does not pass
+`verdict.min_posted_tier`: the entry records the tier it came from in
+`ownerQuestionFrom`, and a nit posted as a question stays below a `minor` or
+higher posting tier, as a promoted nit would.
+
 One tier per category was the first version, and it was wrong whenever a
 category's members vary in reach: `ci` covers both a change that breaks every
 lint job and a stale comment in a CI config, so on a live run a build-breaker
@@ -1442,7 +1456,33 @@ layer banned.
 `.review-voice/config.yaml` is the user's own file in their own checkout and is
 trusted. A PR review (`review --pr`) is the exception: it reads the base
 commit's config (or `--config`, or an absolute `REVIEW_VOICE_CONFIG`), never
-the head's, so a pull request cannot loosen its own review. `.review-voice/policy.yaml` is repository content and is not: it is
+the head's, so a pull request cannot loosen its own review. The slash command
+is under the same rule on a `--pr` review. It runs the stage commands itself
+and each reads `REVIEW_VOICE_CONFIG`, else the checkout, so
+`commands/review.md` first runs `review-voice config resolve`, which calls the
+driver's own resolver (`resolveTrustedConfig` in `src/review/config.ts`),
+prints the file and its source and writes both, with the file's SHA-256
+(`null` for the built-in defaults), to `trusted-config.json` in the review's
+directory, and then runs every stage command of that review with
+`--trusted-config <dir>`. `main()` in `src/cli.ts` reads that file before it
+dispatches any command (`withTrustedConfig` in `src/cli/config.ts`), sets
+`REVIEW_VOICE_CONFIG` and `REVIEW_VOICE_CONFIG_SOURCE` for the process and
+drops the option, and refuses with exit 2 when the file is missing or is not
+exactly `{path, source, sha256}`, names an unknown source, or a path that is
+not absolute, names no file, is or runs through a symbolic link, or no longer
+has that hash (for `default`, a path where a file now exists). With
+repository commands on, pull request code runs as the reviewer and can rewrite
+that file, so it never confers an operator source by itself. `flag` and
+`checkout` are always refused, since the slash commands never pass
+`--config`, and `env` is accepted only when the process already holds an
+absolute `REVIEW_VOICE_CONFIG` equal to the path and no other source. An option and not a variable prefix, so the command documents'
+`Bash(node:*)` rule matches each stage command. `commands/draft-review.md`
+does the same before `verdict` and `post`, which read the approval cap, the
+`verdict:` settings and the posting switch. The source travels with the path,
+so a `runners:` block in a base commit's file stays ignored. A review of the
+working tree with no `--pr`, and a stage command run by hand with neither the
+option nor the variables, read the checkout as before.
+`.review-voice/policy.yaml` is repository content and is not: it is
 parsed, hashed and reported as pending approval, never applied. Editing an
 approved file changes its hash and re-proposes it, so a quiet edit cannot
 inherit an old approval.

@@ -18,6 +18,32 @@ The review on stdin is the **validated review exactly as recorded** with
 a review that differs from the recorded run, or a run of another head: what
 posts has to be what was verified.
 
+## 0 - Resolve the configuration
+
+Create a temporary directory and run
+`RV config resolve --pr <number> --repository <owner/repo> --dir <tmpdir>`
+before any other command. It chooses the one configuration the verdict reads,
+the way step 0 of `/review-voice:review` and the review driver do. That is an
+absolute `REVIEW_VOICE_CONFIG` the operator set, else
+`.review-voice/config.yaml` at the pull request's base commit, copied to
+`<tmpdir>/config.yaml`, else the built-in defaults. It prints `path`, `source`
+and `notes`.
+
+It also writes both to `<tmpdir>/trusted-config.json`. Then run every `RV`
+command below with `--trusted-config <tmpdir>` at the end, as
+`node "${CLAUDE_PLUGIN_ROOT}/dist/review-voice.mjs" <command> ... --trusted-config <tmpdir>`,
+which sets `REVIEW_VOICE_CONFIG` and `REVIEW_VOICE_CONFIG_SOURCE` for that
+command. It is an option and not a variable prefix, so the `Bash(node:*)` rule
+this command is allowed matches every one. That covers `RV verdict`, `RV post`,
+the later `--recheck` and `RV anchors`. A checkout of the head holds the
+`.review-voice/config.yaml` the pull request's author wrote, so a verdict that
+read the checkout would let a change lift its own approval cap and switch
+posting on. The option sets both, because a path with no source beside it is
+read as the operator's own file. Tell the user each entry of `notes`, and never
+post it. Exit code 2 means the configuration could not be chosen, and on a
+later command that `<tmpdir>/trusted-config.json` could not be read; report
+that, and compute and post nothing.
+
 ## 1 - Compute the verdict
 
 ```
@@ -37,8 +63,9 @@ Exit codes: 0 ready, 2 nothing to post or re-check (or a bad invocation), 3
 head moved, 4 CI still running on an approval, 5 CI red on a re-check, 6 CI
 needs a rerun.
 
-The settings under `verdict:` in `.review-voice/config.yaml` (docs/adr/0028)
-change some of the rules below; the defaults are the rules as written:
+The settings under `verdict:` in the configuration step 0 resolved
+(docs/adr/0028) change some of the rules below; the defaults are the rules as
+written:
 
 - `ci_pending: proceed` approves while CI is still running instead of waiting.
 - `ci_red: annotate` keeps the event on red CI instead of capping an approval.
@@ -135,7 +162,7 @@ path hold it refuses with exit 2, because there is no approval to re-check.
   failure always counts, whatever else ran under its name; only a run that never
   finished, or was cancelled, is replaced, and only by a later completed run of
   the same app and name. No checks at all, a combined status of pending, or
-  more checks than could be read are all pending, never green. Checks listed under `ci.gate_checks` in `.review-voice/config.yaml`
+  more checks than could be read are all pending, never green. Checks listed under `ci.gate_checks` in the resolved configuration
   (`name` is a glob, `summary` an optional phrase the check must contain) are
   reported as `gates`, not as failures. Red CI caps an approval at COMMENT.
   Pending CI turns an approval into `action: "wait"`, exit 4, with no payload.

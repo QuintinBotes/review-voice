@@ -242,6 +242,14 @@ so an external agent may run repository code or reach the network whenever
 those flags allow it. The operator checks the flags against the installed
 version; `doctor` only reports whether the binaries exist.
 
+When repository commands run, pull request code runs as the reviewer and can
+change any file a review writes, including the resolved configuration and its
+`trusted-config.json` (issue 357). That file is checked against the SHA-256 it
+holds and can never confer operator authority, since `flag` and `checkout` are
+refused and `env` needs the operator's own variable, so a changed file can at
+most point a stage at another base-like file. The person who enables
+repository commands accepts that code.
+
 **A second route, and an honest limit.** The adapter gate covers the path this
 plugin drives. It does not cover an agent with a shell. Every agent declares
 the narrowest grant it can work with - the two that read code hold

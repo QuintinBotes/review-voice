@@ -67,10 +67,12 @@ Each figure below is reported and never a gate. A figure with no data prints
 | Second-pass drop, downgrade and tie-break rates, per family | Whether a second model family earns its cost; see below |
 | Challenge hold rate, per family | The challenge hold rate over the runs whose challenge ran on that family; see below |
 | Posted replies, replied fixed rate | How many findings got this tool's one reply, and what became of them; see below |
+| Approvals tracked | How many sent approvals have a recorded outcome |
+| Approval escape rate | Of the approvals that settled, the share a revert or a request for changes overturned, with a Wilson 95% upper bound; see below |
 
 `RV evaluate --json` also carries a top-level `stage_seconds` map of stage name
-to `{ median, p95, runs, unmeasured }`, beside `metrics` and `posted_breakdown`.
-It is not a metric, because its value is a map, and the text output does not
+to `{ median, p95, runs, unmeasured }`, beside `metrics`, `posted_breakdown` and
+`approval_breakdown`. It is not a metric, because its value is a map, and the text output does not
 print it.
 
 A stage may be recorded without its seconds, because a coordinator that hands
@@ -90,7 +92,8 @@ function so the JSON and the rendered report (see "The rendered report") cannot
 disagree. Its keys are `generated_at`, `window_days` (the window the `_recent`
 rates use), `metrics`, `posted_breakdown` (by severity, lane, rule and
 evidence block), `precision_breakdown` (below), `stage_seconds`,
-`rule_effectiveness` (below) and `by_family` (below). The text output is unchanged.
+`rule_effectiveness` (below), `by_family` (below) and `approval_breakdown`
+(below). The text output is unchanged.
 
 #### Precision by lane and rule
 
@@ -257,6 +260,45 @@ with no outcome yet, or a weak one, counts in `posted_replies` and nowhere else.
 Both are `no data` with none. Reply counts never appear on the pull request.
 The scope block takes no reply input, so a reply changes neither the posted body
 nor the review's idempotency key.
+
+#### Approval outcomes
+
+An approval is the one write that can unblock a merge, so ADR 0036 follows
+each APPROVE Review Voice sent to what the pull request and the default branch
+later show. `RV outcomes --approvals` checks on demand and `RV watch` checks
+each pass, with GET requests inside the allowlist only. The strength rules are
+ADR 0004's:
+
+| Outcome | Strength | When |
+|---|---|---|
+| `reverted` | strong | A merged pull request in the same repository reverts this one inside the window |
+| `changes_requested` | strong | A person who is not a bot and not the poster requested changes on the approved head after the approval |
+| `survived` | strong | Merged at the approved head, the window has passed, neither of the above |
+| `merged_other_head` | weak | Merged at a head the approval did not read |
+| `pending` | weak | Merged at the approved head, the window not over yet |
+| `closed`, `open`, `unknown` | weak | Not merged, or the pull request state, the merged head or the merge time could not be read |
+
+The window is `outcomes.approval_window_days`, default 14, counted from the
+merge. Silence before the window ends is `pending`, never `survived`. The rows
+are read top down: a revert or a request for changes on the approved head
+counts whichever head merged, and only then does a merge at another head make
+the outcome `merged_other_head`.
+
+```
+approval_escape_rate = (reverted + changes_requested) / (reverted + changes_requested + survived)
+```
+
+The rate counts settled approvals only and is `no data` until there is one.
+Beside it `RV evaluate` prints the Wilson 95% upper bound of the rate, which
+stays honest at small counts where 0 of 5 reads as certainly 0, and the basis
+`E escaped / N settled approvals; P pending, W weak excluded`, where W is the
+weak outcomes other than pending. `RV evaluate --json` adds
+`approval_breakdown` by provenance mode, complexity level, independence label
+and origin; a group with nothing settled reports `null`, never zero.
+
+`RV status` prints one line when the upper bound is above
+`outcomes.approval_escape_warn` (default 0.05) and at least 30 approvals are
+settled. Nothing is sent anywhere, and no verdict changes.
 
 #### Candidate set agreement
 
