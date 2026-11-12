@@ -160,7 +160,18 @@ unknown) and passes it, its `--origin` (`driver` unless `watch` or the Action
 said otherwise) and the plan's mode to `record` for the run's provenance. Each
 agent call's token count (input plus output, from the envelope's `usage`) is
 summed into its stage; a stage whose calls reported none has no `tokens`, never
-zero. `src/review/prompts.ts` holds each agent's
+zero. The same holds for every figure of a stage. The driver times each call
+itself, so its stages always carry `seconds`, but the slash command's
+coordinator hands a stage to a subagent and gets back only its answer, so
+`record --stages` requires a stage's `name` alone. `seconds`, `toolCalls`,
+`filesRead` and `tokens` left out or null are stored as absent, and a present
+value that is not a number of zero or more is refused. `explain` prints each
+missing figure as `not measured`. `evaluate` reads only `seconds` of the four,
+so it counts a run that recorded the stage without `seconds` under the stage's
+`unmeasured` and keeps it out of the median and 95th percentile, and shows
+nothing for a missing `toolCalls`, `filesRead` or `tokens`. The shallow-read
+check, having no file count to judge when `filesRead` is missing, says so on
+stderr at `record` instead of passing in silence. `src/review/prompts.ts` holds each agent's
 prompt and output envelope; a test holds `commands/review.md` to the agents in
 the stage table.
 

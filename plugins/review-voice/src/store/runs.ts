@@ -902,7 +902,8 @@ export function describeStructure(structure: RecordedStructure | null): string {
 export interface StageTiming {
   /** `analyst`, `verifier`, `editor`, and so on. */
   name: string;
-  seconds: number;
+  /** Left out, as any of the four figures may be, when nobody measured it (#352); never a zero or an estimate. */
+  seconds?: number | undefined;
   toolCalls?: number | undefined;
   tokens?: number | undefined;
   /** Distinct files the stage read, as the stage itself counted them. */

@@ -86,8 +86,8 @@ export function renderEvaluationHtml(report: EvaluationReport): string {
     h3('Seconds by stage'),
     tableOrNone(
       'no run has recorded stage timings',
-      ['stage', 'median', 'p95', 'runs'],
-      Object.entries(report.stage_seconds).map(([stage, s]) => [stage, rate(s.median), rate(s.p95), count(s.runs)]),
+      ['stage', 'median', 'p95', 'runs', 'unmeasured'],
+      Object.entries(report.stage_seconds).map(([stage, s]) => [stage, rate(s.median), rate(s.p95), count(s.runs), count(s.unmeasured)]),
     ),
     h3('Posted findings'),
     anyPosted

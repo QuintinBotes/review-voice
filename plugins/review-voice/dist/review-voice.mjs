@@ -17309,8 +17309,7 @@ function parseStages(raw) {
     const cost = record3["costUsd"];
     return {
       name: typeof record3["name"] === "string" ? record3["name"] : null,
-      // A non-finite duration contributes nothing, as it always has.
-      seconds: typeof seconds === "number" && Number.isFinite(seconds) ? seconds : 0,
+      seconds: typeof seconds === "number" && Number.isFinite(seconds) ? seconds : null,
       cost: typeof cost === "number" && Number.isFinite(cost) ? cost : null
     };
   });
@@ -17326,14 +17325,19 @@ function stageSeconds(db) {
     const inRun = /* @__PURE__ */ new Map();
     for (const stage of stages) {
       if (stage.name === null) continue;
-      inRun.set(stage.name, (inRun.get(stage.name) ?? 0) + stage.seconds);
+      const before = inRun.get(stage.name);
+      inRun.set(stage.name, stage.seconds === null || before === null ? null : (before ?? 0) + stage.seconds);
     }
     for (const [name, total] of inRun) {
-      if (total > 0) byName.set(name, [...byName.get(name) ?? [], total]);
+      if (total !== null && total <= 0) continue;
+      const entry = byName.get(name) ?? { values: [], unmeasured: 0 };
+      if (total === null) entry.unmeasured += 1;
+      else entry.values.push(total);
+      byName.set(name, entry);
     }
   }
   return Object.fromEntries(
-    [...byName.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, values]) => [name, { median: median(values), p95: percentile(values, 95), runs: values.length }])
+    [...byName.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, { values, unmeasured }]) => [name, { median: median(values), p95: percentile(values, 95), runs: values.length, unmeasured }])
   );
 }
 function runCosts(db) {
@@ -17543,11 +17547,14 @@ function computeMetrics(db, options = {}) {
   const runs = db.prepare("SELECT output_json FROM review_runs").all();
   const windowDays = options.windowDays ?? DEFAULT_WINDOW_DAYS;
   const runSeconds = [];
+  let untimed = 0;
   for (const stages of storedStages(db)) {
     if (stages === null) continue;
-    const total = stages.reduce((sum, stage) => sum + stage.seconds, 0);
-    if (total > 0) runSeconds.push(total);
+    const total = stages.reduce((sum, stage) => sum === null || stage.seconds === null ? null : sum + stage.seconds, 0);
+    if (total === null) untimed += 1;
+    else if (total > 0) runSeconds.push(total);
   }
+  const secondsBasis = runSeconds.length === 0 && untimed === 0 ? "no run has recorded stage timings; pass `record --stages`" : `${runSeconds.length} run(s) with recorded stages${untimed === 0 ? "" : `, ${untimed} excluded (a stage not measured)`}`;
   const { costs, excluded: uncosted } = runCosts(db);
   const costBasis = `${costs.length} costed run(s), ${uncosted} excluded (no cost recorded)`;
   const challenge2 = challengeCounts(db);
@@ -17613,7 +17620,7 @@ function computeMetrics(db, options = {}) {
       median(runSeconds),
       "no target",
       () => true,
-      runSeconds.length === 0 ? "no run has recorded stage timings; pass `record --stages`" : `${runSeconds.length} run(s) with recorded stages`,
+      secondsBasis,
       "goal"
     ),
     metric(
@@ -17621,7 +17628,7 @@ function computeMetrics(db, options = {}) {
       percentile(runSeconds, 95),
       "no target",
       () => true,
-      runSeconds.length === 0 ? "no run has recorded stage timings; pass `record --stages`" : `${runSeconds.length} run(s) with recorded stages`,
+      secondsBasis,
       "goal"
     ),
     metric(
@@ -19784,7 +19791,9 @@ var COMMAND_HELP = {
       "                         basis states the number of runs and the range from the lowest to the highest run",
       "  --since <Nd>           Window in days for posted_fixed_rate_recent and posted_dismissed_rate_recent (default 30d)",
       "Reads: nothing on stdin; the local store, and the results file with --recall.",
-      "Writes: text (or JSON) on stdout; --json also carries stage_seconds, the median and p95 seconds per stage,",
+      "Writes: text (or JSON) on stdout; --json also carries stage_seconds, the median and p95 seconds per stage",
+      "  over the runs that measured it (null when none did) beside unmeasured, the runs that recorded the stage",
+      "  without its seconds; a run with an unmeasured stage is left out of the review seconds;",
       "  and by_family, which gives per model family the second pass's verdicts, drop, downgrade and tie-break",
       "  rates and the challenge's judged, held and hold rate, plus runs_without_families. The text prints it as a",
       "  by family block. --html writes the fragment to stdout, or with --out the page file and nothing on stdout.",
@@ -20169,9 +20178,12 @@ var COMMAND_HELP = {
       "  --thread <path>        thread.json; a follow-up whose comment thread is resolved is settled,",
       "                         and with --carried-from, findings `carry --thread` held back stay out",
       "  --follow-ups <path>    The verifier's follow_ups rulings on the open follow-ups",
-      "  --stages <path>        Per-stage timings as",
-      '                         [{"name","seconds","toolCalls","filesRead","tokens"}]; a clean',
-      "                         result from a shallow analyst pass is warned about",
+      "  --stages <path>        Per-stage effort as",
+      '                         [{"name","seconds","toolCalls","filesRead","tokens"}]; only "name" is required.',
+      "                         A figure left out or null is stored as not measured, never as zero; one",
+      "                         that is given must be a number of zero or more, or the file is refused.",
+      "                         A clean result from a shallow analyst pass is warned about; when the",
+      "                         analyst recorded no filesRead, stderr says the read could not be judged",
       "  --evidence <path>      evidence.json from `evidence`; needs --symbols. With it, stores which",
       "                         static checks ran and which did not, for `explain` and the scope block,",
       "                         and on each finding the first static signal at its exact path and line",
@@ -25466,8 +25478,8 @@ function renderEvaluationHtml(report) {
     h3("Seconds by stage"),
     tableOrNone(
       "no run has recorded stage timings",
-      ["stage", "median", "p95", "runs"],
-      Object.entries(report.stage_seconds).map(([stage, s]) => [stage, rate(s.median), rate(s.p95), count2(s.runs)])
+      ["stage", "median", "p95", "runs", "unmeasured"],
+      Object.entries(report.stage_seconds).map(([stage, s]) => [stage, rate(s.median), rate(s.p95), count2(s.runs), count2(s.unmeasured)])
     ),
     h3("Posted findings"),
     anyPosted ? p("Rates count strong outcomes only; a weak outcome is tracked and not counted.") + postedTable("severity", posted.by_severity) + postedTable("lane", posted.by_lane) + postedTable("rule", posted.by_rule) + table(["evidence block", ...POSTED_HEADERS], ["with", "without", "unknown"].map((key2) => postedRow(key2, blocks[key2]))) : p("no data; no posted finding has a recorded outcome"),
@@ -30675,6 +30687,7 @@ var STAGE_FIELDS = {
   costUsd: true,
   family: true
 };
+var FIGURES = ["seconds", "toolCalls", "filesRead", "tokens"];
 function parseStagesFile(parsed2, warn2 = () => void 0) {
   const keyed = typeof parsed2 === "object" && parsed2 !== null && !Array.isArray(parsed2) ? Object.keys(parsed2).filter((key2) => key2 !== "stages") : [];
   const list3 = Array.isArray(parsed2) ? parsed2 : parsed2?.stages;
@@ -30686,9 +30699,10 @@ function parseStagesFile(parsed2, warn2 = () => void 0) {
       if (typeof stage !== "object" || stage === null || Array.isArray(stage)) return "not an object";
       const unknown = Object.keys(stage).filter((key2) => !Object.hasOwn(STAGE_FIELDS, key2));
       if (unknown.length > 0) warn2(`entry ${index}: unknown field${unknown.length === 1 ? "" : "s"} ${unknown.map((key2) => JSON.stringify(key2)).join(", ")} not stored`);
-      const { name, seconds } = stage;
-      if (typeof name !== "string" || name === "") return "name must be a non-empty string";
-      return Number.isFinite(seconds) ? null : "seconds must be a number";
+      const given = stage;
+      if (typeof given["name"] !== "string" || given["name"] === "") return "name must be a non-empty string";
+      const bad = FIGURES.find((key2) => given[key2] !== void 0 && given[key2] !== null && count3(given[key2]) === void 0);
+      return bad === void 0 ? null : `${bad} must be a number, zero or more, when it is given`;
     })();
     if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
   });
@@ -30698,6 +30712,7 @@ function cleanStages(stages, diff) {
   const diffLines = diff === null ? void 0 : changedLineCount(diff);
   const diffFiles = diff === null ? void 0 : [...parseHunks(diff).values()].filter((file2) => file2.ranges.length > 0).length;
   return stages.map((stage) => {
+    const seconds = count3(stage.seconds);
     const toolCalls = count3(stage.toolCalls);
     const tokens = count3(stage.tokens);
     const filesRead = count3(stage.filesRead);
@@ -30708,7 +30723,7 @@ function cleanStages(stages, diff) {
     const family = FAMILIES.includes(stage.family) ? stage.family : void 0;
     return {
       name: stage.name,
-      seconds: stage.seconds,
+      ...seconds === void 0 ? {} : { seconds },
       ...model === void 0 ? {} : { model },
       ...models.length === 0 ? {} : { models },
       ...family === void 0 ? {} : { family },
@@ -30722,10 +30737,13 @@ function cleanStages(stages, diff) {
   });
 }
 function describeStage(stage) {
-  const parts = [`${Math.round(stage.seconds)}s`];
-  if (stage.toolCalls !== void 0) parts.push(`${stage.toolCalls} tool call${stage.toolCalls === 1 ? "" : "s"}`);
-  if (stage.filesRead !== void 0) parts.push(`${stage.filesRead} file${stage.filesRead === 1 ? "" : "s"} read`);
-  if (stage.tokens !== void 0) parts.push(`${stage.tokens} tokens`);
+  const figure = (value, label2, measured) => typeof value === "number" ? measured(value) : `${label2} not measured`;
+  const parts = [
+    figure(stage.seconds, "seconds", (value) => `${Math.round(value)}s`),
+    figure(stage.toolCalls, "tool calls", (value) => `${value} tool call${value === 1 ? "" : "s"}`),
+    figure(stage.filesRead, "files read", (value) => `${value} file${value === 1 ? "" : "s"} read`),
+    figure(stage.tokens, "tokens", (value) => `${value} tokens`)
+  ];
   if (stage.diffLines !== void 0) parts.push(`on ${stage.diffLines} changed lines`);
   return `${stage.name}: ${parts.join(", ")}`;
 }
@@ -30735,14 +30753,20 @@ function shallowPassWarning(stages, findingCount) {
   if (analyst === void 0) return null;
   const { toolCalls, diffLines, filesRead, diffFiles } = analyst;
   const reasons = [];
-  if (toolCalls !== void 0 && diffLines !== void 0 && diffLines >= SHALLOW_MIN_DIFF_LINES && toolCalls * SHALLOW_LINES_PER_CALL < diffLines) {
+  if (typeof toolCalls === "number" && diffLines !== void 0 && diffLines >= SHALLOW_MIN_DIFF_LINES && toolCalls * SHALLOW_LINES_PER_CALL < diffLines) {
     reasons.push(`made ${toolCalls} tool call(s) on ${diffLines} changed lines`);
   }
-  if (filesRead !== void 0 && diffFiles !== void 0 && filesRead < diffFiles * SHALLOW_MIN_FILES_READ_SHARE) {
+  if (typeof filesRead === "number" && diffFiles !== void 0 && filesRead < diffFiles * SHALLOW_MIN_FILES_READ_SHARE) {
     reasons.push(`read ${filesRead} of ${diffFiles} changed files`);
   }
   if (reasons.length === 0) return null;
   return `The analyst ${reasons.join(", ")} and found nothing. That is a shallow pass for this size; consider re-running it, on a stronger model if need be, before trusting a clean result.`;
+}
+function unjudgedRead(stages, findingCount) {
+  if (findingCount > 0) return null;
+  const analyst = stages.find((stage) => stage.name === "analyst");
+  if (analyst === void 0 || typeof analyst.filesRead === "number" || !analyst.diffFiles) return null;
+  return `Whether the analyst read enough of the ${analyst.diffFiles} changed files could not be judged, because the stage recorded no file count.`;
 }
 
 // plugins/review-voice/src/cli/explain.ts
@@ -33041,6 +33065,8 @@ function recordCommand(argv) {
       }
     });
     const warning = shallowPassWarning(stages, findings.length);
+    const notJudged = unjudgedRead(stages, findings.length);
+    if (notJudged !== null) console.error(notJudged);
     console.log(
       JSON.stringify(
         {
