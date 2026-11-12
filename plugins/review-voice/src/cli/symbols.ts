@@ -60,8 +60,9 @@ export function symbolsCommand(argv: string[]): number {
 
   // The same configured test paths the size signals use, so a repository that
   // names its tests differently gets the same split here.
-  const testPaths = repositoryConfig()?.humanReview.testPaths ?? DEFAULT_TEST_PATHS;
-  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, head, testPaths, maxMs });
+  const config = repositoryConfig();
+  const testPaths = config?.humanReview.testPaths ?? DEFAULT_TEST_PATHS;
+  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, head, testPaths, firstPartyPaths: config?.firstPartyPaths ?? [], maxMs });
   const out = flag(argv, '--out');
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));

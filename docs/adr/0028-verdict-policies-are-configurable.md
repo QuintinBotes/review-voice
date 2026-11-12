@@ -184,3 +184,21 @@ last line before any CI annotation. [0016](0016-what-the-verifier-could-not-chec
 lists stay local, and the reasons [0020](0020-structural-signals-may-opt-into-human-review.md)
 lets a signal add to the complexity cap stay off the posted body. Both
 settings ride on the existing review write; no GitHub write is added.
+
+## Amendment - 2026-11-11
+
+The scope block's `Not checked` line also names the changed files the review
+left out. A pull request changed twelve files, ten of them under a first-party
+directory named `vendor`, the diff dropped the ten as vendored and the review
+read two, with nothing in the review to say so (issue 351). When the recorded
+run holds a count of excluded files, the line ends with it and the count for
+each reason, for example
+`10 of 12 changed files left out (10 vendored dependency)`.
+It is counts and the diff's own reason texts, never a path, and a recorded
+reason that is not one of those texts reads `other reason`. The count is over
+the files of the scope the run reviewed, so a follow-up counts the files that
+changed since the earlier review, and a file that review left out and this one
+would read, under the same path or a new one, sends the whole pull request to
+be read rather than being called unchanged or read only as its change since.
+A run that read every changed file of its scope, or one recorded
+before the count was kept, adds nothing to the line. The JSON comment is unchanged, and no GitHub write is added.

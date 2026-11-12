@@ -7,6 +7,7 @@ import { ruleIdFor } from '../policy/rules.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { parseReviewScope, type ReviewScope } from '../diff/incremental.ts';
 import { parseComplexity, type ComplexityAssessment } from '../diff/complexity.ts';
+import { parseExclusions, type ExclusionSummary } from '../diff/exclusions.ts';
 import { matchCarried, type CarriedFinding } from '../diff/carry.ts';
 import type { RemovedControlKind } from '../diff/removed-controls.ts';
 import type { RiskMarkerKind } from '../diff/risk-markers.ts';
@@ -551,6 +552,10 @@ export interface RecordRunInput {
   checks?: RecordedChecks | undefined;
   /** The manifest's structural signals as per-file counts; see `recordedStructure`. Absent for a run recorded without them. */
   structure?: RecordedStructure | undefined;
+  /** The manifest's count of changed files the review left out, by reason. Absent when it read them all. */
+  exclusions?: ExclusionSummary | undefined;
+  /** The manifest's files the review left out by its own rules, so a follow-up does not call them covered. */
+  leftOut?: readonly string[] | undefined;
   /** The static signals of `evidence.json`, with repository-relative paths, for each finding's `toolSignal`. */
   toolSignals?: readonly EvidenceSignal[] | undefined;
   /** The convention documents `conventions` returned, for each finding's `conventionQuotes`. */
@@ -1207,6 +1212,8 @@ export function recordRun(
         ...(input.checks === undefined ? {} : { checks: input.checks }),
         ...(input.reproductions === undefined ? {} : { reproductions: markHeld(input.reproductions, input.held ?? []) }),
         ...(input.structure === undefined ? {} : { structure: input.structure }),
+        ...(input.exclusions === undefined ? {} : { exclusions: input.exclusions }),
+        ...(input.leftOut === undefined ? {} : { leftOut: input.leftOut }),
       }),
       new Date().toISOString(),
       JSON.stringify(input.stages ?? []),
@@ -1270,6 +1277,10 @@ export interface RunDetail {
   reproductions: RecordedReproduction[] | null;
   /** Null for rows recorded before the structure was kept, or from a manifest without one. */
   structure: RecordedStructure | null;
+  /** Null when the review read every changed file, and for rows recorded before the count was kept. */
+  exclusions: ExclusionSummary | null;
+  /** The paths the review left out by its own rules. Null for rows recorded before the list was kept, or without a file list. */
+  leftOut: string[] | null;
 }
 
 function storedComplexity(raw: unknown): ComplexityAssessment | null {
@@ -1354,6 +1365,8 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     checks?: unknown;
     reproductions?: unknown;
     structure?: unknown;
+    exclusions?: unknown;
+    leftOut?: unknown;
   };
 
   return {
@@ -1378,6 +1391,8 @@ export function runDetail(db: Database, reviewRunId?: string): RunDetail | null 
     checks: storedChecks(parsed.checks),
     reproductions: storedReproductions(parsed.reproductions),
     structure: storedStructure(parsed.structure),
+    exclusions: parseExclusions(parsed.exclusions),
+    leftOut: Array.isArray(parsed.leftOut) && parsed.leftOut.every((path) => typeof path === 'string') ? (parsed.leftOut as string[]) : null,
     // Older rows predate the column, so absence is normal rather than an error.
     stages: ((): StageTiming[] => {
       const raw = row['stages_json'];

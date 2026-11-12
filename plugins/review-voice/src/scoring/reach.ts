@@ -1,5 +1,5 @@
 import { gitGrepPaths, namedSymbols, type PathSearcher } from './existence.ts';
-import { classify } from '../diff/classify.ts';
+import { classify, type FirstParty } from '../diff/classify.ts';
 
 /** How far a claim's named implementation is shared through the repository. */
 export type Reach = 'local' | 'component' | 'repository';
@@ -137,12 +137,12 @@ function directoryCount(paths: Iterable<string>): number {
  */
 const PROSE_EXTENSIONS = new Set(['md', 'markdown', 'mdx', 'txt', 'rst', 'adoc']);
 
-export function isCode(path: string): boolean {
+export function isCode(path: string, firstParty?: FirstParty): boolean {
   const name = normalisePath(path).split('/').pop() ?? '';
   const dot = name.lastIndexOf('.');
   const extension = dot <= 0 ? '' : name.slice(dot + 1).toLowerCase();
   if (PROSE_EXTENSIONS.has(extension)) return false;
-  return classify(normalisePath(path)) === 'source';
+  return classify(normalisePath(path), firstParty) === 'source';
 }
 
 /**
@@ -230,7 +230,10 @@ export function computeReach(
   search: PathSearcher = gitGrepPaths,
   /** The diff under review. When given, it decides which symbols count. */
   diff: string | null = null,
+  /** `review.first_party_paths`, so a path the review reads as source is code here too. */
+  firstParty?: FirstParty,
 ): ReachCheck {
+  const isCodePath = (path: string): boolean => isCode(path, firstParty);
   const searchedRef = ref ?? 'working tree';
 
   // Symbols the diff touched, when the diff is available; otherwise the
@@ -254,7 +257,7 @@ export function computeReach(
   const changedDirectory = directoryOf(changedPath);
 
   const result = (reach: Reach | null, inconclusive: boolean): ReachCheck => {
-    const counted = [...hits].filter(isCode).sort();
+    const counted = [...hits].filter(isCodePath).sort();
     const outside = counted.filter(
       (path) => normalisePath(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory),
     );
@@ -291,7 +294,7 @@ export function computeReach(
       return result(null, true);
     }
 
-    const code = found.filter(isCode);
+    const code = found.filter(isCodePath);
 
     // Reach is the spread of the code under review, not of every word the
     // finding happens to use. A symbol the changed file does not contain is
@@ -319,7 +322,7 @@ export function computeReach(
 
   // Spread is measured in code. A symbol named only in prose has no
   // deterministic evidence of coupling, so it is absent rather than local.
-  let counted = [...hits].filter(isCode);
+  let counted = [...hits].filter(isCodePath);
 
   // A symbol the change introduces does not exist at the base ref, so it has
   // no spread there by construction. Measuring at base is right for a modified
@@ -338,7 +341,7 @@ export function computeReach(
       } catch {
         return result(null, true);
       }
-      counted = [...hits].filter(isCode);
+      counted = [...hits].filter(isCodePath);
       usedModuleFallback = counted.length > 0;
     }
   }

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { isReviewable } from './classify.ts';
-import { unquoteGitPath } from './hunks.ts';
+import { firstPartyMatcher, isReviewable } from './classify.ts';
+import { patchRenames, unquoteGitPath } from './hunks.ts';
 
 /** Every reason a pull request must be read in full rather than narrowed. */
 export type FullReviewCause =
@@ -12,6 +12,8 @@ export type FullReviewCause =
   | 'history-rewritten'
   | 'base-merged'
   | 'base-sync-only'
+  // This review reads a file the earlier one left out, or is not known to have read.
+  | 'not-read-before'
   // Recorded by versions that matched own-diff hunks before and after a merge
   // or rebase. No longer produced; kept so those stored scopes still read back.
   | 'own-diff-unrepresentable';
@@ -247,12 +249,29 @@ export interface PlanIncrementalScopeOptions {
    * no review would have read is not one whose absence needs saying.
    */
   includeGenerated?: boolean | undefined;
+  /** `review.first_party_paths`, so the same files count as reviewed here as in the diff. */
+  firstPartyPaths?: readonly string[] | undefined;
+  /**
+   * The pull request's files the full read leaves out by its own rules. The
+   * plan says which of them changed since the review, so that the count of
+   * excluded files is over the scope and not the whole pull request.
+   */
+  leftOutFiles?: ReviewedPullFile[] | undefined;
+  /**
+   * The paths the earlier review left out by its own rules, or is not known
+   * to have read. A file among them that this review reads, or one renamed
+   * from them since, cannot be called covered or read as its change since, so
+   * the pull request is read in full (issue 351).
+   */
+  priorLeftOut?: readonly string[] | undefined;
 }
 
 /** A planned scope, and the patch an `interdiff` scope reviews. */
 export interface PlannedScope {
   scope: ReviewScope;
   interdiffPatch: string | null;
+  /** Those of `leftOutFiles` that changed since the review; absent on a full read. */
+  leftOutChanged?: string[];
 }
 
 /**
@@ -513,6 +532,30 @@ export function planIncrementalScope(options: PlanIncrementalScopeOptions): Revi
 
 /** `planIncrementalScope`, plus the patch an `interdiff` scope reviews. */
 export function planScope(options: PlanIncrementalScopeOptions): PlannedScope {
+  const planned = narrowestScope(options);
+  if (planned.scope.kind === 'full') return planned;
+  // A narrowed scope calls every reviewed file outside it covered by the
+  // earlier review, and shows a file inside it only as what changed since.
+  // Neither is a read of a file that review left out and this one reads, as
+  // after `review.first_party_paths` names it, whether or not a follow-up
+  // touched it. Nor of a file moved since out of a path no review reads,
+  // which the narrowed patch shows as a rename with none of its lines, and
+  // which an author could use to pass code by the review (issue 351).
+  const leftOutBefore = new Set(options.priorLeftOut ?? []);
+  const notRead = new Set(options.reviewedFiles.map((file) => file.path).filter((path) => leftOutBefore.has(path)));
+  for (const [from, to] of patchRenames(planned.interdiffPatch ?? '')) {
+    // The old path is in no list when the earlier review kept none, so it is
+    // also judged by the default rules, without the key or the flag that the
+    // earlier review may not have had.
+    if (leftOutBefore.has(from) || !isReviewable(from, false)) notRead.add(to);
+  }
+  const unread = notRead.size;
+  if (unread === 0) return planned;
+  const detail = `${unread} file${unread === 1 ? '' : 's'} the earlier review is not known to have read ${unread === 1 ? 'is' : 'are'} read now`;
+  return { scope: full('not-read-before', options.priorRun, detail), interdiffPatch: null };
+}
+
+function narrowestScope(options: PlanIncrementalScopeOptions): PlannedScope {
   const prior = options.priorRun;
   const only = (scope: ReviewScope): PlannedScope => ({ scope, interdiffPatch: null });
 
@@ -551,13 +594,15 @@ export function planScope(options: PlanIncrementalScopeOptions): PlannedScope {
     if (!ancestor) return only(full('history-rewritten', prior));
     if (merged) return only(full('base-merged', prior));
 
-    const files = changedReviewedFiles(
-      options.reviewedFiles,
-      git.changedPaths(prior.headRef, options.head, options.cwd),
-    );
+    const changed = git.changedPaths(prior.headRef, options.head, options.cwd);
+    const files = changedReviewedFiles(options.reviewedFiles, changed);
     if (files.length === 0) return only(full('base-sync-only', prior));
 
-    return only(incremental(options, prior, git, files));
+    return {
+      scope: incremental(options, prior, git, files),
+      interdiffPatch: null,
+      leftOutChanged: changedReviewedFiles(options.leftOutFiles ?? [], changed),
+    };
   } catch (error) {
     // Narrowing on partial information is worse than re-reading a change. The
     // caller still receives a usable full diff and an honest explanation.
@@ -991,7 +1036,8 @@ function interdiffFrom(
   // Asked of git without rename detection, so a file renamed since the review
   // counts as changed under its old path too, never as absorbed.
   let absorbedList: string[] = [];
-  const candidates = withdrawn.filter((path) => !own.has(path) && isReviewable(path, options.includeGenerated === true));
+  const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
+  const candidates = withdrawn.filter((path) => !own.has(path) && isReviewable(path, options.includeGenerated === true, firstParty));
   if (from !== prior.headRef && candidates.length > 0) {
     const differs = new Set(git.changedPaths(from, options.head, options.cwd));
     absorbedList = candidates.filter((path) => !differs.has(path)).sort();
@@ -1001,9 +1047,14 @@ function interdiffFrom(
     ...(dropped.length === 0 ? {} : { noLongerChanged: dropped.sort() }),
   };
 
+  // Asked only when a file is left out, and of the side the patch was read
+  // from, so a base change to a lock file is not the author's.
+  const leftOut = options.leftOutFiles ?? [];
+  const leftOutChanged = leftOut.length === 0 ? [] : changedReviewedFiles(leftOut, git.changedPaths(from, options.head, options.cwd));
+
   const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
   if (patch.trim().length === 0) {
-    return { scope: { kind: 'unchanged', ...common, reason: unchangedReason, ...absorbed }, interdiffPatch: null };
+    return { scope: { kind: 'unchanged', ...common, reason: unchangedReason, ...absorbed }, interdiffPatch: null, leftOutChanged };
   }
 
   const reviewed = new Map<string, string>();
@@ -1021,5 +1072,6 @@ function interdiffFrom(
   return {
     scope: { kind: 'interdiff', ...common, files: [...files].sort(), hunks, ...detail, ...absorbed },
     interdiffPatch: patch,
+    leftOutChanged,
   };
 }
