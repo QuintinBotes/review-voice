@@ -838,6 +838,438 @@ one fixture is noise, not a trend. This
 repository has no `ANTHROPIC_API_KEY` secret, so the weekly `Recall` workflow
 skips here, and the figure is refreshed by a run the maintainer starts locally.
 
+## External benchmark
+
+The fixtures above were written beside the prompts they test, so nobody
+outside the repository can check that they were not tuned against. This
+section runs the reviewer over a public set it was never shaped by, through
+the same harness and the same scorer, and publishes every item.
+
+### How the items were imported
+
+The set is the Qodo Code Review Benchmark 1.0, the Hugging Face dataset
+`Qodo/PR-Review-Bench`, read at the dataset's commit
+`a73957c450a70693a743260e5637fffc44625f16`, since the dataset has no tags.
+The file read is `git_code_review_bench_100_w_open_prs.jsonl`, whose SHA-256
+`2f0448ed1f9a55bea14039961d8d9e610ee8885b37559b80f5821f3f70cfe64d` the
+manifest records. The set's licence is MIT, declared in the front matter of its
+dataset card. The set ships no licence file, so the manifest records
+`licenceSource` as `dataset card`.
+
+The file is JSON Lines, one object per pull request, 100 in all. Each object
+names a pull request on a public fork of an upstream project and lists its
+issues, each with a file and a start line on the new side of the diff. It holds
+no diff, no pull request description and no licence for the upstream code. The
+diffs were fetched from the public forks the set names, with the pull request
+bodies beside them, and given to `review-voice import-benchmark` with
+`--diffs`. The importer itself reads only local files and never touches the
+network.
+
+The licence of each upstream project comes from the owner's reading of its
+licence file. Five projects were mapped to a licence, Ghost and aspnetcore to
+MIT, prefect to Apache-2.0, firefox-ios to MPL-2.0 and tauri to
+`Apache-2.0 OR MIT`. By the owner's decision cal.com, dify and redis were
+left out of the map, because their licences are not standard open-source ones.
+cal.com is AGPL with directories under a commercial licence, dify is Apache 2.0
+with added conditions, and redis is source-available under RSALv2 or SSPL. The
+importer therefore refused every pull request of those three as
+`unknown-licence`, 38 in all (16, 13 and 9).
+
+Each located issue became one fixture, `positive/<pull request>-<n>`,
+numbered by its place in the set's list. An issue with no file or line is
+refused as `no-location`. One whose line is more than 3 lines from every
+changed line of its file is refused as `off-diff`, because a finding off the
+diff is sent back to the analyst and such an issue could not be hit. The 62
+pull requests that passed the item checks list 355 issues, and 302 of them
+became fixtures.
+
+No fixture carries a `config.yaml` or a `context/` directory, so each runs
+with S04's default configuration and its base commit is rebuilt from the patch
+with filler, as for the synthetic fixtures. The reviewer saw the diff with no
+upstream repository context, so a caller, a type or a test outside the patch
+was not there to read.
+
+### The match rule
+
+An issue counts as found when one validated finding of its run is on the
+issue's file within 3 lines of its line. Category, severity and wording are not
+compared, and no model judges a match. Findings that match no listed issue are
+not scored, because a finding on an unlisted line may be a real defect the set
+did not list, so the set yields recall and no precision. Each issue is its own
+run of its pull request's whole diff, so two issues of one pull request are two
+samples, and S04's scorer, results file and reader are unchanged.
+
+### qodo-pr-review-bench, version a73957c450a70693a743260e5637fffc44625f16, plugin 1.24.1
+
+The run directory is
+`docs/benchmarks/qodo-pr-review-bench/a73957c450a70693a743260e5637fffc44625f16/1.24.1/`,
+holding `import.json` and `results.json` as the two commands wrote them. It is
+one `review-voice recall` run of release 1.24.1, with runner `claude` and mode
+`auto`, one review per fixture. The 302 reviews took 8.7 hours between them and
+cost $235.53, as the runner reported it.
+
+| Figure | Value | Basis |
+|---|---|---|
+| Key-bug recall | 0.19 | 58 of 299 completed positives |
+| Causal-line hit | 0.41 | 58 of 143 completed positives with a finding on the issue's file |
+| Clean silence | no data | the set has no clean items, so there is no clean fixture |
+| Failed runs | 3 | of 302 fixtures, left out of every denominator |
+
+The set lists defects only, so clean silence is `no data` for it. The three
+failed runs share one defect, the challenger naming the line a finding was
+already on and `challenge` refusing the review, which was fixed after 1.24.1 in
+pull request 364.
+
+The set lists up to 15 issues on one pull request (`aspnetcore-pull-4`, 14 of
+them imported), and each listed issue is its own run of the whole diff, scored
+on that issue alone. Findings on lines the set did not list are not scored, so
+the set gives recall and no precision. The results record where each miss was
+lost (`lostAt`, described under "Where a miss was lost"). Of the 241 misses,
+153 are `posted-elsewhere`, a review that posted findings but none within 3
+lines of the listed line. Of the rest, 41 are `not-raised`, 23 are
+`verifier-rejected`, 17 are `below-gate`, 5 are `challenge` and 2 are
+`held-other`. Of the 299 completed reviews, 69 ended in `APPROVE`.
+
+| Refusal | Count |
+|---|---|
+| `unknown-licence` | 38 |
+| `no-location` | 27 |
+| `off-diff` | 26 |
+
+`unknown-licence` refuses a whole pull request; `no-location` and
+`off-diff` refuse one issue. The `off-diff` count is published so a reader
+can count those issues as misses for a stricter figure.
+
+| Fixture | Repository | Licence | Severity | Result | Line delta | Findings |
+|---|---|---|---|---|---|---|
+| `positive/ghost-pull-1-1` | Ghost | MIT | - | miss | 39 | 2 |
+| `positive/ghost-pull-1-2` | Ghost | MIT | - | hit | 1 | 2 |
+| `positive/ghost-pull-1-3` | Ghost | MIT | - | miss | 4 | 1 |
+| `positive/ghost-pull-1-4` | Ghost | MIT | - | miss | 15 | 1 |
+| `positive/ghost-pull-2-1` | Ghost | MIT | - | miss | - | 1 |
+| `positive/ghost-pull-2-2` | Ghost | MIT | - | miss | 47 | 1 |
+| `positive/ghost-pull-3-1` | Ghost | MIT | - | miss | 9 | 3 |
+| `positive/ghost-pull-3-2` | Ghost | MIT | - | hit | 1 | 3 |
+| `positive/ghost-pull-3-3` | Ghost | MIT | - | miss | 8 | 2 |
+| `positive/ghost-pull-3-4` | Ghost | MIT | - | hit | 1 | 4 |
+| `positive/ghost-pull-4-1` | Ghost | MIT | - | miss | 8 | 3 |
+| `positive/ghost-pull-4-2` | Ghost | MIT | - | miss | 4 | 3 |
+| `positive/ghost-pull-4-3` | Ghost | MIT | - | miss | 40 | 3 |
+| `positive/ghost-pull-4-4` | Ghost | MIT | - | miss | 5 | 3 |
+| `positive/ghost-pull-4-6` | Ghost | MIT | - | miss | 12 | 3 |
+| `positive/ghost-pull-5-1` | Ghost | MIT | - | miss | - | 1 |
+| `positive/ghost-pull-5-3` | Ghost | MIT | - | miss | - | 1 |
+| `positive/ghost-pull-5-4` | Ghost | MIT | - | miss | - | 2 |
+| `positive/ghost-pull-5-5` | Ghost | MIT | - | miss | - | 2 |
+| `positive/ghost-pull-6-1` | Ghost | MIT | - | hit | 2 | 2 |
+| `positive/ghost-pull-6-2` | Ghost | MIT | - | hit | 0 | 2 |
+| `positive/ghost-pull-6-3` | Ghost | MIT | - | hit | 0 | 2 |
+| `positive/ghost-pull-7-1` | Ghost | MIT | - | miss | 9 | 1 |
+| `positive/ghost-pull-7-2` | Ghost | MIT | - | miss | 8 | 1 |
+| `positive/ghost-pull-7-4` | Ghost | MIT | - | miss | - | 1 |
+| `positive/ghost-pull-8-2` | Ghost | MIT | - | miss | 105 | 1 |
+| `positive/ghost-pull-8-3` | Ghost | MIT | - | miss | - | 0 |
+| `positive/ghost-pull-8-6` | Ghost | MIT | - | miss | - | 1 |
+| `positive/ghost-pull-8-7` | Ghost | MIT | - | hit | 0 | 1 |
+| `positive/ghost-pull-9-1` | Ghost | MIT | - | hit | 2 | 2 |
+| `positive/ghost-pull-9-2` | Ghost | MIT | - | miss | 10 | 2 |
+| `positive/ghost-pull-9-3` | Ghost | MIT | - | hit | 0 | 2 |
+| `positive/ghost-pull-9-4` | Ghost | MIT | - | hit | 0 | 3 |
+| `positive/ghost-pull-10-1` | Ghost | MIT | - | hit | 0 | 4 |
+| `positive/ghost-pull-10-3` | Ghost | MIT | - | miss | 50 | 2 |
+| `positive/ghost-pull-10-4` | Ghost | MIT | - | miss | 13 | 4 |
+| `positive/ghost-pull-10-5` | Ghost | MIT | - | miss | 111 | 3 |
+| `positive/ghost-pull-10-6` | Ghost | MIT | - | miss | 107 | 3 |
+| `positive/ghost-pull-11-1` | Ghost | MIT | - | hit | 2 | 1 |
+| `positive/ghost-pull-11-2` | Ghost | MIT | - | miss | - | 0 |
+| `positive/ghost-pull-11-3` | Ghost | MIT | - | miss | 150 | 1 |
+| `positive/ghost-pull-11-4` | Ghost | MIT | - | miss | 894 | 1 |
+| `positive/ghost-pull-11-6` | Ghost | MIT | - | miss | 182 | 1 |
+| `positive/ghost-pull-12-1` | Ghost | MIT | - | miss | 37 | 1 |
+| `positive/ghost-pull-12-2` | Ghost | MIT | - | miss | - | 0 |
+| `positive/ghost-pull-12-3` | Ghost | MIT | - | miss | 64 | 1 |
+| `positive/ghost-pull-12-4` | Ghost | MIT | - | miss | 49 | 1 |
+| `positive/ghost-pull-13-1` | Ghost | MIT | - | miss | - | 1 |
+| `positive/ghost-pull-13-2` | Ghost | MIT | - | hit | 1 | 2 |
+| `positive/aspnetcore-pull-1-1` | aspnetcore | MIT | - | miss | 174 | 1 |
+| `positive/aspnetcore-pull-1-2` | aspnetcore | MIT | - | miss | - | 0 |
+| `positive/aspnetcore-pull-1-3` | aspnetcore | MIT | - | miss | - | 0 |
+| `positive/aspnetcore-pull-1-4` | aspnetcore | MIT | - | miss | - | 0 |
+| `positive/aspnetcore-pull-1-6` | aspnetcore | MIT | - | miss | - | 0 |
+| `positive/aspnetcore-pull-1-7` | aspnetcore | MIT | - | miss | - | 0 |
+| `positive/aspnetcore-pull-2-1` | aspnetcore | MIT | - | miss | - | 1 |
+| `positive/aspnetcore-pull-2-2` | aspnetcore | MIT | - | hit | 1 | 1 |
+| `positive/aspnetcore-pull-2-3` | aspnetcore | MIT | - | miss | - | 1 |
+| `positive/aspnetcore-pull-2-4` | aspnetcore | MIT | - | miss | - | 1 |
+| `positive/aspnetcore-pull-2-5` | aspnetcore | MIT | - | miss | 4 | 1 |
+| `positive/aspnetcore-pull-2-6` | aspnetcore | MIT | - | miss | - | 1 |
+| `positive/aspnetcore-pull-2-7` | aspnetcore | MIT | - | miss | - | 1 |
+| `positive/aspnetcore-pull-2-8` | aspnetcore | MIT | - | miss | - | 0 |
+| `positive/aspnetcore-pull-2-9` | aspnetcore | MIT | - | miss | - | 1 |
+| `positive/aspnetcore-pull-3-1` | aspnetcore | MIT | - | miss | 629 | 1 |
+| `positive/aspnetcore-pull-3-2` | aspnetcore | MIT | - | miss | 8 | 1 |
+| `positive/aspnetcore-pull-3-3` | aspnetcore | MIT | - | hit | 1 | 1 |
+| `positive/aspnetcore-pull-3-4` | aspnetcore | MIT | - | miss | - | 1 |
+| `positive/aspnetcore-pull-3-5` | aspnetcore | MIT | - | hit | 3 | 1 |
+| `positive/aspnetcore-pull-4-1` | aspnetcore | MIT | - | miss | 38 | 3 |
+| `positive/aspnetcore-pull-4-2` | aspnetcore | MIT | - | miss | - | 3 |
+| `positive/aspnetcore-pull-4-3` | aspnetcore | MIT | - | miss | 23 | 2 |
+| `positive/aspnetcore-pull-4-4` | aspnetcore | MIT | - | miss | 54 | 2 |
+| `positive/aspnetcore-pull-4-6` | aspnetcore | MIT | - | miss | - | 3 |
+| `positive/aspnetcore-pull-4-7` | aspnetcore | MIT | - | miss | - | 2 |
+| `positive/aspnetcore-pull-4-8` | aspnetcore | MIT | - | miss | - | 2 |
+| `positive/aspnetcore-pull-4-9` | aspnetcore | MIT | - | miss | - | 2 |
+| `positive/aspnetcore-pull-4-10` | aspnetcore | MIT | - | miss | - | 3 |
+| `positive/aspnetcore-pull-4-11` | aspnetcore | MIT | - | miss | - | 2 |
+| `positive/aspnetcore-pull-4-12` | aspnetcore | MIT | - | miss | - | 3 |
+| `positive/aspnetcore-pull-4-13` | aspnetcore | MIT | - | miss | - | 2 |
+| `positive/aspnetcore-pull-4-14` | aspnetcore | MIT | - | miss | - | 3 |
+| `positive/aspnetcore-pull-4-15` | aspnetcore | MIT | - | miss | - | 2 |
+| `positive/aspnetcore-pull-5-1` | aspnetcore | MIT | - | miss | 74 | 2 |
+| `positive/aspnetcore-pull-5-2` | aspnetcore | MIT | - | miss | - | 1 |
+| `positive/aspnetcore-pull-5-3` | aspnetcore | MIT | - | miss | - | 1 |
+| `positive/aspnetcore-pull-5-4` | aspnetcore | MIT | - | miss | 5 | 2 |
+| `positive/aspnetcore-pull-5-5` | aspnetcore | MIT | - | miss | 118 | 1 |
+| `positive/aspnetcore-pull-5-6` | aspnetcore | MIT | - | miss | 100 | 1 |
+| `positive/aspnetcore-pull-5-7` | aspnetcore | MIT | - | miss | 50 | 1 |
+| `positive/aspnetcore-pull-5-8` | aspnetcore | MIT | - | hit | 0 | 1 |
+| `positive/aspnetcore-pull-6-1` | aspnetcore | MIT | - | miss | - | 0 |
+| `positive/aspnetcore-pull-6-2` | aspnetcore | MIT | - | miss | 10 | 1 |
+| `positive/aspnetcore-pull-6-3` | aspnetcore | MIT | - | miss | - | 1 |
+| `positive/aspnetcore-pull-7-1` | aspnetcore | MIT | - | miss | 20 | 1 |
+| `positive/aspnetcore-pull-7-2` | aspnetcore | MIT | - | hit | 0 | 1 |
+| `positive/aspnetcore-pull-7-3` | aspnetcore | MIT | - | miss | 6 | 1 |
+| `positive/aspnetcore-pull-7-4` | aspnetcore | MIT | - | miss | - | 1 |
+| `positive/aspnetcore-pull-8-1` | aspnetcore | MIT | - | miss | 381 | 2 |
+| `positive/aspnetcore-pull-8-2` | aspnetcore | MIT | - | hit | 2 | 2 |
+| `positive/aspnetcore-pull-8-3` | aspnetcore | MIT | - | miss | 67 | 1 |
+| `positive/aspnetcore-pull-8-4` | aspnetcore | MIT | - | miss | 82 | 1 |
+| `positive/aspnetcore-pull-8-5` | aspnetcore | MIT | - | miss | - | 2 |
+| `positive/aspnetcore-pull-8-6` | aspnetcore | MIT | - | miss | - | 2 |
+| `positive/aspnetcore-pull-8-7` | aspnetcore | MIT | - | miss | - | 2 |
+| `positive/aspnetcore-pull-8-8` | aspnetcore | MIT | - | miss | 425 | 2 |
+| `positive/aspnetcore-pull-8-9` | aspnetcore | MIT | - | miss | - | 2 |
+| `positive/aspnetcore-pull-9-1` | aspnetcore | MIT | - | miss | - | 1 |
+| `positive/aspnetcore-pull-9-2` | aspnetcore | MIT | - | hit | 2 | 2 |
+| `positive/aspnetcore-pull-9-3` | aspnetcore | MIT | - | miss | - | 1 |
+| `positive/aspnetcore-pull-9-4` | aspnetcore | MIT | - | hit | 1 | 2 |
+| `positive/aspnetcore-pull-10-1` | aspnetcore | MIT | - | hit | 0 | 3 |
+| `positive/aspnetcore-pull-10-2` | aspnetcore | MIT | - | miss | 5 | 2 |
+| `positive/aspnetcore-pull-10-3` | aspnetcore | MIT | - | miss | - | 1 |
+| `positive/aspnetcore-pull-10-4` | aspnetcore | MIT | - | miss | - | 1 |
+| `positive/aspnetcore-pull-10-5` | aspnetcore | MIT | - | miss | - | 2 |
+| `positive/firefox-ios-pull-1-1` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-1-2` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-1-3` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-1-4` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-1-6` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-1-7` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-1-8` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-1-9` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-1-10` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-1-11` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-1-12` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-2-1` | firefox-ios | MPL-2.0 | - | hit | 0 | 2 |
+| `positive/firefox-ios-pull-2-2` | firefox-ios | MPL-2.0 | - | hit | 3 | 2 |
+| `positive/firefox-ios-pull-2-3` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-2-4` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-2-5` | firefox-ios | MPL-2.0 | - | miss | - | 2 |
+| `positive/firefox-ios-pull-2-6` | firefox-ios | MPL-2.0 | - | miss | - | 2 |
+| `positive/firefox-ios-pull-3-1` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-3-2` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-3-5` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-3-6` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-3-7` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-3-8` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-3-9` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-4-1` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-4-3` | firefox-ios | MPL-2.0 | - | hit | 2 | 1 |
+| `positive/firefox-ios-pull-4-4` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-4-6` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-5-1` | firefox-ios | MPL-2.0 | - | miss | - | 2 |
+| `positive/firefox-ios-pull-5-2` | firefox-ios | MPL-2.0 | - | miss | 13 | 3 |
+| `positive/firefox-ios-pull-5-3` | firefox-ios | MPL-2.0 | - | hit | 1 | 2 |
+| `positive/firefox-ios-pull-5-4` | firefox-ios | MPL-2.0 | - | miss | - | 3 |
+| `positive/firefox-ios-pull-6-1` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-6-2` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-6-3` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-6-4` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-6-5` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-6-6` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-7-1` | firefox-ios | MPL-2.0 | - | miss | - | 2 |
+| `positive/firefox-ios-pull-7-2` | firefox-ios | MPL-2.0 | - | miss | 14 | 3 |
+| `positive/firefox-ios-pull-7-3` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-7-4` | firefox-ios | MPL-2.0 | - | hit | 2 | 3 |
+| `positive/firefox-ios-pull-7-5` | firefox-ios | MPL-2.0 | - | miss | - | 2 |
+| `positive/firefox-ios-pull-7-6` | firefox-ios | MPL-2.0 | - | miss | - | 2 |
+| `positive/firefox-ios-pull-7-7` | firefox-ios | MPL-2.0 | - | miss | - | 2 |
+| `positive/firefox-ios-pull-7-8` | firefox-ios | MPL-2.0 | - | miss | - | 2 |
+| `positive/firefox-ios-pull-8-1` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-8-2` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-8-3` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-8-4` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-9-1` | firefox-ios | MPL-2.0 | - | hit | 1 | 4 |
+| `positive/firefox-ios-pull-9-2` | firefox-ios | MPL-2.0 | - | hit | 3 | 4 |
+| `positive/firefox-ios-pull-10-1` | firefox-ios | MPL-2.0 | - | miss | - | 2 |
+| `positive/firefox-ios-pull-10-2` | firefox-ios | MPL-2.0 | - | miss | 14 | 1 |
+| `positive/firefox-ios-pull-10-3` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-10-4` | firefox-ios | MPL-2.0 | - | failed | - | 0 |
+| `positive/firefox-ios-pull-10-6` | firefox-ios | MPL-2.0 | - | miss | - | 2 |
+| `positive/firefox-ios-pull-11-1` | firefox-ios | MPL-2.0 | - | hit | 1 | 3 |
+| `positive/firefox-ios-pull-11-2` | firefox-ios | MPL-2.0 | - | hit | 1 | 3 |
+| `positive/firefox-ios-pull-11-3` | firefox-ios | MPL-2.0 | - | hit | 3 | 4 |
+| `positive/firefox-ios-pull-11-4` | firefox-ios | MPL-2.0 | - | hit | 0 | 4 |
+| `positive/firefox-ios-pull-11-5` | firefox-ios | MPL-2.0 | - | hit | 1 | 4 |
+| `positive/firefox-ios-pull-12-1` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-12-2` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-12-3` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-12-4` | firefox-ios | MPL-2.0 | - | miss | 11 | 1 |
+| `positive/firefox-ios-pull-12-5` | firefox-ios | MPL-2.0 | - | miss | 16 | 1 |
+| `positive/firefox-ios-pull-12-6` | firefox-ios | MPL-2.0 | - | hit | 1 | 1 |
+| `positive/firefox-ios-pull-12-7` | firefox-ios | MPL-2.0 | - | miss | 19 | 1 |
+| `positive/firefox-ios-pull-12-8` | firefox-ios | MPL-2.0 | - | miss | - | 0 |
+| `positive/firefox-ios-pull-12-9` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-12-10` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-12-11` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-13-1` | firefox-ios | MPL-2.0 | - | hit | 0 | 2 |
+| `positive/firefox-ios-pull-13-2` | firefox-ios | MPL-2.0 | - | miss | 4 | 1 |
+| `positive/firefox-ios-pull-13-3` | firefox-ios | MPL-2.0 | - | miss | - | 1 |
+| `positive/firefox-ios-pull-13-4` | firefox-ios | MPL-2.0 | - | miss | 196 | 2 |
+| `positive/prefect-pull-1-1` | prefect | Apache-2.0 | - | hit | 1 | 1 |
+| `positive/prefect-pull-1-2` | prefect | Apache-2.0 | - | miss | - | 0 |
+| `positive/prefect-pull-1-3` | prefect | Apache-2.0 | - | miss | 217 | 1 |
+| `positive/prefect-pull-1-4` | prefect | Apache-2.0 | - | miss | 177 | 1 |
+| `positive/prefect-pull-2-1` | prefect | Apache-2.0 | - | miss | - | 1 |
+| `positive/prefect-pull-2-2` | prefect | Apache-2.0 | - | miss | - | 1 |
+| `positive/prefect-pull-3-2` | prefect | Apache-2.0 | - | miss | - | 0 |
+| `positive/prefect-pull-3-3` | prefect | Apache-2.0 | - | miss | - | 0 |
+| `positive/prefect-pull-3-4` | prefect | Apache-2.0 | - | miss | - | 0 |
+| `positive/prefect-pull-4-1` | prefect | Apache-2.0 | - | miss | - | 0 |
+| `positive/prefect-pull-4-2` | prefect | Apache-2.0 | - | hit | 1 | 1 |
+| `positive/prefect-pull-4-3` | prefect | Apache-2.0 | - | miss | - | 1 |
+| `positive/prefect-pull-4-4` | prefect | Apache-2.0 | - | miss | - | 1 |
+| `positive/prefect-pull-5-1` | prefect | Apache-2.0 | - | miss | 36 | 1 |
+| `positive/prefect-pull-5-2` | prefect | Apache-2.0 | - | hit | 0 | 1 |
+| `positive/prefect-pull-5-3` | prefect | Apache-2.0 | - | miss | - | 1 |
+| `positive/prefect-pull-5-4` | prefect | Apache-2.0 | - | miss | - | 1 |
+| `positive/prefect-pull-5-5` | prefect | Apache-2.0 | - | miss | 724 | 1 |
+| `positive/prefect-pull-6-1` | prefect | Apache-2.0 | - | hit | 1 | 3 |
+| `positive/prefect-pull-6-2` | prefect | Apache-2.0 | - | hit | 1 | 2 |
+| `positive/prefect-pull-6-3` | prefect | Apache-2.0 | - | hit | 1 | 2 |
+| `positive/prefect-pull-6-4` | prefect | Apache-2.0 | - | hit | 2 | 3 |
+| `positive/prefect-pull-6-6` | prefect | Apache-2.0 | - | miss | 225 | 1 |
+| `positive/prefect-pull-7-1` | prefect | Apache-2.0 | - | miss | - | 0 |
+| `positive/prefect-pull-7-2` | prefect | Apache-2.0 | - | miss | - | 0 |
+| `positive/prefect-pull-7-3` | prefect | Apache-2.0 | - | miss | - | 0 |
+| `positive/prefect-pull-7-4` | prefect | Apache-2.0 | - | miss | - | 1 |
+| `positive/prefect-pull-7-5` | prefect | Apache-2.0 | - | miss | - | 0 |
+| `positive/prefect-pull-8-1` | prefect | Apache-2.0 | - | miss | 65 | 3 |
+| `positive/prefect-pull-8-2` | prefect | Apache-2.0 | - | miss | - | 2 |
+| `positive/prefect-pull-8-3` | prefect | Apache-2.0 | - | miss | 5 | 2 |
+| `positive/prefect-pull-8-4` | prefect | Apache-2.0 | - | hit | 1 | 3 |
+| `positive/prefect-pull-9-2` | prefect | Apache-2.0 | - | miss | - | 1 |
+| `positive/prefect-pull-9-3` | prefect | Apache-2.0 | - | miss | 6 | 1 |
+| `positive/prefect-pull-9-5` | prefect | Apache-2.0 | - | miss | 8 | 1 |
+| `positive/prefect-pull-10-1` | prefect | Apache-2.0 | - | hit | 0 | 3 |
+| `positive/prefect-pull-10-2` | prefect | Apache-2.0 | - | miss | - | 3 |
+| `positive/prefect-pull-10-3` | prefect | Apache-2.0 | - | miss | - | 1 |
+| `positive/prefect-pull-10-4` | prefect | Apache-2.0 | - | miss | - | 2 |
+| `positive/prefect-pull-10-5` | prefect | Apache-2.0 | - | miss | - | 1 |
+| `positive/prefect-pull-10-6` | prefect | Apache-2.0 | - | miss | - | 3 |
+| `positive/prefect-pull-10-7` | prefect | Apache-2.0 | - | miss | - | 4 |
+| `positive/prefect-pull-10-8` | prefect | Apache-2.0 | - | miss | - | 3 |
+| `positive/prefect-pull-11-3` | prefect | Apache-2.0 | - | miss | - | 0 |
+| `positive/prefect-pull-12-2` | prefect | Apache-2.0 | - | miss | 93 | 1 |
+| `positive/prefect-pull-12-3` | prefect | Apache-2.0 | - | miss | 19 | 1 |
+| `positive/prefect-pull-12-4` | prefect | Apache-2.0 | - | hit | 3 | 2 |
+| `positive/prefect-pull-13-1` | prefect | Apache-2.0 | - | hit | 0 | 1 |
+| `positive/prefect-pull-13-2` | prefect | Apache-2.0 | - | miss | 37 | 1 |
+| `positive/prefect-pull-13-3` | prefect | Apache-2.0 | - | miss | 101 | 1 |
+| `positive/tauri-pull-1-1` | tauri | Apache-2.0 OR MIT | - | failed | - | 0 |
+| `positive/tauri-pull-1-2` | tauri | Apache-2.0 OR MIT | - | miss | 10 | 2 |
+| `positive/tauri-pull-1-3` | tauri | Apache-2.0 OR MIT | - | hit | 3 | 1 |
+| `positive/tauri-pull-1-4` | tauri | Apache-2.0 OR MIT | - | miss | 24 | 1 |
+| `positive/tauri-pull-1-6` | tauri | Apache-2.0 OR MIT | - | miss | 28 | 1 |
+| `positive/tauri-pull-1-7` | tauri | Apache-2.0 OR MIT | - | failed | - | 0 |
+| `positive/tauri-pull-1-8` | tauri | Apache-2.0 OR MIT | - | miss | - | 1 |
+| `positive/tauri-pull-2-1` | tauri | Apache-2.0 OR MIT | - | miss | 27 | 2 |
+| `positive/tauri-pull-2-2` | tauri | Apache-2.0 OR MIT | - | hit | 1 | 1 |
+| `positive/tauri-pull-2-3` | tauri | Apache-2.0 OR MIT | - | miss | 66 | 1 |
+| `positive/tauri-pull-2-4` | tauri | Apache-2.0 OR MIT | - | miss | 8 | 1 |
+| `positive/tauri-pull-2-6` | tauri | Apache-2.0 OR MIT | - | miss | - | 1 |
+| `positive/tauri-pull-2-7` | tauri | Apache-2.0 OR MIT | - | miss | - | 2 |
+| `positive/tauri-pull-3-2` | tauri | Apache-2.0 OR MIT | - | hit | 3 | 1 |
+| `positive/tauri-pull-3-4` | tauri | Apache-2.0 OR MIT | - | miss | - | 0 |
+| `positive/tauri-pull-4-1` | tauri | Apache-2.0 OR MIT | - | miss | 24 | 3 |
+| `positive/tauri-pull-4-2` | tauri | Apache-2.0 OR MIT | - | hit | 2 | 2 |
+| `positive/tauri-pull-4-3` | tauri | Apache-2.0 OR MIT | - | hit | 1 | 3 |
+| `positive/tauri-pull-4-4` | tauri | Apache-2.0 OR MIT | - | hit | 3 | 3 |
+| `positive/tauri-pull-4-5` | tauri | Apache-2.0 OR MIT | - | miss | 27 | 3 |
+| `positive/tauri-pull-5-1` | tauri | Apache-2.0 OR MIT | - | hit | 2 | 1 |
+| `positive/tauri-pull-5-2` | tauri | Apache-2.0 OR MIT | - | miss | - | 2 |
+| `positive/tauri-pull-5-3` | tauri | Apache-2.0 OR MIT | - | miss | - | 0 |
+| `positive/tauri-pull-5-4` | tauri | Apache-2.0 OR MIT | - | miss | - | 2 |
+| `positive/tauri-pull-5-5` | tauri | Apache-2.0 OR MIT | - | miss | - | 1 |
+| `positive/tauri-pull-5-6` | tauri | Apache-2.0 OR MIT | - | miss | - | 1 |
+| `positive/tauri-pull-5-7` | tauri | Apache-2.0 OR MIT | - | miss | - | 2 |
+| `positive/tauri-pull-6-1` | tauri | Apache-2.0 OR MIT | - | miss | - | 0 |
+| `positive/tauri-pull-6-2` | tauri | Apache-2.0 OR MIT | - | miss | - | 0 |
+| `positive/tauri-pull-6-3` | tauri | Apache-2.0 OR MIT | - | miss | - | 0 |
+| `positive/tauri-pull-7-1` | tauri | Apache-2.0 OR MIT | - | miss | 39 | 1 |
+| `positive/tauri-pull-7-3` | tauri | Apache-2.0 OR MIT | - | miss | - | 1 |
+| `positive/tauri-pull-7-4` | tauri | Apache-2.0 OR MIT | - | miss | - | 1 |
+| `positive/tauri-pull-7-5` | tauri | Apache-2.0 OR MIT | - | miss | - | 1 |
+| `positive/tauri-pull-8-1` | tauri | Apache-2.0 OR MIT | - | hit | 2 | 2 |
+| `positive/tauri-pull-8-2` | tauri | Apache-2.0 OR MIT | - | miss | 4 | 1 |
+| `positive/tauri-pull-8-3` | tauri | Apache-2.0 OR MIT | - | hit | 1 | 2 |
+| `positive/tauri-pull-8-4` | tauri | Apache-2.0 OR MIT | - | miss | - | 1 |
+| `positive/tauri-pull-8-5` | tauri | Apache-2.0 OR MIT | - | miss | - | 2 |
+| `positive/tauri-pull-9-1` | tauri | Apache-2.0 OR MIT | - | miss | - | 0 |
+| `positive/tauri-pull-9-2` | tauri | Apache-2.0 OR MIT | - | miss | - | 0 |
+| `positive/tauri-pull-10-1` | tauri | Apache-2.0 OR MIT | - | miss | - | 0 |
+| `positive/tauri-pull-10-3` | tauri | Apache-2.0 OR MIT | - | miss | - | 0 |
+| `positive/tauri-pull-10-4` | tauri | Apache-2.0 OR MIT | - | miss | - | 1 |
+| `positive/tauri-pull-10-5` | tauri | Apache-2.0 OR MIT | - | miss | - | 0 |
+| `positive/tauri-pull-10-6` | tauri | Apache-2.0 OR MIT | - | miss | - | 0 |
+| `positive/tauri-pull-11-1` | tauri | Apache-2.0 OR MIT | - | miss | 36 | 2 |
+| `positive/tauri-pull-11-3` | tauri | Apache-2.0 OR MIT | - | miss | - | 1 |
+| `positive/tauri-pull-11-4` | tauri | Apache-2.0 OR MIT | - | miss | - | 1 |
+| `positive/tauri-pull-12-1` | tauri | Apache-2.0 OR MIT | - | miss | 5 | 2 |
+| `positive/tauri-pull-12-2` | tauri | Apache-2.0 OR MIT | - | hit | 0 | 3 |
+| `positive/tauri-pull-12-3` | tauri | Apache-2.0 OR MIT | - | hit | 0 | 2 |
+| `positive/tauri-pull-12-4` | tauri | Apache-2.0 OR MIT | - | miss | 5 | 3 |
+| `positive/tauri-pull-12-5` | tauri | Apache-2.0 OR MIT | - | miss | 11 | 3 |
+| `positive/tauri-pull-13-1` | tauri | Apache-2.0 OR MIT | - | miss | 153 | 2 |
+| `positive/tauri-pull-13-2` | tauri | Apache-2.0 OR MIT | - | miss | 93 | 2 |
+| `positive/tauri-pull-13-4` | tauri | Apache-2.0 OR MIT | - | miss | 56 | 1 |
+| `positive/tauri-pull-13-7` | tauri | Apache-2.0 OR MIT | - | miss | 156 | 1 |
+| `positive/tauri-pull-13-8` | tauri | Apache-2.0 OR MIT | - | miss | 6 | 2 |
+
+The set records no severity, so every severity is `-`. A line delta is the
+distance from the issue's line to the nearest finding on its file, and `-`
+when the run posted none there or did not complete.
+
+### Caveats
+
+One run per issue is a sample. Candidate-set agreement between two runs over
+the same diff has measured 0.25 to 0.60 (see "Candidate set agreement"), so
+every figure here moves between runs with no change to the plugin, and a
+difference of a few fixtures is not a trend. The figures are not comparable to
+the set's own leaderboard or to any vendor's published figure, which use their
+own matching rules and review with the whole repository at hand. The figures
+are goals, never gates.
+
+### Keeping the set clean
+
+The set is never tuned against. Imported items never enter the repository.
+They are third-party code under their own licences, imported outside any git
+working tree, and `CONTRIBUTING.md` rule 1 keeps real review data out.
+Benchmark runs never reach the operator's store, because `recall` records
+into a temporary store of its own. A published run directory is never edited
+or removed, and a run with another plugin version, set version or mode is a
+new directory beside it. No change to a prompt, policy, threshold or scorer
+cites a benchmark item or figure as its reason.
+
 ## Reading the numbers
 
 `review-voice evaluate` computes these from recorded runs and feedback, and
