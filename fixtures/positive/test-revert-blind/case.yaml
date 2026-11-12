@@ -7,5 +7,5 @@ expect:
   min_findings: 1
   severity: minor
   path: test/orders/MarkPaidHandlerTests.cs
-  line: 9
+  line: 14
   category: test_coverage

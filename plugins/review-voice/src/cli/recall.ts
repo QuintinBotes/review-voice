@@ -100,7 +100,7 @@ export async function recallCommand(argv: string[], runInProcess: InProcessRunne
                   ? result.hit === true
                     ? `hit (line delta ${result.lineDelta})`
                     : result.lineDelta === null || result.lineDelta === undefined
-                      ? 'miss (no finding on the expected file)'
+                      ? 'miss (no finding on an expected file)'
                       : `miss (line delta ${result.lineDelta})`
                   : result.silent === true
                     ? 'silent'

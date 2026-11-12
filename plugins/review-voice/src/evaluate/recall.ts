@@ -11,6 +11,7 @@ import {
   RECALL_CLASSES,
   scoreFixture,
   summariseResults,
+  type Anchor,
   type Expectation,
   type FixtureResult,
   type RecallClass,
@@ -80,10 +81,32 @@ function scalar(raw: string): string {
 }
 
 /**
+ * Reads `expect.anchors` from the lines of the `expect:` block, as one
+ * `- { path: <path>, line: <number> }` entry per line under the key. That is
+ * the one form the fixtures write, so any other is refused instead of guessed at.
+ */
+function readAnchors(label: string, block: readonly string[]): Anchor[] {
+  const start = block.findIndex((line) => /^  anchors:/.test(line));
+  if (start === -1) return [];
+  const form = '`- { path: <path>, line: <number> }`';
+  if (!/^  anchors:\s*$/.test(block[start] as string)) throw new RecallUsageError(`${label}: expect.anchors is a list with one ${form} entry per line.`);
+  const anchors: Anchor[] = [];
+  for (const line of block.slice(start + 1)) {
+    if (line.trim() === '') continue;
+    if (!/^ {3}/.test(line)) break;
+    const entry = /^\s+-\s*\{\s*path:\s*(.+?)\s*,\s*line:\s*([1-9]\d*)\s*\}\s*$/.exec(line);
+    if (entry === null) throw new RecallUsageError(`${label}: expect.anchors entry ${JSON.stringify(line.trim())} is not ${form}.`);
+    anchors.push({ path: scalar(entry[1] as string), line: Number(entry[2]) });
+  }
+  if (anchors.length === 0) throw new RecallUsageError(`${label}: expect.anchors is empty.`);
+  return anchors;
+}
+
+/**
  * Reads the few keys the harness needs from a fixture's `case.yaml` by line
  * matching, since the plugin ships no YAML parser: top-level `harness` and
- * `harness_reason`, and the two-space indented `path`, `line` and `category`
- * of the `expect:` block.
+ * `harness_reason`, and the two-space indented `path`, `line`, `category` and
+ * `anchors` of the `expect:` block.
  */
 function readExpectation(cls: RecallClass, name: string, caseText: string): Expectation {
   const lines = caseText.split('\n');
@@ -110,6 +133,7 @@ function readExpectation(cls: RecallClass, name: string, caseText: string): Expe
     name,
     path: inExpect('path'),
     line,
+    anchors: readAnchors(`${cls}/${name}`, block),
     category: inExpect('category'),
     skip: top('harness') === 'skip' ? (reason === null || reason === '' ? 'harness: skip' : reason) : null,
   };

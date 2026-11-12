@@ -7,5 +7,5 @@ expect:
   findings: 1
   verified: true
   path: src/orders/load-checkout.ts
-  line: 3
+  line: 7
   category: performance

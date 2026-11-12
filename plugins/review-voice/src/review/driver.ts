@@ -83,6 +83,8 @@ export interface ReviewDeps {
 }
 
 export interface StageReport extends StageTiming {
+  /** The driver times every agent call itself, so its stages are always measured. */
+  seconds: number;
   /** Why the stage did not run, when it did not. */
   skipped?: string;
 }

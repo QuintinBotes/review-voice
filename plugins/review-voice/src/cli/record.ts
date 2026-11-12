@@ -45,7 +45,7 @@ import { seriousNotCarried, type CarriedFinding } from '../diff/carry.ts';
 import { leftOutPaths, parseExclusions, type ExclusionSummary } from '../diff/exclusions.ts';
 import { resolveCommit } from '../diff/prior.ts';
 import { parseTieBreaks, type TieBreak } from '../verify/reconcile.ts';
-import { cleanStages, parseStagesFile, shallowPassWarning } from '../store/effort.ts';
+import { cleanStages, parseStagesFile, shallowPassWarning, unjudgedRead } from '../store/effort.ts';
 import { noFindingsHint, readStdin, inferRepository, flag, boundLists } from './shared.ts';
 import { reviewScopeFromManifest } from './explain.ts';
 import { carryForRun, sameCommit } from './carry.ts';
@@ -704,6 +704,8 @@ export function recordCommand(argv: string[]): number {
     });
     // Local only: printed here and by `explain`, never part of what is posted.
     const warning = shallowPassWarning(stages, findings.length);
+    const notJudged = unjudgedRead(stages, findings.length);
+    if (notJudged !== null) console.error(notJudged);
     console.log(
       JSON.stringify(
         {

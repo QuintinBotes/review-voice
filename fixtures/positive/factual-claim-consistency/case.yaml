@@ -8,4 +8,6 @@ expect:
   severity: nit
   category: maintainability
   path: src/registration.ts
-  line: 2
+  line: 6
+  anchors:
+    - { path: docs/registration.md, line: 3 }

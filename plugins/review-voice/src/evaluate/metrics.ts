@@ -120,7 +120,8 @@ export function windowStart(days: number, now: () => Date = () => new Date()): s
 
 interface ParsedStage {
   name: string | null;
-  seconds: number;
+  /** Null when the stage recorded no duration: not measured, which is not zero seconds (#352). */
+  seconds: number | null;
   cost: number | null;
 }
 
@@ -140,8 +141,7 @@ function parseStages(raw: string | null): ParsedStage[] | null {
     const cost = record['costUsd'];
     return {
       name: typeof record['name'] === 'string' ? record['name'] : null,
-      // A non-finite duration contributes nothing, as it always has.
-      seconds: typeof seconds === 'number' && Number.isFinite(seconds) ? seconds : 0,
+      seconds: typeof seconds === 'number' && Number.isFinite(seconds) ? seconds : null,
       cost: typeof cost === 'number' && Number.isFinite(cost) ? cost : null,
     };
   });
@@ -152,32 +152,49 @@ function storedStages(db: Database): (ParsedStage[] | null)[] {
   return rows.map((row) => parseStages(row.stages_json));
 }
 
+export interface StageSeconds {
+  median: number | null;
+  p95: number | null;
+  /** Runs that measured the stage. */
+  runs: number;
+  /** Runs that recorded the stage without its seconds. */
+  unmeasured: number;
+}
+
 /**
  * Seconds per stage across runs: for each stage name, the median and 95th
  * percentile of the time that stage took in a run (summed when a run names it
- * twice) and the number of runs that recorded it.
+ * twice) and the number of runs that measured it. `unmeasured` counts the runs
+ * that recorded the stage without its seconds (#352); they are in neither
+ * figure, and a stage no run measured has null for both.
  *
  * Not a `Metric`: its value is a map, and the tests that walk every metric
  * assert a number or null. `evaluate --json` carries it beside the metrics.
  */
-export function stageSeconds(db: Database): Record<string, { median: number; p95: number; runs: number }> {
-  const byName = new Map<string, number[]>();
+export function stageSeconds(db: Database): Record<string, StageSeconds> {
+  const byName = new Map<string, { values: number[]; unmeasured: number }>();
   for (const stages of storedStages(db)) {
     if (stages === null) continue;
-    const inRun = new Map<string, number>();
+    // Null once any entry of the name has no seconds: the sum of the rest would pass that entry off as zero.
+    const inRun = new Map<string, number | null>();
     for (const stage of stages) {
       if (stage.name === null) continue;
-      inRun.set(stage.name, (inRun.get(stage.name) ?? 0) + stage.seconds);
+      const before = inRun.get(stage.name);
+      inRun.set(stage.name, stage.seconds === null || before === null ? null : (before ?? 0) + stage.seconds);
     }
     for (const [name, total] of inRun) {
-      // As with a whole run, zero seconds is an unmeasured stage.
-      if (total > 0) byName.set(name, [...(byName.get(name) ?? []), total]);
+      // A recorded total of zero or less (1.24.0 stored a negative) is left out as it always was, and is not unmeasured: the run did give a number.
+      if (total !== null && total <= 0) continue;
+      const entry = byName.get(name) ?? { values: [], unmeasured: 0 };
+      if (total === null) entry.unmeasured += 1;
+      else entry.values.push(total);
+      byName.set(name, entry);
     }
   }
   return Object.fromEntries(
     [...byName.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([name, values]) => [name, { median: median(values) as number, p95: percentile(values, 95) as number, runs: values.length }]),
+      .map(([name, { values, unmeasured }]) => [name, { median: median(values), p95: percentile(values, 95), runs: values.length, unmeasured }]),
   );
 }
 
@@ -457,7 +474,7 @@ export interface EvaluationReport {
     by_evidence_block: { with: PostedStats; without: PostedStats; unknown: PostedStats };
   };
   precision_breakdown: { by_lane: Record<string, PrecisionStats>; by_rule: Record<string, PrecisionStats> };
-  stage_seconds: Record<string, { median: number; p95: number; runs: number }>;
+  stage_seconds: Record<string, StageSeconds>;
   rule_effectiveness: RuleEffectiveness[];
   /** Per model family (docs/adr/0034), as `byFamily` returns it. */
   by_family: ByFamily;
@@ -525,12 +542,19 @@ export function computeMetrics(db: Database, options: ComputeOptions = {}): Metr
   // for twenty-five - rests on a distribution rather than the one run somebody
   // happened to time.
   const runSeconds: number[] = [];
+  let untimed = 0;
   for (const stages of storedStages(db)) {
     // A row that will not parse is not a measurement.
     if (stages === null) continue;
-    const total = stages.reduce((sum, stage) => sum + stage.seconds, 0);
-    if (total > 0) runSeconds.push(total);
+    // One stage without seconds leaves the run's total unknown, as one stage without a cost leaves the run uncosted.
+    const total = stages.reduce<number | null>((sum, stage) => (sum === null || stage.seconds === null ? null : sum + stage.seconds), 0);
+    if (total === null) untimed += 1;
+    else if (total > 0) runSeconds.push(total);
   }
+  const secondsBasis =
+    runSeconds.length === 0 && untimed === 0
+      ? 'no run has recorded stage timings; pass `record --stages`'
+      : `${runSeconds.length} run(s) with recorded stages${untimed === 0 ? '' : `, ${untimed} excluded (a stage not measured)`}`;
   const { costs, excluded: uncosted } = runCosts(db);
   const costBasis = `${costs.length} costed run(s), ${uncosted} excluded (no cost recorded)`;
   const challenge = challengeCounts(db);
@@ -619,9 +643,7 @@ export function computeMetrics(db: Database, options: ComputeOptions = {}): Metr
       median(runSeconds),
       'no target',
       () => true,
-      runSeconds.length === 0
-        ? 'no run has recorded stage timings; pass `record --stages`'
-        : `${runSeconds.length} run(s) with recorded stages`,
+      secondsBasis,
       'goal',
     ),
     metric(
@@ -629,9 +651,7 @@ export function computeMetrics(db: Database, options: ComputeOptions = {}): Metr
       percentile(runSeconds, 95),
       'no target',
       () => true,
-      runSeconds.length === 0
-        ? 'no run has recorded stage timings; pass `record --stages`'
-        : `${runSeconds.length} run(s) with recorded stages`,
+      secondsBasis,
       'goal',
     ),
     metric(
