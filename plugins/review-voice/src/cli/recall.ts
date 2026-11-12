@@ -1,8 +1,8 @@
 import { writeFileSync, mkdirSync, statSync, lstatSync, renameSync, rmSync, existsSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { MODES } from '../review/plan.ts';
-import { RECALL_CLASSES, type RecallClass } from '../evaluate/recall-results.ts';
-import { RecallUsageError, runRecall } from '../evaluate/recall.ts';
+import { RECALL_CLASSES, type FixtureResult, type RecallClass, type RecallSummary } from '../evaluate/recall-results.ts';
+import { MAX_RUNS, RecallUsageError, runRecall } from '../evaluate/recall.ts';
 import { flag, realExistingPath } from './shared.ts';
 
 /**
@@ -16,9 +16,29 @@ type InProcessRunner = (
   options: { stdin?: string; fetchImpl?: typeof fetch },
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
+/** What one fixture's result reads as on its line of output. */
+function describe(result: FixtureResult): string {
+  if (result.skipped !== undefined) return `skipped: ${result.skipped}`;
+  if (result.attempts !== undefined) {
+    const failed = result.attempts.filter((attempt) => attempt.exitCode !== 0 || attempt.error !== undefined).length;
+    const lost = new Map<string, number>();
+    for (const { lostAt } of result.attempts) if (lostAt != null) lost.set(lostAt, (lost.get(lostAt) ?? 0) + 1);
+    return (
+      (result.class === 'positive' ? `${result.hits}/${result.runs} runs hit` : `${result.silentRuns}/${result.runs} runs silent`) +
+      (lost.size === 0 ? '' : `; lost at ${[...lost].map(([stage, count]) => `${stage} ${count}`).join(', ')}`) +
+      (failed === 0 ? '' : `; ${failed} failed`)
+    );
+  }
+  if (result.error !== undefined) return `failed: ${result.error.split('\n')[0]}`;
+  if (result.class !== 'positive') return result.silent === true ? 'silent' : `not silent (${result.findings} finding(s))`;
+  if (result.hit === true) return `hit (line delta ${result.lineDelta})`;
+  const where = result.lineDelta === null || result.lineDelta === undefined ? 'no finding on an expected file' : `line delta ${result.lineDelta}`;
+  return `miss (${where}), lost at ${result.lostAt}`;
+}
+
 export async function recallCommand(argv: string[], runInProcess: InProcessRunner): Promise<number> {
-  const known = new Set(['--fixtures', '--class', '--runner', '--mode', '--out', '--only', '--keep']);
-  const valued = new Set(['--fixtures', '--class', '--runner', '--mode', '--out', '--only']);
+  const known = new Set(['--fixtures', '--class', '--runner', '--mode', '--out', '--only', '--keep', '--runs']);
+  const valued = new Set(['--fixtures', '--class', '--runner', '--mode', '--out', '--only', '--runs']);
   for (const [index, arg] of argv.entries()) {
     if (arg.startsWith('--') ? !known.has(arg) : !valued.has(argv[index - 1] ?? '')) {
       console.error(`Unexpected argument ${arg}.`);
@@ -57,6 +77,11 @@ export async function recallCommand(argv: string[], runInProcess: InProcessRunne
     console.error(`--mode takes one of ${MODES.join(', ')}.`);
     return 2;
   }
+  const runsText = flag(argv, '--runs') ?? '1';
+  if (!/^[1-9]\d*$/.test(runsText) || Number(runsText) > MAX_RUNS) {
+    console.error(`--runs takes a positive whole number up to ${MAX_RUNS}; ${runsText} is not one.`);
+    return 2;
+  }
   const out = resolve(flag(argv, '--out') ?? 'results.json');
   // A link at the output path would be written through to wherever it points,
   // and a dangling one looks like a missing file to every existence check.
@@ -87,26 +112,10 @@ export async function recallCommand(argv: string[], runInProcess: InProcessRunne
   try {
     mkdirSync(dirname(out), { recursive: true });
     run = await runRecall(
-      { fixtures, classes, runner, mode, only: flag(argv, '--only'), keep: argv.includes('--keep') },
+      { fixtures, classes, runner, mode, only: flag(argv, '--only'), keep: argv.includes('--keep'), runs: Number(runsText) },
       {
         commandWith: (fetchImpl) => (args, stdin) => runInProcess(args, { stdin, fetchImpl }),
-        onResult: (result) => {
-          const verdict =
-            result.skipped !== undefined
-              ? `skipped: ${result.skipped}`
-              : result.error !== undefined
-                ? `failed: ${result.error.split('\n')[0]}`
-                : result.class === 'positive'
-                  ? result.hit === true
-                    ? `hit (line delta ${result.lineDelta})`
-                    : result.lineDelta === null || result.lineDelta === undefined
-                      ? 'miss (no finding on an expected file)'
-                      : `miss (line delta ${result.lineDelta})`
-                  : result.silent === true
-                    ? 'silent'
-                    : `not silent (${result.findings} finding(s))`;
-          console.log(`${result.name.padEnd(48)} ${verdict}`);
-        },
+        onResult: (result) => console.log(`${result.name.padEnd(48)} ${describe(result)}`),
       },
     );
   } catch (error) {
@@ -125,12 +134,16 @@ export async function recallCommand(argv: string[], runInProcess: InProcessRunne
   renameSync(staging, out);
   const { summary } = run.results;
   const figure = (value: number | null): string => (value === null ? 'no data' : value.toFixed(2));
+  // Several runs give a mean, which is stated with the lowest and highest run beside it.
+  const rate = (key: keyof NonNullable<RecallSummary['ranges']>): string =>
+    figure(summary[key]) + (summary.ranges === undefined ? '' : ` (${figure(summary.ranges[key].lowest)} to ${figure(summary.ranges[key].highest)})`);
   console.log(
-    `key-bug recall ${figure(summary.keyBugRecall)}, causal-line hit ${figure(summary.causalLineHit)}, clean silence ${figure(summary.cleanSilence)}; ` +
+    `key-bug recall ${rate('keyBugRecall')}, causal-line hit ${rate('causalLineHit')}, clean silence ${rate('cleanSilence')}; ` +
+      (summary.runs === undefined ? '' : `mean of ${summary.runs} runs with the lowest and highest run; `) +
       `${summary.positives} positive(s), ${summary.cleanFixtures} clean, ${summary.skipped} skipped, ${summary.failedRuns} failed run(s)`,
   );
   console.log(`Results: ${out}`);
-  if (run.kept) console.log(`Kept: ${run.dataDir}`);
+  if (run.kept) for (const dir of run.dataDirs) console.log(`Kept: ${dir}`);
   // A failed run is a hole in the measurement, so it fails the command; the file is still written.
   return summary.failedRuns > 0 ? 1 : 0;
 }

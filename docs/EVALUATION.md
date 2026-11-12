@@ -613,6 +613,11 @@ the command exits 1 when there are any. A figure with no denominator is
 The command never posts, never runs the repository's configured commands
 (`REVIEW_VOICE_NO_COMMANDS=1`) and never writes to the operator's data
 directory: it records into one temporary directory, removed unless `--keep`.
+Each run of `--runs` has a store of its own in that directory, and `--keep`
+keeps every one. In one store the first run of a fixture would be an earlier
+run of the same pull request to the second, and a finding the first held would
+be dropped from the second at the candidate check, so the runs would not be
+independent samples.
 
 The `Recall` workflow (`.github/workflows/recall.yml`) runs it weekly, on Monday
 at 04:00 UTC, and on demand with a `mode` input, using the repository's
@@ -626,7 +631,8 @@ or a deployment that supplies its own key.
 One pass per fixture is a noisy sample. Candidate-set agreement between two
 runs over the same diff has measured 0.25 to 0.60, so a single figure moves
 between runs with no change to the plugin, and a difference of one fixture is
-not a trend. The figures are goals, reported and not gated.
+not a trend. `--runs` measures that spread. The figures are goals, reported
+and not gated.
 
 The frozen fixture set must not be tuned against. Editing a prompt until these
 fixtures pass measures the prompt's fit to the fixtures, not the reviewer; a
@@ -641,6 +647,80 @@ defect. The fixtures now carry that context, so clean silence measures what the
 reviewer says about a consistent change. A positive that scored the finding
 its own `asserts` describes as a miss, because the finding sat on another line
 of the same defect, now names that line as an accepted anchor.
+
+### Where a miss was lost
+
+For every completed fixture the results file records `event`, the verdict the
+run reached, such as `APPROVE` or `COMMENT`. For every completed positive it
+also records `lostAt`, which is `null` on a hit and otherwise the stage that
+lost the expected finding. It is read from the run the harness already has
+(the candidates, the candidate check, the verification, the scores after the
+challenge, the held list and the posted findings), so it costs no model call.
+
+The harness takes the candidates the lanes raised on the path of an accepted
+anchor, within the 3-line tolerance of that anchor. With no such candidate
+there are two values:
+
+- `not-raised`: the review posted no finding, so nobody raised the defect.
+- `posted-elsewhere`: the review posted a finding, but none on an accepted
+  anchor.
+
+With at least one such candidate, `lostAt` is how far the one that got
+furthest went. From the nearest stage to the furthest:
+
+- `dropped-at-check`: the candidate check dropped it before verification, for
+  example as a repeat of a comment already on the pull request.
+- `verifier-rejected`: the verifier did not verify it, and nothing held it.
+- `held-other`: it was held, by neither a gate nor the challenger. An approved
+  suppression, a reproduction that did not fail and a claim held for context
+  the verifier could not obtain are of this kind. So is a verified candidate
+  the score turned away without a hold, and one that stayed eligible to the
+  end and that the editor left out of the review.
+- `challenge`: the challenger held it, or it was held because the challenger
+  did not run.
+- `below-gate`: it was verified, then held under a gate.
+
+A candidate that stayed eligible to the end on a positive that still missed
+had its line moved out of the tolerance by the challenger, or was left out by
+the editor. It reads as `posted-elsewhere` when a finding posted on the line
+the challenger moved it to, and that is further than any hold. Left out by the
+editor it reads as `held-other`, whatever else the review posted, so a
+finding from another candidate never hides where this one stopped.
+
+The summary counts the misses by these values under `lost`, and gives
+`approved`, the completed positives whose review ended in `APPROVE`, beside
+`completedPositives`. A positive that ended in `APPROVE` is a seeded defect the
+review waved through. The line `recall` prints for a miss names where it was
+lost.
+
+### Several runs
+
+Two runs of one diff raise different candidates, so one run cannot tell a
+regression from chance. `recall --runs <n>` runs every selected fixture n
+times (a positive whole number up to 1000, 1 by default). `--only`, `--class`, `--mode`,
+`--out` and `--keep` apply as they do to one run.
+
+With one run the results file is as described above. With more, a fixture
+carries `runs`, then `hits`, the number of runs that hit, or `silentRuns` for
+a clean fixture, and `attempts`. That list has one entry per run, holding the
+fields a single run records (`hit` or `silent`, `lineDelta`, `categoryMatch`,
+`findings`, `lostAt`, `event`, `seconds`, `costUsd`, `exitCode` and `error`).
+The single-run fields are not written beside it, so nothing reads one run as
+the answer. In the summary each of the three rates is the mean of the runs'
+rates, `runs` is the number of runs, and `ranges` gives each rate's `lowest`
+and `highest` run and the value of every run. A run that failed is left out of
+the denominators of its own run, as it is with one run. `failedRuns`,
+`completedPositives`, `approved` and `lost` are totals over every run.
+`evaluate --recall` reads either shape. For several runs each of its three
+fixture metrics is the mean, and the basis states the number of runs and the
+range.
+
+A recall figure is stated with its number of runs and its range, in the form
+`<mean> over <n> runs, <lowest> to <highest>`. A change is called a regression
+only when its range sits below the earlier range, which is when its highest
+run is lower than the earlier lowest run. Ranges that overlap are not a
+regression, whatever the two means are, and a figure from one run has no range
+to compare.
 
 ### Measured on 1.22.0
 
@@ -696,8 +776,10 @@ figures do not compare with a run of the present set. Both fixtures it missed
 outside the 3-line window now accept a further anchor, and the line numbers of
 several fixtures have moved since.
 
-This is a single run. One pass per fixture is a noisy sample, as this section
-says above, so a difference of one fixture is noise, not a trend. This
+These figures are one run, so they come with no range, and no later figure
+is a regression against them on the strength of one run of its own. One pass
+per fixture is a noisy sample, as this section says above, so a difference of
+one fixture is noise, not a trend. This
 repository has no `ANTHROPIC_API_KEY` secret, so the weekly `Recall` workflow
 skips here, and the figure is refreshed by a run the maintainer starts locally.
 
