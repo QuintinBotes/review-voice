@@ -1,4 +1,5 @@
 import { spawn as spawnChild } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { cleaner, cut, isSarif, memo, parseOutput, replaced } from './parsers.ts';
 import { terminalSafe } from '../terminal.ts';
 import type { CommandOutcome, EvidenceReport } from './types.ts';
@@ -294,10 +295,11 @@ export function spawnInGroup(
   timeout: number,
   env: NodeJS.ProcessEnv,
   args?: string[],
+  watch: Pick<CommandOptions, 'onStdout' | 'signal'> = {},
 ): CommandResult | Promise<CommandResult> {
   return spawn(run, {
     cwd, env, shell: args === undefined, ...(args === undefined ? {} : { args }),
-    encoding: 'utf8', timeout, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024, detached: true,
+    encoding: 'utf8', timeout, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024, detached: true, ...watch,
   });
 }
 
@@ -326,6 +328,10 @@ export interface CommandOptions {
   detached: true;
   /** Written to stdin. Without it stdin is empty, never left open, so a command that reads it cannot hang. */
   input?: string;
+  /** Given stdout as it arrives, for a command read while it runs. */
+  onStdout?: (text: string) => void;
+  /** Kills the group once aborted, as a timeout does, reported with code ABORT_ERR. */
+  signal?: AbortSignal;
 }
 
 /** The seam tests use so no real process is needed; a result may come back at once. */
@@ -407,14 +413,19 @@ export function stopCommandsOnSignal(): () => void {
  */
 export function spawnCommand(command: string, options: CommandOptions): Promise<CommandResult> {
   return new Promise((resolve) => {
+    // Aborted before it began: the abort event has already fired, so nothing would stop the command once started.
+    if (options.signal?.aborted === true) {
+      resolve({ status: null, stdout: '', stderr: '', error: Object.assign(new Error(`spawn ${command} ABORT_ERR`), { code: 'ABORT_ERR' }) });
+      return;
+    }
     const child = spawnChild(command, options.args ?? [], { cwd: options.cwd, env: options.env, shell: options.shell, detached: options.detached, stdio: 'pipe' });
     const pid = child.pid;
     if (pid !== undefined) runningGroups.add(pid);
     const chunks = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
     const sizes = { stdout: 0, stderr: 0 };
-    let failure: 'ETIMEDOUT' | 'ENOBUFS' | undefined;
+    let failure: 'ETIMEDOUT' | 'ENOBUFS' | 'ABORT_ERR' | undefined;
     let settled = false;
-    const stop = (code: 'ETIMEDOUT' | 'ENOBUFS'): void => {
+    const stop = (code: 'ETIMEDOUT' | 'ENOBUFS' | 'ABORT_ERR'): void => {
       failure ??= code;
       if (pid !== undefined) killGroup(pid, options.killSignal);
       // A descendant that left the group (setsid, or a detached spawn) still
@@ -427,8 +438,14 @@ export function spawnCommand(command: string, options: CommandOptions): Promise<
     // As under spawnSync, a timeout of zero is none. setTimeout fires at once past
     // MAX_TIMER_MS, where spawnSync waited, so a longer one is capped instead.
     const timer = options.timeout > 0 ? setTimeout(() => stop('ETIMEDOUT'), Math.min(options.timeout, MAX_TIMER_MS)) : undefined;
+    // Not once it has returned, when its group id may already be another's.
+    options.signal?.addEventListener('abort', () => {
+      if (!settled) stop('ABORT_ERR');
+    });
+    const decoder = new StringDecoder(options.encoding);
     for (const stream of ['stdout', 'stderr'] as const) {
       child[stream].on('data', (chunk: Buffer) => {
+        if (stream === 'stdout') options.onStdout?.(decoder.write(chunk));
         const room = options.maxBuffer - sizes[stream];
         if (room > 0) chunks[stream].push(chunk.subarray(0, room));
         sizes[stream] += chunk.length;

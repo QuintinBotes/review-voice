@@ -309,7 +309,40 @@ store, outlive the run, or simply pass on purpose.
 - A probe runs through the same wrapper first, and nothing runs unless it shows
   that a connection to a loopback listener, a write outside the reproduction's
   places, an overwrite of the runner's own files and a read of a canary in the
-  run directory are all refused. On macOS nothing runs until issue #321.
+  run directory are all refused. On macOS nothing runs. The sandbox there is
+  reported unavailable, without a probe, until each run has an identity or
+  environment of its own (issue #321), and the macOS profile, probe and System
+  V IPC check below are in place for that day. On macOS the probe also shows that a signal to the
+  CLI, a preference write and a notification post are refused. A refused post
+  still exits 0, so a listener the CLI starts outside the sandbox judges it.
+  The listener hears three fresh random keys over one port, which notifyd sends
+  to in the order it took the posts while the port has room (the listener runs
+  without `-M`, under which two notifications that wait together are printed in
+  either order), and the CLI reads each key as the listener prints it: the CLI
+  posts the first until the listener prints it, the probe posts the second,
+  and once the probe is back the CLI posts the third and waits for it. The
+  first is the key the listener registers last, so the first printed, alone,
+  shows it holds all three; a listener notified while it still registers exits,
+  crashes or goes deaf. The second printed is an escape, before the third or,
+  from a listener whose port had filled, after it; the third without the second
+  is a refusal; and anything else fails the probe: a listener that never
+  printed the first or the third within 5 seconds, one that printed the third
+  before the CLI posted it, one that ended while it still had the second to
+  wait for, or one that printed any other line. A line the listener prints
+  while the CLI reads the state below still counts, since the CLI decides only
+  after that read. The probe passes only if its own attempt ran: the
+  subprocess that sets and posts the second key must have started and exited
+  0, as a refused attempt does under the real profile. One that could not
+  start, was killed, ran past 5 seconds or exited otherwise has tested
+  nothing, and the probe fails, naming why it could not test notifications. The order of the lines is not
+  guaranteed once the listener's port has been full, so a second check rests
+  on no order: the probe sets the state of the second key as well as posting
+  it, the listener holds that key until it is killed, so the state lasts, and
+  once the third key is printed the CLI reads that state from outside. Any
+  value but the default is an escape, whatever the listener printed, and a
+  state that cannot be read, or one read after the listener ended, fails the
+  probe. No fixed wait decides the answer. The CLI never posts the second key
+  itself, and always kills the listener with its process group.
 - On Linux the runner uses user, mount, network and pid namespaces, which give
   no network, a read-only view of the filesystem, writes only to a fresh throwaway
   copy of the head worktree and its scratch directory, the data directory, the
@@ -321,11 +354,45 @@ store, outlive the run, or simply pass on purpose.
   and `urandom`, with the links to the process's own descriptors, and no
   terminal or other device of the host. The probe fails if `/dev/pts` is still
   there. A reproduction's own output is a pipe the CLI reads.
+- On macOS the runner, while it stays off, keeps `sandbox-exec` with an allowlist profile. It starts
+  from `(deny default)` and allows only what a test runner needs: starting
+  processes, reading kernel settings other than those under `kern.proc`, which
+  list every process and give another process's command line, signals within
+  the sandbox, one lookup service (`com.apple.system.opendirectoryd.libinfo`,
+  for the read-only user and group lookups that `os.userInfo`, git and
+  Python's `pwd` make), process information about itself, reads outside the
+  hidden locations and terminal devices, and writes only to the copy, its
+  scratch directory, `/dev/null` and its own open descriptors by path
+  (`/dev/stdout` is `/dev/fd/1`), which grants no access a descriptor did not
+  already have. The network, every other mach service,
+  POSIX IPC, Apple events and preferences stay denied by default. `(deny
+  default)` does not reach IOKit properties, NVRAM or process information about
+  other processes, so the profile denies them by name. Terminal devices are
+  denied so that neither a run nor a process it leaves behind can take what is
+  typed into another session. The kernel does not ask the sandbox before it
+  creates a System V IPC object, so a run can create a shared memory segment,
+  a semaphore set or a message queue, though it can neither use nor remove one,
+  and no profile rule stops that. So before each run and after it ends the CLI
+  lists the System V IPC objects (`ipcs`). One the user owns or created that
+  is listed after the run, and was not listed before it under any owner,
+  appeared while the run lasted. The CLI cannot tell one the run made from one
+  another program of the same user made in that window, and removing the
+  latter could destroy that program's state, so the CLI removes none of them.
+  It records the run as not run with a reason naming System V IPC that lists
+  each such object's type and id and says it was left in place, so a person
+  can inspect it, and the run's result neither holds nor clears a finding. A
+  listing that fails records the run as not run too.
 - The environment is an allowlist (`PATH`, `LANG`, `LC_ALL`, `TERM`, a scratch
   `HOME` and `TMPDIR`, `CI`, `NO_COLOR`), so no token and no `REVIEW_VOICE_*`
   variable reaches it.
 - CPU, memory, file-size and wall-clock limits, and a stop signal kills a
-  running reproduction.
+  running reproduction. Every process a run starts inherits the CPU limit, one
+  that leaves the process group included. On macOS, where the pid namespace
+  that ends every process on Linux does not exist, it is the only bound on
+  such a process, and a partial one: at the limit the kernel ends a process
+  that spins or keeps making ordinary system calls, but not one that handles
+  SIGXCPU or keeps reading its own CPU usage (getrusage, as Node's
+  `process.cpuUsage` does).
 - The head worktree the challenger reads is never writable by a reproduction,
   and a run that changes anything in its own copy is recorded as not run.
 - Output is redacted, loses its terminal sequences (section 1b), is redacted again and is capped
@@ -347,7 +414,30 @@ pass on purpose, which turns a real finding into a `reproduction-did-not-fail`
 hold; that is why a security, authorization, authentication, data integrity or
 trust boundary finding is never held on a pass. Nothing runs where the probe
 fails, which includes hosts that refuse unprivileged user namespaces. The macOS
-mechanism, `sandbox-exec`, is deprecated by Apple and off until issue #321. A
+mechanism, `sandbox-exec`, is deprecated by Apple, so a macOS release can change
+what it enforces; the probe runs before every invocation's first reproduction
+and fails closed. On macOS a process a reproduction leaves behind that sleeps,
+handles SIGXCPU or keeps reading its own CPU usage stays until the user logs
+out, and in the last two cases keeps using CPU until then. It stays confined
+by the profile, with no network, no POSIX IPC and no write outside its own copy
+and scratch directory, which are removed, so nothing it writes reaches a later
+stage. The System V IPC check names what appears during a run on macOS and
+keeps that run from counting; it removes nothing, so an object a run made
+stays until the user removes it or the machine restarts. It does not stop a
+run from using up, while it lasts, the few objects the system holds (32
+shared memory segments by default), so other programs can fail to create one
+until a person removes the objects. An object another program of the same
+user creates while a run lasts is named as if the run had made it, and the
+run is recorded as not run. Two limits remain. A process the run leaves
+behind can create an object after the listing that follows the run, which no
+check sees. And a stop signal that ends the CLI during a run ends it before
+the listing after the run, so what that run made is neither seen nor
+recorded. These limits, with the user identity a run shares with every other
+program of the user, are why macOS reproductions should stay off until runs
+execute under an identity or environment of their own, and why macOS reports
+the sandbox unavailable until then. Under one, every process and System V IPC object a run leaves
+behind belongs to that identity alone, so it can be listed and removed whole,
+which closes both limits; turning macOS on is then one change to the probe. A
 reproduction can still spend its whole time limit.
 
 ### 5. Policy drift and poisoning
