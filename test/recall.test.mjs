@@ -53,6 +53,9 @@ function recall(overrides = {}, requests = []) {
 
 const byName = (run, name) => run.results.fixtures.find((fixture) => fixture.name === name);
 
+/** The loss counts of a summary (issue 338), zero everywhere but where given. */
+const lost = (counts = {}) => ({ 'not-raised': 0, 'dropped-at-check': 0, 'verifier-rejected': 0, 'held-other': 0, challenge: 0, 'below-gate': 0, 'posted-elsewhere': 0, ...counts });
+
 test('canned fixtures: the hit is a hit, the miss is a miss, the clean one is silent', async (t) => {
   const before = snapshot(canned);
   const { results } = await recall();
@@ -88,6 +91,9 @@ test('canned fixtures: the hit is a hit, the miss is a miss, the clean one is si
     skipped: 1,
     cleanFixtures: 1,
     failedRuns: 0,
+    completedPositives: 2,
+    approved: 0,
+    lost: lost({ 'posted-elsewhere': 1 }),
   });
   assert.deepEqual(snapshot(canned), before, 'nothing is written under the fixtures');
 });
@@ -196,6 +202,9 @@ test('scoring: the tolerance edge, a wrong path, no finding, a failed run, and a
     skipped: 1,
     cleanFixtures: 2,
     failedRuns: 2,
+    completedPositives: 2,
+    approved: 0,
+    lost: lost(),
   });
   const empty = summariseResults([{ name: 'positive/x', class: 'positive', skipped: 'r' }]);
   assert.equal(empty.keyBugRecall, null, 'no denominator is no data, not zero');
@@ -524,7 +533,7 @@ test('a fixture record that cannot be true as written is refused, even with a su
     { name: 'positive/c', class: 'positive', skipped: 'r' },
     { name: 'no-findings/d', class: 'no-findings', silent: true, findings: 0, exitCode: 0 },
   ]);
-  assert.deepEqual(readRecallResults(sound).summary, { keyBugRecall: 0, causalLineHit: 0, cleanSilence: 1, positives: 2, skipped: 1, cleanFixtures: 1, failedRuns: 1 });
+  assert.deepEqual(readRecallResults(sound).summary, { keyBugRecall: 0, causalLineHit: 0, cleanSilence: 1, positives: 2, skipped: 1, cleanFixtures: 1, failedRuns: 1, completedPositives: 1, approved: 0, lost: lost() });
 });
 
 test('a miss that names a distance but no finding is refused', (t) => {
