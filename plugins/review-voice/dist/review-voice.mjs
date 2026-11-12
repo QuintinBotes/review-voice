@@ -1672,8 +1672,8 @@ function assessComplexity(diff, files2, partial, markedGenerated2 = /* @__PURE__
   };
 }
 var MAX_STRUCTURE_LISTED = 3;
-function listedStructure(items, describe) {
-  const shown = items.slice(0, MAX_STRUCTURE_LISTED).map(describe).join(", ");
+function listedStructure(items, describe2) {
+  const shown = items.slice(0, MAX_STRUCTURE_LISTED).map(describe2).join(", ");
   const more = items.length - Math.min(items.length, MAX_STRUCTURE_LISTED);
   return `${shown}${more > 0 ? `, +${more} more` : ""}`;
 }
@@ -8414,15 +8414,15 @@ function deriveSeverity(category, requested, reach = null) {
     };
   }
   const varies = new Set(Object.values(tiers ?? {})).size > 1;
-  const describe = resolved === normalised2 ? `${resolved} at ${resolvedReach} reach carries ${severity}` : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`;
+  const describe2 = resolved === normalised2 ? `${resolved} at ${resolvedReach} reach carries ${severity}` : `${category} read as ${resolved}; ${resolvedReach} reach carries ${severity}`;
   if (!varies) {
-    return { severity, requested, reach: reach ?? null, reason: describe };
+    return { severity, requested, reach: reach ?? null, reason: describe2 };
   }
   return boundToRequest(
     severity,
     requested,
     reach ?? null,
-    describe
+    describe2
   );
 }
 
@@ -19786,7 +19786,9 @@ var COMMAND_HELP = {
       "                         owner precision by lane and rule, and each active suppression since its approval",
       "  --html                 Emit the same report as an HTML fragment a job summary renders (exclusive with --json)",
       "  --out <path>           With --html, write a complete static page to the file, or evaluation.html in the directory",
-      "  --recall <results.json>  Also report the fixture recall figures from a file `review-voice recall` wrote",
+      "  --recall <results.json>  Also report the fixture recall figures from a file `review-voice recall` wrote.",
+      "                         A file from `recall --runs` gives each figure as the mean over its runs, and the",
+      "                         basis states the number of runs and the range from the lowest to the highest run",
       "  --since <Nd>           Window in days for posted_fixed_rate_recent and posted_dismissed_rate_recent (default 30d)",
       "Reads: nothing on stdin; the local store, and the results file with --recall.",
       "Writes: text (or JSON) on stdout; --json also carries stage_seconds, the median and p95 seconds per stage",
@@ -19814,9 +19816,24 @@ var COMMAND_HELP = {
       "  --mode <mode>          Review mode, as for `review`",
       "  --only <name>          Score one fixture, by name or <class>/<name>",
       "  --out <file>           Where to write the results (default results.json; never inside the fixtures)",
-      "  --keep                 Keep the temporary store and repositories and print where they are",
+      "  --runs <n>             Run every fixture n times, each run in a store of its own (a positive whole",
+      "                         number up to 1000, default 1). One run cannot tell a regression from chance, so",
+      "                         a figure is stated with its number of runs and its range",
+      "  --keep                 Keep the temporary store of every run, and the repositories, and print where they are",
       "Reads: the fixtures; with the claude runner, the model through the agent runner.",
       "Writes: the results file and one line per fixture on stdout; a temporary directory, removed unless --keep.",
+      "  Every completed fixture records event, the verdict its run reached. Every completed positive records",
+      "  lostAt, null on a hit and otherwise where the expected finding was lost, read from the run with no",
+      "  model call. With no candidate on an accepted anchor it is posted-elsewhere when the review posted a",
+      "  finding and not-raised when it posted none. Otherwise it is the furthest stage such a candidate reached:",
+      "  dropped-at-check (the candidate check dropped it), verifier-rejected (the verifier did not verify it),",
+      "  held-other (held by neither a gate nor the challenger, or left out by the editor), challenge (held by",
+      "  the challenger, or because the challenger did not run) or below-gate (verified, then held under a gate).",
+      "  One the challenger moved off the anchor, which then posted, is posted-elsewhere. The summary gains lost,",
+      "  a count per value over the misses, and approved, the positives that ended in APPROVE, beside",
+      "  completedPositives. With --runs above 1 a fixture carries runs, hits (silentRuns when clean) and",
+      "  attempts, one entry per run, in place of the single-run fields. Each summary rate is then the mean of",
+      "  the runs, and ranges gives its lowest and highest run and the value of every run.",
       "Exit codes: 0 ok, 1 a run failed (the file is still written), 2 bad invocation."
     )
   },
@@ -25510,15 +25527,38 @@ function htmlDocument(fragment, title) {
 
 // plugins/review-voice/src/evaluate/recall-results.ts
 import { readFileSync as readFileSync18 } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 var RECALL_CLASSES = ["positive", "negative", "no-findings"];
+var LOST_AT = ["not-raised", "dropped-at-check", "verifier-rejected", "held-other", "challenge", "below-gate", "posted-elsewhere"];
+var RUN_FIELDS = ["hit", "silent", "lineDelta", "categoryMatch", "findings", "lostAt", "event", "seconds", "costUsd", "exitCode", "error"];
+var RATES = ["keyBugRecall", "causalLineHit", "cleanSilence"];
+function acceptedAnchors(expectation) {
+  if (expectation.path === null || expectation.line === null) return [];
+  return [{ path: expectation.path, line: expectation.line }, ...expectation.anchors ?? []];
+}
+function lostAt(expectation, trail) {
+  const anchors = acceptedAnchors(expectation);
+  const near = trail.candidates.filter((candidate) => anchors.some((anchor) => anchor.path === candidate.path && Math.abs(candidate.line - anchor.line) <= AGREEMENT_LINE_TOLERANCE));
+  if (near.length === 0) return trail.posted.length > 0 ? "posted-elsewhere" : "not-raised";
+  const furthest = (stages) => stages.reduce((a, b) => LOST_AT.indexOf(b) > LOST_AT.indexOf(a) ? b : a);
+  const stage = (id) => {
+    if (!trail.kept.includes(id)) return "dropped-at-check";
+    const holds = trail.held.filter((hold) => hold.candidateId === id).map((hold) => hold.verdict === "below-gate" ? "below-gate" : hold.verdict.startsWith("challenge-") ? "challenge" : "held-other");
+    if (holds.length > 0) return furthest(holds);
+    if (!trail.verified.includes(id)) return "verifier-rejected";
+    const left = trail.eligible.find((entry) => entry.id === id);
+    return left !== void 0 && trail.posted.some((finding) => finding.path === left.path && finding.line === left.line) ? "posted-elsewhere" : "held-other";
+  };
+  return furthest(near.map((candidate) => stage(candidate.id)));
+}
 function scoreFixture(expectation, outcome) {
   if (expectation.class !== "positive") {
     return { silent: outcome.completed ? outcome.silent : null, findings: outcome.findings.length };
   }
-  if (!outcome.completed || expectation.path === null || expectation.line === null) {
+  const anchors = acceptedAnchors(expectation);
+  if (!outcome.completed || anchors.length === 0) {
     return { hit: null, lineDelta: null, categoryMatch: null, findings: outcome.findings.length };
   }
-  const anchors = [{ path: expectation.path, line: expectation.line }, ...expectation.anchors ?? []];
   const onPath = outcome.findings.flatMap((finding) => anchors.filter((anchor) => anchor.path === finding.path).map((anchor) => ({ finding, delta: Math.abs(finding.line - anchor.line) }))).sort((a, b) => a.delta - b.delta);
   const nearest = onPath[0];
   if (nearest === void 0) return { hit: false, lineDelta: null, categoryMatch: null, findings: outcome.findings.length };
@@ -25533,7 +25573,8 @@ function scoreFixture(expectation, outcome) {
 var ratio = (numerator, denominator) => denominator === 0 ? null : numerator / denominator;
 var failed = (result) => result.exitCode !== 0 || result.error !== void 0;
 function tallyResults(results) {
-  const tally = { hits: 0, completedPositives: 0, onPath: 0, silent: 0, completedClean: 0, positives: 0, skipped: 0, cleanFixtures: 0, failedRuns: 0 };
+  const lost = Object.fromEntries(LOST_AT.map((stage) => [stage, 0]));
+  const tally = { hits: 0, completedPositives: 0, onPath: 0, silent: 0, completedClean: 0, positives: 0, skipped: 0, cleanFixtures: 0, failedRuns: 0, approved: 0, lost };
   for (const result of results) {
     if (result.skipped !== void 0) {
       tally.skipped += 1;
@@ -25547,6 +25588,8 @@ function tallyResults(results) {
       tally.completedPositives += 1;
       if (result.hit === true) tally.hits += 1;
       if (result.lineDelta !== void 0 && result.lineDelta !== null) tally.onPath += 1;
+      if (result.event === "APPROVE") tally.approved += 1;
+      if (result.hit === false && result.lostAt !== void 0 && result.lostAt !== null) tally.lost[result.lostAt] += 1;
     } else {
       tally.cleanFixtures += 1;
       if (broken) continue;
@@ -25556,24 +25599,86 @@ function tallyResults(results) {
   }
   return tally;
 }
-function summariseResults(results) {
-  const tally = tallyResults(results);
+function combineAttempts(attempts) {
+  const first = attempts[0];
   return {
-    keyBugRecall: ratio(tally.hits, tally.completedPositives),
-    causalLineHit: ratio(tally.hits, tally.onPath),
-    cleanSilence: ratio(tally.silent, tally.completedClean),
-    positives: tally.positives,
-    skipped: tally.skipped,
-    cleanFixtures: tally.cleanFixtures,
-    failedRuns: tally.failedRuns
+    name: first.name,
+    class: first.class,
+    runs: attempts.length,
+    ...first.class === "positive" ? { hits: attempts.filter((attempt) => attempt.hit === true).length } : { silentRuns: attempts.filter((attempt) => attempt.silent === true).length },
+    // The lanes follow from the diff and the mode, not from the run; a failed run names none.
+    lanes: attempts.find((attempt) => (attempt.lanes ?? []).length > 0)?.lanes ?? [],
+    attempts: attempts.map((attempt) => Object.fromEntries(RUN_FIELDS.filter((key2) => attempt[key2] !== void 0).map((key2) => [key2, attempt[key2]])))
+  };
+}
+function runView(results, run) {
+  return results.map((result) => result.attempts === void 0 ? result : { ...result.attempts[run], name: result.name, class: result.class });
+}
+function summariseResults(results, runs = 1) {
+  const one = (run) => {
+    const tally = tallyResults(run);
+    return {
+      keyBugRecall: ratio(tally.hits, tally.completedPositives),
+      causalLineHit: ratio(tally.hits, tally.onPath),
+      cleanSilence: ratio(tally.silent, tally.completedClean),
+      positives: tally.positives,
+      skipped: tally.skipped,
+      cleanFixtures: tally.cleanFixtures,
+      failedRuns: tally.failedRuns,
+      completedPositives: tally.completedPositives,
+      approved: tally.approved,
+      lost: tally.lost
+    };
+  };
+  if (runs === 1) return one(results);
+  const each = Array.from({ length: runs }, (_, run) => one(runView(results, run)));
+  const first = each[0];
+  const total = (pick) => each.reduce((sum, summary) => sum + pick(summary), 0);
+  const range = (rate2) => {
+    const values = each.map((summary) => summary[rate2]);
+    const known = values.filter((value) => value !== null);
+    return { lowest: known.length === 0 ? null : Math.min(...known), highest: known.length === 0 ? null : Math.max(...known), runs: values };
+  };
+  const ranges = { keyBugRecall: range("keyBugRecall"), causalLineHit: range("causalLineHit"), cleanSilence: range("cleanSilence") };
+  const mean = (rate2) => {
+    const known = ranges[rate2].runs.filter((value) => value !== null);
+    return known.length === 0 ? null : known.reduce((sum, value) => sum + value, 0) / known.length;
+  };
+  return {
+    keyBugRecall: mean("keyBugRecall"),
+    causalLineHit: mean("causalLineHit"),
+    cleanSilence: mean("cleanSilence"),
+    positives: first.positives,
+    skipped: first.skipped,
+    cleanFixtures: first.cleanFixtures,
+    failedRuns: total((summary) => summary.failedRuns),
+    completedPositives: total((summary) => summary.completedPositives),
+    approved: total((summary) => summary.approved),
+    lost: Object.fromEntries(LOST_AT.map((stage) => [stage, total((summary) => summary.lost[stage])])),
+    runs,
+    ranges
   };
 }
 var isRecord6 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var MULTI_RUN_FIELDS = ["runs", "hits", "silentRuns", "attempts"];
+function fieldProblem(entry) {
+  for (const key2 of ["hit", "silent"]) {
+    if (entry[key2] !== void 0 && entry[key2] !== null && typeof entry[key2] !== "boolean") return `${key2} is not true, false or null`;
+  }
+  if (entry["lineDelta"] !== void 0 && entry["lineDelta"] !== null && typeof entry["lineDelta"] !== "number") return "lineDelta is not a number";
+  if (entry["exitCode"] !== void 0 && entry["exitCode"] !== null && typeof entry["exitCode"] !== "number") return "exitCode is not a number";
+  for (const key2 of ["skipped", "error"]) {
+    if (entry[key2] !== void 0 && typeof entry[key2] !== "string") return `${key2} is not a string`;
+  }
+  if (entry["lostAt"] !== void 0 && entry["lostAt"] !== null && !LOST_AT.some((stage) => stage === entry["lostAt"])) return `lostAt is not null or one of ${LOST_AT.join(", ")}`;
+  if (entry["event"] !== void 0 && entry["event"] !== null && typeof entry["event"] !== "string") return "event is not a string or null";
+  return null;
+}
 var isFigure = (value) => value === null || typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 function recordProblem(entry) {
   const count4 = (key2) => entry[key2] === void 0 || entry[key2] === null || Number.isInteger(entry[key2]) && entry[key2] >= 0 ? null : `${key2} is not a whole number`;
   if (entry["skipped"] !== void 0) {
-    const carried = ["hit", "silent", "lineDelta", "findings", "exitCode", "error"].filter((key2) => entry[key2] !== void 0);
+    const carried = ["hit", "silent", "lineDelta", "findings", "exitCode", "error", ...MULTI_RUN_FIELDS].filter((key2) => entry[key2] !== void 0);
     return carried.length === 0 ? null : `a skipped fixture carries no result, but this one has ${carried.join(", ")}`;
   }
   const badCount = count4("findings") ?? count4("lineDelta");
@@ -25587,6 +25692,7 @@ function recordProblem(entry) {
     if (typeof delta === "number" && entry["findings"] === 0) return "lineDelta is set but findings is 0";
     const within = typeof delta === "number" && delta <= AGREEMENT_LINE_TOLERANCE;
     if (entry["hit"] !== within) return `hit is ${String(entry["hit"])} but lineDelta is ${delta === void 0 || delta === null ? "absent" : String(delta)} against a tolerance of ${AGREEMENT_LINE_TOLERANCE}`;
+    if (entry["lostAt"] !== void 0 && entry["lostAt"] === null !== entry["hit"]) return `lostAt is ${String(entry["lostAt"])} but hit is ${String(entry["hit"])}`;
     return null;
   }
   if (typeof entry["silent"] !== "boolean") return "a completed clean fixture has no silent value";
@@ -25613,28 +25719,55 @@ function readRecallResults(path) {
   }
   const fixtures = document["fixtures"];
   if (!Array.isArray(fixtures)) throw bad("fixtures is not a list");
-  for (const [index, entry] of fixtures.entries()) {
-    if (!isRecord6(entry) || typeof entry["name"] !== "string") throw bad(`fixtures[${index}] has no name`);
-    if (!RECALL_CLASSES.some((known) => known === entry["class"])) throw bad(`fixtures[${index}] has no known class`);
-    for (const key2 of ["hit", "silent"]) {
-      if (entry[key2] !== void 0 && entry[key2] !== null && typeof entry[key2] !== "boolean") throw bad(`fixtures[${index}].${key2} is not true, false or null`);
-    }
-    if (entry["lineDelta"] !== void 0 && entry["lineDelta"] !== null && typeof entry["lineDelta"] !== "number") throw bad(`fixtures[${index}].lineDelta is not a number`);
-    if (entry["exitCode"] !== void 0 && entry["exitCode"] !== null && typeof entry["exitCode"] !== "number") throw bad(`fixtures[${index}].exitCode is not a number`);
-    for (const key2 of ["skipped", "error"]) {
-      if (entry[key2] !== void 0 && typeof entry[key2] !== "string") throw bad(`fixtures[${index}].${key2} is not a string`);
-    }
-    const problem = recordProblem(entry);
-    if (problem !== null) throw bad(`fixtures[${index}]: ${problem}`);
-  }
   const summary = document["summary"];
   if (!isRecord6(summary)) throw bad("summary is not an object");
-  for (const key2 of ["keyBugRecall", "causalLineHit", "cleanSilence"]) {
+  const runs = summary["runs"] === void 0 ? 1 : summary["runs"];
+  if (typeof runs !== "number" || !Number.isInteger(runs) || runs < (summary["runs"] === void 0 ? 1 : 2)) throw bad("summary.runs is not a whole number above 1");
+  const checked = (entry, label2) => {
+    const field = fieldProblem(entry);
+    if (field !== null) throw bad(`${label2}.${field}`);
+    const problem = recordProblem(entry);
+    if (problem !== null) throw bad(`${label2}: ${problem}`);
+  };
+  for (const [index, entry] of fixtures.entries()) {
+    const label2 = `fixtures[${index}]`;
+    if (!isRecord6(entry) || typeof entry["name"] !== "string") throw bad(`${label2} has no name`);
+    if (!RECALL_CLASSES.some((known) => known === entry["class"])) throw bad(`${label2} has no known class`);
+    if (runs === 1 || entry["skipped"] !== void 0) {
+      const several = MULTI_RUN_FIELDS.filter((key2) => entry[key2] !== void 0);
+      if (several.length > 0 && entry["skipped"] === void 0) throw bad(`${label2} carries ${several.join(", ")}, but the summary records one run`);
+      checked(entry, label2);
+      continue;
+    }
+    const attempts = entry["attempts"];
+    if (!Array.isArray(attempts) || attempts.length !== runs || entry["runs"] !== runs) throw bad(`${label2} does not carry the ${runs} attempts the summary records`);
+    const single = RUN_FIELDS.filter((key2) => entry[key2] !== void 0);
+    if (single.length > 0) throw bad(`${label2} carries ${single.join(", ")} beside its attempts, and one run is not the answer`);
+    for (const [run, attempt] of attempts.entries()) {
+      if (!isRecord6(attempt) || attempt["skipped"] !== void 0) throw bad(`${label2}.attempts[${run}] is not one run's result`);
+      const foreign = Object.keys(attempt).filter((key2) => !RUN_FIELDS.some((field) => field === key2));
+      if (foreign.length > 0) throw bad(`${label2}.attempts[${run}] carries ${foreign.join(", ")}, which one run does not record`);
+      checked({ ...attempt, class: entry["class"] }, `${label2}.attempts[${run}]`);
+    }
+    const [counted, scored, other] = entry["class"] === "positive" ? ["hits", "hit", "silentRuns"] : ["silentRuns", "silent", "hits"];
+    const count4 = attempts.filter((attempt) => attempt[scored] === true).length;
+    if (entry[counted] !== count4) throw bad(`${label2}.${counted} is ${JSON.stringify(entry[counted])} but its attempts give ${count4}`);
+    if (entry[other] !== void 0) throw bad(`${label2} is a ${String(entry["class"])} fixture and carries ${other}`);
+  }
+  for (const key2 of RATES) {
     if (!isFigure(summary[key2])) throw bad(`summary.${key2} is not a number from 0 to 1, or null`);
   }
-  const recomputed = summariseResults(fixtures);
+  const ranges = summary["ranges"];
+  if (runs > 1 && !RATES.every((rate2) => isRecord6(ranges) && isRecord6(ranges[rate2]) && Array.isArray(ranges[rate2]["runs"]) && ranges[rate2]["runs"].length === runs)) {
+    throw bad(`summary.ranges does not give every rate a value for each of the ${runs} runs`);
+  }
+  if (runs === 1 && ranges !== void 0) throw bad("summary.ranges is given, but the summary records one run");
+  const recomputed = summariseResults(fixtures, runs);
+  const lossCounts = ["completedPositives", "approved", "lost"];
+  const optional = runs === 1 && lossCounts.every((key2) => summary[key2] === void 0) ? lossCounts : [];
   for (const key2 of Object.keys(recomputed)) {
-    if (summary[key2] !== recomputed[key2]) throw bad(`summary.${key2} is ${JSON.stringify(summary[key2])} but the fixtures give ${JSON.stringify(recomputed[key2])}`);
+    if (summary[key2] === void 0 && optional.includes(key2)) continue;
+    if (!isDeepStrictEqual(summary[key2], recomputed[key2])) throw bad(`summary.${key2} is ${JSON.stringify(summary[key2])} but the fixtures give ${JSON.stringify(recomputed[key2])}`);
   }
   return document;
 }
@@ -25644,9 +25777,9 @@ function recallMetrics(results) {
   if (results === null) {
     return names.map((name) => ({ name, value: null, target: "no target", meets: null, basis: NO_RECALL_BASIS, kind: "goal" }));
   }
-  const tally = tallyResults(results.fixtures);
+  const { summary } = results;
   const where = `plugin ${results.pluginVersion}, runner ${results.runner}, mode ${results.mode}`;
-  const left = `${tally.skipped} skipped, ${tally.failedRuns} failed run(s) excluded`;
+  const left = `${summary.skipped} skipped, ${summary.failedRuns} failed run(s) excluded`;
   const metric = (name, value, basis) => ({
     name,
     value,
@@ -25655,10 +25788,21 @@ function recallMetrics(results) {
     basis: `${basis}; ${left} (${where})`,
     kind: "goal"
   });
+  const { runs, ranges } = summary;
+  if (runs !== void 0 && ranges !== void 0) {
+    const figure = (value) => value === null ? "no data" : value.toFixed(2);
+    const over = (rate2, what) => `mean of ${runs} runs, lowest ${figure(ranges[rate2].lowest)}, highest ${figure(ranges[rate2].highest)}, of ${what}`;
+    return [
+      metric("fixture_key_bug_recall", summary.keyBugRecall, over("keyBugRecall", "completed positives with a finding on an accepted anchor")),
+      metric("fixture_causal_line_hit", summary.causalLineHit, over("causalLineHit", `positives with a finding on an expected file that hit an accepted anchor within ${AGREEMENT_LINE_TOLERANCE}`)),
+      metric("fixture_clean_silence", summary.cleanSilence, over("cleanSilence", "completed clean fixtures that ended with exactly the no-findings sentence"))
+    ];
+  }
+  const tally = tallyResults(results.fixtures);
   return [
-    metric("fixture_key_bug_recall", results.summary.keyBugRecall, `${tally.hits}/${tally.completedPositives} completed positives had a finding on an accepted anchor`),
-    metric("fixture_causal_line_hit", results.summary.causalLineHit, `${tally.hits}/${tally.onPath} positives with a finding on an expected file hit an accepted anchor within ${AGREEMENT_LINE_TOLERANCE}`),
-    metric("fixture_clean_silence", results.summary.cleanSilence, `${tally.silent}/${tally.completedClean} completed clean fixtures ended with exactly the no-findings sentence`)
+    metric("fixture_key_bug_recall", summary.keyBugRecall, `${tally.hits}/${tally.completedPositives} completed positives had a finding on an accepted anchor`),
+    metric("fixture_causal_line_hit", summary.causalLineHit, `${tally.hits}/${tally.onPath} positives with a finding on an expected file hit an accepted anchor within ${AGREEMENT_LINE_TOLERANCE}`),
+    metric("fixture_clean_silence", summary.cleanSilence, `${tally.silent}/${tally.completedClean} completed clean fixtures ended with exactly the no-findings sentence`)
   ];
 }
 
@@ -26685,6 +26829,7 @@ var PLACEHOLDER_TOKEN = "recall-placeholder-token";
 var CANNED_OUTPUT = /^[a-z][a-z0-9-]*\.\d+\.json$/;
 var RecallUsageError = class extends Error {
 };
+var MAX_RUNS = 1e3;
 function scalar(raw) {
   const text5 = raw.trim();
   const quoted = /^(["'])(.*)\1$/.exec(text5);
@@ -26841,6 +26986,29 @@ function reviewIsSilent(report) {
     return false;
   }
 }
+function trailOf(report) {
+  const entries = (file2, key2) => {
+    if (report.runDir === null) return [];
+    try {
+      const list3 = JSON.parse(readFileSync23(join24(report.runDir, file2), "utf8"))[key2];
+      return Array.isArray(list3) ? list3.filter((entry) => typeof entry === "object" && entry !== null) : [];
+    } catch {
+      return [];
+    }
+  };
+  const idOf4 = (entry) => String(entry["candidate_id"] ?? entry["candidateId"] ?? "");
+  const candidates = entries("candidates.json", "candidates");
+  const questions = new Set(candidates.filter((candidate) => candidate["severity"] === "question").map(idOf4));
+  return {
+    candidates: candidates.map((candidate) => ({ id: idOf4(candidate), path: String(candidate["path"]), line: Number(candidate["line"]) })),
+    kept: entries("checked.json", "kept").map(idOf4),
+    // The driver's own rule for what the verifier let through, under which a question goes on when its premises hold.
+    verified: entries("verification.json", "verifications").filter((entry) => entry["verified"] === true || questions.has(idOf4(entry)) && entry["premises_verified"] === true).map(idOf4),
+    held: report.held.map((hold) => ({ candidateId: hold.candidateId, verdict: hold.verdict })),
+    eligible: entries("scores.challenged.json", "eligible").map((entry) => ({ id: idOf4(entry), path: String(entry["path"]), line: Number(entry["line"]) })),
+    posted: report.findings.map((finding) => ({ path: finding.path, line: finding.line }))
+  };
+}
 function checkoutBase(repoDir) {
   execFileSync15("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"] });
 }
@@ -26908,10 +27076,14 @@ async function runFixture(fixture, index, context2) {
     silent: reviewIsSilent(report)
   };
   const error = report.error ?? (report.exitCode !== 0 ? `the run exited ${report.exitCode}` : report.runId === null ? "the run recorded nothing" : void 0);
+  const scored = scoreFixture(expectation, outcome);
+  const event = typeof report.verdict === "object" && report.verdict !== null ? report.verdict["event"] : null;
   return {
     name,
     class: expectation.class,
-    ...scoreFixture(expectation, outcome),
+    ...scored,
+    ...completed && expectation.class === "positive" ? { lostAt: scored.hit === true ? null : lostAt(expectation, trailOf(report)) } : {},
+    ...completed ? { event: typeof event === "string" ? event : null } : {},
     lanes: lanesRun(report),
     seconds: report.seconds,
     costUsd: report.costUsd,
@@ -26920,10 +27092,12 @@ async function runFixture(fixture, index, context2) {
   };
 }
 async function runRecall(options, deps) {
+  const runs = options.runs ?? 1;
+  if (!Number.isInteger(runs) || runs < 1 || runs > MAX_RUNS) throw new RecallUsageError(`--runs takes a positive whole number up to ${MAX_RUNS}; ${runs} is not one.`);
   const fixtures = selectFixtures(options);
   const root = mkdtempSync5(join24(tmpdir4(), "rv-recall-"));
-  const dataDir = join24(root, "data");
-  mkdirSync9(dataDir, { recursive: true });
+  const roots = runs === 1 ? [root] : Array.from({ length: runs }, (_, run) => join24(root, `run-${run + 1}`));
+  const dataDirs = roots.map((dir) => join24(dir, "data"));
   const quiet = { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" };
   const gitKeys = [.../* @__PURE__ */ new Set([...Object.keys(process.env).filter((key2) => key2.startsWith("GIT_")), ...Object.keys(quiet)])];
   const touched = ["REVIEW_VOICE_DATA_DIR", "GITHUB_TOKEN", "REVIEW_VOICE_CONFIG", ...gitKeys];
@@ -26931,14 +27105,20 @@ async function runRecall(options, deps) {
   const cwd = process.cwd();
   const fixtureResults = [];
   try {
+    for (const dir of dataDirs) mkdirSync9(dir, { recursive: true });
     for (const key2 of gitKeys) delete process.env[key2];
     Object.assign(process.env, quiet);
-    process.env["REVIEW_VOICE_DATA_DIR"] = dataDir;
     delete process.env["REVIEW_VOICE_CONFIG"];
     const hasToken = [process.env["GITHUB_TOKEN"], process.env["GH_TOKEN"]].some((value) => value !== void 0 && value !== "");
     if (!hasToken) process.env["GITHUB_TOKEN"] = PLACEHOLDER_TOKEN;
     for (const [index, fixture] of fixtures.entries()) {
-      const result = await runFixture(fixture, index, { root, options, deps });
+      const attempts = [];
+      for (const [run, runRoot] of roots.entries()) {
+        process.env["REVIEW_VOICE_DATA_DIR"] = dataDirs[run];
+        attempts.push(await runFixture(fixture, index, { root: runRoot, options, deps }));
+        if (fixture.expectation.skip !== null) break;
+      }
+      const result = attempts.length === 1 ? attempts[0] : combineAttempts(attempts);
       fixtureResults.push(result);
       deps.onResult?.(result);
     }
@@ -26957,17 +27137,32 @@ async function runRecall(options, deps) {
       mode: options.mode ?? "auto",
       runner: options.runner,
       fixtures: fixtureResults,
-      summary: summariseResults(fixtureResults)
+      summary: summariseResults(fixtureResults, runs)
     },
-    dataDir,
+    dataDir: dataDirs[0],
+    dataDirs,
     kept: options.keep
   };
 }
 
 // plugins/review-voice/src/cli/recall.ts
+function describe(result) {
+  if (result.skipped !== void 0) return `skipped: ${result.skipped}`;
+  if (result.attempts !== void 0) {
+    const failed2 = result.attempts.filter((attempt) => attempt.exitCode !== 0 || attempt.error !== void 0).length;
+    const lost = /* @__PURE__ */ new Map();
+    for (const { lostAt: lostAt2 } of result.attempts) if (lostAt2 != null) lost.set(lostAt2, (lost.get(lostAt2) ?? 0) + 1);
+    return (result.class === "positive" ? `${result.hits}/${result.runs} runs hit` : `${result.silentRuns}/${result.runs} runs silent`) + (lost.size === 0 ? "" : `; lost at ${[...lost].map(([stage, count4]) => `${stage} ${count4}`).join(", ")}`) + (failed2 === 0 ? "" : `; ${failed2} failed`);
+  }
+  if (result.error !== void 0) return `failed: ${result.error.split("\n")[0]}`;
+  if (result.class !== "positive") return result.silent === true ? "silent" : `not silent (${result.findings} finding(s))`;
+  if (result.hit === true) return `hit (line delta ${result.lineDelta})`;
+  const where = result.lineDelta === null || result.lineDelta === void 0 ? "no finding on an expected file" : `line delta ${result.lineDelta}`;
+  return `miss (${where}), lost at ${result.lostAt}`;
+}
 async function recallCommand(argv, runInProcess2) {
-  const known = /* @__PURE__ */ new Set(["--fixtures", "--class", "--runner", "--mode", "--out", "--only", "--keep"]);
-  const valued = /* @__PURE__ */ new Set(["--fixtures", "--class", "--runner", "--mode", "--out", "--only"]);
+  const known = /* @__PURE__ */ new Set(["--fixtures", "--class", "--runner", "--mode", "--out", "--only", "--keep", "--runs"]);
+  const valued = /* @__PURE__ */ new Set(["--fixtures", "--class", "--runner", "--mode", "--out", "--only", "--runs"]);
   for (const [index, arg] of argv.entries()) {
     if (arg.startsWith("--") ? !known.has(arg) : !valued.has(argv[index - 1] ?? "")) {
       console.error(`Unexpected argument ${arg}.`);
@@ -27006,6 +27201,11 @@ async function recallCommand(argv, runInProcess2) {
     console.error(`--mode takes one of ${MODES.join(", ")}.`);
     return 2;
   }
+  const runsText = flag(argv, "--runs") ?? "1";
+  if (!/^[1-9]\d*$/.test(runsText) || Number(runsText) > MAX_RUNS) {
+    console.error(`--runs takes a positive whole number up to ${MAX_RUNS}; ${runsText} is not one.`);
+    return 2;
+  }
   const out = resolve9(flag(argv, "--out") ?? "results.json");
   let linked = false;
   try {
@@ -27030,13 +27230,10 @@ async function recallCommand(argv, runInProcess2) {
   try {
     mkdirSync10(dirname16(out), { recursive: true });
     run = await runRecall(
-      { fixtures, classes, runner, mode, only: flag(argv, "--only"), keep: argv.includes("--keep") },
+      { fixtures, classes, runner, mode, only: flag(argv, "--only"), keep: argv.includes("--keep"), runs: Number(runsText) },
       {
         commandWith: (fetchImpl) => (args, stdin) => runInProcess2(args, { stdin, fetchImpl }),
-        onResult: (result) => {
-          const verdict2 = result.skipped !== void 0 ? `skipped: ${result.skipped}` : result.error !== void 0 ? `failed: ${result.error.split("\n")[0]}` : result.class === "positive" ? result.hit === true ? `hit (line delta ${result.lineDelta})` : result.lineDelta === null || result.lineDelta === void 0 ? "miss (no finding on an expected file)" : `miss (line delta ${result.lineDelta})` : result.silent === true ? "silent" : `not silent (${result.findings} finding(s))`;
-          console.log(`${result.name.padEnd(48)} ${verdict2}`);
-        }
+        onResult: (result) => console.log(`${result.name.padEnd(48)} ${describe(result)}`)
       }
     );
   } catch (error) {
@@ -27053,11 +27250,12 @@ async function recallCommand(argv, runInProcess2) {
   renameSync3(staging, out);
   const { summary } = run.results;
   const figure = (value) => value === null ? "no data" : value.toFixed(2);
+  const rate2 = (key2) => figure(summary[key2]) + (summary.ranges === void 0 ? "" : ` (${figure(summary.ranges[key2].lowest)} to ${figure(summary.ranges[key2].highest)})`);
   console.log(
-    `key-bug recall ${figure(summary.keyBugRecall)}, causal-line hit ${figure(summary.causalLineHit)}, clean silence ${figure(summary.cleanSilence)}; ${summary.positives} positive(s), ${summary.cleanFixtures} clean, ${summary.skipped} skipped, ${summary.failedRuns} failed run(s)`
+    `key-bug recall ${rate2("keyBugRecall")}, causal-line hit ${rate2("causalLineHit")}, clean silence ${rate2("cleanSilence")}; ` + (summary.runs === void 0 ? "" : `mean of ${summary.runs} runs with the lowest and highest run; `) + `${summary.positives} positive(s), ${summary.cleanFixtures} clean, ${summary.skipped} skipped, ${summary.failedRuns} failed run(s)`
   );
   console.log(`Results: ${out}`);
-  if (run.kept) console.log(`Kept: ${run.dataDir}`);
+  if (run.kept) for (const dir of run.dataDirs) console.log(`Kept: ${dir}`);
   return summary.failedRuns > 0 ? 1 : 0;
 }
 
