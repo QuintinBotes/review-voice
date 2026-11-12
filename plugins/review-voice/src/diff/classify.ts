@@ -6,7 +6,29 @@
  * request. These are excluded by default and recoverable with
  * --include-generated, because occasionally a lock file change IS the review.
  */
+import { globToRegExp } from '../conventions/globs.ts';
+
 export type FileClass = 'source' | 'generated' | 'vendored' | 'lockfile' | 'binary';
+
+/** Whether a path is one the repository says is its own (`review.first_party_paths`). */
+export type FirstParty = (path: string) => boolean;
+
+/**
+ * The matcher for `review.first_party_paths`, in the sensitive-paths glob
+ * dialect. A directory named `vendor` can be a domain term, and ten of a pull
+ * request's twelve files went unread for it (issue 351). A glob that does not
+ * compile matches nothing, so its files stay excluded.
+ */
+export function firstPartyMatcher(globs: readonly string[]): FirstParty {
+  const matchers = globs.flatMap((glob) => {
+    try {
+      return [globToRegExp(glob)];
+    } catch {
+      return [];
+    }
+  });
+  return (path) => matchers.some((matcher) => matcher.test(path));
+}
 
 const LOCKFILES = new Set([
   'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml',
@@ -70,13 +92,17 @@ export function languageOf(path: string): string | null {
   return LANGUAGES[extensionOf(path)] ?? null;
 }
 
-export function classify(path: string): FileClass {
+/**
+ * `firstParty` lifts the vendored class alone: a lock file, a binary or a
+ * generated file under a first-party path keeps its own rule.
+ */
+export function classify(path: string, firstParty?: FirstParty): FileClass {
   const name = path.split('/').pop() ?? '';
   if (LOCKFILES.has(name)) return 'lockfile';
 
   const segments = path.split('/');
   // Only directory segments count: a file literally named "vendor.ts" is source.
-  if (segments.slice(0, -1).some((segment) => VENDOR_SEGMENTS.has(segment))) return 'vendored';
+  if (segments.slice(0, -1).some((segment) => VENDOR_SEGMENTS.has(segment)) && firstParty?.(path) !== true) return 'vendored';
 
   if (BINARY_EXTENSIONS.has(extensionOf(path))) return 'binary';
   if (GENERATED_PATTERNS.some((pattern) => pattern.test(path))) return 'generated';
@@ -131,8 +157,8 @@ export function isDocumentation(path: string): boolean {
 }
 
 /** Everything but `source` is noise unless the user asked for it. */
-export function isReviewable(path: string, includeGenerated: boolean): boolean {
-  return includeGenerated || classify(path) === 'source';
+export function isReviewable(path: string, includeGenerated: boolean, firstParty?: FirstParty): boolean {
+  return includeGenerated || classify(path, firstParty) === 'source';
 }
 
 /**
@@ -177,8 +203,9 @@ export function generatedRoot(path: string): string {
 export function findHandEdited(
   changedPaths: string[],
   readHeader: (path: string) => string | null,
+  firstParty?: FirstParty,
 ): Set<string> {
-  const generated = changedPaths.filter((path) => classify(path) === 'generated');
+  const generated = changedPaths.filter((path) => classify(path, firstParty) === 'generated');
   const perRoot = new Map<string, number>();
   for (const path of generated) {
     const root = generatedRoot(path);

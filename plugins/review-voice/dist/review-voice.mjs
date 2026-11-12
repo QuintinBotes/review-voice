@@ -235,7 +235,114 @@ import { execFileSync as execFileSync2 } from "node:child_process";
 import { readFileSync as readFileSync2 } from "node:fs";
 import { join as join2 } from "node:path";
 
+// plugins/review-voice/src/conventions/globs.ts
+function frontmatterPaths(content) {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
+  if (match === null) return [];
+  const block = match[1] ?? "";
+  const paths = [];
+  let inPaths = false;
+  for (const raw of block.split(/\r?\n/)) {
+    const line3 = raw.trimEnd();
+    if (/^paths\s*:/.test(line3)) {
+      inPaths = true;
+      const inline = line3.slice(line3.indexOf(":") + 1).trim();
+      if (inline.startsWith("[")) {
+        for (const item of inline.slice(1, -1).split(",")) paths.push(unquote(item));
+        inPaths = false;
+      }
+      continue;
+    }
+    if (!inPaths) continue;
+    if (/^\s*-\s+/.test(line3)) {
+      paths.push(unquote(line3.replace(/^\s*-\s+/, "")));
+      continue;
+    }
+    if (/^\S/.test(line3)) inPaths = false;
+  }
+  return paths.filter((glob) => glob.length > 0);
+}
+function unquote(value) {
+  return value.trim().replace(/^["']|["']$/g, "").trim();
+}
+function globToRegExp(glob) {
+  let source = "";
+  for (let i = 0; i < glob.length; i += 1) {
+    const char = glob[i];
+    if (char === "*") {
+      if (glob[i + 1] === "*") {
+        if (glob[i + 2] === "/") {
+          source += "(?:.*/)?";
+          i += 2;
+        } else {
+          source += ".*";
+          i += 1;
+        }
+        continue;
+      }
+      source += "[^/]*";
+      continue;
+    }
+    if (char === "?") {
+      source += "[^/]";
+      continue;
+    }
+    source += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${source}$`, "su");
+}
+function governsCount(globs, changedPaths) {
+  if (globs.length === 0 || changedPaths.length === 0) return 0;
+  const normalised2 = changedPaths.map((path) => path.split("\\").join("/"));
+  const compiled = globs.flatMap((glob) => {
+    try {
+      const exact = globToRegExp(glob);
+      return glob.includes("/") ? [exact] : [exact, globToRegExp(`**/${glob}`)];
+    } catch {
+      return [];
+    }
+  });
+  return normalised2.filter((path) => compiled.some((pattern) => pattern.test(path))).length;
+}
+function governsAny(globs, changedPaths) {
+  if (globs.length === 0 || changedPaths.length === 0) return false;
+  const normalised2 = changedPaths.map((path) => path.split("\\").join("/"));
+  return globs.some((glob) => {
+    let pattern;
+    try {
+      pattern = globToRegExp(glob);
+    } catch {
+      return false;
+    }
+    const loose = glob.includes("/") ? null : globToRegExp(`**/${glob}`);
+    return normalised2.some((path) => pattern.test(path) || loose !== null && loose.test(path));
+  });
+}
+function pointerTargets(content) {
+  const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---/, "").trim();
+  if (body.length === 0) return [];
+  const targets = [];
+  for (const raw of body.split(/\r?\n/)) {
+    const line3 = raw.trim();
+    if (line3.length === 0 || line3.startsWith("<!--") || line3.startsWith("#")) continue;
+    const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(line3);
+    if (match?.[1] === void 0) return [];
+    targets.push(match[1]);
+  }
+  return targets;
+}
+
 // plugins/review-voice/src/diff/classify.ts
+function firstPartyMatcher(globs) {
+  const matchers = globs.flatMap((glob) => {
+    try {
+      return [globToRegExp(glob)];
+    } catch {
+      return [];
+    }
+  });
+  return (path) => matchers.some((matcher) => matcher.test(path));
+}
 var LOCKFILES = /* @__PURE__ */ new Set([
   "package-lock.json",
   "npm-shrinkwrap.json",
@@ -372,11 +479,11 @@ function languageOf(path) {
   if (name === "makefile") return "make";
   return LANGUAGES[extensionOf(path)] ?? null;
 }
-function classify(path) {
+function classify(path, firstParty) {
   const name = path.split("/").pop() ?? "";
   if (LOCKFILES.has(name)) return "lockfile";
   const segments = path.split("/");
-  if (segments.slice(0, -1).some((segment) => VENDOR_SEGMENTS.has(segment))) return "vendored";
+  if (segments.slice(0, -1).some((segment) => VENDOR_SEGMENTS.has(segment)) && firstParty?.(path) !== true) return "vendored";
   if (BINARY_EXTENSIONS.has(extensionOf(path))) return "binary";
   if (GENERATED_PATTERNS.some((pattern) => pattern.test(path))) return "generated";
   return "source";
@@ -425,8 +532,8 @@ function isDocumentation(path) {
   if (extension !== "" || !DOCUMENTATION_NAMES.has(name)) return false;
   return segments.length === 0 || segments.some((segment) => segment === "docs" || segment === "doc");
 }
-function isReviewable(path, includeGenerated) {
-  return includeGenerated || classify(path) === "source";
+function isReviewable(path, includeGenerated, firstParty) {
+  return includeGenerated || classify(path, firstParty) === "source";
 }
 var DO_NOT_EDIT = /@generated|do not edit|don'?t edit|auto-?generated|automatically generated/i;
 var HEADER_LINES = 20;
@@ -440,8 +547,8 @@ function generatedRoot(path) {
   const slash = path.lastIndexOf("/");
   return slash < 0 ? "" : path.slice(0, slash + 1);
 }
-function findHandEdited(changedPaths, readHeader) {
-  const generated = changedPaths.filter((path) => classify(path) === "generated");
+function findHandEdited(changedPaths, readHeader, firstParty) {
+  const generated = changedPaths.filter((path) => classify(path, firstParty) === "generated");
   const perRoot = /* @__PURE__ */ new Map();
   for (const path of generated) {
     const root = generatedRoot(path);
@@ -454,6 +561,71 @@ function findHandEdited(changedPaths, readHeader) {
     if (header !== null && hasDoNotEditHeader(header)) suspected.add(path);
   }
   return suspected;
+}
+
+// plugins/review-voice/src/diff/exclusions.ts
+var FILE_DELETED = "file deleted";
+var NO_PATCH = "no patch returned (binary or too large)";
+var SAME_AS_BASE_TIP = "identical to the base branch tip (already merged there)";
+var COVERED_EARLIER = "unchanged since the last review";
+function leftOutPaths(files2) {
+  return files2.filter((file2) => file2.reviewed === false && !String(file2.excludedBecause ?? "").startsWith(COVERED_EARLIER)).map((file2) => file2.path);
+}
+function excludedReason(cls) {
+  switch (cls) {
+    case "lockfile":
+      return "lock file; use --include-generated if the dependency change is the point";
+    case "vendored":
+      return "vendored dependency";
+    case "generated":
+      return "generated or minified";
+    case "binary":
+      return "binary";
+    default:
+      return "";
+  }
+}
+var short = (reason2) => reason2.split(";")[0].trim();
+var KNOWN_REASONS = new Set(
+  [...["lockfile", "vendored", "generated", "binary"].map(excludedReason), FILE_DELETED, NO_PATCH, SAME_AS_BASE_TIP].map(short)
+);
+var OTHER_REASON = "other reason";
+var plural = (count4) => `${count4} changed file${count4 === 1 ? "" : "s"}`;
+function summary(changedFiles2, counts) {
+  const reasons = [...counts].map(([reason2, files2]) => ({ reason: reason2, files: files2 })).sort((a, b) => b.files - a.files);
+  const excludedFiles = reasons.reduce((sum, entry) => sum + entry.files, 0);
+  if (excludedFiles === 0) return null;
+  return {
+    changedFiles: changedFiles2,
+    excludedFiles,
+    reasons,
+    note: `Excluded ${excludedFiles} of ${plural(changedFiles2)}: ${reasons.map((entry) => `${entry.files} ${entry.reason}`).join(", ")}.`
+  };
+}
+function summariseExclusions(files2) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const file2 of files2) {
+    if (file2.reviewed) continue;
+    const reason2 = short(file2.excludedBecause ?? "") || OTHER_REASON;
+    counts.set(reason2, (counts.get(reason2) ?? 0) + 1);
+  }
+  return summary(files2.length, counts);
+}
+function parseExclusions(raw) {
+  if (typeof raw !== "object" || raw === null) return null;
+  const value = raw;
+  const whole = (count4) => Number.isInteger(count4) && count4 > 0;
+  if (!whole(value["changedFiles"]) || !whole(value["excludedFiles"]) || !Array.isArray(value["reasons"])) return null;
+  const counts = /* @__PURE__ */ new Map();
+  for (const entry of value["reasons"]) {
+    const reason2 = entry?.reason;
+    const files2 = entry?.files;
+    if (typeof reason2 !== "string" || !whole(files2)) return null;
+    const known = KNOWN_REASONS.has(reason2) ? reason2 : OTHER_REASON;
+    counts.set(known, (counts.get(known) ?? 0) + files2);
+  }
+  const parsed2 = summary(value["changedFiles"], counts);
+  return parsed2 !== null && parsed2.excludedFiles === value["excludedFiles"] && parsed2.excludedFiles <= parsed2.changedFiles ? parsed2 : null;
 }
 
 // plugins/review-voice/src/diff/acquire.ts
@@ -558,22 +730,9 @@ function parseNameStatus(raw) {
   }
   return out;
 }
-function excludedReason(cls) {
-  switch (cls) {
-    case "lockfile":
-      return "lock file; use --include-generated if the dependency change is the point";
-    case "vendored":
-      return "vendored dependency";
-    case "generated":
-      return "generated or minified";
-    case "binary":
-      return "binary";
-    default:
-      return "";
-  }
-}
 function acquireDiff(options) {
   const root = repositoryRoot(options.cwd);
+  const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
   const range = options.base !== null ? [`${options.base}...HEAD`] : options.staged ? ["--cached"] : [];
   const mode = options.base !== null ? "base" : options.staged ? "staged" : "worktree";
   const entries = parseNameStatus(git(["diff", "--name-status", "-z", ...range], root));
@@ -586,11 +745,17 @@ function acquireDiff(options) {
       deletions: match[2] === "-" ? 0 : Number(match[2])
     });
   }
-  if (mode === "worktree") {
-    for (const path of untrackedFiles(root)) {
-      entries.push({ status: "A", path });
-    }
+  const untracked = new Set(mode === "worktree" ? untrackedFiles(root) : []);
+  for (const path of untracked) entries.push({ status: "A", path });
+  const binary2 = /* @__PURE__ */ new Set();
+  const stats = git(["diff", "--numstat", "-z", ...range], root).split("\0");
+  for (let i = 0; i < stats.length; i += 1) {
+    const match = /^(-|\d+)\t(-|\d+)\t([^]*)$/.exec(stats[i]);
+    if (match === null) continue;
+    const path = match[3] !== "" ? match[3] : stats[i += 2];
+    if (match[1] === "-" && path !== void 0) binary2.add(path);
   }
+  const isBinary = (path) => untracked.has(path) ? gitAllowingDifference(["diff", "--numstat", "--no-index", "--", "/dev/null", path], root).startsWith("-	-	") : binary2.has(path);
   const readHead3 = (path) => {
     try {
       if (mode === "worktree") return readFileSync2(join2(root, path), "utf8");
@@ -601,13 +766,16 @@ function acquireDiff(options) {
   };
   const handEdited = findHandEdited(
     entries.filter((entry) => entry.status !== "D").map((entry) => entry.path),
-    readHead3
+    readHead3,
+    firstParty
   );
   const files2 = entries.map((entry) => {
-    const cls = classify(entry.path);
+    const cls = classify(entry.path, firstParty);
     const deleted = entry.status === "D";
     const suspected = handEdited.has(entry.path);
-    const reviewed = !deleted && (suspected || isReviewable(entry.path, options.includeGenerated));
+    const wanted = !deleted && (suspected || isReviewable(entry.path, options.includeGenerated, firstParty));
+    const unreadable = wanted && isBinary(entry.path);
+    const reviewed = wanted && !unreadable;
     return {
       path: entry.path,
       ...entry.previousPath === void 0 ? {} : { previousPath: entry.previousPath },
@@ -618,11 +786,10 @@ function acquireDiff(options) {
       deletions: numstat.get(entry.path)?.deletions ?? 0,
       reviewed,
       ...suspected ? { handEditSuspected: true } : {},
-      ...reviewed ? {} : { excludedBecause: deleted ? "file deleted" : excludedReason(cls) }
+      ...reviewed ? {} : { excludedBecause: deleted ? FILE_DELETED : excludedReason(unreadable ? "binary" : cls) }
     };
   });
   const reviewable = files2.filter((file2) => file2.reviewed).map((file2) => file2.path);
-  const untracked = new Set(mode === "worktree" ? untrackedFiles(root) : []);
   const trackedReviewable = reviewable.filter((path) => !untracked.has(path));
   const untrackedReviewable = reviewable.filter((path) => untracked.has(path));
   const parts = [];
@@ -649,6 +816,7 @@ function acquireDiff(options) {
     // reviewable, present and empty.
     hunkFileCount: reviewable.filter((path) => hunkPaths.has(path)).length,
     excludedFileCount: files2.length - reviewable.length,
+    exclusions: summariseExclusions(files2),
     diff
   };
 }
@@ -1278,103 +1446,6 @@ function openDatabase(path = databasePath()) {
   return db;
 }
 
-// plugins/review-voice/src/conventions/globs.ts
-function frontmatterPaths(content) {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
-  if (match === null) return [];
-  const block = match[1] ?? "";
-  const paths = [];
-  let inPaths = false;
-  for (const raw of block.split(/\r?\n/)) {
-    const line3 = raw.trimEnd();
-    if (/^paths\s*:/.test(line3)) {
-      inPaths = true;
-      const inline = line3.slice(line3.indexOf(":") + 1).trim();
-      if (inline.startsWith("[")) {
-        for (const item of inline.slice(1, -1).split(",")) paths.push(unquote(item));
-        inPaths = false;
-      }
-      continue;
-    }
-    if (!inPaths) continue;
-    if (/^\s*-\s+/.test(line3)) {
-      paths.push(unquote(line3.replace(/^\s*-\s+/, "")));
-      continue;
-    }
-    if (/^\S/.test(line3)) inPaths = false;
-  }
-  return paths.filter((glob) => glob.length > 0);
-}
-function unquote(value) {
-  return value.trim().replace(/^["']|["']$/g, "").trim();
-}
-function globToRegExp(glob) {
-  let source = "";
-  for (let i = 0; i < glob.length; i += 1) {
-    const char = glob[i];
-    if (char === "*") {
-      if (glob[i + 1] === "*") {
-        if (glob[i + 2] === "/") {
-          source += "(?:.*/)?";
-          i += 2;
-        } else {
-          source += ".*";
-          i += 1;
-        }
-        continue;
-      }
-      source += "[^/]*";
-      continue;
-    }
-    if (char === "?") {
-      source += "[^/]";
-      continue;
-    }
-    source += char.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  }
-  return new RegExp(`^${source}$`, "su");
-}
-function governsCount(globs, changedPaths) {
-  if (globs.length === 0 || changedPaths.length === 0) return 0;
-  const normalised2 = changedPaths.map((path) => path.split("\\").join("/"));
-  const compiled = globs.flatMap((glob) => {
-    try {
-      const exact = globToRegExp(glob);
-      return glob.includes("/") ? [exact] : [exact, globToRegExp(`**/${glob}`)];
-    } catch {
-      return [];
-    }
-  });
-  return normalised2.filter((path) => compiled.some((pattern) => pattern.test(path))).length;
-}
-function governsAny(globs, changedPaths) {
-  if (globs.length === 0 || changedPaths.length === 0) return false;
-  const normalised2 = changedPaths.map((path) => path.split("\\").join("/"));
-  return globs.some((glob) => {
-    let pattern;
-    try {
-      pattern = globToRegExp(glob);
-    } catch {
-      return false;
-    }
-    const loose = glob.includes("/") ? null : globToRegExp(`**/${glob}`);
-    return normalised2.some((path) => pattern.test(path) || loose !== null && loose.test(path));
-  });
-}
-function pointerTargets(content) {
-  const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---/, "").trim();
-  if (body.length === 0) return [];
-  const targets = [];
-  for (const raw of body.split(/\r?\n/)) {
-    const line3 = raw.trim();
-    if (line3.length === 0 || line3.startsWith("<!--") || line3.startsWith("#")) continue;
-    const match = /^@(?:\.\/)?([^\s]+\.md)$/.exec(line3);
-    if (match?.[1] === void 0) return [];
-    targets.push(match[1]);
-  }
-  return targets;
-}
-
 // plugins/review-voice/src/diff/complexity.ts
 var DEFAULT_SENSITIVE_PATHS = [
   ".github/workflows/**",
@@ -1707,18 +1778,18 @@ function applyStructureHumanReviewCap(assessment, signals, partial) {
   if (reasons.length === assessment.reasons.length) return assessment;
   return { ...assessment, level: "high", reasons };
 }
-var plural = (count4, noun) => `${count4} ${noun}${count4 === 1 ? "" : "s"}`;
+var plural2 = (count4, noun) => `${count4} ${noun}${count4 === 1 ? "" : "s"}`;
 function notCounted(excluded) {
   const parts = [];
   if (excluded.generatedFiles > 0) {
     parts.push(
-      `${plural(excluded.generatedFiles, "generated file")} (${plural(excluded.generatedDecisionPoints, "decision point")})`
+      `${plural2(excluded.generatedFiles, "generated file")} (${plural2(excluded.generatedDecisionPoints, "decision point")})`
     );
   }
   if (excluded.testFiles > 0) {
-    parts.push(`${plural(excluded.testFiles, "test file")} (${plural(excluded.testDecisionPoints, "decision point")})`);
+    parts.push(`${plural2(excluded.testFiles, "test file")} (${plural2(excluded.testDecisionPoints, "decision point")})`);
   }
-  if (excluded.documentationFiles > 0) parts.push(plural(excluded.documentationFiles, "documentation file"));
+  if (excluded.documentationFiles > 0) parts.push(plural2(excluded.documentationFiles, "documentation file"));
   return parts.length === 0 ? "" : ` Left out of the decision-point count: ${parts.join(", ")}.`;
 }
 function exemptedClause(exempted) {
@@ -11099,6 +11170,19 @@ function ownDiffFiles(patch) {
   return files2;
 }
 function planScope(options) {
+  const planned = narrowestScope(options);
+  if (planned.scope.kind === "full") return planned;
+  const leftOutBefore = new Set(options.priorLeftOut ?? []);
+  const notRead = new Set(options.reviewedFiles.map((file2) => file2.path).filter((path) => leftOutBefore.has(path)));
+  for (const [from, to] of patchRenames(planned.interdiffPatch ?? "")) {
+    if (leftOutBefore.has(from) || !isReviewable(from, false)) notRead.add(to);
+  }
+  const unread = notRead.size;
+  if (unread === 0) return planned;
+  const detail = `${unread} file${unread === 1 ? "" : "s"} the earlier review is not known to have read ${unread === 1 ? "is" : "are"} read now`;
+  return { scope: full("not-read-before", options.priorRun, detail), interdiffPatch: null };
+}
+function narrowestScope(options) {
   const prior = options.priorRun;
   const only = (scope) => ({ scope, interdiffPatch: null });
   if (options.forceFull) return only(full("requested", prior));
@@ -11124,12 +11208,14 @@ function planScope(options) {
     }
     if (!ancestor) return only(full("history-rewritten", prior));
     if (merged) return only(full("base-merged", prior));
-    const files2 = changedReviewedFiles(
-      options.reviewedFiles,
-      git6.changedPaths(prior.headRef, options.head, options.cwd)
-    );
+    const changed = git6.changedPaths(prior.headRef, options.head, options.cwd);
+    const files2 = changedReviewedFiles(options.reviewedFiles, changed);
     if (files2.length === 0) return only(full("base-sync-only", prior));
-    return only(incremental(options, prior, git6, files2));
+    return {
+      scope: incremental(options, prior, git6, files2),
+      interdiffPatch: null,
+      leftOutChanged: changedReviewedFiles(options.leftOutFiles ?? [], changed)
+    };
   } catch (error) {
     return only(full("compare-unavailable", prior, firstLine(error)));
   }
@@ -11378,7 +11464,8 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
   ].filter((note) => note !== null);
   const detail = notes.length === 0 ? {} : { detail: notes.join("; ") };
   let absorbedList = [];
-  const candidates = withdrawn.filter((path) => !own.has(path) && isReviewable(path, options.includeGenerated === true));
+  const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
+  const candidates = withdrawn.filter((path) => !own.has(path) && isReviewable(path, options.includeGenerated === true, firstParty));
   if (from !== prior.headRef && candidates.length > 0) {
     const differs2 = new Set(git6.changedPaths(from, options.head, options.cwd));
     absorbedList = candidates.filter((path) => !differs2.has(path)).sort();
@@ -11387,9 +11474,11 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
     ...absorbedList.length === 0 ? {} : { absorbedByBase: absorbedList },
     ...dropped.length === 0 ? {} : { noLongerChanged: dropped.sort() }
   };
+  const leftOut = options.leftOutFiles ?? [];
+  const leftOutChanged = leftOut.length === 0 ? [] : changedReviewedFiles(leftOut, git6.changedPaths(from, options.head, options.cwd));
   const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
   if (patch.trim().length === 0) {
-    return { scope: { kind: "unchanged", ...common, reason: unchangedReason, ...absorbed }, interdiffPatch: null };
+    return { scope: { kind: "unchanged", ...common, reason: unchangedReason, ...absorbed }, interdiffPatch: null, leftOutChanged };
   }
   const reviewed = /* @__PURE__ */ new Map();
   for (const file2 of options.reviewedFiles) {
@@ -11404,7 +11493,8 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
   }
   return {
     scope: { kind: "interdiff", ...common, files: [...files2].sort(), hunks, ...detail, ...absorbed },
-    interdiffPatch: patch
+    interdiffPatch: patch,
+    leftOutChanged
   };
 }
 
@@ -12494,7 +12584,9 @@ function recordRun(db, input) {
         ...input.followUps === void 0 || input.followUps.length === 0 ? {} : { followUps: input.followUps },
         ...input.checks === void 0 ? {} : { checks: input.checks },
         ...input.reproductions === void 0 ? {} : { reproductions: markHeld(input.reproductions, input.held ?? []) },
-        ...input.structure === void 0 ? {} : { structure: input.structure }
+        ...input.structure === void 0 ? {} : { structure: input.structure },
+        ...input.exclusions === void 0 ? {} : { exclusions: input.exclusions },
+        ...input.leftOut === void 0 ? {} : { leftOut: input.leftOut }
       }),
       (/* @__PURE__ */ new Date()).toISOString(),
       JSON.stringify(input.stages ?? []),
@@ -12582,6 +12674,8 @@ function runDetail(db, reviewRunId) {
     checks: storedChecks(parsed2.checks),
     reproductions: storedReproductions(parsed2.reproductions),
     structure: storedStructure(parsed2.structure),
+    exclusions: parseExclusions(parsed2.exclusions),
+    leftOut: Array.isArray(parsed2.leftOut) && parsed2.leftOut.every((path) => typeof path === "string") ? parsed2.leftOut : null,
     // Older rows predate the column, so absence is normal rather than an error.
     stages: (() => {
       const raw = row["stages_json"];
@@ -13351,44 +13445,44 @@ function decide(input) {
   }
   return done({ event: input.mapped, action: "post", reasons, exitCode: 0, cappedByCi: false }, annotations);
 }
-function plural2(count4, word) {
+function plural3(count4, word) {
   return `${count4} ${word}${count4 === 1 ? "" : "s"}`;
 }
 function summaryLine(event, posted, cappedBy) {
   const count4 = posted.length;
   const highest = [...posted].map((finding) => finding.severity).sort((a, b) => RANK[a] - RANK[b])[0];
   if (cappedBy === "ci") {
-    return count4 === 0 ? "No problems found, but not approving while CI is red." : `${plural2(count4, "nit")}; not approving while CI is red.`;
+    return count4 === 0 ? "No problems found, but not approving while CI is red." : `${plural3(count4, "nit")}; not approving while CI is red.`;
   }
   if (cappedBy === "held") {
-    return count4 === 0 ? "Not approving yet." : `${plural2(count4, "nit")}; not approving yet.`;
+    return count4 === 0 ? "Not approving yet." : `${plural3(count4, "nit")}; not approving yet.`;
   }
   if (cappedBy === "complexity" || cappedBy === "policy") {
-    return count4 === 0 ? "No problems found." : `${plural2(count4, "nit")}.`;
+    return count4 === 0 ? "No problems found." : `${plural3(count4, "nit")}.`;
   }
   if (event === "APPROVE") {
-    return count4 === 0 ? "No problems found." : `Approved, with ${plural2(count4, "nit")}.`;
+    return count4 === 0 ? "No problems found." : `Approved, with ${plural3(count4, "nit")}.`;
   }
   if (event === "REQUEST_CHANGES") {
-    return `Changes requested: ${plural2(count4, "comment")}, the highest ${highest}.`;
+    return `Changes requested: ${plural3(count4, "comment")}, the highest ${highest}.`;
   }
-  return `${plural2(count4, "comment")}, the highest ${highest}.`;
+  return `${plural3(count4, "comment")}, the highest ${highest}.`;
 }
 function wouldHaveSummary(planned) {
   const posted = [...planned.inline, ...planned.unanchored];
   const count4 = posted.length;
   const highest = posted.map((finding) => finding.severity).sort((a, b) => RANK[a] - RANK[b])[0];
   if (planned.mapped === "APPROVE") {
-    return count4 === 0 ? "Would have approved: no problems found." : `Would have approved, with ${plural2(count4, "nit")}.`;
+    return count4 === 0 ? "Would have approved: no problems found." : `Would have approved, with ${plural3(count4, "nit")}.`;
   }
   if (planned.mapped === "REQUEST_CHANGES") {
-    return `Would have requested changes: ${plural2(count4, "comment")}, the highest ${highest}.`;
+    return `Would have requested changes: ${plural3(count4, "comment")}, the highest ${highest}.`;
   }
   if (planned.heldBackApproval) {
-    const nits = count4 === 0 ? "" : `, with ${plural2(count4, "nit")}`;
+    const nits = count4 === 0 ? "" : `, with ${plural3(count4, "nit")}`;
     return `Would have commented: a finding above a nit was held back, unverified, below the posting tier or below the confidence gate${nits}.`;
   }
-  return `Would have commented: ${plural2(count4, "comment")}, the highest ${highest}.`;
+  return `Would have commented: ${plural3(count4, "comment")}, the highest ${highest}.`;
 }
 function suggestionBlock(replacement) {
   return replacement === "" ? "```suggestion\n```" : `\`\`\`suggestion
@@ -13480,13 +13574,18 @@ function scopeBlock(run, planned, policy) {
   if (checks !== null) {
     const parts = [
       ...checks.staticRan.map(
-        (check) => `${code3(safeCheckName(check.name))} ran (exit ${check.exitCode ?? "none"}, ${plural2(check.signals, "signal")})`
+        (check) => `${code3(safeCheckName(check.name))} ran (exit ${check.exitCode ?? "none"}, ${plural3(check.signals, "signal")})`
       ),
       ...checks.staticDidNotRun.map((check) => `${code3(safeCheckName(check.name))} did not run (${code3(safeCheckName(check.reason))})`)
     ];
     staticLine = `Static checks: ${parts.length === 0 ? "none configured" : parts.join("; ")}.`;
-    symbolLine = checks.symbolsInconclusive === 0 ? "Symbol context: every changed file finished." : `Symbol context: ${plural2(checks.symbolsInconclusive, "file")} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}.`;
+    symbolLine = checks.symbolsInconclusive === 0 ? "Symbol context: every changed file finished." : `Symbol context: ${plural3(checks.symbolsInconclusive, "file")} not finished${checks.symbolsBudgetExhausted ? " (time budget)" : ""}.`;
     if (checks.symbolsInconclusive > 0) notChecked.push("files the symbol search did not finish");
+  }
+  const excluded = run.exclusions ?? null;
+  if (excluded !== null) {
+    const reasons = excluded.reasons.map((entry) => `${entry.files} ${entry.reason}`).join(", ");
+    notChecked.push(`${excluded.excludedFiles} of ${plural3(excluded.changedFiles, "changed file")} left out (${reasons})`);
   }
   const issuesRead = checks?.issuesRead ?? null;
   const linkedLine = issuesRead === null || issuesRead.length === 0 ? null : `Linked issues: ${issuesRead.map((n) => code3(`#${n}`)).join(", ")} read for intent.`;
@@ -13494,7 +13593,7 @@ function scopeBlock(run, planned, policy) {
   held.other += planned.held.length;
   held.belowTier = planned.belowTier.length;
   const notPosted = [
-    held.unverified > 0 ? plural2(held.unverified, "unverified claim") : null,
+    held.unverified > 0 ? plural3(held.unverified, "unverified claim") : null,
     held.belowGate > 0 ? `${held.belowGate} below the gate` : null,
     held.challenge > 0 ? `${held.challenge} held by the challenger` : null,
     held.restatesTool > 0 ? `${held.restatesTool} restating a static check` : null,
@@ -13553,16 +13652,16 @@ function readingGuide(run) {
       const removed = sum(file2.removedControls);
       const risks = sum(file2.riskMarkers);
       const parts = [
-        removed > 0 ? `${plural2(removed, "removed control")} (${kinds(file2.removedControls, REMOVED_CONTROL_ORDER)})` : null,
-        risks > 0 ? `${plural2(risks, "risk marker")} (${kinds(file2.riskMarkers, RISK_MARKER_ORDER)})` : null,
+        removed > 0 ? `${plural3(removed, "removed control")} (${kinds(file2.removedControls, REMOVED_CONTROL_ORDER)})` : null,
+        risks > 0 ? `${plural3(risks, "risk marker")} (${kinds(file2.riskMarkers, RISK_MARKER_ORDER)})` : null,
         file2.sizeCrossing === null ? null : `crossed ${file2.sizeCrossing.threshold} lines (now ${file2.sizeCrossing.headLines})`,
-        file2.branchGrowth > 0 ? `${plural2(file2.branchGrowth, "function")} grew past the branch threshold` : null,
-        file2.typeEscapes > 0 ? plural2(file2.typeEscapes, "type escape") : null
+        file2.branchGrowth > 0 ? `${plural3(file2.branchGrowth, "function")} grew past the branch threshold` : null,
+        file2.typeEscapes > 0 ? plural3(file2.typeEscapes, "type escape") : null
       ].filter((part) => part !== null);
       lines2.push(`${index + 1}. \`${safeCheckName(file2.path)}\`${file2.deletedFile ? " (deleted file)" : ""}: ${parts.join("; ")}`);
     });
-    if (files2.length > MAX_GUIDE_FILES) lines2.push(`and ${plural2(files2.length - MAX_GUIDE_FILES, "more file")} with a signal.`);
-    if (structure.unmeasured > 0) lines2.push(`${plural2(structure.unmeasured, "production file")} could not be measured.`);
+    if (files2.length > MAX_GUIDE_FILES) lines2.push(`and ${plural3(files2.length - MAX_GUIDE_FILES, "more file")} with a signal.`);
+    if (structure.unmeasured > 0) lines2.push(`${plural3(structure.unmeasured, "production file")} could not be measured.`);
   }
   return [...lines2, "", "</details>"].join("\n");
 }
@@ -15000,7 +15099,8 @@ var CONFIG_KEYS = {
     "linked_issues",
     "max_findings",
     "max_words_per_finding",
-    "max_total_words"
+    "max_total_words",
+    "first_party_paths"
   ],
   "review.human_review": [
     "max_decision_points",
@@ -15875,10 +15975,10 @@ function readConfigDocument(value, repositoryRoot2, result, honourRunners) {
     const gate = section(entry, `ci.gate_checks[${index}]`, result.warnings);
     const name = gate?.["name"];
     if (typeof name !== "string" || name.length === 0) continue;
-    const summary = gate?.["summary"];
+    const summary2 = gate?.["summary"];
     result.ciGateChecks.push({
       name,
-      ...typeof summary === "string" && summary.length > 0 ? { summary } : {}
+      ...typeof summary2 === "string" && summary2.length > 0 ? { summary: summary2 } : {}
     });
   }
   readCiRules(ci, result);
@@ -15959,6 +16059,7 @@ function readConfigDocument(value, repositoryRoot2, result, honourRunners) {
     const linkedIssues = review2["linked_issues"];
     if (typeof linkedIssues === "boolean") result.linkedIssues = linkedIssues;
     else if (linkedIssues !== void 0) result.warnings.push("review.linked_issues must be true or false; using false.");
+    result.firstPartyPaths = readFirstPartyPaths(review2["first_party_paths"], result.warnings);
     result.layers.push({
       scope: { type: "repository", key: repositoryRoot2 },
       source: ".review-voice/config.yaml",
@@ -15968,6 +16069,33 @@ function readConfigDocument(value, repositoryRoot2, result, honourRunners) {
       ...positiveInt(review2["max_total_words"]) === void 0 ? {} : { maxTotalWords: positiveInt(review2["max_total_words"]) }
     });
   }
+}
+function readFirstPartyPaths(value, warnings) {
+  if (value === void 0) return [];
+  const isGlob = (entry) => {
+    if (typeof entry !== "string" || entry.trim() === "") return false;
+    try {
+      globToRegExp(entry);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const globs = [];
+  for (const entry of Array.isArray(value) ? value : [value]) {
+    if (Array.isArray(value) && isGlob(entry)) {
+      globs.push(entry);
+      continue;
+    }
+    let shown;
+    try {
+      shown = JSON.stringify(entry);
+    } catch {
+      shown = "a value that refers to itself";
+    }
+    warnings.push(`review.first_party_paths must be a list of globs; ${shown} is not one, so the files it names stay excluded as vendored.`);
+  }
+  return globs;
 }
 function loadConfig(repositoryRoot2, baselinePath, path, db, source) {
   const result = {
@@ -15998,6 +16126,7 @@ function loadConfig(repositoryRoot2, baselinePath, path, db, source) {
     lanes: [DIFF_LANE],
     thresholds: {},
     linkedIssues: false,
+    firstPartyPaths: [],
     layers: [],
     suppressions: [],
     activePolicyVersions: [],
@@ -18901,9 +19030,9 @@ async function runPass(options, json2) {
     const counts = /* @__PURE__ */ new Map();
     for (const entry of queue.entries) {
       const outcome = terminalSafeDeep(await handle(options, client, db, entry));
-      const summary = `${entry.repository}#${entry.pull}: ${entry.action.kind}`;
+      const summary2 = `${entry.repository}#${entry.pull}: ${entry.action.kind}`;
       if (outcome.row === null) {
-        lines2.push(`${summary} (no row: ${outcome.detail})`);
+        lines2.push(`${summary2} (no row: ${outcome.detail})`);
         counts.set("retried", (counts.get("retried") ?? 0) + 1);
         continue;
       }
@@ -18911,7 +19040,7 @@ async function runPass(options, json2) {
       rows.push(row);
       counts.set(row.status, (counts.get(row.status) ?? 0) + 1);
       const event = row.event === null ? "" : ` ${row.event}`;
-      lines2.push(`${summary}${event} (${row.status} ${row.reviewUrl ?? row.detail ?? ""})`.replace(/ \)$/, ")"));
+      lines2.push(`${summary2}${event} (${row.status} ${row.reviewUrl ?? row.detail ?? ""})`.replace(/ \)$/, ")"));
       const listed = (outcome.held ?? []).map((line3) => `  ${line3}`);
       lines2.push(...listed);
       held.push(...listed);
@@ -19315,8 +19444,26 @@ var COMMAND_HELP = {
       "  --full                 On --pr, review the complete pull request again",
       "  --since <sha>          On --pr, the head last reviewed (overrides the record)",
       "  --repository <name>    owner/repo for --pr (default: the git remote)",
-      "  --include-generated    Include lock files, generated, vendored and binary files",
+      "  --include-generated    Include lock files, generated and vendored files",
       "  --out <dir>            Write diff.patch and files.json, print a summary",
+      "Excluded files: a changed file the diff leaves out (a lock file, generated or minified output,",
+      "  a vendored dependency, a binary, a deleted file) is counted in `exclusions`, with the count",
+      "  for each reason, in the JSON, in files.json and in the --out summary, and one line goes to",
+      "  stderr, for example `Excluded 10 of 12 changed files: 10 vendored dependency.`. Nothing is",
+      "  printed when every changed file is read. On --pr the count is over the files of the scope",
+      "  being reviewed: on a follow-up, the files that changed since the earlier review. A follow-up",
+      "  that would read a file the earlier review left out, or is not known to have read, whether or",
+      "  not it changed since, or a file renamed since out of a path that review did not read, reads the",
+      "  whole pull request instead (scope full, cause not-read-before), so no file is called unchanged",
+      "  since a review that never read it. An earlier review with no record of what it left out (a run",
+      "  from before that list was kept, or a head from --since or from GitHub) is taken to have left",
+      "  out every file the default rules leave out, so a lock file read now under --include-generated",
+      "  is read in full. A path matching review.first_party_paths (globs, in",
+      "  .review-voice/config.yaml) is never a vendored dependency; a lock file, generated output or a",
+      "  binary under it is still left out. --include-generated reads the lock files, the generated",
+      "  output and the vendored files. A file git reports as binary, or one GitHub serves no patch",
+      "  for, has no lines to read, so it is left out and counted whatever its name, the key or the",
+      "  flag say.",
       "Reads: nothing on stdin (--pr reads the pull request from GitHub, read-only).",
       "Writes: the diff as JSON on stdout, or with --out, diff.patch and files.json in <dir>.",
       "Exit codes: 0 ok, 2 bad invocation or unreadable input."
@@ -20494,6 +20641,14 @@ var COMMAND_HELP = {
       "  (the built-in defaults when the base has none, or is not in the clone). The runners: block",
       "  is honoured only from --config or an operator REVIEW_VOICE_CONFIG (no REVIEW_VOICE_CONFIG_SOURCE",
       "  beside it, or flag or env there, as watch states it), never from the base commit or a checkout.",
+      "Excluded files: the diff stage counts the changed files it leaves out, by reason, for example",
+      "  `Excluded 10 of 12 changed files: 10 vendored dependency.`. The line is a note of the report,",
+      "  the counts are recorded with the run, `explain` prints them, and under verdict.scope_block the",
+      "  `Not checked` line names them, never a path. A follow-up counts the files that changed since",
+      "  the earlier review, and reads the whole pull request when it would read a file that review",
+      "  left out. review.first_party_paths lists paths that are",
+      "  never a vendored dependency. It is read from the config named above, so a pull request cannot",
+      "  set it for its own review.",
       "Reads: GitHub (read-only), the clone, the local store and the config named above;",
       "  REVIEW_VOICE_FAKE_AGENTS selects the fake agent backend; REVIEW_VOICE_NO_COMMANDS=1 skips",
       "  the static evidence commands, the reproductions, the second-pass verification command and every",
@@ -21408,7 +21563,6 @@ function ensureRefs(options) {
     `The ${missing.join(" and ")} commit could not be made available locally. Reading code at that ref will fail, so evidence from it is unavailable rather than absent.`
   );
 }
-var SAME_AS_BASE_TIP = "identical to the base branch tip (already merged there)";
 function differingFromBaseTip(base, head, cwd) {
   try {
     const args = ["diff", "--no-ext-diff", "--no-relative", "--ignore-submodules=none", "--no-renames", "--name-only", "-z", base, head];
@@ -21449,7 +21603,7 @@ function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = 
   } catch (error) {
     throw new Error(gitFailure(args, error));
   }
-}, interdiffPatch = null) {
+}, interdiffPatch = null, leftOutChanged = []) {
   if (scope.kind === "full") return fullScopeResult(result, pullNumber, scope);
   const fallBack = (detail) => fullScopeResult(result, pullNumber, {
     kind: "full",
@@ -21475,7 +21629,7 @@ function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = 
     }
     included = new Set(scope.files);
   }
-  const excludedBecause = `unchanged since the last review (${scope.since.slice(0, 7)})`;
+  const excludedBecause = `${COVERED_EARLIER} (${scope.since.slice(0, 7)})`;
   const files2 = result.files.map((file2) => {
     if (file2.reviewed && !included.has(file2.path)) return { ...file2, reviewed: false, excludedBecause };
     if (scope.kind === "interdiff" && file2.status === "deleted" && included.has(file2.path)) {
@@ -21485,6 +21639,7 @@ function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = 
     return file2;
   });
   const hunkPaths = pathsWithHunks(diff);
+  const changedLeftOut = new Set(leftOutChanged);
   const reviewedFileCount = files2.filter((file2) => file2.reviewed).length;
   return {
     ...result,
@@ -21495,6 +21650,8 @@ function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = 
     reviewedFileCount,
     hunkFileCount: files2.filter((file2) => file2.reviewed && hunkPaths.has(file2.path)).length,
     excludedFileCount: files2.length - reviewedFileCount,
+    // Counted over this scope: the files it reads, and those left out that changed since the earlier review.
+    exclusions: summariseExclusions(files2.filter((file2) => file2.reviewed || changedLeftOut.has(file2.path))),
     diff
   };
 }
@@ -21545,6 +21702,7 @@ async function acquirePullRequestDiff(options) {
   const cwd = options.cwd ?? process.cwd();
   const headLocal = hasCommit(pull.head.sha, cwd);
   const byName = new Map(rawFiles.map((file2) => [file2.filename, file2]));
+  const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
   const handEdited = findHandEdited(
     rawFiles.filter((file2) => file2.status !== "removed" && file2.patch !== void 0).map((file2) => file2.filename),
     (path) => {
@@ -21557,7 +21715,8 @@ async function acquirePullRequestDiff(options) {
       }
       const added = (byName.get(path)?.patch ?? "").split("\n").filter((line3) => line3.startsWith("+")).map((line3) => line3.slice(1));
       return added.join("\n");
-    }
+    },
+    firstParty
   );
   const refs = ensureRefs({
     repository: options.repository,
@@ -21569,17 +21728,17 @@ async function acquirePullRequestDiff(options) {
   const differing = refs.base.available && refs.head.available ? differingFromBaseTip(pull.base.sha, pull.head.sha, cwd) : null;
   const sameAsBaseTip = (file2) => differing !== null && !differing.has(file2.filename) && (file2.previous_filename === void 0 || !differing.has(file2.previous_filename));
   const files2 = rawFiles.map((file2) => {
-    const cls = classify(file2.filename);
+    const cls = classify(file2.filename, firstParty);
     const deleted = file2.status === "removed";
     const suspected = handEdited.has(file2.filename);
     const merged = sameAsBaseTip(file2);
-    const reviewed = !merged && !deleted && (suspected || isReviewable(file2.filename, options.includeGenerated)) && file2.patch !== void 0;
+    const reviewed = !merged && !deleted && (suspected || isReviewable(file2.filename, options.includeGenerated, firstParty)) && file2.patch !== void 0;
     let excludedBecause;
     if (!reviewed) {
       if (merged) excludedBecause = SAME_AS_BASE_TIP;
-      else if (deleted) excludedBecause = "file deleted";
-      else if (file2.patch === void 0) excludedBecause = "no patch returned (binary or too large)";
-      else excludedBecause = `${cls} file`;
+      else if (deleted) excludedBecause = FILE_DELETED;
+      else if (file2.patch === void 0) excludedBecause = NO_PATCH;
+      else excludedBecause = excludedReason(cls);
     }
     return {
       path: file2.filename,
@@ -21607,6 +21766,7 @@ async function acquirePullRequestDiff(options) {
     // file here carries a hunk by construction.
     hunkFileCount: files2.filter((file2) => file2.reviewed).length,
     excludedFileCount: files2.filter((file2) => !file2.reviewed).length,
+    exclusions: summariseExclusions(files2),
     diff,
     totalChangedFiles: pull.changed_files,
     additions: pull.additions,
@@ -22094,12 +22254,12 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
     }
   }
   if (problems.length > 0) return { ok: false, problems };
-  const summary = { confirmed: [], held: [], moved: [] };
+  const summary2 = { confirmed: [], held: [], moved: [] };
   const held = [];
   const holdReasons = /* @__PURE__ */ new Map();
   const hold = (finding, id, verdict2, reason2) => {
     holdReasons.set(id, { verdict: verdict2, reason: reason2 });
-    summary.held.push({ candidate_id: id, verdict: verdict2, reason: reason2 });
+    summary2.held.push({ candidate_id: id, verdict: verdict2, reason: reason2 });
     const candidate = candidates.get(id);
     const claim = text3(candidate?.["claim"]) ?? text3(finding["claim"]);
     const severity = text3(finding["severity"]);
@@ -22139,14 +22299,14 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
     const verdict2 = byId.get(id);
     if (verdict2.verdict !== "confirmed") continue;
     if (verdict2.corrected_line === void 0) {
-      summary.confirmed.push(id);
+      summary2.confirmed.push(id);
       continue;
     }
     const moved = reanchorScores(document, id, { path: null, line: verdict2.corrected_line }, hunks);
     if (moved.ok) {
       document = moved.updated;
-      summary.confirmed.push(id);
-      summary.moved.push({ candidate_id: id, from: moved.from, to: moved.to });
+      summary2.confirmed.push(id);
+      summary2.moved.push({ candidate_id: id, from: moved.from, to: moved.to });
       continue;
     }
     const reason2 = `corrected line refused: ${moved.refused}`;
@@ -22161,8 +22321,8 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
   const order = new Map(eligibleIds.map((id, index) => [id, index]));
   const rank2 = (id) => order.get(id ?? "") ?? 0;
   held.sort((a, b) => rank2(a.candidateId) - rank2(b.candidateId));
-  summary.held.sort((a, b) => rank2(a.candidate_id) - rank2(b.candidate_id));
-  return { ok: true, document: { ...document, challengeHeld: held, challenge: summary }, summary };
+  summary2.held.sort((a, b) => rank2(a.candidate_id) - rank2(b.candidate_id));
+  return { ok: true, document: { ...document, challengeHeld: held, challenge: summary2 }, summary: summary2 };
 }
 
 // plugins/review-voice/src/verify/reconcile.ts
@@ -22902,7 +23062,7 @@ async function prep(run) {
     if (typeof run.summary[key2] === "string") run.notes.push(run.summary[key2]);
   }
   noteConfigChange(run);
-  for (const key2 of ["suspectedWrongBase", "squashedParentSuspected"]) {
+  for (const key2 of ["suspectedWrongBase", "squashedParentSuspected", "exclusions"]) {
     const note = isRecord5(run.summary[key2]) ? run.summary[key2]["note"] : null;
     if (typeof note === "string") run.notes.push(note);
   }
@@ -23003,6 +23163,8 @@ async function carry(run) {
 async function reviewInFull(run, why) {
   run.notes.push(`${why}, so the whole pull request is reviewed.`);
   skip(run, "carry", why);
+  const abandoned = isRecord5(run.summary["exclusions"]) ? run.summary["exclusions"]["note"] : null;
+  run.notes = run.notes.filter((note) => note !== abandoned);
   run.options = { ...run.options, full: true };
   await prep(run);
 }
@@ -25633,9 +25795,9 @@ function summariseResults(results, runs = 1) {
   if (runs === 1) return one(results);
   const each = Array.from({ length: runs }, (_, run) => one(runView(results, run)));
   const first = each[0];
-  const total = (pick) => each.reduce((sum, summary) => sum + pick(summary), 0);
+  const total = (pick) => each.reduce((sum, summary2) => sum + pick(summary2), 0);
   const range = (rate2) => {
-    const values = each.map((summary) => summary[rate2]);
+    const values = each.map((summary2) => summary2[rate2]);
     const known = values.filter((value) => value !== null);
     return { lowest: known.length === 0 ? null : Math.min(...known), highest: known.length === 0 ? null : Math.max(...known), runs: values };
   };
@@ -25651,10 +25813,10 @@ function summariseResults(results, runs = 1) {
     positives: first.positives,
     skipped: first.skipped,
     cleanFixtures: first.cleanFixtures,
-    failedRuns: total((summary) => summary.failedRuns),
-    completedPositives: total((summary) => summary.completedPositives),
-    approved: total((summary) => summary.approved),
-    lost: Object.fromEntries(LOST_AT.map((stage) => [stage, total((summary) => summary.lost[stage])])),
+    failedRuns: total((summary2) => summary2.failedRuns),
+    completedPositives: total((summary2) => summary2.completedPositives),
+    approved: total((summary2) => summary2.approved),
+    lost: Object.fromEntries(LOST_AT.map((stage) => [stage, total((summary2) => summary2.lost[stage])])),
     runs,
     ranges
   };
@@ -25719,10 +25881,10 @@ function readRecallResults(path) {
   }
   const fixtures = document["fixtures"];
   if (!Array.isArray(fixtures)) throw bad("fixtures is not a list");
-  const summary = document["summary"];
-  if (!isRecord6(summary)) throw bad("summary is not an object");
-  const runs = summary["runs"] === void 0 ? 1 : summary["runs"];
-  if (typeof runs !== "number" || !Number.isInteger(runs) || runs < (summary["runs"] === void 0 ? 1 : 2)) throw bad("summary.runs is not a whole number above 1");
+  const summary2 = document["summary"];
+  if (!isRecord6(summary2)) throw bad("summary is not an object");
+  const runs = summary2["runs"] === void 0 ? 1 : summary2["runs"];
+  if (typeof runs !== "number" || !Number.isInteger(runs) || runs < (summary2["runs"] === void 0 ? 1 : 2)) throw bad("summary.runs is not a whole number above 1");
   const checked = (entry, label2) => {
     const field = fieldProblem(entry);
     if (field !== null) throw bad(`${label2}.${field}`);
@@ -25755,19 +25917,19 @@ function readRecallResults(path) {
     if (entry[other] !== void 0) throw bad(`${label2} is a ${String(entry["class"])} fixture and carries ${other}`);
   }
   for (const key2 of RATES) {
-    if (!isFigure(summary[key2])) throw bad(`summary.${key2} is not a number from 0 to 1, or null`);
+    if (!isFigure(summary2[key2])) throw bad(`summary.${key2} is not a number from 0 to 1, or null`);
   }
-  const ranges = summary["ranges"];
+  const ranges = summary2["ranges"];
   if (runs > 1 && !RATES.every((rate2) => isRecord6(ranges) && isRecord6(ranges[rate2]) && Array.isArray(ranges[rate2]["runs"]) && ranges[rate2]["runs"].length === runs)) {
     throw bad(`summary.ranges does not give every rate a value for each of the ${runs} runs`);
   }
   if (runs === 1 && ranges !== void 0) throw bad("summary.ranges is given, but the summary records one run");
   const recomputed = summariseResults(fixtures, runs);
   const lossCounts = ["completedPositives", "approved", "lost"];
-  const optional = runs === 1 && lossCounts.every((key2) => summary[key2] === void 0) ? lossCounts : [];
+  const optional = runs === 1 && lossCounts.every((key2) => summary2[key2] === void 0) ? lossCounts : [];
   for (const key2 of Object.keys(recomputed)) {
-    if (summary[key2] === void 0 && optional.includes(key2)) continue;
-    if (!isDeepStrictEqual(summary[key2], recomputed[key2])) throw bad(`summary.${key2} is ${JSON.stringify(summary[key2])} but the fixtures give ${JSON.stringify(recomputed[key2])}`);
+    if (summary2[key2] === void 0 && optional.includes(key2)) continue;
+    if (!isDeepStrictEqual(summary2[key2], recomputed[key2])) throw bad(`summary.${key2} is ${JSON.stringify(summary2[key2])} but the fixtures give ${JSON.stringify(recomputed[key2])}`);
   }
   return document;
 }
@@ -25777,9 +25939,9 @@ function recallMetrics(results) {
   if (results === null) {
     return names.map((name) => ({ name, value: null, target: "no target", meets: null, basis: NO_RECALL_BASIS, kind: "goal" }));
   }
-  const { summary } = results;
+  const { summary: summary2 } = results;
   const where = `plugin ${results.pluginVersion}, runner ${results.runner}, mode ${results.mode}`;
-  const left = `${summary.skipped} skipped, ${summary.failedRuns} failed run(s) excluded`;
+  const left = `${summary2.skipped} skipped, ${summary2.failedRuns} failed run(s) excluded`;
   const metric = (name, value, basis) => ({
     name,
     value,
@@ -25788,21 +25950,21 @@ function recallMetrics(results) {
     basis: `${basis}; ${left} (${where})`,
     kind: "goal"
   });
-  const { runs, ranges } = summary;
+  const { runs, ranges } = summary2;
   if (runs !== void 0 && ranges !== void 0) {
     const figure = (value) => value === null ? "no data" : value.toFixed(2);
     const over = (rate2, what) => `mean of ${runs} runs, lowest ${figure(ranges[rate2].lowest)}, highest ${figure(ranges[rate2].highest)}, of ${what}`;
     return [
-      metric("fixture_key_bug_recall", summary.keyBugRecall, over("keyBugRecall", "completed positives with a finding on an accepted anchor")),
-      metric("fixture_causal_line_hit", summary.causalLineHit, over("causalLineHit", `positives with a finding on an expected file that hit an accepted anchor within ${AGREEMENT_LINE_TOLERANCE}`)),
-      metric("fixture_clean_silence", summary.cleanSilence, over("cleanSilence", "completed clean fixtures that ended with exactly the no-findings sentence"))
+      metric("fixture_key_bug_recall", summary2.keyBugRecall, over("keyBugRecall", "completed positives with a finding on an accepted anchor")),
+      metric("fixture_causal_line_hit", summary2.causalLineHit, over("causalLineHit", `positives with a finding on an expected file that hit an accepted anchor within ${AGREEMENT_LINE_TOLERANCE}`)),
+      metric("fixture_clean_silence", summary2.cleanSilence, over("cleanSilence", "completed clean fixtures that ended with exactly the no-findings sentence"))
     ];
   }
   const tally = tallyResults(results.fixtures);
   return [
-    metric("fixture_key_bug_recall", summary.keyBugRecall, `${tally.hits}/${tally.completedPositives} completed positives had a finding on an accepted anchor`),
-    metric("fixture_causal_line_hit", summary.causalLineHit, `${tally.hits}/${tally.onPath} positives with a finding on an expected file hit an accepted anchor within ${AGREEMENT_LINE_TOLERANCE}`),
-    metric("fixture_clean_silence", summary.cleanSilence, `${tally.silent}/${tally.completedClean} completed clean fixtures ended with exactly the no-findings sentence`)
+    metric("fixture_key_bug_recall", summary2.keyBugRecall, `${tally.hits}/${tally.completedPositives} completed positives had a finding on an accepted anchor`),
+    metric("fixture_causal_line_hit", summary2.causalLineHit, `${tally.hits}/${tally.onPath} positives with a finding on an expected file hit an accepted anchor within ${AGREEMENT_LINE_TOLERANCE}`),
+    metric("fixture_clean_silence", summary2.cleanSilence, `${tally.silent}/${tally.completedClean} completed clean fixtures ended with exactly the no-findings sentence`)
   ];
 }
 
@@ -27248,15 +27410,15 @@ async function recallCommand(argv, runInProcess2) {
   writeFileSync10(staging, `${JSON.stringify(run.results, null, 2)}
 `, { flag: "wx" });
   renameSync3(staging, out);
-  const { summary } = run.results;
+  const { summary: summary2 } = run.results;
   const figure = (value) => value === null ? "no data" : value.toFixed(2);
-  const rate2 = (key2) => figure(summary[key2]) + (summary.ranges === void 0 ? "" : ` (${figure(summary.ranges[key2].lowest)} to ${figure(summary.ranges[key2].highest)})`);
+  const rate2 = (key2) => figure(summary2[key2]) + (summary2.ranges === void 0 ? "" : ` (${figure(summary2.ranges[key2].lowest)} to ${figure(summary2.ranges[key2].highest)})`);
   console.log(
-    `key-bug recall ${rate2("keyBugRecall")}, causal-line hit ${rate2("causalLineHit")}, clean silence ${rate2("cleanSilence")}; ` + (summary.runs === void 0 ? "" : `mean of ${summary.runs} runs with the lowest and highest run; `) + `${summary.positives} positive(s), ${summary.cleanFixtures} clean, ${summary.skipped} skipped, ${summary.failedRuns} failed run(s)`
+    `key-bug recall ${rate2("keyBugRecall")}, causal-line hit ${rate2("causalLineHit")}, clean silence ${rate2("cleanSilence")}; ` + (summary2.runs === void 0 ? "" : `mean of ${summary2.runs} runs with the lowest and highest run; `) + `${summary2.positives} positive(s), ${summary2.cleanFixtures} clean, ${summary2.skipped} skipped, ${summary2.failedRuns} failed run(s)`
   );
   console.log(`Results: ${out}`);
   if (run.kept) for (const dir of run.dataDirs) console.log(`Kept: ${dir}`);
-  return summary.failedRuns > 0 ? 1 : 0;
+  return summary2.failedRuns > 0 ? 1 : 0;
 }
 
 // plugins/review-voice/src/cli/import-benchmark.ts
@@ -27893,10 +28055,13 @@ async function pullRequestDiffCommand(argv) {
       return 2;
     }
   }
+  const firstPartyPaths = repositoryConfig()?.firstPartyPaths ?? [];
+  const firstParty = firstPartyMatcher(firstPartyPaths);
   const result = await acquirePullRequestDiff({
     repository,
     pullNumber,
     includeGenerated: argv.includes("--include-generated"),
+    firstPartyPaths,
     cwd: process.cwd(),
     client: githubClient([repository])
   });
@@ -27924,6 +28089,7 @@ async function pullRequestDiffCommand(argv) {
   if (uncoveredPrior !== null && since === null) {
     console.error(`Run ${uncoveredPrior} carried candidates without reviewing the commits before it, so the whole pull request is read.`);
   }
+  const priorLeftOut = prior === null ? [] : (prior.reviewRunId === null ? null : leftOutBy(prior.reviewRunId)) ?? result.files.filter((file2) => !isReviewable(file2.path, false)).map((file2) => file2.path);
   let planned;
   try {
     planned = planScope({
@@ -27933,13 +28099,16 @@ async function pullRequestDiffCommand(argv) {
       reviewedFiles: result.files.filter((file2) => file2.reviewed),
       // Deletions are never reviewed, but a follow-up must still show one. A
       // deleted lock file or generated output stays out, as it would anyway.
-      deletedFiles: result.files.filter((file2) => file2.status === "deleted" && isReviewable(file2.path, argv.includes("--include-generated"))).map((file2) => file2.path),
+      deletedFiles: result.files.filter((file2) => file2.status === "deleted" && isReviewable(file2.path, argv.includes("--include-generated"), firstParty)).map((file2) => file2.path),
       cwd: process.cwd(),
       truncated: result.truncated,
       forceFull: argv.includes("--full"),
       base: result.refs.base.available && result.base !== null ? result.base : void 0,
       fetchPriorHead: (sha) => fetchPriorHead(sha, repository, process.cwd()),
-      includeGenerated: argv.includes("--include-generated")
+      includeGenerated: argv.includes("--include-generated"),
+      firstPartyPaths,
+      leftOutFiles: result.files.filter((file2) => !file2.reviewed),
+      priorLeftOut
     });
   } catch (error) {
     planned = {
@@ -27953,8 +28122,20 @@ async function pullRequestDiffCommand(argv) {
       interdiffPatch: null
     };
   }
-  const scoped = applyReviewScope(result, pullNumber, planned.scope, process.cwd(), void 0, planned.interdiffPatch);
+  const scoped = applyReviewScope(result, pullNumber, planned.scope, process.cwd(), void 0, planned.interdiffPatch, planned.leftOutChanged);
   return emitDiff({ ...scoped, repository, prior: resolution }, flag(argv, "--out"));
+}
+function leftOutBy(runId) {
+  try {
+    const db = openDatabase();
+    try {
+      return runDetail(db, runId)?.leftOut ?? null;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
 }
 function diffSummary(result) {
   const scope = result.scope === void 0 ? null : {
@@ -27984,6 +28165,7 @@ function diffSummary(result) {
     reviewedFileCount: result.reviewedFileCount,
     hunkFileCount: result.hunkFileCount,
     excludedFileCount: result.excludedFileCount,
+    exclusions: result.exclusions ?? null,
     handEditSuspected: (result.files ?? []).filter((file2) => file2.handEditSuspected === true).map((file2) => file2.path),
     refs: result.refs === void 0 ? null : { base: result.refs.base, head: result.refs.head, mergeBase: result.refs.mergeBase },
     prior: result.prior === void 0 ? null : {
@@ -28006,6 +28188,7 @@ function markedGenerated(acquired) {
 function emitDiff(acquired, outDir) {
   const config2 = repositoryConfig();
   for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
+  if (acquired.exclusions != null) console.error(acquired.exclusions.note);
   const generated = markedGenerated(acquired);
   const scope = acquired.scope;
   const narrowed = scope !== void 0 && (scope.kind === "interdiff" || scope.kind === "incremental") ? scope.files : null;
@@ -28056,7 +28239,8 @@ function diffCommand(argv) {
       cwd: process.cwd(),
       staged: argv.includes("--staged"),
       base,
-      includeGenerated: argv.includes("--include-generated")
+      includeGenerated: argv.includes("--include-generated"),
+      firstPartyPaths: repositoryConfig()?.firstPartyPaths ?? []
     });
     return emitDiff(result, flag(argv, "--out"));
   } catch (error) {
@@ -28641,12 +28825,12 @@ function directoryCount(paths) {
   return new Set([...paths].map(directoryOf)).size;
 }
 var PROSE_EXTENSIONS = /* @__PURE__ */ new Set(["md", "markdown", "mdx", "txt", "rst", "adoc"]);
-function isCode(path) {
+function isCode(path, firstParty) {
   const name = normalisePath3(path).split("/").pop() ?? "";
   const dot = name.lastIndexOf(".");
   const extension = dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
   if (PROSE_EXTENSIONS.has(extension)) return false;
-  return classify(normalisePath3(path)) === "source";
+  return classify(normalisePath3(path), firstParty) === "source";
 }
 var NON_DISCRIMINATING_DIRECTORIES = 12;
 var IMPORT_LINE = [
@@ -28684,7 +28868,8 @@ function isRepositoryWideToolchainPath(path) {
   const normalised2 = normalisePath3(path);
   return REPOSITORY_WIDE_TOOLCHAIN_PATHS.some((pattern) => pattern.test(normalised2));
 }
-function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null) {
+function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths, diff = null, firstParty) {
+  const isCodePath = (path) => isCode(path, firstParty);
   const searchedRef = ref ?? "working tree";
   const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
   const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
@@ -28697,7 +28882,7 @@ function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths
   const normalisedChangedPath = normalisePath3(changedPath);
   const changedDirectory = directoryOf(changedPath);
   const result = (reach, inconclusive) => {
-    const counted2 = [...hits].filter(isCode).sort();
+    const counted2 = [...hits].filter(isCodePath).sort();
     const outside = counted2.filter(
       (path) => normalisePath3(path) !== normalisedChangedPath && !withinSubtree(path, changedDirectory)
     );
@@ -28725,7 +28910,7 @@ function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths
     } catch {
       return result(null, true);
     }
-    const code3 = found2.filter(isCode);
+    const code3 = found2.filter(isCodePath);
     if (source !== "diff" && !code3.some((path) => normalisePath3(path) === normalisedChangedPath)) {
       ignored.push(symbol);
       continue;
@@ -28737,7 +28922,7 @@ function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths
     for (const path of found2) hits.add(path);
   }
   if (isRepositoryWideToolchainPath(changedPath)) return result("repository", false);
-  let counted = [...hits].filter(isCode);
+  let counted = [...hits].filter(isCodePath);
   if (counted.length === 0 && source !== "claim") {
     const moduleName = normalisePath3(changedPath).split("/").pop()?.replace(/\.[^.]+$/, "");
     if (moduleName !== void 0 && moduleName.length >= 4) {
@@ -28747,7 +28932,7 @@ function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths
       } catch {
         return result(null, true);
       }
-      counted = [...hits].filter(isCode);
+      counted = [...hits].filter(isCodePath);
       usedModuleFallback = counted.length > 0;
     }
   }
@@ -28810,11 +28995,11 @@ function declarationsByPath(declarations) {
   }
   return { addedNames, byPath };
 }
-function possibleExisting(declaration, hits, addedNames, isTestPath) {
+function possibleExisting(declaration, hits, addedNames, isTestPath, isCodePath) {
   const matches = [];
   for (const hit of hits) {
     const path = normalisePath4(hit.path);
-    if (!isCode(path) || isTestPath(path)) continue;
+    if (!isCodePath(path) || isTestPath(path)) continue;
     const name = declarationName(hit.text);
     if (name === null || addedNames.has(name)) continue;
     const hitTokens = new Set(declarationTokens(name));
@@ -28878,7 +29063,7 @@ function pathsWithHunks2(diff) {
   keepCurrent();
   return paths;
 }
-function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declarations, addedNames, head, headSearch, isTestPath) {
+function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declarations, addedNames, head, headSearch, isTestPath, isCodePath) {
   const allSymbols = symbolsFromHunks(diff, path);
   const omitted = Math.max(0, allSymbols.length - MAX_SYMBOLS_PER_FILE);
   const symbols = [];
@@ -28906,7 +29091,7 @@ function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declara
       incomplete = true;
       break;
     }
-    const code3 = new Set(found2.filter(isCode).map(normalisePath4));
+    const code3 = new Set(found2.filter(isCodePath).map(normalisePath4));
     if (directoryCount2(code3) > NON_DISCRIMINATING_DIRECTORIES) {
       symbols.push({ symbol, common: true });
       continue;
@@ -28938,7 +29123,7 @@ function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declara
       const entry = {
         name: declaration.name,
         line: declaration.line,
-        possibleExisting: possibleExisting(declaration, hits, addedNames, isTestPath)
+        possibleExisting: possibleExisting(declaration, hits, addedNames, isTestPath, isCodePath)
       };
       declared.push(entry);
       if (head === null) {
@@ -28950,7 +29135,7 @@ function reportFile(diff, path, cwd, ref, search, lineSearch, remaining, declara
         try {
           const callers = [
             ...new Set(
-              headSearch(declaration.name, cwd, head, remaining()).filter(isCode).map(normalisePath4).filter((candidate) => candidate !== normalisedPath && !isTestPath(candidate))
+              headSearch(declaration.name, cwd, head, remaining()).filter(isCodePath).map(normalisePath4).filter((candidate) => candidate !== normalisedPath && !isTestPath(candidate))
             )
           ].sort();
           entry.callers = callers.slice(0, MAX_CALLERS_PER_DECLARATION);
@@ -28979,6 +29164,8 @@ function collectSymbolContext(options) {
   const headSearch = options.headSearch ?? gitGrepWordPaths;
   const head = options.head ?? null;
   const isTestPath = testPathMatcher(options.testPaths ?? DEFAULT_TEST_PATHS);
+  const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
+  const isCodePath = (path) => isCode(path, firstParty);
   const now = options.now ?? Date.now;
   const maxMs = options.maxMs ?? DEFAULT_MAX_MS;
   const started = now();
@@ -28999,7 +29186,8 @@ function collectSymbolContext(options) {
       declarationContext.addedNames,
       head,
       headSearch,
-      isTestPath
+      isTestPath,
+      isCodePath
     );
   });
   const changed = new Set(paths.map(normalisePath4));
@@ -29067,8 +29255,9 @@ function symbolsCommand(argv) {
       return 2;
     }
   }
-  const testPaths = repositoryConfig()?.humanReview.testPaths ?? DEFAULT_TEST_PATHS;
-  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, head, testPaths, maxMs });
+  const config2 = repositoryConfig();
+  const testPaths = config2?.humanReview.testPaths ?? DEFAULT_TEST_PATHS;
+  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, head, testPaths, firstPartyPaths: config2?.firstPartyPaths ?? [], maxMs });
   const out = flag(argv, "--out");
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));
@@ -30823,6 +31012,7 @@ function explainCommand(argv) {
     if (detail.pullNumber !== null) console.log(`Pull request #${detail.pullNumber}`);
     const recordedScope = describeReviewScope(detail.scope);
     if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
+    if (detail.exclusions !== null) console.log(detail.exclusions.note);
     console.log(describeProvenance(detail.provenance));
     console.log(describeChecks(detail.checks));
     console.log(describeStructure(detail.structure));
@@ -31610,6 +31800,7 @@ function deletedFileCheck(argv) {
   const head = flag(argv, "--head");
   const cwd = process.cwd();
   if (base === null || head === null || !refExists(base, cwd) || !refExists(head, cwd)) return () => false;
+  const firstParty = firstPartyMatcher(repositoryConfig()?.firstPartyPaths ?? []);
   const git6 = (args) => execFileSync23("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
   let deleted;
   const deletions = () => {
@@ -31641,7 +31832,7 @@ function deletedFileCheck(argv) {
   return (candidate, anchor) => {
     if (anchor.ok || anchor.kind !== "file-not-in-diff") return false;
     const path = candidate.path.replace(/^\.\/+/, "");
-    if (path === "" || path.startsWith("/") || path.split(/[\\/]/).includes("..") || !isReviewable(path, false)) return false;
+    if (path === "" || path.startsWith("/") || path.split(/[\\/]/).includes("..") || !isReviewable(path, false, firstParty)) return false;
     const found2 = deletions();
     if (found2 === null || !found2.paths.has(path)) return false;
     const count4 = baseLines(found2.from, path);
@@ -31892,6 +32083,7 @@ function scoreCommand(argv) {
     }
   }
   if (searchRoot !== null) {
+    const firstParty = firstPartyMatcher(repositoryConfig()?.firstPartyPaths ?? []);
     for (const candidate of candidates) {
       const verification2 = verifications.get(candidate.candidateId);
       verifications.set(candidate.candidateId, {
@@ -31903,7 +32095,8 @@ function scoreCommand(argv) {
           searchRoot,
           baseRef,
           void 0,
-          reachDiff
+          reachDiff,
+          firstParty
         )
       });
     }
@@ -32718,6 +32911,8 @@ function recordCommand(argv) {
   let scope;
   let complexity = null;
   let structure;
+  let exclusions;
+  let leftOut;
   const knownPaths = /* @__PURE__ */ new Set();
   const pullFiles = /* @__PURE__ */ new Set();
   let pullFilesListed = false;
@@ -32732,6 +32927,7 @@ function recordCommand(argv) {
           pullFiles.add(plainPath2(file2.path));
           if (typeof file2.previousPath === "string") pullFiles.add(plainPath2(file2.previousPath));
         }
+        if (pullFilesListed) leftOut = leftOutPaths(manifest.files);
       }
       if (Number.isInteger(manifest.pullNumber) && manifest.pullNumber > 0) {
         pullNumber = manifest.pullNumber;
@@ -32748,6 +32944,10 @@ function recordCommand(argv) {
       if (manifest.structure !== void 0 && manifest.structure !== null) {
         structure = recordedStructure(manifest.structure) ?? void 0;
         if (structure === void 0) console.error(`The structure signals in ${filesFile} are malformed; recording without them.`);
+      }
+      if (manifest.exclusions !== void 0 && manifest.exclusions !== null) {
+        exclusions = parseExclusions(manifest.exclusions) ?? void 0;
+        if (exclusions === void 0) console.error(`The excluded file counts in ${filesFile} are malformed; recording without them.`);
       }
     } catch {
       console.error(`Cannot read ${filesFile}; recording without pull-request scope.`);
@@ -33075,6 +33275,8 @@ function recordCommand(argv) {
       ...checks === void 0 ? {} : { checks },
       ...reproductions === void 0 ? {} : { reproductions },
       ...structure === void 0 ? {} : { structure },
+      ...exclusions === void 0 ? {} : { exclusions },
+      ...leftOut === void 0 ? {} : { leftOut },
       toolSignals,
       conventions,
       provenance: {

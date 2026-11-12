@@ -1062,6 +1062,12 @@ export function scopeBlock(
         : `Symbol context: ${plural(checks.symbolsInconclusive, 'file')} not finished${checks.symbolsBudgetExhausted ? ' (time budget)' : ''}.`;
     if (checks.symbolsInconclusive > 0) notChecked.push('files the symbol search did not finish');
   }
+  // Counts and the reasons this code words itself, never a path (issue 351).
+  const excluded = run.exclusions ?? null;
+  if (excluded !== null) {
+    const reasons = excluded.reasons.map((entry) => `${entry.files} ${entry.reason}`).join(', ');
+    notChecked.push(`${excluded.excludedFiles} of ${plural(excluded.changedFiles, 'changed file')} left out (${reasons})`);
+  }
   // Each number is inline code, so GitHub neither links it nor adds a reference to the issue's timeline.
   const issuesRead = checks?.issuesRead ?? null;
   const linkedLine = issuesRead === null || issuesRead.length === 0 ? null : `Linked issues: ${issuesRead.map((n) => code(`#${n}`)).join(', ')} read for intent.`;
