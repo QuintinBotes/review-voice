@@ -26472,6 +26472,16 @@ function parsePatchFiles(normalised2) {
   }
   return files2;
 }
+function patchMoves(normalised2) {
+  const moves = [];
+  for (const section2 of normalised2.split(/^diff --git /m).slice(1)) {
+    const from = /^(rename|copy) from (.+)$/m.exec(section2);
+    const to = from === null ? null : new RegExp(`^${from[1]} to (.+)$`, "m").exec(section2);
+    if (from === null || to === null) continue;
+    moves.push({ from: unquoteGitPath(withoutCarriageReturn(from[2])), to: unquoteGitPath(withoutCarriageReturn(to[1])) });
+  }
+  return moves;
+}
 function fillerFor(path) {
   const extension = basename6(path).includes(".") ? basename6(path).split(".").pop().toLowerCase() : "";
   const hash2 = ["yml", "yaml", "tf", "py", "rb", "sh", "toml", "ini", "cfg", "conf", "md", "txt"];
@@ -26563,7 +26573,7 @@ function gitEnvironment() {
 }
 function git3(cwd, label2, args) {
   try {
-    return execFileSync14("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", ...args], {
+    return execFileSync14("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", "-c", "maintenance.auto=false", "-c", "core.precomposeunicode=false", ...args], {
       cwd,
       env: gitEnvironment(),
       encoding: "utf8",
@@ -26594,6 +26604,11 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
     if (file2.newPath !== null) confinedPath(file2.newPath, label2);
   }
   const images = reconstruct(files2, label2);
+  const moves = patchMoves(normalised2);
+  for (const move of moves) {
+    confinedPath(move.from, label2);
+    confinedPath(move.to, label2);
+  }
   const contextDir = join23(fixtureDir, "context");
   const supplied = /* @__PURE__ */ new Map();
   if (existsSync15(contextDir)) {
@@ -26621,6 +26636,10 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
     const text5 = content.length === 0 ? "" : content.join("\n") + (image.noFinalNewline ? "" : "\n");
     writeInside(targetDir, path, text5, label2);
   }
+  for (const { from } of moves) {
+    if (!images.has(from) && !supplied.has(from)) writeInside(targetDir, from, `${fillerFor(from)}
+`, label2);
+  }
   for (const [path, text5] of supplied) writeInside(targetDir, path, text5, label2);
   const configPath = join23(fixtureDir, "config.yaml");
   let config2 = DEFAULT_CONFIG;
@@ -26638,16 +26657,19 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
     const copy = join23(scratch, "normalised.patch");
     writeFileSync9(copy, normalised2);
     try {
-      git3(targetDir, label2, ["apply", "--whitespace=nowarn", copy]);
+      git3(targetDir, label2, ["apply", "--cached", "--whitespace=nowarn", copy]);
     } catch (error) {
       throw new Error(`${error.message} (the patch does not apply to its reconstructed pre-image)`);
     }
   } finally {
     rmSync7(scratch, { recursive: true, force: true });
   }
-  git3(targetDir, label2, ["add", "-A"]);
   git3(targetDir, label2, ["commit", "-q", "-m", `head: ${label2}`]);
   const head = git3(targetDir, label2, ["rev-parse", "HEAD"]).trim();
+  for (const entry of readdirSync5(targetDir)) {
+    if (entry !== ".git") rmSync7(join23(targetDir, entry), { recursive: true, force: true });
+  }
+  git3(targetDir, label2, ["reset", "-q", "--hard", head]);
   const changed = [];
   for (const file2 of files2) {
     const path = file2.newPath ?? file2.oldPath;
