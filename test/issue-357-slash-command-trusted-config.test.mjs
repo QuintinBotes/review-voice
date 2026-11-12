@@ -28,7 +28,7 @@ const VARIABLES = ['REVIEW_VOICE_CONFIG', 'REVIEW_VOICE_CONFIG_SOURCE'];
 
 // Each setting shows in one stage command's output. That is the mode in `plan`,
 // the gate in `score`, and the sensitive glob in the complexity `diff` assesses.
-const BASE_CONFIG = ['review:', '  mode: thorough', '  confidence_threshold: 0.95', '  human_review:', '    sensitive_paths:', "      - 'src/billing/**'", ''].join('\n');
+const BASE_CONFIG = ['review:', '  mode: thorough', '  confidence_threshold: 0.95', '  minor_confidence_threshold: 0.95', '  human_review:', '    sensitive_paths:', "      - 'src/billing/**'", ''].join('\n');
 const HEAD_CONFIG = ['review:', '  mode: fast', '  confidence_threshold: 0.5', '  human_review:', '    sensitive_paths: []', ''].join('\n');
 const RUNNERS = ['runners:', '  codex:', '    command: [codex, exec, "{schema}"]', '  use:', '    challenge: codex', ''].join('\n');
 const CHARGE = ['export function charge(cents) {', '  if (cents < 0) return 0;', '  return cents * 2;', '}', ''].join('\n');

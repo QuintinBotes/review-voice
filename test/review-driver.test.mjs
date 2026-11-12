@@ -2170,7 +2170,7 @@ function githubActions(t, value) {
 }
 
 const HELD_QUEUE_CONFIG = { '.review-voice/config.yaml': 'verdict:\n  held_queue: true\n' };
-const BELOW_GATE_RUN = { 'diff-analyst': [{ candidates: [CANDIDATE] }], 'evidence-verifier': [{ verifications: [{ ...VERIFIED, technical_confidence: 0.7 }] }] };
+const BELOW_GATE_RUN = { 'diff-analyst': [{ candidates: [CANDIDATE] }], 'evidence-verifier': [{ verifications: [{ ...VERIFIED, technical_confidence: 0.65 }] }] };
 
 test('S22: every scored run leaves score-input.json, equal to what score read, and the default report has no heldQueue', async (t) => {
   const repo = repository(t, { 'src/app.ts': APP_HEAD });
@@ -2238,7 +2238,7 @@ test('S22: inside GitHub Actions the held queue names the candidate, never a com
 
 // ---------------------------------------------------------------- issue 337: a verified finding under the confidence gate caps an approval, and its hold outlives a narrowed review
 
-const UNDER_GATE_RUN = { 'diff-analyst': [{ candidates: [CANDIDATE] }], 'evidence-verifier': [{ verifications: [{ ...VERIFIED, technical_confidence: 0.78 }] }] };
+const UNDER_GATE_RUN = { 'diff-analyst': [{ candidates: [CANDIDATE] }], 'evidence-verifier': [{ verifications: [{ ...VERIFIED, technical_confidence: 0.65 }] }] };
 const UNDER_GATE = ['src/app.ts', 3, 'below-gate', 'below the confidence gate'];
 const gateHeld = (data, report) => storedRun(data, report.runId).held.map((entry) => [entry.path, entry.line, entry.verdict, entry.reason]);
 const namesGate = (report) => report.verdict.reasons.some((reason) => reason.includes('below the confidence gate'));
@@ -2249,7 +2249,7 @@ const changeReadme = (repo, text) =>
     git('commit', '-q', '-am', 'docs');
   });
 
-/** A pull request whose first, full review verifies its one minor finding at 0.78, under the 0.8 gate, and so holds it. */
+/** A pull request whose first, full review verifies its one minor finding at 0.65, under the 0.7 gate, and so holds it. */
 async function underGateReview(t) {
   const repo = repository(t, { 'src/app.ts': APP_HEAD });
   const github = fakeGitHub(repo);

@@ -75,8 +75,14 @@ review:
   max_words_per_finding: 40
   # A runaway guard rather than a trim target - see docs/ARCHITECTURE.md.
   max_total_words: 600
-  # Defaults for `score --min-confidence` and `--min-score`; the flags win.
+  # Defaults for `score --min-confidence`, `--min-minor-confidence` and
+  # `--min-score`; the flags win. The verifier's confidence must reach
+  # confidence_threshold at blocking or important, and
+  # minor_confidence_threshold at minor or nit, which is never above the
+  # first. A security, authorization, authentication, data integrity or trust
+  # boundary finding takes confidence_threshold at every tier.
   confidence_threshold: 0.80
+  minor_confidence_threshold: 0.70
   final_score_threshold: 0.68
   # true posts a verified repair of at most five added lines as a suggestion
   # block the author can commit, when the head's lines still match what the

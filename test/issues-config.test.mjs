@@ -105,7 +105,7 @@ test('review.final_score_threshold is the default score gate and --min-score win
   }));
 
 test('review.confidence_threshold is the default confidence gate and --min-confidence wins', () =>
-  withRepo('review:\n  confidence_threshold: 0.95\n', (dir) => {
+  withRepo('review:\n  confidence_threshold: 0.95\n  minor_confidence_threshold: 0.95\n', (dir) => {
     assert.deepEqual(score(dir).eligible, []);
     assert.equal(score(dir, ['--min-confidence', '0.5']).eligible.length, 1);
   }));

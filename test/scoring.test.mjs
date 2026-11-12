@@ -983,8 +983,8 @@ test('a verifier confidence is still held to the higher bar', () => {
     technicalConfidence: 0.7,
   });
   assert.equal(result.confidenceSource, 'verifier');
-  assert.equal(result.eligible, false);
-  assert.match(result.rejectedBecause, /0\.70 \(verifier\) is below 0\.8/);
+  assert.equal(result.eligible, true);
+  assert.equal(result.rejectedBecause, null);
 });
 
 test('below its own floor the analyst self-report still gates', () => {

@@ -207,3 +207,39 @@ The question cap (`MAX_QUESTIONS`) ranks the analyst's questions only. A
 question the owner posted is the owner's decision, so the cap neither drops it,
 which would hold it silently while `explain` said it was posted, nor counts it
 against the analyst's questions.
+
+## Amendment - 2026-11-12 (the minor floor)
+
+A verified minor or nit is held to 0.7, not 0.8 (#343). Measured on the recall
+fixtures over three runs, recall was 0.76 with clean silence 1.00, and 8 of the
+16 missed runs were findings the verifier confirmed and this gate then held,
+nearly all maintainability minors and nits. Those are the findings an author
+loses least by declining, and a held nit already leaves the review at APPROVE.
+
+**The rule.** A finding the verifier scored takes one of two floors by the tier
+the scorer derives, after any owner `--severity` override.
+`review.confidence_threshold` (default 0.8, the `score --min-confidence` flag)
+applies at `blocking` and `important`. `review.minor_confidence_threshold`
+(default 0.7, the `score --min-minor-confidence` flag) applies at `minor` and
+`nit`. A question keeps its own rule. The analyst-only floor and the
+unverifiable cap are unchanged.
+
+**Some categories never take the lower floor.** A finding in a category no
+suppression may reach (security, authorization, authentication, data
+integrity, trust boundary) takes `review.confidence_threshold` at every tier.
+Its tier is a derivation that can come out too low, and the lower floor must
+not then also lower the bar for the claims a wrong comment costs most.
+
+**A lower tier never needs more confidence.** A
+`review.minor_confidence_threshold` above `review.confidence_threshold` is
+replaced by it, with a warning naming both keys. A value that is not a number
+above 0 and at most 1 is ignored with a warning, as for the main key.
+
+**The reason names the floor.** The rejection reads, for example, `technical
+confidence 0.72 (verifier) is below 0.8, the floor for an important finding`,
+and the `threshold` of the `belowGate` entry is the floor that applied, so
+`explain` and the local list say which gate held it.
+
+The hold for a finding under the confidence gate (the amendment of 2026-11-11)
+is unchanged: a minor held below 0.7 still keeps a review from approving. This
+changes a default. Some minors and nits that were held now post.

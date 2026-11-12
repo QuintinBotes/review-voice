@@ -23,6 +23,7 @@ import { DEFAULT_RETENTION, type RetentionConfig } from '../store/retention.ts';
 import { defaultReproduction, type ReproductionConfig, type ReproductionRunner } from '../evidence/reproduce.ts';
 import { DEFAULT_AGENT_TIMEOUT_MS, FAMILIES, type ExternalFamily, type Family } from '../agents/types.ts';
 import { DEFAULT_OUTCOMES, type OutcomesConfig } from '../store/approvals.ts';
+import { DEFAULT_THRESHOLDS } from '../scoring/score.ts';
 
 /** One `runners.<family>` block: the argv that runs an agent on that family (docs/adr/0021, amended). */
 export interface ConfiguredRunner {
@@ -122,8 +123,11 @@ export interface LoadedConfig {
   verdictPolicy: VerdictPolicy;
   /** `review.lanes` after the built-in diff lane, which is always first (docs/adr/0023). */
   lanes: Lane[];
-  /** `review.confidence_threshold` and `review.final_score_threshold`: defaults for `score` when its flags are absent. */
-  thresholds: { technicalConfidence?: number; finalScore?: number };
+  /**
+   * `review.confidence_threshold`, `review.minor_confidence_threshold` and
+   * `review.final_score_threshold`: defaults for `score` when its flags are absent.
+   */
+  thresholds: { technicalConfidence?: number; minorConfidence?: number; finalScore?: number };
   /** `review.linked_issues`: whether `thread` also reads the same-repository issues the description closes. Off by default. */
   linkedIssues: boolean;
   /**
@@ -172,8 +176,8 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
   identity: ['owner_reviewer', 'reviewers'],
   repositories: ['include'],
   review: [
-    'human_review', 'structure', 'mode', 'models', 'confidence_threshold', 'final_score_threshold', 'lanes', 'suggestions',
-    'linked_issues', 'max_findings', 'max_words_per_finding', 'max_total_words', 'first_party_paths',
+    'human_review', 'structure', 'mode', 'models', 'confidence_threshold', 'minor_confidence_threshold', 'final_score_threshold',
+    'lanes', 'suggestions', 'linked_issues', 'max_findings', 'max_words_per_finding', 'max_total_words', 'first_party_paths',
   ],
   'review.human_review': [
     'max_decision_points', 'max_hunk_decision_points', 'sensitive_paths', 'sensitive_exempt_paths', 'test_paths',
@@ -1090,8 +1094,19 @@ function readThresholds(review: Record<string, unknown>, result: LoadedConfig): 
     return undefined;
   };
   const confidence = read('confidence_threshold');
+  const minor = read('minor_confidence_threshold');
   const score = read('final_score_threshold');
   if (confidence !== undefined) result.thresholds.technicalConfidence = confidence;
+  if (minor !== undefined) {
+    const main = confidence ?? DEFAULT_THRESHOLDS.technicalConfidence;
+    if (minor > main) {
+      result.warnings.push(
+        `review.minor_confidence_threshold ${minor} is above review.confidence_threshold ${main}; ` +
+          `using ${main} for minor and nit too, since a lower tier never needs more confidence.`,
+      );
+    }
+    result.thresholds.minorConfidence = Math.min(minor, main);
+  }
   if (score !== undefined) result.thresholds.finalScore = score;
 }
 

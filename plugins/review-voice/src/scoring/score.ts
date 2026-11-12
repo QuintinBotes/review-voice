@@ -565,6 +565,12 @@ export interface ScoreBreakdown {
   confidenceSource: 'analyst' | 'verifier' | 'unverifiable-cap';
   /** Which input applied the unverifiable cap, when `confidenceSource` is `unverifiable-cap`. */
   unverifiableBecause: string | null;
+  /**
+   * The confidence floor this candidate was held to, by source, tier and
+   * category (#343). For a question it is `QUESTION_GAP_FLOOR`, which applies
+   * only once the verifier has rejected it.
+   */
+  confidenceFloor: number;
   /** The tier this is reported at, derived rather than requested. */
   severity: DerivedSeverity;
   ownerAlignment: number;
@@ -617,8 +623,15 @@ export interface ScoreBreakdown {
 }
 
 export interface Thresholds {
-  /** Applied to a confidence the verifier established. */
+  /** Applied to a confidence the verifier established, at blocking or important. */
   technicalConfidence: number;
+  /**
+   * Applied to a confidence the verifier established, at minor or nit (#343),
+   * and never above `technicalConfidence`. Of the runs that missed a seeded
+   * defect on the recall fixtures, half lost it to a verified finding held
+   * under 0.8, nearly all minors and nits, which cost the author least to decline.
+   */
+  minorConfidence: number;
   /**
    * Applied when only the analyst's self-report exists.
    *
@@ -680,6 +693,7 @@ export const QUESTION_GAP_FLOOR = 0.5;
 
 export const DEFAULT_THRESHOLDS: Thresholds = {
   technicalConfidence: 0.8,
+  minorConfidence: 0.7,
   analystOnlyConfidence: 0.7,
   finalScore: 0.68,
 };
@@ -1647,6 +1661,22 @@ function withLegacyTierHint(
   };
 }
 
+/** The floor a confidence the verifier established must clear, and the words that name it (#343). */
+function verifiedFloor(category: string, tier: Severity | 'question', thresholds: Thresholds): { floor: number; names: string } {
+  const main = thresholds.technicalConfidence;
+  // The same categories no suppression may reach: a tier derived too low must
+  // not also lower the bar for the claims a wrong comment costs most. An
+  // unlabelled candidate arrives without a category.
+  if (isSuppressionExempt(category ?? '')) {
+    return { floor: main, names: `the floor for every tier in the ${canonicalCategory(category)} category` };
+  }
+  if (tier !== 'minor' && tier !== 'nit') {
+    return { floor: main, names: `the floor for ${tier === 'important' ? 'an' : 'a'} ${tier} finding` };
+  }
+  // A caller that predates the minor floor omits it, and gets the stricter one.
+  return { floor: Math.min(thresholds.minorConfidence ?? main, main), names: `the floor for a ${tier} finding` };
+}
+
 export function scoreCandidate(
   candidate: Candidate,
   precedents: Precedent[],
@@ -1654,6 +1684,8 @@ export function scoreCandidate(
   thresholds: Thresholds = DEFAULT_THRESHOLDS,
   verification?: Verification | undefined,
   lane?: Lane | undefined,
+  /** An owner `--severity` override, which sets the tier the confidence floor is chosen by. */
+  ownerTier?: Severity | undefined,
 ): ScoreBreakdown {
   const analystConfidence = candidate.technicalConfidence;
 
@@ -1693,10 +1725,15 @@ export function scoreCandidate(
         ? `the verifier listed required_context_missing the claim depends on: ${missing.join('; ')}`
         : "the analyst's evidence says the claim could not be checked, and the verifier gave no technical_confidence of its own";
 
+  // Based on the unbounded derivation, so the evidence bound cannot change
+  // which candidates are gated as questions.
+  const derivedSeverity = deriveSeverity(candidate.category, candidate.severity, verification?.reach);
+  const isQuestion = derivedSeverity.severity === 'question';
+
   // Which floor applies depends on who established the number. The verifier
   // checked the claim; the analyst did not.
-  const confidenceFloor =
-    confidenceSource === 'verifier' ? thresholds.technicalConfidence : thresholds.analystOnlyConfidence;
+  const verified = verifiedFloor(candidate.category, ownerTier ?? derivedSeverity.severity, thresholds);
+  const confidenceFloor = confidenceSource === 'verifier' ? verified.floor : thresholds.analystOnlyConfidence;
 
   const alreadySaid = duplicatePrecedent(candidate, precedents);
 
@@ -1736,11 +1773,6 @@ export function scoreCandidate(
   // What a question needs is not a confidence bar but a limit on how many can
   // be asked at once, since a review that ends in five questions has stopped
   // being a review.
-  // Based on the unbounded derivation, so the evidence bound cannot change
-  // which candidates are gated as questions.
-  const derivedSeverity = deriveSeverity(candidate.category, candidate.severity, verification?.reach);
-  const isQuestion = derivedSeverity.severity === 'question';
-
   let rejectedBecause: string | null = null;
   // Checked explicitly: every comparison against NaN is false, so a
   // non-finite score would otherwise pass both thresholds below.
@@ -1812,7 +1844,7 @@ export function scoreCandidate(
       `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` +
       (confidenceSource === 'analyst'
         ? '. No verification was supplied, so this is the analyst\'s opinion of its own output.'
-        : '');
+        : `, ${verified.names}`);
   } else if (finalScore < thresholds.finalScore) {
     // Four places, because two produced "score 0.78 is below 0.78" on a
     // finalScore of 0.7788996174443317. True, and unreadable.
@@ -1877,6 +1909,7 @@ export function scoreCandidate(
     verifiedConfidence,
     confidenceSource,
     unverifiableBecause,
+    confidenceFloor: isQuestion ? QUESTION_GAP_FLOOR : confidenceFloor,
     ownerAlignment,
     repositoryAlignment,
     evidenceQuality: quality,
