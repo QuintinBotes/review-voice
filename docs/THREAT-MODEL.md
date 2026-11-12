@@ -317,9 +317,15 @@ store, outlive the run, or simply pass on purpose.
   is a refusal; and anything else fails the probe: a listener that never
   printed the first or the third within 5 seconds, one that printed the third
   before the CLI posted it, one that ended while it still had the second to
-  wait for, or one that printed any other line. No
-  fixed wait decides the answer. The CLI never posts the second key itself, and
-  always kills the listener with its process group.
+  wait for, or one that printed any other line. The order of the lines is not
+  guaranteed once the listener's port has been full, so a second check rests
+  on no order: the probe sets the state of the second key as well as posting
+  it, the listener holds that key until it is killed, so the state lasts, and
+  once the third key is printed the CLI reads that state from outside. Any
+  value but the default is an escape, whatever the listener printed, and a
+  state that cannot be read, or one read after the listener ended, fails the
+  probe. No fixed wait decides the answer. The CLI never posts the second key
+  itself, and always kills the listener with its process group.
 - On Linux the runner uses user, mount, network and pid namespaces, which give
   no network, a read-only view of the filesystem, writes only to a fresh throwaway
   copy of the head worktree and its scratch directory, the data directory, the
@@ -349,7 +355,14 @@ store, outlive the run, or simply pass on purpose.
   typed into another session. The kernel does not ask the sandbox before it
   creates a System V IPC object, so a run can create a shared memory segment,
   a semaphore set or a message queue, though it can neither use nor remove one,
-  and no profile rule stops that.
+  and no profile rule stops that. So before each run and after it ends the CLI
+  lists the System V IPC objects (`ipcs`). One the user owns or created that
+  is listed after the run, and was not listed before it under any owner, was
+  made during it: the CLI removes it by its
+  id (`ipcrm`), only those, and records the run as not run with a reason
+  naming System V IPC, so its result neither holds nor clears a finding. An
+  object listed before the run is never touched, and a listing or a removal
+  that fails records the run as not run too.
 - The environment is an allowlist (`PATH`, `LANG`, `LC_ALL`, `TERM`, a scratch
   `HOME` and `TMPDIR`, `CI`, `NO_COLOR`), so no token and no `REVIEW_VOICE_*`
   variable reaches it.
@@ -389,12 +402,16 @@ handles SIGXCPU or keeps reading its own CPU usage stays until the user logs
 out, and in the last two cases keeps using CPU until then. It stays confined
 by the profile, with no network, no POSIX IPC and no write outside its own copy
 and scratch directory, which are removed, so nothing it writes reaches a later
-stage. A System V IPC object a run, or a process it leaves behind, creates on
-macOS outlives it until it is removed with `ipcrm` or the machine restarts, and
-the CLI does not remove it. It carries no data, since the run cannot use it, but
-the system holds few of them (32 shared memory segments by default), so a run
-can use them all up and make other programs fail to create one. A reproduction
-can still spend its whole time limit.
+stage. The System V IPC check bounds what a run leaves behind on macOS; it
+does not stop a run from using up, while it lasts, the few objects the system
+holds (32 shared memory segments by default), so other programs can fail to
+create one until the run ends. An object a process the run leaves behind
+creates after the listing that follows the run is not seen, and outlives it
+until it is removed with `ipcrm` or the machine restarts. An object another
+program of the same user creates while a run lasts is taken for the run's,
+removed, and the run is recorded as not run. A stop signal that ends the CLI
+during a run leaves what that run made. A reproduction can still spend its
+whole time limit.
 
 ### 5. Policy drift and poisoning
 

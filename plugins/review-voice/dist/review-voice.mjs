@@ -13864,6 +13864,7 @@ import { execFileSync as execFileSync8 } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync as chmodSync2, constants, cpSync, existsSync as existsSync3, lstatSync as lstatSync3, mkdirSync as mkdirSync2, mkdtempSync, readdirSync as readdirSync2, readFileSync as readFileSync4, realpathSync, renameSync, rmSync as rmSync3, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { userInfo } from "node:os";
 import { basename as basename4, dirname as dirname5, join as join7, relative, resolve } from "node:path";
 
 // plugins/review-voice/src/review/worktree.ts
@@ -14541,6 +14542,8 @@ var PROBE_TIMEOUT_MS = 3e4;
 var PROBE_DOMAIN = "review-voice.probe";
 var NOTIFYUTIL = "/usr/bin/notifyutil";
 var NOTIFY_READY_MS = 5e3;
+var IPCS = "/usr/bin/ipcs";
+var IPCRM = "/usr/bin/ipcrm";
 var CREDENTIAL_DIRS = [".ssh", ".gnupg", ".aws", ".config/gh", "Library/Keychains"];
 var CREDENTIAL_FILES = [".netrc", ".npmrc", ".git-credentials"];
 var DEVICES = ["null", "zero", "full", "random", "urandom"];
@@ -14779,8 +14782,9 @@ function probeScript(targets) {
     // The user's terminals are devices there, which take a write on a read-only mount.
     "if (fs.existsSync('/dev/pts')) escaped.push('terminal');",
     "if (t.domain !== null) { const cp = require('child_process'); if (cp.spawnSync('/usr/bin/defaults', ['write', t.domain, 'probe', 'escaped']).status === 0) { escaped.push('preference'); cp.spawnSync('/usr/bin/defaults', ['delete', t.domain]); } }",
-    // A refused post exits 0 too, so only the listener outside can tell.
-    `if (t.notify !== null) require('child_process').spawnSync(${JSON.stringify(NOTIFYUTIL)}, ['-p', t.notify]);`,
+    // A refused post exits 0 too, so only the listener outside can tell. The
+    // state is set first, so it holds whatever order the lines arrive in.
+    `if (t.notify !== null) require('child_process').spawnSync(${JSON.stringify(NOTIFYUTIL)}, ['-s', t.notify, '1', '-p', t.notify]);`,
     "const socket = require('net').connect(t.port, '127.0.0.1');",
     "let done = false;",
     "const finish = (connected) => { if (done) return; done = true; clearTimeout(timer); socket.destroy(); if (connected) escaped.push('connect'); console.log(escaped.length > 0 ? 'escaped by ' + escaped.join(', ') : 'RV_PROBE_OK'); };",
@@ -14804,7 +14808,7 @@ function listenForNotify(spawn3, cwd) {
   let printed = "";
   let ended;
   const listening = Promise.resolve(
-    spawnInGroup(spawn3, NOTIFYUTIL, cwd, 2 * PROBE_TIMEOUT_MS, {}, ["-1", escape, "-1", post, "-1", pre], {
+    spawnInGroup(spawn3, NOTIFYUTIL, cwd, 2 * PROBE_TIMEOUT_MS, {}, ["-w", escape, "-1", post, "-1", pre], {
       onStdout: (text5) => printed += text5,
       signal: killer.signal
     })
@@ -14829,11 +14833,22 @@ function listenForNotify(spawn3, cwd) {
     if (ended !== void 0) return ended.error?.message ?? `notifyutil exited ${String(ended.status ?? "on a signal")}`;
     return heard.includes(key2) ? false : `no post was heard within ${NOTIFY_READY_MS / 1e3}s`;
   };
+  const state = async () => {
+    const read = await spawnInGroup(spawn3, NOTIFYUTIL, cwd, NOTIFY_READY_MS, {}, ["-g", escape]);
+    await new Promise((done) => setImmediate(done));
+    if (ended !== void 0) return "the listener ended before the state was read";
+    if (read.error !== void 0) return read.error.message;
+    if (read.status !== 0) return `notifyutil -g exited ${String(read.status ?? "on a signal")}`;
+    const line3 = read.stdout.trim();
+    const value = line3.startsWith(`${escape} `) ? line3.slice(escape.length + 1) : "";
+    if (!/^\d+$/.test(value)) return `notifyutil -g printed an unexpected line: ${firstLine2(line3)}`;
+    return Number(value) !== 0;
+  };
   const end = async () => {
     killer.abort();
     await listening;
   };
-  return { escape, hear, end };
+  return { escape, hear, state, end };
 }
 async function probeSandbox(ctx, given) {
   const platform = ctx.platform ?? process.platform;
@@ -14888,15 +14903,17 @@ async function runProbe(ctx, layout) {
     await new Promise((done) => setImmediate(done));
     const said = new Set(/^escaped by (.+)$/m.exec(result.stdout)?.[1]?.split(", ") ?? []);
     const notified = listener === null ? false : await listener.hear("post");
+    const set2 = listener === null ? false : await listener.state();
     const outside = {
       write: existsSync3(layout.escape),
       connect: connections > 0,
       profile: contentOf(overwrite) !== before,
-      notify: notified === true
+      notify: notified === true || set2 === true
     };
     const seen = ["write", "read", "connect", "profile", "terminal", "signal", "preference", "notify"].filter((name) => said.has(name) || outside[name] === true);
     if (seen.length > 0) return { platform, mechanism: "none", probe: `escaped by ${seen.join(", ")}` };
     if (typeof notified === "string") return { platform, mechanism: "none", probe: `could not tell whether the probe posted a notification: ${notified}` };
+    if (typeof set2 === "string") return { platform, mechanism: "none", probe: `could not read the state of the notification key: ${set2}` };
     if (result.error === void 0 && result.status === 0 && result.stdout.trim() === "RV_PROBE_OK") return { platform, mechanism, probe: "passed" };
     const why = result.error === void 0 ? firstLine2(result.stderr) || firstLine2(result.stdout) || `exited ${String(result.status)}` : result.error.message;
     return { platform, mechanism: "none", probe: why.startsWith(`${mechanism}:`) ? why : `${mechanism}: ${why}` };
@@ -15011,6 +15028,38 @@ function stateOf(result, reached, text5, timeoutSeconds, cpuSeconds) {
   if (!reached) return { kind: "not-run", reason: `exited ${result.status} before reaching its assertion` };
   return { kind: "failed", code: result.status };
 }
+async function ipcObjects(spawn3, cwd) {
+  const result = await spawnInGroup(spawn3, IPCS, cwd, PROBE_TIMEOUT_MS, {}, ["-c"]);
+  if (result.error !== void 0) return result.error.message;
+  if (result.status !== 0) return `ipcs exited ${String(result.status ?? "on a signal")}`;
+  if (!["Message Queues:", "Shared Memory:", "Semaphores:"].every((title) => result.stdout.split("\n").includes(title))) return "ipcs did not list every facility";
+  let names;
+  try {
+    const user = userInfo();
+    names = [user.username, String(user.uid)];
+  } catch (error) {
+    return `could not name the user: ${error.message}`;
+  }
+  const objects = { all: /* @__PURE__ */ new Set(), mine: /* @__PURE__ */ new Set() };
+  for (const [, type, id, owner, creator] of result.stdout.matchAll(/^([qms])\s+(\d+)\s+\S+\s+\S+\s+(\S+)\s+\S+\s+(\S+)/gm)) {
+    objects.all.add(`${type} ${id}`);
+    if (names.includes(owner) || names.includes(creator)) objects.mine.add(`${type} ${id}`);
+  }
+  return objects;
+}
+async function removeIpcLeft(spawn3, cwd, before) {
+  const after = await ipcObjects(spawn3, cwd);
+  if (typeof after === "string") return `could not list System V IPC objects after the run: ${after}`;
+  const made = [...after.mine].filter((object) => !before.has(object));
+  if (made.length === 0) return null;
+  const result = await spawnInGroup(spawn3, IPCRM, cwd, PROBE_TIMEOUT_MS, {}, made.flatMap((object) => {
+    const [type, id] = object.split(" ");
+    return [`-${type}`, id];
+  }));
+  if (result.error === void 0 && result.status === 0) return `the reproduction left System V IPC objects behind, removed by id: ${made.join(", ")}`;
+  const why = result.error?.message ?? `ipcrm exited ${String(result.status ?? "on a signal")}`;
+  return `the reproduction left System V IPC objects behind, and they could not be removed (${made.join(", ")}): ${why}`;
+}
 async function runReproduction(record3, content, runner, layout, ctx) {
   const command = runner.run.replace("{file}", () => shellQuote(record3.file));
   const end = (outcome, reason2) => ({ ...record3, outcome, ...reason2 === void 0 ? {} : { reason: reason2 } });
@@ -15034,12 +15083,16 @@ async function runReproduction(record3, content, runner, layout, ctx) {
   for (const attempt of [1, 2]) {
     const changed = attempt === 1 ? null : changedSince();
     if (changed !== null) return end("did-not-run", changed);
+    const ipcBefore = layout.platform === "darwin" ? await ipcObjects(ctx.spawn ?? spawnCommand, layout.reproDir) : null;
+    if (typeof ipcBefore === "string") return end("did-not-run", `could not list System V IPC objects before the run: ${ipcBefore}`);
     const started = Date.now();
     const result = await spawnConfined(layout, ctx, command, runner.timeoutSeconds * 1e3);
     const durationMs = Date.now() - started;
     const text5 = `${result.stdout}${result.stdout === "" || result.stdout.endsWith("\n") ? "" : "\n"}${result.stderr}`;
     const reached = reachedMarker(text5, record3.candidateId);
     record3.runs.push({ exitCode: result.status, durationMs, reached, output: recorded(text5) });
+    const ipcLeft = ipcBefore === null ? null : await removeIpcLeft(ctx.spawn ?? spawnCommand, layout.reproDir, ipcBefore.all);
+    if (ipcLeft !== null) return end("did-not-run", ipcLeft);
     const modified = changedSince();
     if (modified !== null) return end("did-not-run", modified);
     const state = stateOf(result, reached, text5, runner.timeoutSeconds, ctx.config.cpuSeconds);

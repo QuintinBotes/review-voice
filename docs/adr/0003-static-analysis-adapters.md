@@ -239,15 +239,28 @@ which can carry a token passed as an argument, so `(deny sysctl-read
 The kernel does not ask the sandbox before it creates a System V IPC object, so
 a run can create a shared memory segment, a semaphore set or a message queue,
 though it can neither use nor remove one, and no profile rule, `(deny
-ipc-sysv*)` included, stops that. Such an object outlives the run until `ipcrm`
-or a restart, and the CLI does not remove it; the system holds few of them (32
-shared memory segments by default), so a run can use them all up. File reads of
+ipc-sysv*)` included, stops that. So the CLI brackets each run instead. Before
+the run and after it ends it lists the System V IPC objects (`ipcs -c`). An
+object the user owns or created that is listed after the run, and was not
+listed before it under any owner, was made while the run lasted, and the CLI removes it by its id (`ipcrm`), and only
+those, and records the run as not run with a reason naming System V IPC, so its
+result neither holds nor clears a finding. An object listed before the run is
+never touched. A listing that fails, or leaves out a facility, and a removal
+that fails also record the run as not run. This bounds what a run leaves
+behind; it does not stop a run from using up, while it lasts, the few objects
+the system holds (32 shared memory segments by default), so other programs can
+fail to create one until the run ends. Three more limits remain. An object a
+process the run leaves behind creates after the listing that follows the run is
+not seen, and outlives the run until `ipcrm` or a restart. An object another
+program of the same user creates while a run lasts is taken for the run's,
+removed, and the run recorded as not run. And a stop signal that ends the CLI
+during a run leaves what that run made. File reads of
 terminal devices (`/dev/tty*`, `/dev/pty*`, `/dev/cu.*` and `/dev/ptmx`) are
 denied after every read the profile allows, since a run, or a process it leaves
 behind, could otherwise take what is typed into another session. The probe
 keeps every check it had and adds one, a notification post, which a listener
 outside the sandbox judges, since a refused post exits 0 too. The CLI starts
-one listener, `notifyutil -1 <escape> -1 <post> -1 <pre>`, for three fresh
+one listener, `notifyutil -w <escape> -1 <post> -1 <pre>`, for three fresh
 random keys, and reads each line as the listener prints it. The three keys
 share one port, and notifyd sends to it in the order it takes the posts while
 the port has room. The listener runs without `-M`, which passes each
@@ -272,9 +285,17 @@ still heard once the probe was back, so the CLI does not post and the probe
 fails. The order is not all the CLI relies on. A listener held still until its
 port fills is sent what it missed newest registration first, which puts
 `<post>` ahead of `<escape>`, so `<escape>` printed after `<post>` is the
-escape `notify` as well; the CLI could miss it only by reading `<post>` in the
-instant before `<escape>` follows, and only when the listener was stopped for
-seconds before the probe and again while it ran. Anything else fails the probe:
+escape `notify` as well. That order is not guaranteed once the port has been
+full, and an `<escape>` line still to come when the listener is killed is lost,
+so a second check rests on no order. The probe sets the state of `<escape>`
+before it posts it. A key keeps its state only while some process holds it, so
+the listener holds `<escape>` with `-w`, which lasts until it is killed, rather
+than `-1`, which ends at the first notification. Once `<post>` is printed the
+CLI reads that state from outside (`notifyutil -g <escape>`) while the listener
+still runs, and any value but the default 0 is the escape `notify`, whatever
+the listener printed. A state that cannot be read, a reply that is not
+`<escape>` and a number, and a listener that ended before the read was answered
+fail the probe. Anything else fails the probe:
 a listener that never prints `<post>`, one that printed `<post>` before the CLI
 posted it, one that has ended, however it ended, while it still had `<escape>`
 to wait for, or one that prints any other line. So no fixed wait decides the

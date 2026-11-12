@@ -13,7 +13,7 @@ import fs, { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSy
 import { connect, createServer } from 'node:net';
 import { randomInt } from 'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
-import { homedir, tmpdir } from 'node:os';
+import { homedir, tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../plugins/review-voice/src/policy/load.ts';
@@ -158,16 +158,16 @@ const notifyKey = (options) => /"notify":"([^"]+)"/.exec(options.args.at(-1))?.[
 
 /**
  * notifyd and notifyutil as the macOS probe uses them outside the sandbox.
- * `-1 <escape> -1 <post> -1 <pre>` takes its keys in that order, the first
+ * `-w <escape> -1 <post> -1 <pre>` takes its keys in that order, the first
  * `registers` ms after it starts (or never) and each of the others `between`
  * ms after the one before. It prints each key once, as a post of it is
- * delivered, and exits 0 once it has printed every key it holds, as the real
- * one does, so one that hears a key while it still has others to take exits
- * with those unheard. An abort kills it, and once it has ended it prints
- * nothing. Posts are delivered in the order they were made, each `lag` ms
- * after the one before, and one delivered before the listener holds that key
- * is lost. With -M the real one prints two that wait together in either order,
- * so the fake refuses it.
+ * delivered, and since it holds one key with -w it never exits by itself. An
+ * abort kills it, and once it has ended it prints nothing. Posts are delivered
+ * in the order they were made, each `lag` ms after the one before, and one
+ * delivered before the listener holds that key is lost. With -M the real one
+ * prints two that wait together in either order, so the fake refuses it. A
+ * key's state, which `set` gives and `-g` prints, lasts while a listener holds
+ * the key.
  */
 function fakeNotify({ registers = 0, between = 0 } = {}) {
   const listeners = new Set();
@@ -177,13 +177,19 @@ function fakeNotify({ registers = 0, between = 0 } = {}) {
       for (const listener of listeners) if (!listener.deaf && listener.held.includes(key) && !listener.heard.includes(key)) listener.say(key);
     });
   };
+  const states = new Map();
+  const holds = (key) => [...listeners].some((listener) => listener.held.includes(key));
   const notify = (args, options = {}) => {
     if (args[0] === '-p') {
       assert.equal(args.length, 2, 'a post of one key');
       post(args[1]);
       return { status: 0, stdout: '', stderr: '' };
     }
-    assert.deepEqual([args.length, ...args.filter((_, at) => at % 2 === 0)], [6, '-1', '-1', '-1'], 'one listener for three keys, and no -M');
+    if (args[0] === '-g') {
+      assert.equal(args.length, 2, 'a read of one key');
+      return { status: 0, stdout: `${args[1]} ${holds(args[1]) ? (states.get(args[1]) ?? 0) : 0}\n`, stderr: '' };
+    }
+    assert.deepEqual([args.length, ...args.filter((_, at) => at % 2 === 0)], [6, '-w', '-1', '-1'], 'one listener for three keys, and no -M');
     return new Promise((done) => {
       let stdout = '';
       const listener = {
@@ -194,7 +200,6 @@ function fakeNotify({ registers = 0, between = 0 } = {}) {
           stdout += `${line}\n`;
           options.onStdout?.(`${line}\n`);
           if (listener.keys.includes(line)) listener.heard.push(line);
-          if (listener.heard.length > 0 && listener.held.every((key) => listener.heard.includes(key))) listener.end({ status: 0, stderr: '' });
         },
         end: (result) => {
           if (listeners.delete(listener)) done({ ...result, stdout });
@@ -206,8 +211,15 @@ function fakeNotify({ registers = 0, between = 0 } = {}) {
       if (registers !== null) [args[1], args[3], args[5]].forEach((key, at) => setTimeout(() => listener.held.push(key), registers + at * between));
     });
   };
-  return { notify, post, listening: () => [...listeners].flatMap((listener) => listener.keys), listener: () => [...listeners][0] };
+  const set = (key, value) => {
+    if (holds(key)) states.set(key, value);
+  };
+  return { notify, post, set, listening: () => [...listeners].flatMap((listener) => listener.keys), listener: () => [...listeners][0] };
 }
+
+const IPCS = '/usr/bin/ipcs';
+/** What macOS ipcs -c prints when the user has no System V IPC object. */
+const NO_IPC = ['Message Queues:', 'Shared Memory:', 'Semaphores:'].map((title) => `T     ID     KEY        MODE       OWNER    GROUP  CREATOR   CGROUP\n${title}\n`).join('\n');
 
 /**
  * A spawn that passes the probe and answers each reproduction run from `runs`
@@ -220,6 +232,7 @@ function fakeSpawn(runs = [], { onRun = () => {}, probe = { status: 0, stdout: '
   const { notify, listening } = notifyd;
   const spawn = async (command, options) => {
     if (command === NOTIFYUTIL) return notify(options.args, options);
+    if (command === IPCS) return { status: 0, stdout: NO_IPC, stderr: '' };
     calls.push({ command, options });
     if (isProbe(options)) {
       onProbe(options, notifyd);
@@ -1241,7 +1254,7 @@ test('on macOS the probe passes once the last post from outside arrives with no 
       return { status: 0, stdout: 'RV_PROBE_OK\n', stderr: '' };
     }
     order.push(options.args);
-    if (options.args[0] === '-1') killer = options.signal;
+    if (options.args[0] === '-w') killer = options.signal;
     return notifyd.notify(options.args, options);
   };
   assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn })), { platform: 'darwin', mechanism: 'sandbox-exec', probe: 'passed' });
@@ -1253,7 +1266,8 @@ test('on macOS the probe passes once the last post from outside arrives with no 
   const at = rest.findIndex((call) => call[0] === 'probe');
   assert.deepEqual(rest[at], ['probe', escape], 'the probe posts the escape key');
   assert.ok(at > 0 && rest.slice(0, at).every((call) => call.join(' ') === `-p ${pre}`), 'only the first key is posted before the probe');
-  assert.ok(rest.length > at + 1 && rest.slice(at + 1).every((call) => call.join(' ') === `-p ${post}`), 'only the last key is posted after it, and never the escape key');
+  assert.ok(rest.length > at + 2 && rest.slice(at + 1, -1).every((call) => call.join(' ') === `-p ${post}`), 'only the last key is posted after it, and never the escape key');
+  assert.equal(rest.at(-1).join(' '), `-g ${escape}`, 'then the state of the escape key is read, once');
   assert.equal(killer?.aborted, true, 'the listener is killed');
   assert.deepEqual(notifyd.listening(), [], 'no listener is left');
 });
@@ -1304,7 +1318,7 @@ test('on macOS a listener that prints a key before the first, or one key twice, 
     let last;
     const spawn = (command, options) => {
       const ended = fake.spawn(command, options);
-      if (command === NOTIFYUTIL && options.args[0] === '-1') {
+      if (command === NOTIFYUTIL && options.args[0] === '-w') {
         last = notifyd.listener().keys[2];
         if (early) notifyd.listener().say(last);
       }
@@ -1345,7 +1359,7 @@ test('on macOS a last key the listener prints before the CLI posts it fails the 
     const spawn = (command, options) => {
       const ended = fake.spawn(command, options);
       if (command === NOTIFYUTIL && options.args[0] === '-p') posts.push(options.args[1]);
-      if (command === NOTIFYUTIL && options.args[0] === '-1') {
+      if (command === NOTIFYUTIL && options.args[0] === '-w') {
         const listener = notifyd.listener();
         [first, , last] = listener.keys;
         const say = listener.say;
@@ -2021,7 +2035,7 @@ test('on macOS a profile that lets a post through is the escape notify, and the 
 
 /** Signals the real listener of a probe, found by the key the probe posts, so no other process is ever signalled. */
 function signalListener(options, signal) {
-  const listening = new RegExp(`^\\s*(\\d+) ${NOTIFYUTIL} .*-1 ${escaped(notifyKey(options))}( |$)`);
+  const listening = new RegExp(`^\\s*(\\d+) ${NOTIFYUTIL} .*-w ${escaped(notifyKey(options))}( |$)`);
   const pid = Number(spawnSync('ps', ['-A', '-o', 'pid=', '-o', 'args='], { encoding: 'utf8' }).stdout.split('\n').map((line) => listening.exec(line)?.[1]).find((found) => found !== undefined));
   assert.ok(pid > 1, 'the listener is running');
   process.kill(pid, signal);
@@ -2046,7 +2060,7 @@ test('on macOS a last key a real listener prints before the CLI posts it fails t
   let last;
   // Under the real profile, which refuses the probe's post, with the listener's last key posted by another as the probe starts.
   const spawn = (command, options) => {
-    if (command === NOTIFYUTIL && options.args[0] === '-1') last = options.args[3];
+    if (command === NOTIFYUTIL && options.args[0] === '-w') last = options.args[3];
     if (command === '/usr/bin/sandbox-exec') spawnSync(NOTIFYUTIL, ['-p', last]);
     return spawnCommand(command, options);
   };
@@ -2186,11 +2200,18 @@ test('ADR 0003 names the rules the profile needs because (deny default) does not
   assert.doesNotMatch(text, /IOKit and NVRAM stay denied by default/);
 });
 
-test('the threat model and ADR 0003 say a run can create a System V IPC object the CLI does not remove, and never that all IPC is denied', () => {
+test('the threat model and ADR 0003 say a run can create a System V IPC object, which the CLI removes, though it cannot stop a run using them up, and never that all IPC is denied', () => {
   for (const file of ['docs/THREAT-MODEL.md', 'docs/adr/0003-static-analysis-adapters.md']) {
     const text = readFileSync(join(root, file), 'utf8').replace(/\s+/g, ' ');
-    // The kernel creates one without asking the sandbox, and no profile rule stops it.
-    for (const fact of ['The kernel does not ask the sandbox before it creates a System V IPC object', 'the CLI does not remove it']) assert.ok(text.includes(fact), `${file}: ${fact}`);
+    // The kernel creates one without asking the sandbox, and no profile rule stops it, so the CLI removes what a run made and the run does not count.
+    const facts = [
+      'The kernel does not ask the sandbox before it creates a System V IPC object',
+      'the CLI removes it by its id',
+      'records the run as not run with a reason naming System V IPC',
+      'does not stop a run from using up, while it lasts,',
+    ];
+    for (const fact of facts) assert.ok(text.includes(fact), `${file}: ${fact}`);
+    assert.doesNotMatch(text, /the CLI does not remove it/, file);
     assert.doesNotMatch(text, /\bno IPC\b|, IPC,/, file);
   }
 });
@@ -2239,4 +2260,60 @@ test('on macOS a detached process a reproduction leaves is gone once it has used
     assert.ok(Date.now() < deadline, 'it used twice its CPU seconds within a minute');
     await new Promise((done) => setTimeout(done, 100));
   }
+});
+
+test('on macOS a real listener held still for the whole probe still shows the escape notify, through the state of its key', async (t) => {
+  if (!onMacOS(t)) return;
+  const repo = scratchRepository(t);
+  const layout = layoutOf(context(repo, { platform: 'darwin' }));
+  const loose = join(repo.dir, 'loose.sb');
+  // Under a profile that lets the post out, with the listener stopped until it is killed, so it prints no line after the first key.
+  const spawn = (command, options) => {
+    if (command !== '/usr/bin/sandbox-exec') return spawnCommand(command, options);
+    signalListener(options, 'SIGSTOP');
+    writeFileSync(loose, `${readFileSync(layout.profile, 'utf8')}(allow mach-lookup (global-name "com.apple.system.notification_center"))\n`);
+    return spawnCommand(command, { ...options, args: options.args.map((arg) => (arg === layout.profile ? loose : arg)) });
+  };
+  const ctx = context(repo, { platform: 'darwin', spawn, env: macEnv(), execPath: process.execPath });
+  assert.deepEqual(await runProbe(ctx, layout), { platform: 'darwin', mechanism: 'none', probe: 'escaped by notify' });
+  assert.deepEqual(notifyListeners(), [], 'no listener is left running');
+});
+
+/** The System V IPC objects macOS lists for this user, as `<type> <id> <key>`. */
+const ipcListed = () => spawnSync('/usr/bin/ipcs', ['-c'], { encoding: 'utf8' }).stdout.split('\n').map((line) => /^([qms])\s+(\d+)\s+(0x[0-9a-f]+)\s+\S+\s+(\S+)/.exec(line)).filter((match) => match !== null && match[4] === userInfo().username).map((match) => `${match[1]} ${match[2]} ${match[3]}`);
+
+test('on macOS a System V IPC object a reproduction creates is removed by its id, the run is not run, and one from before is left alone', async (t) => {
+  if (!onMacOS(t)) return;
+  const runner = { name: 'node', run: 'node {file}', extension: '.mjs', timeout_seconds: 60 };
+  const repo = scratchRepository(t, { config: { reproduction: { enabled: true, runners: [runner] } } });
+  // Random keys of the test's own, so the clean-up below can only ever reach these two objects.
+  const [mine, theirs] = [randomInt(0x10000000, 0x7fffffff), randomInt(0x10000000, 0x7fffffff)].map((key) => `0x${key.toString(16)}`);
+  const make = (key) => `my $id = shmget(${key}, 4096, 0600 | 01000); print defined $id ? "$id\\n" : "refused\\n";`;
+  t.after(() => {
+    for (const listed of ipcListed()) if (listed.endsWith(` ${mine}`) || listed.endsWith(` ${theirs}`)) spawnSync('/usr/bin/ipcrm', ['-m', listed.split(' ')[1]]);
+  });
+  const id = spawnSync('/usr/bin/perl', ['-e', make(mine)], { encoding: 'utf8' }).stdout.trim();
+  assert.match(id, /^\d+$/, 'the object from before is made outside the sandbox');
+  const before = ipcListed();
+  assert.ok(before.includes(`m ${id} ${mine}`));
+  const content = [
+    "import { spawnSync } from 'node:child_process';",
+    `const made = spawnSync('/usr/bin/perl', ['-e', ${JSON.stringify(make(theirs))}], { encoding: 'utf8' }).stdout.trim();`,
+    "console.log('made ' + made);",
+    `console.log('${MARKER}');`,
+    'process.exit(1);',
+    '',
+  ].join('\n');
+  const { out, args } = inputs(repo);
+  writeFileSync(join(repo.runDir, 'verification.json'), JSON.stringify({ verifications: [entry({ runner: 'node', path: 'src/ipc.mjs', content })] }));
+  const result = cli(repo, args, macEnv());
+  assert.equal(result.status, 0, result.stderr);
+  const [record] = JSON.parse(readFileSync(out, 'utf8')).reproductions;
+  const made = /made (\d+)/.exec(record.runs[0]?.output ?? '')?.[1];
+  assert.ok(made !== undefined, record.runs.map((run) => run.output).join('\n'));
+  assert.deepEqual([record.outcome, record.reason, record.runs.length], ['did-not-run', `the reproduction left System V IPC objects behind, removed by id: m ${made}`, 1]);
+  const after = ipcListed();
+  assert.ok(!after.some((listed) => listed.endsWith(` ${theirs}`)), 'the object the run made is gone');
+  for (const listed of before) assert.ok(after.includes(listed), `${listed} is still there`);
+  assertHeadUntouched(repo);
 });
