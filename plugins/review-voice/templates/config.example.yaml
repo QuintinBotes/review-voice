@@ -260,9 +260,8 @@ reproduction:
   # a blocking or important finding; the CLI runs it in a throwaway copy of the
   # head worktree in a confined runner (no network, writes only inside that
   # copy, which is removed after), and only through a runner listed here.
-  # Linux only for now. On macOS nothing runs until issue #321 hardens the
-  # sandbox-exec profile. Running pull request code is the risk this switch
-  # accepts (docs/adr/0003, docs/THREAT-MODEL.md).
+  # Linux (unshare) and macOS (sandbox-exec) only. Running pull request code
+  # is the risk this switch accepts (docs/adr/0003, docs/THREAT-MODEL.md).
   enabled: false
   runners: []
   # Example:

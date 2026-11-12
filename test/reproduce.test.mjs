@@ -13,11 +13,11 @@ import fs, { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSy
 import { connect, createServer } from 'node:net';
 import { randomInt } from 'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
-import { homedir, tmpdir } from 'node:os';
+import { homedir, tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadConfig } from '../plugins/review-voice/src/policy/load.ts';
-import { layoutOf, linuxSetup, probeSandbox, reproduce, runProbe, sandboxProfile, shellQuote, wrapperArgv } from '../plugins/review-voice/src/evidence/reproduce.ts';
+import { layoutOf, limitsLine, linuxSetup, probeSandbox, reproduce, runProbe, sandboxProfile, shellQuote, wrapperArgv } from '../plugins/review-voice/src/evidence/reproduce.ts';
 import { spawnCommand, stopCommands } from '../plugins/review-voice/src/evidence/run.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -128,9 +128,11 @@ function context(repo, over = {}) {
       PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', TERM: 'dumb',
       GITHUB_TOKEN: 'a-token-value', GH_TOKEN: 'another', ANTHROPIC_API_KEY: 'a-key', REVIEW_VOICE_DATA_DIR: '/data', OTHER: 'x',
     },
-    // macOS runs nothing until issue 321, so the runner's rules are shown through the Linux wrapper.
+    // The runner's rules are shown through the Linux wrapper, whose inner command innerOf reads back.
     platform: 'linux',
     execPath: '/opt/node/bin/node',
+    // macOS reports none in production; the opt-in keeps its profile, probe and IPC checks under test.
+    allowMacOS: true,
     ...over,
   };
 }
@@ -145,24 +147,97 @@ function innerOf(options) {
   return last.slice(prefix.length, -1).replaceAll("'\\''", "'");
 }
 
-/** A layout of a copy as the runner lays one out, for the macOS profile and wrapper that issue 321 builds on. */
+/** A layout of a copy as the runner lays one out, for the macOS profile and wrapper. */
 function copyLayout(repo, over = {}) {
   const copy = join(treesDir(repo), 'cand_001-AAAAAA', 'tree');
   mkdirSync(copy, { recursive: true });
   return layoutOf(context(repo, { platform: 'darwin', ...over }), { worktree: copy, scratch: scratchBeside(copy) });
 }
 
+const NOTIFYUTIL = '/usr/bin/notifyutil';
+/** The key the macOS probe posts, read from its script. */
+const notifyKey = (options) => /"notify":"([^"]+)"/.exec(options.args.at(-1))?.[1];
+
+/**
+ * notifyd and notifyutil as the macOS probe uses them outside the sandbox.
+ * `-w <escape> -1 <post> -1 <pre>` takes its keys in that order, the first
+ * `registers` ms after it starts (or never) and each of the others `between`
+ * ms after the one before. It prints each key once, as a post of it is
+ * delivered, and since it holds one key with -w it never exits by itself. An
+ * abort kills it, and once it has ended it prints nothing. Posts are delivered
+ * in the order they were made, each `lag` ms after the one before, and one
+ * delivered before the listener holds that key is lost. With -M the real one
+ * prints two that wait together in either order, so the fake refuses it. A
+ * key's state, which `set` gives and `-g` prints, lasts while a listener holds
+ * the key.
+ */
+function fakeNotify({ registers = 0, between = 0 } = {}) {
+  const listeners = new Set();
+  let delivered = Promise.resolve();
+  const post = (key, lag = 0) => {
+    delivered = delivered.then(() => new Promise((done) => setTimeout(done, lag))).then(() => {
+      for (const listener of listeners) if (!listener.deaf && listener.held.includes(key) && !listener.heard.includes(key)) listener.say(key);
+    });
+  };
+  const states = new Map();
+  const holds = (key) => [...listeners].some((listener) => listener.held.includes(key));
+  const notify = (args, options = {}) => {
+    if (args[0] === '-p') {
+      assert.equal(args.length, 2, 'a post of one key');
+      post(args[1]);
+      return { status: 0, stdout: '', stderr: '' };
+    }
+    if (args[0] === '-g') {
+      assert.equal(args.length, 2, 'a read of one key');
+      return { status: 0, stdout: `${args[1]} ${holds(args[1]) ? (states.get(args[1]) ?? 0) : 0}\n`, stderr: '' };
+    }
+    assert.deepEqual([args.length, ...args.filter((_, at) => at % 2 === 0)], [6, '-w', '-1', '-1'], 'one listener for three keys, and no -M');
+    return new Promise((done) => {
+      let stdout = '';
+      const listener = {
+        // As the probe uses them: the first it posts, the one the probe posts, and the last.
+        keys: [args[5], args[1], args[3]], heard: [], held: [], deaf: false,
+        say: (line) => {
+          if (!listeners.has(listener)) return;
+          stdout += `${line}\n`;
+          options.onStdout?.(`${line}\n`);
+          if (listener.keys.includes(line)) listener.heard.push(line);
+        },
+        end: (result) => {
+          if (listeners.delete(listener)) done({ ...result, stdout });
+        },
+      };
+      listeners.add(listener);
+      const aborted = Object.assign(new Error(`spawn ${NOTIFYUTIL} ABORT_ERR`), { code: 'ABORT_ERR' });
+      options.signal?.addEventListener('abort', () => listener.end({ status: null, stderr: '', error: aborted }));
+      if (registers !== null) [args[1], args[3], args[5]].forEach((key, at) => setTimeout(() => listener.held.push(key), registers + at * between));
+    });
+  };
+  const set = (key, value) => {
+    if (holds(key)) states.set(key, value);
+  };
+  return { notify, post, set, listening: () => [...listeners].flatMap((listener) => listener.keys), listener: () => [...listeners][0] };
+}
+
+const IPCS = '/usr/bin/ipcs';
+/** What macOS ipcs -c prints when the user has no System V IPC object. */
+const NO_IPC = ['Message Queues:', 'Shared Memory:', 'Semaphores:'].map((title) => `T     ID     KEY        MODE       OWNER    GROUP  CREATOR   CGROUP\n${title}\n`).join('\n');
+
 /**
  * A spawn that passes the probe and answers each reproduction run from `runs`
  * in turn; `onRun` sees the run as it happens, so a test can act as the code
- * under review would.
+ * under review would. notifyutil is answered by `notifyd`, which `onProbe`
+ * is given too, so a probe can post as one that got out would.
  */
-function fakeSpawn(runs = [], { onRun = () => {}, probe = { status: 0, stdout: 'RV_PROBE_OK\n', stderr: '' }, onProbe = () => {} } = {}) {
+function fakeSpawn(runs = [], { onRun = () => {}, probe = { status: 0, stdout: 'RV_PROBE_OK\n', stderr: '' }, onProbe = () => {}, notifyd = fakeNotify() } = {}) {
   const calls = [];
+  const { notify, listening } = notifyd;
   const spawn = async (command, options) => {
+    if (command === NOTIFYUTIL) return notify(options.args, options);
+    if (command === IPCS) return { status: 0, stdout: NO_IPC, stderr: '' };
     calls.push({ command, options });
     if (isProbe(options)) {
-      onProbe(options);
+      onProbe(options, notifyd);
       return probe;
     }
     onRun(options);
@@ -170,7 +245,7 @@ function fakeSpawn(runs = [], { onRun = () => {}, probe = { status: 0, stdout: '
     assert.ok(next !== undefined, 'a run nobody expected');
     return { stdout: '', stderr: '', status: 0, ...next };
   };
-  return { spawn, calls, runs: () => calls.filter((call) => !isProbe(call.options)) };
+  return { spawn, calls, listening, runs: () => calls.filter((call) => !isProbe(call.options)) };
 }
 
 const entry = (over = {}, id = 'cand_001') => ({
@@ -372,26 +447,35 @@ test('context carries the reproduction switch and runners for the driver', (t) =
 
 // The runner through the injected spawn (AC-3). These run on every host.
 
-test('on macOS the probe is none until issue 321, and nothing is spawned or written', async (t) => {
+test('on macOS the probe runs through sandbox-exec, and a reproduction runs once it passes', async (t) => {
   const repo = scratchRepository(t);
-  const off = { platform: 'darwin', mechanism: 'none', probe: 'sandbox-exec is not yet trusted to confine a reproduction (issue #321)' };
-  const fake = fakeSpawn([]);
-  assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn })), off);
-  assert.equal(existsSync(reproDir(repo)), false, 'no profile, probe or canary was written');
+  const passed = { platform: 'darwin', mechanism: 'sandbox-exec', probe: 'passed' };
+  const alone = fakeSpawn([]);
+  assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn: alone.spawn })), passed);
+  assert.deepEqual(alone.calls.map((call) => call.command), ['/usr/bin/sandbox-exec'], 'the probe, through the wrapper');
+  const fake = fakeSpawn([failing, failing]);
   const report = await reproduce({ verifications: [entry()] }, candidates('blocking'), context(repo, { platform: 'darwin', spawn: fake.spawn }));
-  assert.deepEqual(report.sandbox, off);
-  assert.deepEqual(report.reproductions.map((r) => [r.outcome, r.reason, r.runs.length]), [['did-not-run', `the sandbox probe did not pass: ${off.probe}`, 0]]);
-  assert.equal(fake.calls.length, 0, 'not even the probe');
-  assert.equal(existsSync(join(reproDir(repo), 'sandbox.sb')), false, 'no profile');
+  assertInCopies(repo, fake.calls);
+  assert.deepEqual(report.sandbox, passed);
+  assert.deepEqual(report.reproductions.map((r) => [r.outcome, r.reason, r.runs.length]), [['reproduced', undefined, 2]]);
+  const profile = join(reproDir(repo), 'sandbox.sb');
+  for (const call of fake.calls) assert.deepEqual([call.command, ...call.options.args.slice(0, 4)], ['/usr/bin/sandbox-exec', '-f', profile, '/bin/sh', '-c']);
+  assert.match(readFileSync(profile, 'utf8'), /^\(version 1\)\n\(deny default\)\n/, 'the allowlist profile');
   assertHeadUntouched(repo);
 });
 
-test('the macOS wrapper, kept for issue 321, is sandbox-exec with the profile and the ulimit line', (t) => {
+test('the macOS wrapper is sandbox-exec with the profile and the ulimit line', (t) => {
   const repo = scratchRepository(t);
   assert.deepEqual(wrapperArgv(copyLayout(repo), "node --test 'src/add.repro.test.mjs'"), [
     '/usr/bin/sandbox-exec', '-f', join(reproDir(repo), 'sandbox.sb'), '/bin/sh', '-c',
     "ulimit -t 60; ulimit -v 1048576 2>/dev/null; ulimit -f 2097152; exec node --test 'src/add.repro.test.mjs'",
   ]);
+});
+
+test('the limits carry ulimit -t with cpu_seconds on macOS, so a process that leaves the group is bounded too, and Linux is unchanged', () => {
+  const config = { enabled: true, runners: [RUNNER], linkPaths: [], memoryMb: 512, cpuSeconds: 7 };
+  assert.equal(limitsLine(config, 'darwin'), 'ulimit -t 7; ulimit -v 524288 2>/dev/null; ulimit -f 2097152');
+  assert.equal(limitsLine(config, 'linux'), 'ulimit -t 7; ulimit -d 524288; ulimit -f 2097152');
 });
 
 test('on Linux the wrapper is unshare with the listed flags, a read-only root and a second user namespace', async (t) => {
@@ -890,24 +974,25 @@ test('the CLI git runs with GIT_OPTIONAL_LOCKS=0 and never rewrites the head ind
   assert.ok(readFileSync(index).equals(before), 'the index is byte for byte as it was, though every file in the copy is new to it');
 });
 
-test('the profile, kept for issue 321, allows writes only in the copy and its scratch directory, and hides the store and credentials', (t) => {
+test('the profile allows writes only in the copy and its scratch directory, and hides the store and credentials', (t) => {
   const repo = scratchRepository(t);
   const layout = copyLayout(repo);
   const profile = sandboxProfile(layout);
   const lines = profile.split('\n');
   const copy = layout.worktree;
   const scratch = layout.scratch;
-  assert.deepEqual(lines.slice(0, 6), ['(version 1)', '(allow default)', '(deny network*)', '(deny signal)', '(allow signal (target same-sandbox))', '(deny file-write*)']);
-  assert.deepEqual(lines.filter((line) => line.startsWith('(allow file-write*')), [`(allow file-write* (subpath "${copy}") (subpath "${scratch}") (literal "/dev/null"))`]);
+  assert.deepEqual(lines.filter((line) => line.startsWith('(allow file-write*')), [`(allow file-write* (subpath "${copy}") (subpath "${scratch}") (literal "/dev/null") (regex #"^/dev/fd/[0-9]+$"))`]);
   assert.ok(!profile.includes(`"${repo.worktree}"`), 'the head worktree is in no rule, so it is never writable');
   // Later rules win, so each deny inside the copy must come after the rule allowing writes there.
   const allowWrite = lines.findIndex((line) => line.startsWith('(allow file-write*'));
   for (const rule of [`(deny file-write* (literal "${copy}/.git"))`, '(deny file-write-flags)']) {
     assert.ok(lines.indexOf(rule) > allowWrite, `${rule} follows the allow`);
   }
-  // cfprefsd would otherwise write a preference domain outside the copy for a reproduction.
-  assert.ok(lines.includes('(deny user-preference-write)'), 'no preference write');
+  // Every read is allowed first, so the hidden places are denied after it and the reachable ones allowed again after that.
+  const allowRead = lines.indexOf('(allow file-read*)');
   const denied = lines.find((line) => line.startsWith('(deny file-read*'));
+  assert.ok(allowRead > 1 && lines.indexOf(denied) > allowRead, 'the hidden places follow the read allowed everywhere');
+  assert.ok(lines.indexOf(`(allow file-read* (subpath "${copy}") (subpath "${scratch}"))`) > lines.indexOf(denied), 'the copy follows the hidden places');
   const credentials = ['.ssh', '.gnupg', '.aws', '.config/gh', 'Library/Keychains'].map((dir) => join(repo.home, dir));
   for (const hidden of [repo.dataDir, repo.runDir, join(repo.clone, '.git'), ...credentials]) assert.ok(denied.includes(`(subpath "${hidden}")`), hidden);
   for (const file of ['.netrc', '.npmrc', '.git-credentials']) assert.ok(denied.includes(`(literal "${join(repo.home, file)}")`), file);
@@ -918,13 +1003,39 @@ test('the profile, kept for issue 321, allows writes only in the copy and its sc
   assert.ok(quoted.includes('(subpath "/a\\"b\\\\c")'), 'a path cannot close its string');
 });
 
-test('the profile denies every signal and then allows one only within the same sandbox', (t) => {
+test('the profile allows a signal only within the same sandbox', (t) => {
   const repo = scratchRepository(t);
   const lines = sandboxProfile(copyLayout(repo)).split('\n');
-  const rules = lines.filter((line) => line.includes('signal'));
-  // Later rules win, so the allow must follow the deny for a reproduction to signal its own children and nothing else.
-  assert.deepEqual(rules, ['(deny signal)', '(allow signal (target same-sandbox))']);
-  assert.equal(lines.indexOf('(allow signal (target same-sandbox))'), lines.indexOf('(deny signal)') + 1);
+  // Under deny default, so a reproduction signals its own children and nothing else.
+  assert.deepEqual(lines.filter((line) => line.includes('signal')), ['(allow signal (target same-sandbox))']);
+});
+
+test('the profile is an allowlist that denies by default and allows only what a test runner needs', (t) => {
+  const repo = scratchRepository(t);
+  const profile = sandboxProfile(copyLayout(repo));
+  const lines = profile.split('\n');
+  assert.deepEqual(lines.slice(0, 2), ['(version 1)', '(deny default)']);
+  assert.ok(!profile.includes('(allow default'), 'no allow default');
+  const allows = lines.filter((line) => line.startsWith('(allow '));
+  assert.deepEqual(allows.map((line) => /^\(allow (\S+?)[\s)]/.exec(line)[1]), [
+    'process-info*', 'process-fork', 'process-exec*', 'sysctl-read', 'signal', 'mach-lookup', 'file-read*', 'file-read*', 'file-read-metadata', 'file-write*',
+  ]);
+  // One lookup service, for read-only user and group lookups; every other service, notifications included, stays denied.
+  assert.deepEqual(allows.filter((line) => line.includes('mach')), ['(allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo"))']);
+  for (const operation of ['network', 'mach-register', 'ipc', 'appleevent', 'user-preference', 'iokit', 'nvram', 'sysctl-write', 'file-ioctl', 'system']) {
+    assert.ok(!allows.some((line) => line.startsWith(`(allow ${operation}`)), `nothing allows ${operation}`);
+  }
+  // (deny default) does not reach these, so they are denied by name, and a process reads information about itself only.
+  for (const rule of ['(deny iokit-get-properties iokit-set-properties)', '(deny nvram*)', '(deny process-info*)']) assert.ok(lines.includes(rule), rule);
+  assert.deepEqual(allows.filter((line) => line.includes('process-info')), ['(allow process-info* (target self))']);
+  assert.ok(lines.indexOf('(allow process-info* (target self))') > lines.indexOf('(deny process-info*)'), 'the process itself follows the deny');
+  // The sysctls that list every process and give another's command line are taken back from the sysctl reads allowed.
+  const processTable = '(deny sysctl-read (sysctl-name-prefix "kern.proc"))';
+  assert.ok(lines.indexOf(processTable) > lines.indexOf('(allow sysctl-read)'), `${processTable} follows the allow`);
+  // A terminal device is denied after every read allowed, so no reachable place reopens one.
+  const terminals = '(deny file-read* (regex #"^/dev/(tty|pty|cu\\.)") (literal "/dev/ptmx"))';
+  assert.ok(lines.includes(terminals), terminals);
+  assert.ok(lines.findLastIndex((line) => line.startsWith('(allow file-read*')) < lines.indexOf(terminals), 'the terminals follow every read allowed');
 });
 
 test('link_paths are linked into the copy before the first run, read-only to it, and never into the head', async (t) => {
@@ -946,13 +1057,13 @@ test('link_paths are linked into the copy before the first run, read-only to it,
   const stage = join(reproDir(repo), 'stage');
   assert.ok(script.includes(`mount --bind ${shellQuote(target)} ${shellQuote(`${stage}/hold/l0`)}`));
   assert.ok(script.includes(`ro ${shellQuote(`${stage}/root${target}`)}`), 'the target is bound back read-only');
-  // The macOS profile issue 321 builds on.
+  // The macOS profile.
   const layout = copyLayout(repo, { config });
   const profile = sandboxProfile(layout).split('\n');
   const [copy, scratch] = [layout.worktree, layout.scratch];
   assert.ok(profile.includes(`(allow file-read* (subpath "${copy}") (subpath "${scratch}") (subpath "${target}"))`));
   // Readable by name, never writable, so a run cannot plant a module in the clone.
-  assert.deepEqual(profile.filter((line) => line.startsWith('(allow file-write*')), [`(allow file-write* (subpath "${copy}") (subpath "${scratch}") (literal "/dev/null"))`]);
+  assert.deepEqual(profile.filter((line) => line.startsWith('(allow file-write*')), [`(allow file-write* (subpath "${copy}") (subpath "${scratch}") (literal "/dev/null") (regex #"^/dev/fd/[0-9]+$"))`]);
   assert.ok(!profile.some((line) => line.startsWith('(allow file-write') && line.includes(target)), 'no write rule names the target');
 });
 
@@ -1038,23 +1149,281 @@ test('a probe that fails runs nothing, names the reason, and is run once', async
 
 test('an escape the probe reports, or one seen from outside, is mechanism none', async (t) => {
   const repo = scratchRepository(t);
-  // Linux through probeSandbox, and the macOS probe issue 321 builds on through runProbe, where the profile is what a broken sandbox overwrites.
+  // On macOS the profile is what a broken sandbox overwrites, and a post the listener outside hears is the escape notify.
   for (const platform of ['linux', 'darwin']) {
     const layout = layoutOf(context(repo, { platform }));
+    const post = (options, notifyd) => notifyd.post(notifyKey(options));
+    const postToOneThatDies = (options, notifyd) => {
+      const listener = notifyd.listener();
+      const say = listener.say;
+      listener.say = (line) => {
+        say(line);
+        listener.end({ status: 1, stderr: '' });
+      };
+      post(options, notifyd);
+    };
     const cases = [
       [{ probe: { status: 0, stdout: 'escaped by write, connect\n', stderr: '' } }, 'escaped by write, connect'],
       [{ probe: { status: 0, stdout: 'escaped by signal\n', stderr: '' } }, 'escaped by signal'],
       [{ probe: { status: 0, stdout: 'escaped by preference\n', stderr: '' } }, 'escaped by preference'],
       [{ onProbe: () => writeFileSync(layout.escape, 'x') }, 'escaped by write'],
       [{ onProbe: () => writeFileSync(platform === 'darwin' ? layout.profile : layout.probeFile, '(allow default)') }, 'escaped by profile'],
+      ...(platform === 'darwin' ? [
+        // Heard outside though the probe printed it was confined, since a refused post exits 0 too.
+        [{ onProbe: post }, 'escaped by notify'],
+        [{ onProbe: post, probe: { status: 0, stdout: 'escaped by write\n', stderr: '' } }, 'escaped by write, notify'],
+        // Printed already, so a listener that dies before the last key has still shown the escape.
+        [{ onProbe: postToOneThatDies }, 'escaped by notify'],
+      ] : []),
     ];
     for (const [options, probe] of cases) {
-      const ctx = context(repo, { platform, spawn: fakeSpawn([], options).spawn });
-      assert.deepEqual(await (platform === 'darwin' ? runProbe(ctx, layout) : probeSandbox(ctx)), { platform, mechanism: 'none', probe }, `${platform}: ${probe}`);
+      const fake = fakeSpawn([], options);
+      assert.deepEqual(await probeSandbox(context(repo, { platform, spawn: fake.spawn })), { platform, mechanism: 'none', probe }, `${platform}: ${probe}`);
+      assert.deepEqual(fake.listening(), [], `${platform}: ${probe}: no listener is left`);
     }
     assert.equal(existsSync(layout.escape), false, 'the escape file is cleared after the probe');
     assert.equal(existsSync(layout.canary), false, 'the canary is removed after the probe');
   }
+});
+
+test('on macOS a notification listener that cannot start or never registers fails the probe, and nothing runs', async (t) => {
+  const repo = scratchRepository(t);
+  const missing = Object.assign(new Error('spawn /usr/bin/notifyutil ENOENT'), { code: 'ENOENT' });
+  const cases = [
+    [() => ({ status: null, stdout: '', stderr: '', error: missing }), 'could not listen for notifications for the probe: spawn /usr/bin/notifyutil ENOENT'],
+    // A listener that exits at once with nothing to say, so it never prints the first key.
+    [() => ({ status: 0, stdout: '', stderr: '' }), 'could not listen for notifications for the probe: notifyutil exited 0'],
+  ];
+  for (const [notify, probe] of cases) {
+    const calls = [];
+    const spawn = async (command, options) => {
+      calls.push(command);
+      return command === NOTIFYUTIL ? notify(options.args) : { status: 0, stdout: 'RV_PROBE_OK\n', stderr: '' };
+    };
+    const report = await reproduce({ verifications: [entry()] }, candidates('blocking'), context(repo, { platform: 'darwin', spawn }));
+    assert.deepEqual(report.sandbox, { platform: 'darwin', mechanism: 'none', probe });
+    assert.deepEqual(report.reproductions.map((r) => [r.outcome, r.runs.length]), [['did-not-run', 0]]);
+    assert.ok(!calls.includes('/usr/bin/sandbox-exec'), 'not even the probe');
+    assertHeadUntouched(repo);
+  }
+});
+
+test('on macOS the probe waits until the listener prints a first key posted from outside, and a listener that never does fails the probe', async (t) => {
+  const repo = scratchRepository(t);
+  const cases = [
+    // The probe posts as soon as it starts, so one started before the listener holds its keys would lose the post and pass.
+    [150, 'escaped by notify', ['/usr/bin/sandbox-exec']],
+    [null, 'could not listen for notifications for the probe: no post was heard within 5s', []],
+  ];
+  for (const [registers, probe, spawned] of cases) {
+    const notifyd = fakeNotify({ registers });
+    const fake = fakeSpawn([], { notifyd, onProbe: (options) => notifyd.post(notifyKey(options)) });
+    // A probe that got out, and printed that it was confined, since a refused post exits 0 too.
+    assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn })), { platform: 'darwin', mechanism: 'none', probe }, probe);
+    assert.deepEqual(fake.calls.map((call) => call.command), spawned, `${probe}: what ran`);
+    assert.deepEqual(fake.listening(), [], `${probe}: no listener is left`);
+  }
+});
+
+test('on macOS a probe whose wrapper cannot start still stops the notification listener', async (t) => {
+  const repo = scratchRepository(t);
+  const { notify, listening } = fakeNotify();
+  const spawn = async (command, options) => {
+    if (command === NOTIFYUTIL) return notify(options.args, options);
+    throw new Error('spawn sandbox-exec EAGAIN');
+  };
+  await assert.rejects(probeSandbox(context(repo, { platform: 'darwin', spawn })), /spawn sandbox-exec EAGAIN/);
+  assert.deepEqual(listening(), [], 'no listener is left');
+});
+
+test('on macOS a probe whose removals throw still kills the notification listener', async (t) => {
+  const repo = scratchRepository(t);
+  const layout = layoutOf(context(repo, { platform: 'darwin' }));
+  // A directory where the escape file would be, which the removal after the probe refuses.
+  const fake = fakeSpawn([], { onProbe: () => mkdirSync(layout.escape) });
+  await assert.rejects(probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn })), { code: 'ERR_FS_EISDIR' });
+  assert.deepEqual(fake.listening(), [], 'no listener is left');
+});
+
+test('on macOS the probe passes once the last post from outside arrives with no escape before it, and the listener is killed', async (t) => {
+  const repo = scratchRepository(t);
+  const notifyd = fakeNotify();
+  const order = [];
+  let killer;
+  const spawn = async (command, options) => {
+    if (command !== NOTIFYUTIL) {
+      order.push(['probe', notifyKey(options)]);
+      return { status: 0, stdout: 'RV_PROBE_OK\n', stderr: '' };
+    }
+    order.push(options.args);
+    if (options.args[0] === '-w') killer = options.signal;
+    return notifyd.notify(options.args, options);
+  };
+  assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn })), { platform: 'darwin', mechanism: 'sandbox-exec', probe: 'passed' });
+  const [listener, ...rest] = order;
+  // The first key posted is the last the listener registers.
+  const [pre, escape, post] = [listener[5], listener[1], listener[3]];
+  assert.equal(new Set([pre, escape, post]).size, 3, 'three keys');
+  for (const key of [pre, escape, post]) assert.match(key, new RegExp(`^rv\\.probe\\.${process.pid}\\.[0-9a-f]{8}$`), 'each fresh and random');
+  const at = rest.findIndex((call) => call[0] === 'probe');
+  assert.deepEqual(rest[at], ['probe', escape], 'the probe posts the escape key');
+  assert.ok(at > 0 && rest.slice(0, at).every((call) => call.join(' ') === `-p ${pre}`), 'only the first key is posted before the probe');
+  assert.ok(rest.length > at + 2 && rest.slice(at + 1, -1).every((call) => call.join(' ') === `-p ${post}`), 'only the last key is posted after it, and never the escape key');
+  assert.equal(rest.at(-1).join(' '), `-g ${escape}`, 'then the state of the escape key is read, once');
+  assert.equal(killer?.aborted, true, 'the listener is killed');
+  assert.deepEqual(notifyd.listening(), [], 'no listener is left');
+});
+
+test('on macOS an escape delivered late but before the last post is the escape notify', async (t) => {
+  const repo = scratchRepository(t);
+  // Later than a fixed grace would wait, and still taken before the post the CLI makes once the probe is back.
+  const fake = fakeSpawn([], { onProbe: (options, notifyd) => notifyd.post(notifyKey(options), 600) });
+  assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn })), { platform: 'darwin', mechanism: 'none', probe: 'escaped by notify' });
+  assert.deepEqual(fake.listening(), [], 'no listener is left');
+});
+
+test('on macOS an escape key the listener prints after the last key is still the escape notify', async (t) => {
+  const repo = scratchRepository(t);
+  // As notifyd sends to a listener whose port had filled: the last key, then the escape key it had held back.
+  const onProbe = (options, notifyd) => {
+    const listener = notifyd.listener();
+    const say = listener.say;
+    listener.say = (line) => {
+      say(line);
+      if (line === listener.keys[2]) say(notifyKey(options));
+    };
+  };
+  const fake = fakeSpawn([], { onProbe });
+  assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn })), { platform: 'darwin', mechanism: 'none', probe: 'escaped by notify' });
+  assert.deepEqual(fake.listening(), [], 'no listener is left');
+});
+
+test('on macOS a listener that prints a key before the first, or one key twice, fails the probe closed', async (t) => {
+  const repo = scratchRepository(t);
+  const cases = [
+    // The last key as soon as it starts, before anybody posted it.
+    [true, 'could not listen for notifications for the probe', []],
+    // The last key twice, though it listens for one notification of each.
+    [false, 'could not tell whether the probe posted a notification', ['/usr/bin/sandbox-exec']],
+  ];
+  for (const [early, what, spawned] of cases) {
+    const notifyd = fakeNotify();
+    const twice = () => {
+      const listener = notifyd.listener();
+      const say = listener.say;
+      listener.say = (line) => {
+        say(line);
+        if (line === listener.keys[2]) say(line);
+      };
+    };
+    const fake = fakeSpawn([], { notifyd, onProbe: twice });
+    let last;
+    const spawn = (command, options) => {
+      const ended = fake.spawn(command, options);
+      if (command === NOTIFYUTIL && options.args[0] === '-w') {
+        last = notifyd.listener().keys[2];
+        if (early) notifyd.listener().say(last);
+      }
+      return ended;
+    };
+    const state = await probeSandbox(context(repo, { platform: 'darwin', spawn }));
+    assert.deepEqual(state, { platform: 'darwin', mechanism: 'none', probe: `${what}: notifyutil printed an unexpected line: ${last}` }, what);
+    assert.deepEqual(fake.calls.map((call) => call.command), spawned, `${what}: what ran`);
+    assert.deepEqual(fake.listening(), [], `${what}: no listener is left`);
+  }
+});
+
+test('on macOS a listener notified of its first key while it still registers the others is never read as ready', async (t) => {
+  const repo = scratchRepository(t);
+  // The CLI posts from the moment the listener starts, and the real one exits, crashes or goes deaf when a key it holds is posted before it holds them all.
+  for (const [onProbe, probe] of [[() => {}, 'passed'], [(options, notifyd) => notifyd.post(notifyKey(options)), 'escaped by notify']]) {
+    const fake = fakeSpawn([], { notifyd: fakeNotify({ between: 100 }), onProbe });
+    const state = await probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn }));
+    assert.deepEqual(state, { platform: 'darwin', mechanism: probe === 'passed' ? 'sandbox-exec' : 'none', probe });
+    assert.deepEqual(fake.listening(), [], `${probe}: no listener is left`);
+  }
+});
+
+test('on macOS a last key the listener prints before the CLI posts it fails the probe closed', async (t) => {
+  const repo = scratchRepository(t);
+  const cases = [
+    // With the first key, before the probe, so the first key alone no longer shows a listener that waits.
+    [true, 'could not listen for notifications for the probe: notifyutil printed an unexpected line: LAST', []],
+    // While the probe runs, so it does not show the listener still heard once the probe was back.
+    [false, 'could not tell whether the probe posted a notification: notifyutil printed LAST before it was posted', ['/usr/bin/sandbox-exec']],
+  ];
+  for (const [withFirst, probe, spawned] of cases) {
+    const notifyd = fakeNotify();
+    // A probe whose post got out, which a listener held still after the last key would never print.
+    const fake = fakeSpawn([], { notifyd, onProbe: () => notifyd.listener().say(notifyd.listener().keys[2]) });
+    const posts = [];
+    let first, last;
+    const spawn = (command, options) => {
+      const ended = fake.spawn(command, options);
+      if (command === NOTIFYUTIL && options.args[0] === '-p') posts.push(options.args[1]);
+      if (command === NOTIFYUTIL && options.args[0] === '-w') {
+        const listener = notifyd.listener();
+        [first, , last] = listener.keys;
+        const say = listener.say;
+        if (withFirst) listener.say = (line) => {
+          say(line);
+          if (line === first) say(last);
+        };
+      }
+      return ended;
+    };
+    const state = await probeSandbox(context(repo, { platform: 'darwin', spawn }));
+    assert.deepEqual(state, { platform: 'darwin', mechanism: 'none', probe: probe.replace('LAST', last) });
+    assert.ok(posts.length > 0 && posts.every((key) => key === first), 'the CLI never posted the last key');
+    assert.deepEqual(fake.calls.map((call) => call.command), spawned, 'what ran');
+    assert.deepEqual(fake.listening(), [], 'no listener is left');
+  }
+});
+
+test('on macOS a listener that cannot say whether the probe posted fails the probe closed', async (t) => {
+  const repo = scratchRepository(t);
+  const cases = [
+    // It dies after it printed the first key, before the probe posts, so the escape reaches nobody.
+    [(options, notifyd) => {
+      notifyd.listener().end({ status: 1, stderr: '' });
+      notifyd.post(notifyKey(options));
+    }, 'notifyutil exited 1'],
+    // It stays up but hears nothing more, so the last post never arrives.
+    [(options, notifyd) => {
+      notifyd.listener().deaf = true;
+      notifyd.post(notifyKey(options));
+    }, 'no post was heard within 5s'],
+    [(options, notifyd) => notifyd.listener().say('notifyutil: a line of its own'), 'notifyutil printed an unexpected line: notifyutil: a line of its own'],
+    // It prints the last key and exits, though it still had the escape key to wait for.
+    [(options, notifyd) => {
+      const listener = notifyd.listener();
+      const say = listener.say;
+      listener.say = (line) => {
+        say(line);
+        listener.end({ status: 0, stderr: '' });
+      };
+    }, 'notifyutil exited 0'],
+  ];
+  for (const [onProbe, why] of cases) {
+    const fake = fakeSpawn([], { onProbe });
+    const probe = `could not tell whether the probe posted a notification: ${why}`;
+    assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn })), { platform: 'darwin', mechanism: 'none', probe }, why);
+    assert.deepEqual(fake.listening(), [], `${why}: no listener is left`);
+  }
+});
+
+test('on macOS without the test opt-in the probe is none until issue 321, and nothing is spawned or written', async (t) => {
+  const repo = scratchRepository(t);
+  const off = { platform: 'darwin', mechanism: 'none', probe: 'reproductions stay off on macOS until each run has an identity or environment of its own (issue #321)' };
+  const fake = fakeSpawn([]);
+  assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn, allowMacOS: undefined })), off);
+  assert.equal(existsSync(reproDir(repo)), false, 'no profile, probe or canary was written');
+  const report = await reproduce({ verifications: [entry()] }, candidates('blocking'), context(repo, { platform: 'darwin', spawn: fake.spawn, allowMacOS: undefined }));
+  assert.deepEqual(report.sandbox, off);
+  assert.deepEqual(report.reproductions.map((r) => [r.outcome, r.reason, r.runs.length]), [['did-not-run', `the sandbox probe did not pass: ${off.probe}`, 0]]);
+  assert.equal(fake.calls.length, 0, 'not even the probe');
+  assert.equal(existsSync(join(reproDir(repo), 'sandbox.sb')), false, 'no profile');
+  assertHeadUntouched(repo);
 });
 
 test('a platform with no mechanism, or a worktree that holds a hidden path, runs nothing', async (t) => {
@@ -1234,17 +1603,20 @@ test('the probe tries every escape, and a connection it does not admit still fai
   if (process.platform === 'darwin') t.after(() => rmSync(join(homedir(), 'Library/Preferences/review-voice.probe.plist'), { force: true }));
   for (const platform of ['darwin', 'linux']) {
     const layout = layoutOf(context(repo, { platform }));
+    // The listener is the real one where there is one, so the probe's real post reaches it.
+    const { notify } = fakeNotify();
+    const listener = (options) => (process.platform === 'darwin' ? spawnCommand(NOTIFYUTIL, options) : notify(options.args, options));
     // The wrapper is dropped, so the probe script runs with nothing confining it, and can signal the CLI.
-    const unconfined = (command, options) => spawnCommand(process.execPath, { ...options, shell: false, args: [layout.probeFile] });
+    const unconfined = (command, options) => (command === NOTIFYUTIL ? listener(options) : spawnCommand(process.execPath, { ...options, shell: false, args: [layout.probeFile] }));
     // Only the macOS probe tries a signal, since a Linux pid namespace can reuse the CLI's pid number.
     const signal = platform === 'darwin' ? ', signal' : '';
-    // Only macOS has cfprefsd, and only the macOS probe tries it.
+    // Only macOS has cfprefsd and notifyd, and only the macOS probe tries them.
     const preference = platform === 'darwin' && process.platform === 'darwin' ? ', preference' : '';
+    const notified = platform === 'darwin' && process.platform === 'darwin' ? ', notify' : '';
     // Only a Linux host has /dev/pts, which the probe looks for and never opens.
     const terminal = process.platform === 'linux' ? ', terminal' : '';
-    // The macOS probe through runProbe, since probeSandbox runs nothing on macOS until issue 321.
     const ctx = context(repo, { platform, spawn: unconfined });
-    assert.deepEqual(await (platform === 'darwin' ? runProbe(ctx, layout) : probeSandbox(ctx)), { platform, mechanism: 'none', probe: `escaped by write, read, connect, profile${terminal}${signal}${preference}` });
+    assert.deepEqual(await probeSandbox(ctx), { platform, mechanism: 'none', probe: `escaped by write, read, connect, profile${terminal}${signal}${preference}${notified}` });
   }
   // A sandbox that still shows the host's terminals is named as an escape, whatever else the probe found.
   const sees = fakeSpawn([], { probe: { status: 0, stdout: 'escaped by terminal\n', stderr: '' } });
@@ -1299,9 +1671,9 @@ test('a stop signal during the probe removes the canary and the escape file befo
 test('a probe that passes names the mechanism of its platform', async (t) => {
   const repo = scratchRepository(t);
   assert.deepEqual(await probeSandbox(context(repo, { platform: 'linux', spawn: fakeSpawn().spawn })), { platform: 'linux', mechanism: 'unshare', probe: 'passed' });
-  // The macOS probe issue 321 builds on, which probeSandbox does not reach.
-  const ctx = context(repo, { platform: 'darwin', spawn: fakeSpawn().spawn });
-  assert.deepEqual(await runProbe(ctx, layoutOf(ctx)), { platform: 'darwin', mechanism: 'sandbox-exec', probe: 'passed' });
+  const fake = fakeSpawn();
+  assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn })), { platform: 'darwin', mechanism: 'sandbox-exec', probe: 'passed' });
+  assert.deepEqual(fake.listening(), [], 'the notification listener is stopped once the probe has passed');
 });
 
 test('the git calls before a run carry SAFE_GIT, so a hook the pull request tracks never runs outside the sandbox', async (t) => {
@@ -1540,18 +1912,35 @@ test('the runner confines a real reproduction, or names why it cannot and runs n
   if (process.env.REVIEW_VOICE_REQUIRE_SANDBOX === '1') assert.fail(`REVIEW_VOICE_REQUIRE_SANDBOX=1 and the sandbox is unavailable: ${sandbox.probe}`);
 });
 
+/** This host's real sandbox, macOS through the test opt-in, since the CLI reports macOS as none. */
+function liveContext(repo, runner, { cpuSeconds = 60, linkPaths = [] } = {}) {
+  const config = { enabled: true, runners: [runner], linkPaths, memoryMb: 1024, cpuSeconds };
+  return context(repo, { platform: process.platform, env: { PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ''}` }, execPath: process.execPath, config });
+}
+
+/** reproduce run on its own as the CLI runs it, with the CLI's stop handler, so a stop signal can reach it. */
+const STOPPABLE = [
+  "import { writeFileSync } from 'node:fs';",
+  `import { reproduce } from ${JSON.stringify(pathToFileURL(join(root, 'plugins/review-voice/src/evidence/reproduce.ts')).href)};`,
+  `import { stopCommandsOnSignal } from ${JSON.stringify(pathToFileURL(join(root, 'plugins/review-voice/src/evidence/run.ts')).href)};`,
+  'stopCommandsOnSignal();',
+  'const [verification, ctx, out] = JSON.parse(process.argv[1]);',
+  "const report = await reproduce(verification, new Map([['cand_001', { candidate_id: 'cand_001', path: 'src/add.mjs', line: 1, severity: 'blocking' }]]), ctx);",
+  'writeFileSync(out, JSON.stringify(report));',
+].join('\n');
+
 test('a stop signal to reproduce kills the running reproduction, removes its copy and leaves the head worktree as it found it', async (t) => {
-  const env = { PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ''}` };
   for (const [signal, code] of [['SIGTERM', 143], ['SIGINT', 130]]) {
-    const runner = { name: 'sh', run: '/bin/sh {file}', extension: '.sh', timeout_seconds: 120 };
-    const repo = scratchRepository(t, { config: { reproduction: { enabled: true, runners: [runner], link_paths: ['node_modules'] } } });
+    const runner = { name: 'sh', run: '/bin/sh {file}', extension: '.sh', timeoutSeconds: 120 };
+    const repo = scratchRepository(t);
     mkdirSync(join(repo.clone, 'node_modules'));
-    const probe = JSON.parse(cli(repo, ['reproduce', '--worktree', repo.worktree, '--run-dir', repo.runDir, '--probe'], env).stdout);
+    const ctx = liveContext(repo, runner, { linkPaths: ['node_modules'] });
+    const probe = await probeSandbox(ctx);
     if (probe.probe !== 'passed') {
       t.skip(`needs a sandbox that holds: ${probe.probe}`);
       return;
     }
-    const { out, args } = inputs(repo);
+    const out = join(repo.runDir, 'reproductions.json');
     // The fresh directory of the execution, once mkdtemp has made it.
     const places = () => readdirSync(treesDir(repo)).filter((name) => name.startsWith('cand_001-')).map((name) => join(treesDir(repo), name))[0] ?? join(treesDir(repo), 'none');
     // TMPDIR is the scratch directory inside the sandbox, so the test sees when the reproduction has started.
@@ -1559,11 +1948,8 @@ test('a stop signal to reproduce kills the running reproduction, removes its cop
     // Found by its arguments, which the host sees, since a pid written inside a pid namespace is 1 there.
     const seconds = `600.${randomInt(1e9)}`;
     const running = () => spawnSync('ps', ['-A', '-o', 'args='], { encoding: 'utf8' }).stdout.split('\n').some((line) => line.trim() === `sleep ${seconds}`);
-    writeFileSync(join(repo.runDir, 'verification.json'), JSON.stringify({ verifications: [entry({ runner: 'sh', path: 'src/stop.sh', content: `echo started > "$TMPDIR/started"\nexec sleep ${seconds}\n` })] }));
-    const childEnv = { ...process.env, REVIEW_VOICE_DATA_DIR: repo.dataDir, ...env };
-    delete childEnv.REVIEW_VOICE_CONFIG;
-    delete childEnv.REVIEW_VOICE_NO_COMMANDS;
-    const child = spawnChild(process.execPath, [bundle, ...args], { cwd: repo.clone, env: childEnv, stdio: 'ignore' });
+    const verification = { verifications: [entry({ runner: 'sh', path: 'src/stop.sh', content: `echo started > "$TMPDIR/started"\nexec sleep ${seconds}\n` })] };
+    const child = spawnChild(process.execPath, ['--input-type=module', '-e', STOPPABLE, JSON.stringify([verification, ctx, out])], { cwd: repo.clone, stdio: 'ignore' });
     const exited = new Promise((done) => child.on('exit', (status) => done(status)));
     const deadline = Date.now() + 30_000;
     while (!started() || !running()) {
@@ -1584,10 +1970,10 @@ test('a stop signal to reproduce kills the running reproduction, removes its cop
 
 test('a process a reproduction leaves behind never writes the head worktree', async (t) => {
   // On macOS a child started with setsid leaves the process group, outlives the run and its group kill, and keeps the sandbox it was started in.
-  const runner = { name: 'node', run: 'node {file}', extension: '.mjs', timeout_seconds: 60 };
-  const repo = scratchRepository(t, { config: { reproduction: { enabled: true, runners: [runner] } } });
-  const env = { PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ''}` };
-  const probe = JSON.parse(cli(repo, ['reproduce', '--worktree', repo.worktree, '--run-dir', repo.runDir, '--probe'], env).stdout);
+  const runner = { name: 'node', run: 'node {file}', extension: '.mjs', timeoutSeconds: 60 };
+  const repo = scratchRepository(t);
+  const ctx = liveContext(repo, runner);
+  const probe = await probeSandbox(ctx);
   if (probe.probe !== 'passed') {
     t.skip(`needs a sandbox that holds: ${probe.probe}`);
     return;
@@ -1602,17 +1988,347 @@ test('a process a reproduction leaves behind never writes the head worktree', as
     `spawn(process.execPath, ['-e', ${JSON.stringify(child)}], { detached: true, stdio: 'ignore' }).unref();`,
     '',
   ].join('\n');
-  const verification = join(repo.runDir, 'verification.json');
-  const checked = join(repo.runDir, 'checked.json');
-  const out = join(repo.runDir, 'reproductions.json');
-  writeFileSync(verification, JSON.stringify({ verifications: [entry({ runner: 'node', path: 'src/leave.mjs', content })] }));
-  writeFileSync(checked, JSON.stringify({ kept: [{ candidate_id: 'cand_001', path: 'src/add.mjs', line: 1, severity: 'blocking' }] }));
-  const result = cli(repo, ['reproduce', '--worktree', repo.worktree, '--verification', verification, '--candidates', checked, '--out', out, '--run-dir', repo.runDir], env);
-  assert.equal(result.status, 0, result.stderr);
-  const [record] = JSON.parse(readFileSync(out, 'utf8')).reproductions;
+  const [record] = (await reproduce({ verifications: [entry({ runner: 'node', path: 'src/leave.mjs', content })] }, candidates('blocking'), ctx)).reproductions;
   assert.deepEqual([record.outcome, record.reason], ['did-not-fail', 'run 1 exited 0'], record.runs.map((run) => run.output).join('\n'));
   await new Promise((done) => setTimeout(done, 2500));
   assert.equal(git(repo.worktree, 'status', '--porcelain', '--ignored'), '', 'the head worktree is as the driver made it');
   assert.equal(existsSync(join(repo.worktree, 'planted-here')), false, 'not in the place the run had');
   assert.equal(existsSync(planted), false, 'not through the head path either');
+});
+
+// The allowlist profile under sandbox-exec itself, on macOS as an ordinary user.
+
+function onMacOS(t) {
+  if (process.platform === 'darwin' && process.getuid?.() !== 0) return true;
+  t.skip('needs sandbox-exec as an ordinary user, which only macOS has');
+  return false;
+}
+
+const macEnv = () => ({ PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ''}` });
+
+/** One reproduction under the real profile. */
+const reproduceOnMac = (repo, reproduction, runner = RUNNER, cpuSeconds = 60) => reproduce({ verifications: [entry(reproduction)] }, candidates('blocking'), liveContext(repo, runner, { cpuSeconds }));
+/** Listeners the probes of this process started, found by their key from outside. */
+const notifyListeners = () => spawnSync('ps', ['-A', '-o', 'args='], { encoding: 'utf8' }).stdout.split('\n').filter((line) => line.includes(`rv.probe.${process.pid}.`));
+
+test('on macOS the real probe passes, and a node --test reproduction runs under the allowlist and fails at its assertion', async (t) => {
+  if (!onMacOS(t)) return;
+  const repo = scratchRepository(t);
+  const passed = { platform: 'darwin', mechanism: 'sandbox-exec', probe: 'passed' };
+  assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', env: macEnv(), execPath: process.execPath })), passed);
+  assert.deepEqual(notifyListeners(), [], 'the listener is stopped once the probe has passed');
+  const content = [
+    "import { test } from 'node:test';",
+    "import assert from 'node:assert/strict';",
+    "import os from 'node:os';",
+    "import { add } from './add.mjs';",
+    "test('add adds', () => {",
+    // A user lookup, which needs the one lookup service the profile allows.
+    "  console.log('user ' + os.userInfo().username);",
+    `  console.log('${MARKER}');`,
+    '  assert.equal(add(2, 2), 4);',
+    '});',
+    '',
+  ].join('\n');
+  const report = await reproduceOnMac(repo, { content });
+  assert.deepEqual(report.sandbox, passed);
+  const [record] = report.reproductions;
+  assert.deepEqual([record.outcome, record.reason, record.runs.length], ['reproduced', undefined, 2], record.runs.map((run) => run.output).join('\n'));
+  // Node 22 reports in TAP when its output is not a terminal and Node 24 in its spec format, and both name the two values.
+  for (const run of record.runs) for (const value of [/expected: 4\b/, /actual: 0\b/]) assert.match(run.output, value, 'each run failed at its assertion');
+  assertHeadUntouched(repo);
+});
+
+test('on macOS a profile that lets a post through is the escape notify, and the listener is gone afterwards', async (t) => {
+  if (!onMacOS(t)) return;
+  const repo = scratchRepository(t);
+  const layout = layoutOf(context(repo, { platform: 'darwin' }));
+  const loose = join(repo.dir, 'loose.sb');
+  // The real wrapper and probe, under the profile the probe wrote with one more rule, which lets a process reach notifyd.
+  const spawn = (command, options) => {
+    if (command !== '/usr/bin/sandbox-exec') return spawnCommand(command, options);
+    writeFileSync(loose, `${readFileSync(layout.profile, 'utf8')}(allow mach-lookup (global-name "com.apple.system.notification_center"))\n`);
+    return spawnCommand(command, { ...options, args: options.args.map((arg) => (arg === layout.profile ? loose : arg)) });
+  };
+  const ctx = context(repo, { platform: 'darwin', spawn, env: macEnv(), execPath: process.execPath });
+  assert.deepEqual(await runProbe(ctx, layout), { platform: 'darwin', mechanism: 'none', probe: 'escaped by notify' });
+  assert.deepEqual(notifyListeners(), [], 'no listener is left running');
+});
+
+/** Signals the real listener of a probe, found by the key the probe posts, so no other process is ever signalled. */
+function signalListener(options, signal) {
+  const listening = new RegExp(`^\\s*(\\d+) ${NOTIFYUTIL} .*-w ${escaped(notifyKey(options))}( |$)`);
+  const pid = Number(spawnSync('ps', ['-A', '-o', 'pid=', '-o', 'args='], { encoding: 'utf8' }).stdout.split('\n').map((line) => listening.exec(line)?.[1]).find((found) => found !== undefined));
+  assert.ok(pid > 1, 'the listener is running');
+  process.kill(pid, signal);
+}
+
+test('on macOS a real listener killed once it has registered fails the probe closed', async (t) => {
+  if (!onMacOS(t)) return;
+  const repo = scratchRepository(t);
+  // Under the real profile, which refuses the post, so nothing but the dead listener can fail the probe.
+  const spawn = (command, options) => {
+    if (command === '/usr/bin/sandbox-exec') signalListener(options, 'SIGKILL');
+    return spawnCommand(command, options);
+  };
+  const probe = 'could not tell whether the probe posted a notification: notifyutil exited on a signal';
+  assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn, env: macEnv(), execPath: process.execPath })), { platform: 'darwin', mechanism: 'none', probe });
+  assert.deepEqual(notifyListeners(), [], 'no listener is left running');
+});
+
+test('on macOS a last key a real listener prints before the CLI posts it fails the probe closed', async (t) => {
+  if (!onMacOS(t)) return;
+  const repo = scratchRepository(t);
+  let last;
+  // Under the real profile, which refuses the probe's post, with the listener's last key posted by another as the probe starts.
+  const spawn = (command, options) => {
+    if (command === NOTIFYUTIL && options.args[0] === '-w') last = options.args[3];
+    if (command === '/usr/bin/sandbox-exec') spawnSync(NOTIFYUTIL, ['-p', last]);
+    return spawnCommand(command, options);
+  };
+  const state = await probeSandbox(context(repo, { platform: 'darwin', spawn, env: macEnv(), execPath: process.execPath }));
+  assert.deepEqual(state, { platform: 'darwin', mechanism: 'none', probe: `could not tell whether the probe posted a notification: notifyutil printed ${last} before it was posted` });
+  assert.deepEqual(notifyListeners(), [], 'no listener is left running');
+});
+
+test('on macOS an escape a real listener reports late is still the escape notify', async (t) => {
+  if (!onMacOS(t)) return;
+  const repo = scratchRepository(t);
+  const layout = layoutOf(context(repo, { platform: 'darwin' }));
+  const loose = join(repo.dir, 'loose.sb');
+  // Under a profile that lets the post out, with the listener held still until well after the probe is back.
+  const spawn = async (command, options) => {
+    if (command !== '/usr/bin/sandbox-exec') return spawnCommand(command, options);
+    signalListener(options, 'SIGSTOP');
+    writeFileSync(loose, `${readFileSync(layout.profile, 'utf8')}(allow mach-lookup (global-name "com.apple.system.notification_center"))\n`);
+    const result = await spawnCommand(command, { ...options, args: options.args.map((arg) => (arg === layout.profile ? loose : arg)) });
+    setTimeout(() => signalListener(options, 'SIGCONT'), 700);
+    return result;
+  };
+  const ctx = context(repo, { platform: 'darwin', spawn, env: macEnv(), execPath: process.execPath });
+  assert.deepEqual(await runProbe(ctx, layout), { platform: 'darwin', mechanism: 'none', probe: 'escaped by notify' });
+  assert.deepEqual(notifyListeners(), [], 'no listener is left running');
+});
+
+test('on macOS a reproduction reads neither the IOKit registry nor NVRAM, which name the machine', (t) => {
+  if (!onMacOS(t)) return;
+  const layout = copyLayout(scratchRepository(t));
+  writeFileSync(layout.profile, sandboxProfile(layout));
+  // Counts only, so no identifier is ever printed.
+  const counts = `/usr/sbin/ioreg -c IOPlatformExpertDevice -d 2 | grep -cE '"IOPlatform(SerialNumber|UUID)"'; /usr/sbin/nvram -p 2>/dev/null | grep -c .`;
+  const count = ([program, ...args]) => spawnSync(program, args, { cwd: layout.worktree, env: macEnv(), encoding: 'utf8' }).stdout.split('\n').filter(Boolean).map(Number);
+  assert.ok(count(['/bin/sh', '-c', counts])[0] > 0, 'outside the sandbox the registry names the machine');
+  assert.deepEqual(count(wrapperArgv(layout, `/bin/sh -c ${shellQuote(counts)}`)), [0, 0]);
+});
+
+test('on macOS a reproduction writes to its own stdout and stderr by path, and still cannot write a descriptor it holds read only', (t) => {
+  if (!onMacOS(t)) return;
+  const layout = copyLayout(scratchRepository(t));
+  writeFileSync(layout.profile, sandboxProfile(layout));
+  const run = (script) => spawnSync(...((argv) => [argv[0], argv.slice(1)])(wrapperArgv(layout, `/bin/sh -c ${shellQuote(script)}`)), { cwd: layout.worktree, env: macEnv(), encoding: 'utf8' });
+  const paths = run('echo out > /dev/stdout; echo err > /dev/stderr; echo fd > /dev/fd/1');
+  assert.equal(paths.status, 0, paths.stderr);
+  assert.deepEqual([paths.stdout, paths.stderr], ['out\nfd\n', 'err\n']);
+  const readOnly = run('exec 3< /dev/null; echo x > /dev/fd/3 && echo wrote || echo refused');
+  assert.equal(readOnly.stdout.trim(), 'refused');
+});
+
+test('on macOS a reproduction cannot read the open files of another process', (t) => {
+  if (!onMacOS(t)) return;
+  const layout = copyLayout(scratchRepository(t));
+  writeFileSync(layout.profile, sandboxProfile(layout));
+  // This test process stands for any process of the user; a count, so no path is printed.
+  const files = `/usr/sbin/lsof -a -p ${process.pid} -d cwd -Fn 2>/dev/null | grep -c '^n'`;
+  const count = ([program, ...args]) => Number(spawnSync(program, args, { cwd: layout.worktree, env: macEnv(), encoding: 'utf8' }).stdout.trim());
+  assert.equal(count(['/bin/sh', '-c', files]), 1, 'outside the sandbox lsof names its directory');
+  assert.equal(count(wrapperArgv(layout, `/bin/sh -c ${shellQuote(files)}`)), 0);
+});
+
+test('on macOS a reproduction reads neither the process table nor the command line of another process', async (t) => {
+  if (!onMacOS(t)) return;
+  const layout = copyLayout(scratchRepository(t));
+  writeFileSync(layout.profile, sandboxProfile(layout));
+  // A sleeping perl of the test's own stands for any process of the user, with an argument of its own; it is killed when the test ends.
+  const marker = `rv-argv-${randomInt(1e9)}`;
+  const other = spawnChild('/usr/bin/perl', ['-e', 'sleep 60', marker], { stdio: 'ignore' });
+  t.after(() => other.kill('SIGKILL'));
+  // kern.procargs2, kern.proc.all and kern.proc.pid through perl's syscall (202 is sysctl); only whether each was read, and whether the marker was there, is printed.
+  const sysctls = [
+    'my ($pid, $marker) = @ARGV;',
+    "sub get { my ($mib, $size) = @_; my $len = pack('Q', $size); my $buf = \"\\0\" x $size; syscall(202, $mib, length($mib) / 4, $buf, $len, 0, 0) == 0 ? substr($buf, 0, unpack('Q', $len)) : undef }",
+    "my $args = get(pack('i3', 1, 49, $pid), 1 << 16);",
+    'print defined $args ? (index($args, $marker) >= 0 ? "procargs2 found\\n" : "procargs2 absent\\n") : "procargs2 denied\\n";',
+    "print defined get(pack('i3', 1, 14, 0), 1 << 24) ? \"proc.all read\\n\" : \"proc.all denied\\n\";",
+    "print defined get(pack('i4', 1, 14, 1, $pid), 4096) ? \"proc.pid read\\n\" : \"proc.pid denied\\n\";",
+  ].join('\n');
+  const read = `/usr/bin/perl -e ${shellQuote(sysctls)} ${other.pid} ${marker}`;
+  const said = ([program, ...args]) => spawnSync(program, args, { cwd: layout.worktree, env: macEnv(), encoding: 'utf8' }).stdout.trim().split('\n');
+  // The marker is in the command line once perl has started.
+  const deadline = Date.now() + 10_000;
+  while (said(['/bin/sh', '-c', read])[0] !== 'procargs2 found') {
+    assert.ok(Date.now() < deadline, 'outside the sandbox the command line names the marker within ten seconds');
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  assert.deepEqual(said(['/bin/sh', '-c', read]), ['procargs2 found', 'proc.all read', 'proc.pid read'], 'outside the sandbox all three are read');
+  assert.deepEqual(said(wrapperArgv(layout, read)), ['procargs2 denied', 'proc.all denied', 'proc.pid denied']);
+});
+
+test('on macOS a reproduction opens no terminal device, so it never takes what is typed into another session', async (t) => {
+  if (!onMacOS(t)) return;
+  const layout = copyLayout(scratchRepository(t));
+  writeFileSync(layout.profile, sandboxProfile(layout));
+  // A terminal the test owns, which script holds and names from inside; it and its sleep, found by its argument, are killed when the test ends.
+  const named = join(layout.reproDir, 'terminal');
+  const nameOf = () => (existsSync(named) ? readFileSync(named, 'utf8').trim() : '');
+  const seconds = `60.${randomInt(1e9)}`;
+  const holder = spawnChild('/usr/bin/script', ['-q', '/dev/null', '/bin/sh', '-c', `tty > ${shellQuote(named)}; exec sleep ${seconds}`], { stdio: 'ignore' });
+  t.after(() => {
+    holder.kill('SIGKILL');
+    const sleeps = spawnSync('ps', ['-A', '-o', 'pid=,args='], { encoding: 'utf8' }).stdout.split('\n').filter((line) => line.trim().endsWith(`sleep ${seconds}`));
+    for (const line of sleeps) {
+      try {
+        process.kill(Number.parseInt(line, 10), 'SIGKILL');
+      } catch {
+        // Gone with its terminal already.
+      }
+    }
+  });
+  const deadline = Date.now() + 10_000;
+  while (!/^\/dev\/ttys\d+$/.test(nameOf())) {
+    assert.ok(Date.now() < deadline, 'script made a terminal within ten seconds');
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  const terminal = nameOf();
+  const open = "const fs = require('fs'); try { fs.closeSync(fs.openSync(process.argv[1], fs.constants.O_RDONLY | fs.constants.O_NOCTTY | fs.constants.O_NONBLOCK)); console.log('opened'); } catch (error) { console.log(error.code); }";
+  const node = (path) => `${shellQuote(process.execPath)} -e ${shellQuote(open)} ${shellQuote(path)}`;
+  const opened = ([program, ...args]) => spawnSync(program, args, { cwd: layout.worktree, env: macEnv(), encoding: 'utf8' }).stdout.trim();
+  assert.equal(opened(['/bin/sh', '-c', node(terminal)]), 'opened', 'outside the sandbox the terminal opens');
+  assert.equal(opened(wrapperArgv(layout, node(terminal))), 'EPERM');
+  assert.equal(opened(wrapperArgv(layout, node('/dev/null'))), 'opened', '/dev/null still opens');
+});
+
+test('the threat model and ADR 0003 say the macOS CPU limit does not end a process that handles SIGXCPU or keeps reading its own CPU usage', () => {
+  for (const file of ['docs/THREAT-MODEL.md', 'docs/adr/0003-static-analysis-adapters.md']) {
+    const text = readFileSync(join(root, file), 'utf8').replace(/\s+/g, ' ');
+    assert.match(text, /handles SIGXCPU or keeps reading its own CPU usage/, file);
+    // The kernel does end one that keeps making ordinary system calls.
+    assert.doesNotMatch(text, /keeps making system calls/, file);
+  }
+});
+
+test('ADR 0003 names the rules the profile needs because (deny default) does not reach them', () => {
+  const text = readFileSync(join(root, 'docs/adr/0003-static-analysis-adapters.md'), 'utf8').replace(/\s+/g, ' ');
+  for (const rule of ['(deny iokit-get-properties iokit-set-properties)', '(deny nvram*)', '(deny process-info*)', '(allow process-info* (target self))']) assert.ok(text.includes(`\`${rule}\``), rule);
+  assert.doesNotMatch(text, /IOKit and NVRAM stay denied by default/);
+});
+
+test('the threat model and ADR 0003 say a run can create a System V IPC object, which the CLI names and leaves in place, though it cannot stop a run using them up, and never that all IPC is denied', () => {
+  for (const file of ['docs/THREAT-MODEL.md', 'docs/adr/0003-static-analysis-adapters.md']) {
+    const text = readFileSync(join(root, file), 'utf8').replace(/\s+/g, ' ');
+    // The kernel creates one without asking the sandbox, and no profile rule stops it, so the CLI names what appeared during a run, leaves it, and the run does not count.
+    const facts = [
+      'The kernel does not ask the sandbox before it creates a System V IPC object',
+      'the CLI removes none of them',
+      'records the run as not run with a reason naming System V IPC',
+      'does not stop a run from using up, while it lasts,',
+      'macOS reproductions should stay off until runs execute under an identity or environment of their own',
+    ];
+    for (const fact of facts) assert.ok(text.includes(fact), `${file}: ${fact}`);
+    assert.doesNotMatch(text, /the CLI removes it by its id/, file);
+    assert.doesNotMatch(text, /\bno IPC\b|, IPC,/, file);
+  }
+});
+
+test('on macOS a detached process a reproduction leaves is gone once it has used its CPU seconds, a stat loop included, and one that keeps reading its own CPU usage is not', async (t) => {
+  if (!onMacOS(t)) return;
+  const runner = { name: 'node', run: 'node {file}', extension: '.mjs', timeoutSeconds: 60 };
+  const repo = scratchRepository(t);
+  // Each found from outside by an argument of its own, and killed when the test ends, so none outlives the test.
+  const spin = `rv-spin-${randomInt(1e9)}`;
+  const stat = `rv-stat-${randomInt(1e9)}`;
+  const busy = `rv-busy-${randomInt(1e9)}`;
+  const pidsOf = (token) => spawnSync('ps', ['-A', '-o', 'pid=,args='], { encoding: 'utf8' }).stdout.split('\n').filter((line) => line.includes(token)).map((line) => Number.parseInt(line, 10));
+  t.after(() => {
+    for (const pid of [...pidsOf(spin), ...pidsOf(stat), ...pidsOf(busy)]) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // Gone already.
+      }
+    }
+  });
+  const child = (code, token) => `spawn(process.execPath, ['-e', ${JSON.stringify(code)}, ${JSON.stringify(token)}], { detached: true, stdio: 'ignore' }).unref();`;
+  // A stat loop makes an ordinary system call on every turn, and process.cpuUsage() reads its own CPU usage (getrusage).
+  const content = ["import { spawn } from 'node:child_process';", child('for (;;) {}', spin), child("for (;;) require('fs').statSync('/')", stat), child('for (;;) process.cpuUsage()', busy), ''].join('\n');
+  const [record] = (await reproduceOnMac(repo, { runner: 'node', path: 'src/spin.mjs', content }, runner, 2)).reproductions;
+  assert.deepEqual([record.outcome, record.reason], ['did-not-fail', 'run 1 exited 0'], record.runs.map((run) => run.output).join('\n'));
+  assert.deepEqual([pidsOf(spin).length, pidsOf(stat).length, pidsOf(busy).length], [1, 1, 1], 'each outlived the run and its group kill');
+  // Two CPU seconds take longer than two seconds on a loaded machine.
+  let deadline = Date.now() + 60_000;
+  while (pidsOf(spin).length > 0 || pidsOf(stat).length > 0) {
+    assert.ok(Date.now() < deadline, 'the kernel ended the spinning one and the stat loop within a minute');
+    await new Promise((done) => setTimeout(done, 100));
+  }
+  // The limit the threat model states: the kernel lets this one run on past its CPU seconds.
+  const [pid] = pidsOf(busy);
+  const cpu = () => spawnSync('ps', ['-o', 'time=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim().split(':').reduce((seconds, part) => seconds * 60 + Number(part), 0);
+  deadline = Date.now() + 60_000;
+  for (;;) {
+    assert.deepEqual(pidsOf(busy), [pid], 'the one reading its own CPU usage is still running');
+    if (cpu() >= 4) break;
+    assert.ok(Date.now() < deadline, 'it used twice its CPU seconds within a minute');
+    await new Promise((done) => setTimeout(done, 100));
+  }
+});
+
+test('on macOS a real listener held still for the whole probe still shows the escape notify, through the state of its key', async (t) => {
+  if (!onMacOS(t)) return;
+  const repo = scratchRepository(t);
+  const layout = layoutOf(context(repo, { platform: 'darwin' }));
+  const loose = join(repo.dir, 'loose.sb');
+  // Under a profile that lets the post out, with the listener stopped until it is killed, so it prints no line after the first key.
+  const spawn = (command, options) => {
+    if (command !== '/usr/bin/sandbox-exec') return spawnCommand(command, options);
+    signalListener(options, 'SIGSTOP');
+    writeFileSync(loose, `${readFileSync(layout.profile, 'utf8')}(allow mach-lookup (global-name "com.apple.system.notification_center"))\n`);
+    return spawnCommand(command, { ...options, args: options.args.map((arg) => (arg === layout.profile ? loose : arg)) });
+  };
+  const ctx = context(repo, { platform: 'darwin', spawn, env: macEnv(), execPath: process.execPath });
+  assert.deepEqual(await runProbe(ctx, layout), { platform: 'darwin', mechanism: 'none', probe: 'escaped by notify' });
+  assert.deepEqual(notifyListeners(), [], 'no listener is left running');
+});
+
+/** The System V IPC objects macOS lists for this user, as `<type> <id> <key>`. */
+const ipcListed = () => spawnSync('/usr/bin/ipcs', ['-c'], { encoding: 'utf8' }).stdout.split('\n').map((line) => /^([qms])\s+(\d+)\s+(0x[0-9a-f]+)\s+\S+\s+(\S+)/.exec(line)).filter((match) => match !== null && match[4] === userInfo().username).map((match) => `${match[1]} ${match[2]} ${match[3]}`);
+
+test('on macOS a System V IPC object a reproduction creates is left in place and named, the run is not run, and one from before is left alone', async (t) => {
+  if (!onMacOS(t)) return;
+  const runner = { name: 'node', run: 'node {file}', extension: '.mjs', timeoutSeconds: 60 };
+  const repo = scratchRepository(t);
+  // Random keys of the test's own, so the clean-up below, the test's and never the CLI's, can only ever reach these two objects.
+  const [mine, theirs] = [randomInt(0x10000000, 0x7fffffff), randomInt(0x10000000, 0x7fffffff)].map((key) => `0x${key.toString(16)}`);
+  const make = (key) => `my $id = shmget(${key}, 4096, 0600 | 01000); print defined $id ? "$id\\n" : "refused\\n";`;
+  t.after(() => {
+    for (const listed of ipcListed()) if (listed.endsWith(` ${mine}`) || listed.endsWith(` ${theirs}`)) spawnSync('/usr/bin/ipcrm', ['-m', listed.split(' ')[1]]);
+  });
+  const id = spawnSync('/usr/bin/perl', ['-e', make(mine)], { encoding: 'utf8' }).stdout.trim();
+  assert.match(id, /^\d+$/, 'the object from before is made outside the sandbox');
+  const before = ipcListed();
+  assert.ok(before.includes(`m ${id} ${mine}`));
+  const content = [
+    "import { spawnSync } from 'node:child_process';",
+    `const made = spawnSync('/usr/bin/perl', ['-e', ${JSON.stringify(make(theirs))}], { encoding: 'utf8' }).stdout.trim();`,
+    "console.log('made ' + made);",
+    `console.log('${MARKER}');`,
+    'process.exit(1);',
+    '',
+  ].join('\n');
+  const [record] = (await reproduceOnMac(repo, { runner: 'node', path: 'src/ipc.mjs', content }, runner)).reproductions;
+  const made = /made (\d+)/.exec(record.runs[0]?.output ?? '')?.[1];
+  assert.ok(made !== undefined, record.runs.map((run) => run.output).join('\n'));
+  assert.deepEqual([record.outcome, record.reason, record.runs.length], ['did-not-run', `System V IPC objects appeared during the run and were left in place: m ${made}`, 1]);
+  const after = ipcListed();
+  assert.ok(after.includes(`m ${made} ${theirs}`), 'the object the run made is still there');
+  for (const listed of before) assert.ok(after.includes(listed), `${listed} is still there`);
+  assertHeadUntouched(repo);
 });

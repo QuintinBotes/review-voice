@@ -13891,6 +13891,7 @@ import { execFileSync as execFileSync8 } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync as chmodSync2, constants, cpSync, existsSync as existsSync3, lstatSync as lstatSync3, mkdirSync as mkdirSync2, mkdtempSync, readdirSync as readdirSync2, readFileSync as readFileSync4, realpathSync, renameSync, rmSync as rmSync3, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { userInfo } from "node:os";
 import { basename as basename4, dirname as dirname5, join as join7, relative, resolve } from "node:path";
 
 // plugins/review-voice/src/review/worktree.ts
@@ -13940,6 +13941,7 @@ function removeHeadWorktree(headDir, cwd = process.cwd()) {
 
 // plugins/review-voice/src/evidence/run.ts
 import { spawn as spawnChild } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 
 // plugins/review-voice/src/evidence/parsers.ts
 import { createHash as createHash4 } from "node:crypto";
@@ -14444,7 +14446,7 @@ async function readVersion(spawn3, run, cwd, timeout, env, clean2) {
   if (result.error !== void 0 || result.status !== 0) return void 0;
   return sanitisedVersion(String(result.stdout ?? ""), clean2);
 }
-function spawnInGroup(spawn3, run, cwd, timeout, env, args) {
+function spawnInGroup(spawn3, run, cwd, timeout, env, args, watch = {}) {
   return spawn3(run, {
     cwd,
     env,
@@ -14454,7 +14456,8 @@ function spawnInGroup(spawn3, run, cwd, timeout, env, args) {
     timeout,
     killSignal: "SIGKILL",
     maxBuffer: 16 * 1024 * 1024,
-    detached: true
+    detached: true,
+    ...watch
   });
 }
 var MAX_TIMER_MS = 2 ** 31 - 1;
@@ -14494,6 +14497,10 @@ function stopCommandsOnSignal() {
 }
 function spawnCommand(command, options) {
   return new Promise((resolve16) => {
+    if (options.signal?.aborted === true) {
+      resolve16({ status: null, stdout: "", stderr: "", error: Object.assign(new Error(`spawn ${command} ABORT_ERR`), { code: "ABORT_ERR" }) });
+      return;
+    }
     const child = spawnChild(command, options.args ?? [], { cwd: options.cwd, env: options.env, shell: options.shell, detached: options.detached, stdio: "pipe" });
     const pid = child.pid;
     if (pid !== void 0) runningGroups.add(pid);
@@ -14508,8 +14515,13 @@ function spawnCommand(command, options) {
       child.stderr.destroy();
     };
     const timer = options.timeout > 0 ? setTimeout(() => stop("ETIMEDOUT"), Math.min(options.timeout, MAX_TIMER_MS)) : void 0;
+    options.signal?.addEventListener("abort", () => {
+      if (!settled) stop("ABORT_ERR");
+    });
+    const decoder = new StringDecoder(options.encoding);
     for (const stream of ["stdout", "stderr"]) {
       child[stream].on("data", (chunk) => {
+        if (stream === "stdout") options.onStdout?.(decoder.write(chunk));
         const room = options.maxBuffer - sizes[stream];
         if (room > 0) chunks[stream].push(chunk.subarray(0, room));
         sizes[stream] += chunk.length;
@@ -14554,8 +14566,11 @@ var runGit2 = (args, cwd) => execFileSync8("git", [...SAFE_GIT, ...args], {
 });
 var OUTPUT_CAP_BYTES = 8 * 1024;
 var PROBE_TIMEOUT_MS = 3e4;
-var DARWIN_OFF = "sandbox-exec is not yet trusted to confine a reproduction (issue #321)";
+var DARWIN_OFF = "reproductions stay off on macOS until each run has an identity or environment of its own (issue #321)";
 var PROBE_DOMAIN = "review-voice.probe";
+var NOTIFYUTIL = "/usr/bin/notifyutil";
+var NOTIFY_READY_MS = 5e3;
+var IPCS = "/usr/bin/ipcs";
 var CREDENTIAL_DIRS = [".ssh", ".gnupg", ".aws", ".config/gh", "Library/Keychains"];
 var CREDENTIAL_FILES = [".netrc", ".npmrc", ".git-credentials"];
 var DEVICES = ["null", "zero", "full", "random", "urandom"];
@@ -14657,27 +14672,42 @@ function sandboxProfile(layout) {
   const literals = (paths) => paths.map((path) => `(literal ${sbString(path)})`).join(" ");
   return [
     "(version 1)",
-    "(allow default)",
-    "(deny network*)",
-    // Neither a reproduction nor a process it leaves behind can signal the CLI or any other process of the user.
-    "(deny signal)",
+    "(deny default)",
+    // (deny default) leaves IOKit properties and NVRAM readable, which name the machine: its serial number, platform UUID and NVRAM variables.
+    "(deny iokit-get-properties iokit-set-properties)",
+    "(deny nvram*)",
+    // It leaves other processes' information readable too, their list and paths among it; a process still reads its own.
+    "(deny process-info*)",
+    "(allow process-info* (target self))",
+    // The shell execs the runner, and a runner such as node --test starts a process for each test file.
+    "(allow process-fork)",
+    "(allow process-exec*)",
+    // libc and an interpreter read the CPU count, the page size and the kernel version as they start.
+    "(allow sysctl-read)",
+    // Except the sysctls under kern.proc, which list every process and give another's command line, a token passed as an argument among it.
+    '(deny sysctl-read (sysctl-name-prefix "kern.proc"))',
+    // A runner stops its own workers; neither a reproduction nor a process it leaves behind can signal any other.
     "(allow signal (target same-sandbox))",
-    "(deny file-write*)",
-    // cfprefsd writes a named domain into the real ~/Library/Preferences for
-    // the process, which the sandbox checks as a preference write, never as a
-    // file write of the process.
-    "(deny user-preference-write)",
-    `(allow file-write* ${subpaths([layout.worktree, layout.scratch])} (literal "/dev/null"))`,
-    `(deny file-write* ${literals([join7(layout.worktree, ".git")])})`,
-    // A user-immutable flag would keep the copy from being removed; the Linux
-    // namespace has no CAP_LINUX_IMMUTABLE to set one.
-    "(deny file-write-flags)",
+    // The user and group lookups (getpwuid) that os.userInfo, git and Python's pwd make, which read and change nothing.
+    '(allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo"))',
+    // An interpreter reads its own install, the system libraries and the code under review.
+    "(allow file-read*)",
     `(deny file-read* ${subpaths(layout.hiddenDirs)} ${literals(layout.hiddenFiles)})`,
     `(allow file-read* ${subpaths(reachable)})`,
+    // A terminal of another session would hand a run, or a process it leaves behind, what is typed there; after the reachable places, so no link reopens one.
+    '(deny file-read* (regex #"^/dev/(tty|pty|cu\\.)") (literal "/dev/ptmx"))',
     // Node resolves a path by an lstat of every parent, the hidden data
     // directory's included, so those parents' own metadata is readable while
     // what they hold stays hidden.
     `(allow file-read-metadata ${literals(ancestors2)})`,
+    // A test writes its own files, temporary files under TMPDIR, output it throws away,
+    // and its own stdout and stderr by path (/dev/stdout is /dev/fd/1), which reopens
+    // only a descriptor the process already holds, with no wider access.
+    `(allow file-write* ${subpaths([layout.worktree, layout.scratch])} (literal "/dev/null") (regex #"^/dev/fd/[0-9]+$"))`,
+    `(deny file-write* ${literals([join7(layout.worktree, ".git")])})`,
+    // A user-immutable flag would keep the copy from being removed; the Linux
+    // namespace has no CAP_LINUX_IMMUTABLE to set one.
+    "(deny file-write-flags)",
     ""
   ].join("\n");
 }
@@ -14779,9 +14809,15 @@ function probeScript(targets) {
     // The user's terminals are devices there, which take a write on a read-only mount.
     "if (fs.existsSync('/dev/pts')) escaped.push('terminal');",
     "if (t.domain !== null) { const cp = require('child_process'); if (cp.spawnSync('/usr/bin/defaults', ['write', t.domain, 'probe', 'escaped']).status === 0) { escaped.push('preference'); cp.spawnSync('/usr/bin/defaults', ['delete', t.domain]); } }",
+    // A refused post exits 0 too, so only the listener outside can tell. The
+    // state is set first, so it holds whatever order the lines arrive in. An
+    // attempt that did not start and exit 0 tested nothing, and a silent
+    // listener would then pass the probe.
+    "let untested = null;",
+    `if (t.notify !== null) { const r = require('child_process').spawnSync(${JSON.stringify(NOTIFYUTIL)}, ['-s', t.notify, '1', '-p', t.notify], { timeout: ${NOTIFY_READY_MS} }); untested = r.error ? r.error.message : r.signal !== null ? 'notifyutil was killed by ' + r.signal : r.status !== 0 ? 'notifyutil exited ' + r.status : null; }`,
     "const socket = require('net').connect(t.port, '127.0.0.1');",
     "let done = false;",
-    "const finish = (connected) => { if (done) return; done = true; clearTimeout(timer); socket.destroy(); if (connected) escaped.push('connect'); console.log(escaped.length > 0 ? 'escaped by ' + escaped.join(', ') : 'RV_PROBE_OK'); };",
+    "const finish = (connected) => { if (done) return; done = true; clearTimeout(timer); socket.destroy(); if (connected) escaped.push('connect'); console.log(escaped.length > 0 ? 'escaped by ' + escaped.join(', ') : untested !== null ? 'notifications not tested: ' + untested : 'RV_PROBE_OK'); };",
     "const timer = setTimeout(() => finish(false), 2000);",
     "socket.on('connect', () => finish(true));",
     "socket.on('error', () => finish(false));"
@@ -14795,10 +14831,59 @@ var contentOf = (path) => {
   }
 };
 var firstLine2 = (text5) => text5.split("\n").map((line3) => line3.trim()).find((line3) => /[\p{L}\p{N}]/u.test(line3)) ?? "";
+var delay = (ms) => new Promise((done) => setTimeout(done, ms));
+function listenForNotify(spawn3, cwd) {
+  const [pre, escape, post] = [0, 1, 2].map(() => `rv.probe.${process.pid}.${randomBytes(4).toString("hex")}`);
+  const killer = new AbortController();
+  let printed = "";
+  let ended;
+  const listening = Promise.resolve(
+    spawnInGroup(spawn3, NOTIFYUTIL, cwd, 2 * PROBE_TIMEOUT_MS, {}, ["-w", escape, "-1", post, "-1", pre], {
+      onStdout: (text5) => printed += text5,
+      signal: killer.signal
+    })
+  ).then(
+    (result) => void (ended = result),
+    (error) => void (ended = { status: null, stdout: "", stderr: "", error })
+  );
+  const lines2 = () => printed.split("\n").slice(0, -1);
+  const hear = async (which) => {
+    const key2 = which === "pre" ? pre : post;
+    const early = lines2().includes(key2);
+    const deadline = Date.now() + NOTIFY_READY_MS;
+    while (!early && !lines2().includes(key2) && ended === void 0 && Date.now() < deadline) {
+      await spawnInGroup(spawn3, NOTIFYUTIL, cwd, NOTIFY_READY_MS, {}, ["-p", key2]);
+      await delay(20);
+    }
+    const heard = lines2();
+    const odd = heard.find((line3, at2) => (at2 === 0 ? line3 !== pre : which === "pre" || line3 !== escape && line3 !== post) || heard.indexOf(line3) !== at2);
+    if (odd !== void 0) return `notifyutil printed an unexpected line: ${odd}`;
+    if (heard.includes(escape)) return true;
+    if (early) return `notifyutil printed ${key2} before it was posted`;
+    if (ended !== void 0) return ended.error?.message ?? `notifyutil exited ${String(ended.status ?? "on a signal")}`;
+    return heard.includes(key2) ? false : `no post was heard within ${NOTIFY_READY_MS / 1e3}s`;
+  };
+  const state = async () => {
+    const read = await spawnInGroup(spawn3, NOTIFYUTIL, cwd, NOTIFY_READY_MS, {}, ["-g", escape]);
+    await new Promise((done) => setImmediate(done));
+    if (ended !== void 0) return "the listener ended before the state was read";
+    if (read.error !== void 0) return read.error.message;
+    if (read.status !== 0) return `notifyutil -g exited ${String(read.status ?? "on a signal")}`;
+    const line3 = read.stdout.trim();
+    const value = line3.startsWith(`${escape} `) ? line3.slice(escape.length + 1) : "";
+    if (!/^\d+$/.test(value)) return `notifyutil -g printed an unexpected line: ${firstLine2(line3)}`;
+    return Number(value) !== 0;
+  };
+  const end = async () => {
+    killer.abort();
+    await listening;
+  };
+  return { escape, hear, printedEscape: () => lines2().includes(escape), state, end };
+}
 async function probeSandbox(ctx, given) {
   const platform = ctx.platform ?? process.platform;
-  if (platform === "darwin") return { platform, mechanism: "none", probe: DARWIN_OFF };
-  if (platform !== "linux") return { platform, mechanism: "none", probe: `no confinement mechanism on ${platform}` };
+  if (platform === "darwin" && ctx.allowMacOS !== true) return { platform, mechanism: "none", probe: DARWIN_OFF };
+  if (platform !== "linux" && platform !== "darwin") return { platform, mechanism: "none", probe: `no confinement mechanism on ${platform}` };
   return runProbe(ctx, given ?? layoutOf(ctx));
 }
 async function runProbe(ctx, layout) {
@@ -14821,30 +14906,53 @@ async function runProbe(ctx, layout) {
     rmSync3(layout.escape, { force: true });
   };
   const withdraw = onStop(clear);
+  let listener = null;
   try {
-    if (mechanism === "sandbox-exec") writeFileSync(layout.profile, sandboxProfile(layout));
+    if (mechanism === "sandbox-exec") {
+      listener = listenForNotify(ctx.spawn ?? spawnCommand, layout.reproDir);
+      const ready = await listener.hear("pre");
+      if (typeof ready === "string") return { platform, mechanism: "none", probe: `could not listen for notifications for the probe: ${ready}` };
+      writeFileSync(layout.profile, sandboxProfile(layout));
+    }
     rmSync3(layout.escape, { force: true });
     writeFileSync(layout.canary, "canary\n");
     const address = server.address();
     const port = typeof address === "object" && address !== null ? address.port : 0;
-    const script = probeScript({ port, escape: layout.escape, canary: layout.canary, overwrite, pid: mechanism === "sandbox-exec" ? process.pid : null, domain: mechanism === "sandbox-exec" ? PROBE_DOMAIN : null });
+    const script = probeScript({
+      port,
+      escape: layout.escape,
+      canary: layout.canary,
+      overwrite,
+      pid: mechanism === "sandbox-exec" ? process.pid : null,
+      domain: mechanism === "sandbox-exec" ? PROBE_DOMAIN : null,
+      notify: listener?.escape ?? null
+    });
     writeFileSync(layout.probeFile, `${script}
 `);
     const before = contentOf(overwrite);
     const result = await spawnConfined(layout, ctx, `${shellQuote(ctx.execPath ?? process.execPath)} -e ${shellQuote(script)}`, PROBE_TIMEOUT_MS);
     await new Promise((done) => setImmediate(done));
     const said = new Set(/^escaped by (.+)$/m.exec(result.stdout)?.[1]?.split(", ") ?? []);
+    const notified = listener === null ? false : await listener.hear("post");
+    const set2 = listener === null ? false : await listener.state();
     const outside = {
       write: existsSync3(layout.escape),
       connect: connections > 0,
-      profile: contentOf(overwrite) !== before
+      profile: contentOf(overwrite) !== before,
+      // Read again after the state, so a line that arrived during that read counts.
+      notify: notified === true || set2 === true || listener?.printedEscape() === true
     };
-    const seen = ["write", "read", "connect", "profile", "terminal", "signal", "preference"].filter((name) => said.has(name) || outside[name] === true);
+    const seen = ["write", "read", "connect", "profile", "terminal", "signal", "preference", "notify"].filter((name) => said.has(name) || outside[name] === true);
     if (seen.length > 0) return { platform, mechanism: "none", probe: `escaped by ${seen.join(", ")}` };
+    const untested = /^notifications not tested: (.+)$/m.exec(result.stdout)?.[1];
+    if (untested !== void 0) return { platform, mechanism: "none", probe: `could not test notifications: ${untested}` };
+    if (typeof notified === "string") return { platform, mechanism: "none", probe: `could not tell whether the probe posted a notification: ${notified}` };
+    if (typeof set2 === "string") return { platform, mechanism: "none", probe: `could not read the state of the notification key: ${set2}` };
     if (result.error === void 0 && result.status === 0 && result.stdout.trim() === "RV_PROBE_OK") return { platform, mechanism, probe: "passed" };
     const why = result.error === void 0 ? firstLine2(result.stderr) || firstLine2(result.stdout) || `exited ${String(result.status)}` : result.error.message;
     return { platform, mechanism: "none", probe: why.startsWith(`${mechanism}:`) ? why : `${mechanism}: ${why}` };
   } finally {
+    await listener?.end();
     withdraw();
     server.close();
     clear();
@@ -14954,6 +15062,31 @@ function stateOf(result, reached, text5, timeoutSeconds, cpuSeconds) {
   if (!reached) return { kind: "not-run", reason: `exited ${result.status} before reaching its assertion` };
   return { kind: "failed", code: result.status };
 }
+async function ipcObjects(spawn3, cwd) {
+  const result = await spawnInGroup(spawn3, IPCS, cwd, PROBE_TIMEOUT_MS, {}, ["-c"]);
+  if (result.error !== void 0) return result.error.message;
+  if (result.status !== 0) return `ipcs exited ${String(result.status ?? "on a signal")}`;
+  if (!["Message Queues:", "Shared Memory:", "Semaphores:"].every((title) => result.stdout.split("\n").includes(title))) return "ipcs did not list every facility";
+  let names;
+  try {
+    const user = userInfo();
+    names = [user.username, String(user.uid)];
+  } catch (error) {
+    return `could not name the user: ${error.message}`;
+  }
+  const objects = { all: /* @__PURE__ */ new Set(), mine: /* @__PURE__ */ new Set() };
+  for (const [, type, id, owner, creator] of result.stdout.matchAll(/^([qms])\s+(\d+)\s+\S+\s+\S+\s+(\S+)\s+\S+\s+(\S+)/gm)) {
+    objects.all.add(`${type} ${id}`);
+    if (names.includes(owner) || names.includes(creator)) objects.mine.add(`${type} ${id}`);
+  }
+  return objects;
+}
+async function ipcLeft(spawn3, cwd, before) {
+  const after = await ipcObjects(spawn3, cwd);
+  if (typeof after === "string") return `could not list System V IPC objects after the run: ${after}`;
+  const made = [...after.mine].filter((object) => !before.has(object));
+  return made.length === 0 ? null : `System V IPC objects appeared during the run and were left in place: ${made.join(", ")}`;
+}
 async function runReproduction(record3, content, runner, layout, ctx) {
   const command = runner.run.replace("{file}", () => shellQuote(record3.file));
   const end = (outcome, reason2) => ({ ...record3, outcome, ...reason2 === void 0 ? {} : { reason: reason2 } });
@@ -14977,12 +15110,16 @@ async function runReproduction(record3, content, runner, layout, ctx) {
   for (const attempt of [1, 2]) {
     const changed = attempt === 1 ? null : changedSince();
     if (changed !== null) return end("did-not-run", changed);
+    const ipcBefore = layout.platform === "darwin" ? await ipcObjects(ctx.spawn ?? spawnCommand, layout.reproDir) : null;
+    if (typeof ipcBefore === "string") return end("did-not-run", `could not list System V IPC objects before the run: ${ipcBefore}`);
     const started = Date.now();
     const result = await spawnConfined(layout, ctx, command, runner.timeoutSeconds * 1e3);
     const durationMs = Date.now() - started;
     const text5 = `${result.stdout}${result.stdout === "" || result.stdout.endsWith("\n") ? "" : "\n"}${result.stderr}`;
     const reached = reachedMarker(text5, record3.candidateId);
     record3.runs.push({ exitCode: result.status, durationMs, reached, output: recorded(text5) });
+    const leftIpc = ipcBefore === null ? null : await ipcLeft(ctx.spawn ?? spawnCommand, layout.reproDir, ipcBefore.all);
+    if (leftIpc !== null) return end("did-not-run", leftIpc);
     const modified = changedSince();
     if (modified !== null) return end("did-not-run", modified);
     const state = stateOf(result, reached, text5, runner.timeoutSeconds, ctx.config.cpuSeconds);
@@ -20002,15 +20139,15 @@ var COMMAND_HELP = {
       "review-voice reproduce --worktree <dir> --run-dir <dir> --probe",
       "  Run each reproduction the verifier wrote for a blocking or important candidate in a throwaway copy",
       "  of the pull request's head worktree, through a runner configured under reproduction.runners only,",
-      "  twice at most, inside unshare namespaces on Linux: no network, no signal to any process outside the",
-      "  sandbox, writes only in that copy and its scratch directory under a fresh directory per execution,",
+      "  twice at most, inside unshare namespaces (Linux only): no network, no signal to any process outside",
+      "  the sandbox, writes only in that copy and its scratch directory under a fresh directory per execution,",
       "  <run dir>/reproductions/trees/<candidate id>-<random>/, CPU, memory and file-size limits, and an",
       "  environment of PATH, LANG, LC_ALL and TERM with HOME and TMPDIR in the scratch directory. On macOS",
-      "  nothing runs until issue #321 hardens the sandbox-exec profile, and the probe there is none. The",
-      "  file is written once, before run 1, and never removed or rewritten between runs. The copy is checked by a",
-      "  walk that follows no link, after run 1, before run 2 and after run 2, and no git runs in a copy once",
-      "  a run has. The head worktree is never writable, and each copy is removed after its last run. A probe",
-      "  must show the sandbox holds first.",
+      "  nothing runs, and the probe there is none, until each run has an identity or environment of its own",
+      "  (issue #321). The file is written once, before run 1, and never removed or rewritten",
+      "  between runs. The copy is checked by a walk that follows no link, after run 1, before run 2 and after",
+      "  run 2, and no git runs in a copy once a run has. The head worktree is never writable, and each copy is",
+      "  removed after its last run. A probe must show the sandbox holds first.",
       "",
       "Flags:",
       "  --worktree <dir>       The head worktree, a linked git worktree (review-voice worktree add makes one); only copied",

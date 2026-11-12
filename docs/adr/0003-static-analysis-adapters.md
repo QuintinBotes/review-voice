@@ -211,3 +211,134 @@ defaults. An absolute `REVIEW_VOICE_CONFIG` with no source beside it is the
 operator's own environment.
 `doctor` reports whether `codex` and `gemini` are on `PATH` as information and
 never runs a configured command: detection suggests, configuration enables.
+
+## Amendment - 2026-11-10
+
+The macOS reproduction sandbox is hardened (issue #321), but macOS still
+reports the sandbox unavailable, so nothing runs there. `probeSandbox` returns
+mechanism `none` on darwin, without running the probe, with a reason saying
+reproductions stay off until each run has an identity or environment of its
+own. The profile, the probe with its notification check, and the System V IPC
+check below are in place and tested, so turning macOS on is one change to
+`probeSandbox`. `sandbox-exec` gets an allowlist profile in place of the
+profile that started from `(allow default)` and denied what it named. The
+profile starts from `(deny default)` and allows
+only what a test runner such as `node --test` or `npm test` needs: process fork
+and exec, sysctl reads, signals to processes in the same sandbox, file reads
+outside the hidden locations, and file writes in the reproduction's copy, its
+scratch directory, `/dev/null` and its own open descriptors by path
+(`/dev/fd/<n>`, so `/dev/stdout` and `/dev/stderr` work), which grants no access
+a descriptor did not already have. It allows one mach service,
+`com.apple.system.opendirectoryd.libinfo`, because `os.userInfo`, git and
+Python's `pwd` look up the user (getpwuid) and fail without it; the service
+answers read-only user and group lookups and cannot change anything. Every
+other mach service, the network, POSIX IPC, Apple events and preferences stay
+denied by default. `(deny default)` does not reach IOKit properties, NVRAM or
+process information, which would name the machine (its serial number and
+platform UUID) and list other processes and their paths, so the profile denies
+them by name: `(deny iokit-get-properties iokit-set-properties)`, `(deny
+nvram*)`, and `(deny process-info*)` followed by `(allow process-info* (target
+self))`, since a process reads information about itself. The sysctls under
+`kern.proc` list every process too and give another process's command line,
+which can carry a token passed as an argument, so `(deny sysctl-read
+(sysctl-name-prefix "kern.proc"))` follows the sysctl reads the profile allows.
+The kernel does not ask the sandbox before it creates a System V IPC object, so
+a run can create a shared memory segment, a semaphore set or a message queue,
+though it can neither use nor remove one, and no profile rule, `(deny
+ipc-sysv*)` included, stops that. So the CLI brackets each run instead. Before
+the run and after it ends it lists the System V IPC objects (`ipcs -c`). An
+object the user owns or created that is listed after the run, and was not
+listed before it under any owner, appeared while the run lasted. The CLI
+cannot tell one the run made from one another program of the same user made in
+that window, and removing the latter could destroy that program's state, so
+the CLI removes none of them. It records the run as not run with a reason
+naming System V IPC that lists each such object's type and id and says it was
+left in place, so a person can inspect it, and the run's result neither holds
+nor clears a finding. A listing that fails, or leaves out a facility, also
+records the run as not run. An object a run made stays until the user removes
+it or the machine restarts. The check does not stop a run from using up, while
+it lasts, the few objects the system holds (32 shared memory segments by default), so other
+programs can fail to create one until a person removes them. An object another
+program of the same user creates while a run lasts is named as if the run had
+made it, and the run recorded as not run. Two limits remain. A process the run
+leaves behind can create an object after the listing that follows the run,
+which no check sees. And a stop signal that ends the CLI during a run ends it
+before the listing after the run, so what that run made is neither seen nor
+recorded. These limits, with the user identity a run shares with every other
+program of the user, are why macOS reproductions should stay off until runs
+execute under an identity or environment of their own. File reads of
+terminal devices (`/dev/tty*`, `/dev/pty*`, `/dev/cu.*` and `/dev/ptmx`) are
+denied after every read the profile allows, since a run, or a process it leaves
+behind, could otherwise take what is typed into another session. The probe
+keeps every check it had and adds one, a notification post, which a listener
+outside the sandbox judges, since a refused post exits 0 too. The CLI starts
+one listener, `notifyutil -w <escape> -1 <post> -1 <pre>`, for three fresh
+random keys, and reads each line as the listener prints it. The three keys
+share one port, and notifyd sends to it in the order it takes the posts while
+the port has room. The listener runs without `-M`, which passes each
+notification through a concurrent queue inside the listener: with it, two
+notifications that waited together were printed in the wrong order in 12 of 150
+trials on this Mac, and without it in none of 450. Before the probe the CLI
+posts `<pre>` until the listener prints it. `<pre>` is the last key the
+listener registers, because notifyutil registers its keys in the order given,
+and one notified of a key while it still has others to register exits, crashes
+or goes deaf: with `<pre>` posted without pause as the listener started, 61 of
+200 listeners did so on this Mac when `<pre>` was registered first, and none of
+300 when it was registered last. So `<pre>` printed, and nothing else, shows
+the listener holds all three keys and hears; if that takes more than 5 seconds,
+the listener ends first, or it has printed any other line, the probe fails. The
+probe posts `<escape>` from inside. Once it is back the CLI posts `<post>` and
+waits, up to 5 seconds, for the listener to print it. notifyd took the probe's
+post first, so `<escape>` printed before `<post>` is the escape `notify`, and
+`<post>` with no `<escape>` shows the post was refused. `<post>` counts only
+when the listener prints it after the CLI began to post it: one that had
+printed it already, before the probe or while it ran, has not shown that it
+still heard once the probe was back, so the CLI does not post and the probe
+fails. The order is not all the CLI relies on. A listener held still until its
+port fills is sent what it missed newest registration first, which puts
+`<post>` ahead of `<escape>`, so `<escape>` printed after `<post>` is the
+escape `notify` as well. That order is not guaranteed once the port has been
+full, and an `<escape>` line still to come when the listener is killed is lost,
+so a second check rests on no order. The probe sets the state of `<escape>`
+before it posts it. A key keeps its state only while some process holds it, so
+the listener holds `<escape>` with `-w`, which lasts until it is killed, rather
+than `-1`, which ends at the first notification. Once `<post>` is printed the
+CLI reads that state from outside (`notifyutil -g <escape>`) while the listener
+still runs, and any value but the default 0 is the escape `notify`, whatever
+the listener printed. A state that cannot be read, a reply that is not
+`<escape>` and a number, and a listener that ended before the read was answered
+fail the probe. The CLI decides only after that read, so an `<escape>` line
+the listener prints while the state is read is the escape `notify` too. The
+probe passes only if its own attempt ran: the subprocess that sets and posts
+`<escape>` must have started and exited 0, the status a refused attempt gives
+under the real profile, where notifyutil prints that the call failed and still
+exits 0. One that could not start, was killed, ran past 5 seconds or exited
+with any other status has tested nothing, and the probe fails with `could not
+test notifications` and the reason. Anything else fails the probe:
+a listener that never prints `<post>`, one that printed `<post>` before the CLI
+posted it, one that has ended, however it ended, while it still had `<escape>`
+to wait for, or one that prints any other line. So no fixed wait decides the
+answer, and a listener that died is never read as one that heard nothing. The
+CLI never posts `<escape>` itself, and kills the listener with its process
+group whatever happened. As before, a probe that fails means nothing runs.
+
+A process a reproduction starts can leave the process group and outlive the run
+on macOS, where no pid namespace ends it. It inherits the CPU limit (`ulimit -t
+<cpu_seconds>`), and at the limit the kernel ends a process that spins or keeps
+making ordinary system calls. One that sleeps, handles SIGXCPU or keeps reading
+its own CPU usage (getrusage, as Node's `process.cpuUsage` does) is not ended:
+it stays until the user logs out, and in the last two cases keeps using CPU
+until then. It stays confined by the profile: no network, no POSIX IPC, and no
+write outside its own copy and scratch directory, which are removed after the
+run, so nothing it writes reaches a later stage. Reads of the user's other
+files stay allowed, read-only, outside the hidden locations, as on Linux.
+`sandbox-exec` is deprecated by Apple, so a macOS release can change what it
+enforces, and the probe before the first reproduction of each invocation is what
+shows it still holds.
+
+To turn macOS on, each run has to execute under an identity or environment of
+its own, such as a separate user account or a virtual machine, rather than the
+user's. Every process and System V IPC object a run leaves behind then belongs
+to that identity alone, so the CLI can list and remove them whole, which also
+closes the two System V IPC limits above. Until then `probeSandbox` keeps
+reporting macOS as `none`.
