@@ -601,6 +601,10 @@ export interface ScoreBreakdown {
     ownerNote?: string;
     ruleId?: string;
   };
+  /** Set by `score --as-question`: the owner posted this verified minor or nit as a question (#361). */
+  ownerQuestion?: boolean;
+  /** The tier it had before `--as-question`, which `verdict.min_posted_tier` still ranks it by. */
+  ownerQuestionFrom?: 'minor' | 'nit';
   /**
    * The precedent that already states this finding at this location, when one
    * exists. Reported so `explain` can name what the corpus already said.
@@ -699,9 +703,14 @@ export const MAX_QUESTIONS: number = 2;
  * is the nondeterminism severity derivation exists to remove.
  *
  * Ties break on candidate id so the order is total, not merely sorted.
+ *
+ * It ranks the analyst's questions only. A question the owner posted with
+ * `score --as-question` is the owner's decision, so the cap neither drops it,
+ * which would hold it silently while `explain` says it was posted, nor counts it
+ * against the analyst's (#361).
  */
 export function applyQuestionCap(breakdowns: ScoreBreakdown[], limit: number = MAX_QUESTIONS): void {
-  const questions = breakdowns.filter((b) => b.eligible && b.severity.severity === 'question');
+  const questions = breakdowns.filter((b) => b.eligible && b.severity.severity === 'question' && b.ownerQuestion !== true);
   if (questions.length <= limit) return;
 
   const ranked = [...questions].sort(
