@@ -861,6 +861,20 @@ to the tier the analyst requested, within its lane's cap and never for a
 question-framed claim or an untraced stale consumer: only the owner can say
 that a broken shared build reaches everyone (#216).
 
+The owner may also post a verified `minor` or `nit` as a question with
+`score --as-question <candidate_id>`, after any `--severity`. A finding held
+by the score or confidence gate alone, or by an approved suppression, posts
+past that hold exactly as with `--promote`, under the same refusals; an
+eligible one changes only its tier. The tier becomes `question`, the severity
+reason ends "the owner posted this as a question", and the entry carries
+`ownerQuestion: true`, which `record` stores and `explain` shows. So the tag
+`validate-output` checks, the score and the verdict agree: a question comments.
+It refuses `blocking` and `important`, an existing question, and a candidate
+whose verification is not `verified: true` (#361). It does not pass
+`verdict.min_posted_tier`: the entry records the tier it came from in
+`ownerQuestionFrom`, and a nit posted as a question stays below a `minor` or
+higher posting tier, as a promoted nit would.
+
 One tier per category was the first version, and it was wrong whenever a
 category's members vary in reach: `ci` covers both a change that breaks every
 lint job and a stale comment in a CI config, so on a live run a build-breaker

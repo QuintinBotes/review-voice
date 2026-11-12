@@ -725,7 +725,15 @@ When the owner asks to post a finding listed in `belowGate` or in
 `belowGate` entry, which is a verified finding held by the score or confidence
 gate alone, or a `suppressed` entry, which is a verified finding an approved
 policy held back, and records `ownerPromotion` with the gate it was held by.
-Do not edit a score file by hand.
+When the owner wants such a finding raised as a question rather than stated,
+rerun `score` with `--as-question <candidate_id>` instead. It posts the
+finding past its gate as `--promote` would, with the same refusals, sets its
+tier to `question` and records `ownerQuestion: true`; tag it `[question]` and
+word it as one. It applies only to a verified `minor` or `nit` (after any
+`--severity`), and refuses `blocking` and `important`, which would soften a
+request for changes into a comment. On an eligible finding it changes the tier
+only. A nit posted as a question is still withheld when `verdict.min_posted_tier`
+is above `nit`, as a promoted nit is. Do not edit a score file by hand.
 
 A verified finding lands in `unverified` with `confidenceSource:
 "unverifiable-cap"` for one of two reasons, named in `unverifiableBecause`:

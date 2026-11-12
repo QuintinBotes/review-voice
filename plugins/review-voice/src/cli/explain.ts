@@ -67,6 +67,7 @@ export function explainCommand(argv: string[]): number {
       };
       challenge?: { verdict?: unknown; line_ok?: unknown; corrected_line?: unknown; decisive_evidence?: unknown } | null;
       reanchoredFrom?: { line?: unknown } | null;
+      ownerQuestion?: boolean;
     }[];
 
     if (argv.includes('--json')) {
@@ -115,11 +116,17 @@ export function explainCommand(argv: string[]): number {
     // The scores the posted blocks were read from, chosen as `post` chooses them.
     const planned = planFindings(detail.output, detail, (id) => runDetail(db, id));
     for (const finding of shown) {
-      // Matched by location. An earlier version matched on a predicate that
-      // never discriminated, so every finding showed the first finding's
+      // The candidate `post` paired with the finding, so another candidate at its anchor cannot lend it a
+      // record. A carried finding's pairing is in an earlier run, whose candidate ids this run reuses.
+      const paired = [...planned.backing].find(([entry]) => entry.findingId === finding.findingId)?.[1];
+      const pairedHere = paired?.runId === detail.reviewRunId ? paired.score.candidateId : undefined;
+      // Otherwise matched by location. An earlier version matched on a predicate
+      // that never discriminated, so every finding showed the first finding's
       // numbers - worse than showing none, in the command whose whole purpose
       // is auditability.
-      const score = scores.find((s) => s.path === finding.path && s.line === finding.line);
+      const score =
+        scores.find((s) => pairedHere !== undefined && s.candidateId === pairedHere) ??
+        scores.find((s) => s.path === finding.path && s.line === finding.line);
       console.log(`${finding.findingId}  [${finding.severity}] ${finding.path}:${finding.line}`);
       if (finding.carriedFrom !== undefined) {
         console.log(`  carried from      ${finding.carriedFrom.findingId} of run ${finding.carriedFrom.runId}`);
@@ -142,6 +149,7 @@ export function explainCommand(argv: string[]): number {
       }
       console.log(`  category          ${finding.category ?? 'not recorded'}`);
       console.log(`  rule id           ${finding.ruleId ?? 'not recorded'}`);
+      if (score?.ownerQuestion === true) console.log('  owner             posted this as a question');
       if (score?.technicalConfidence !== undefined) {
         console.log(`  technical         ${score.technicalConfidence.toFixed(2)}`);
       }
@@ -201,9 +209,6 @@ export function explainCommand(argv: string[]): number {
           );
         }
       }
-      // The candidate `post` paired with the finding, so another candidate at its anchor cannot lend it a
-      // record. A carried finding's pairing is in an earlier run, whose candidate ids this run reuses.
-      const paired = [...planned.backing].find(([entry]) => entry.findingId === finding.findingId)?.[1];
       const candidateId = paired === undefined ? score?.candidateId : paired.runId === detail.reviewRunId ? paired.score.candidateId : undefined;
       const reproduction = detail.reproductions?.find((r) => candidateId !== undefined && r.candidateId === candidateId);
       if (reproduction !== undefined) console.log(`  reproduction      ${describeReproduction(reproduction)}`);

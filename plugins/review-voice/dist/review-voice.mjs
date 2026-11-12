@@ -8814,7 +8814,7 @@ var DEFAULT_THRESHOLDS = {
 };
 var MAX_QUESTIONS = 2;
 function applyQuestionCap(breakdowns, limit = MAX_QUESTIONS) {
-  const questions = breakdowns.filter((b) => b.eligible && b.severity.severity === "question");
+  const questions = breakdowns.filter((b) => b.eligible && b.severity.severity === "question" && b.ownerQuestion !== true);
   if (questions.length <= limit) return;
   const ranked = [...questions].sort(
     (a, b) => b.finalScore - a.finalScore || a.candidateId.localeCompare(b.candidateId)
@@ -13198,9 +13198,10 @@ function planFindings(output, run, loadRun, minPostedTier = "nit") {
       continue;
     }
     const category = run.findings.find((stored) => stored.findingId === finding.findingId)?.category ?? result.stored?.category;
-    if (TIER_RANK[finding.severity] > TIER_RANK[minPostedTier] && (category === void 0 || !isSuppressionExempt(category))) {
+    const tier = result.score?.ownerQuestionFrom === "nit" ? "nit" : finding.severity;
+    if (TIER_RANK[tier] > TIER_RANK[minPostedTier] && (category === void 0 || !isSuppressionExempt(category))) {
       belowTier.push(finding);
-      heldSeverities.push(finding.severity);
+      heldSeverities.push(tier);
       continue;
     }
     const anchorable = finding.path !== null && finding.line !== null && result.staleConsumer !== true && result.deletedFile !== true;
@@ -20207,7 +20208,9 @@ var COMMAND_HELP = {
       "  --min-score <n>           Final score gate (default 0.68)",
       "  --severity <id>=<tier>    Owner downgrade, or a raise up to the requested tier when reach is unknown (repeatable)",
       "  --promote <id>            Owner posts a belowGate or suppressed[] finding past its gate (repeatable)",
-      "  --allow-unverifiable      With --promote: also lift the unverifiable cap; needs --owner-note",
+      "  --as-question <id>        Owner posts a verified minor or nit as a question, past its gate as --promote",
+      "                            would (repeatable); refuses blocking, important, a question, or verified not true",
+      "  --allow-unverifiable      With --promote or --as-question: also lift the unverifiable cap; needs --owner-note",
       "  --owner-note <text>       Why the owner posts an unverifiable finding; recorded with it",
       "  --repository <name>       Prefer precedents from this repository",
       "  --owner <login>           Owner whose precedents count; default from config",
@@ -20215,7 +20218,9 @@ var COMMAND_HELP = {
       "  severity rule (cap, escalate on blocker_confirmed) applies after the tier is derived.",
       "Writes: JSON scores on stdout, each entry with its lane. A verified candidate an approved",
       "  suppression held is listed in suppressed[] with its ruleId and policyVersion, and",
-      "  --promote posts it past that policy. Every entry names its candidate as candidate_id,",
+      "  --promote posts it past that policy. --as-question sets the tier to question with",
+      "  ownerQuestion: true, which record stores and explain shows, and ownerQuestionFrom, the",
+      "  tier verdict.min_posted_tier still ranks it by. Every entry names its candidate as candidate_id,",
       "  like candidates and verification; candidateId is still written beside it",
       "  but is deprecated.",
       "Exit codes: 0 ok, 2 malformed candidates or bad invocation."
@@ -31398,7 +31403,9 @@ function explainCommand(argv) {
     }
     const planned = planFindings(detail.output, detail, (id) => runDetail(db, id));
     for (const finding of shown) {
-      const score2 = scores.find((s) => s.path === finding.path && s.line === finding.line);
+      const paired = [...planned.backing].find(([entry]) => entry.findingId === finding.findingId)?.[1];
+      const pairedHere = paired?.runId === detail.reviewRunId ? paired.score.candidateId : void 0;
+      const score2 = scores.find((s) => pairedHere !== void 0 && s.candidateId === pairedHere) ?? scores.find((s) => s.path === finding.path && s.line === finding.line);
       console.log(`${finding.findingId}  [${finding.severity}] ${finding.path}:${finding.line}`);
       if (finding.carriedFrom !== void 0) {
         console.log(`  carried from      ${finding.carriedFrom.findingId} of run ${finding.carriedFrom.runId}`);
@@ -31419,6 +31426,7 @@ function explainCommand(argv) {
       }
       console.log(`  category          ${finding.category ?? "not recorded"}`);
       console.log(`  rule id           ${finding.ruleId ?? "not recorded"}`);
+      if (score2?.ownerQuestion === true) console.log("  owner             posted this as a question");
       if (score2?.technicalConfidence !== void 0) {
         console.log(`  technical         ${score2.technicalConfidence.toFixed(2)}`);
       }
@@ -31467,7 +31475,6 @@ function explainCommand(argv) {
           );
         }
       }
-      const paired = [...planned.backing].find(([entry]) => entry.findingId === finding.findingId)?.[1];
       const candidateId = paired === void 0 ? score2?.candidateId : paired.runId === detail.reviewRunId ? paired.score.candidateId : void 0;
       const reproduction = detail.reproductions?.find((r) => candidateId !== void 0 && r.candidateId === candidateId);
       if (reproduction !== void 0) console.log(`  reproduction      ${describeReproduction(reproduction)}`);
@@ -32229,27 +32236,39 @@ function ownerSeverityOverrides(argv, candidates) {
   }
   return overrides;
 }
-function ownerPromotions(argv, candidates) {
+function ownerPromotions(argv, candidates, option = "--promote") {
   const promotions = /* @__PURE__ */ new Set();
   const known = new Set(candidates.map((candidate) => candidate.candidateId));
   for (let index = 0; index < argv.length; index += 1) {
-    if (argv[index] !== "--promote") continue;
+    if (argv[index] !== option) continue;
     const candidateId = argv[index + 1];
     if (candidateId === void 0 || candidateId.startsWith("--")) {
-      return "--promote needs a candidate_id, for example cand_001.";
+      return `${option} needs a candidate_id, for example cand_001.`;
     }
-    if (!known.has(candidateId)) return `--promote names unknown candidate ${JSON.stringify(candidateId)}.`;
-    if (promotions.has(candidateId)) return `--promote names ${JSON.stringify(candidateId)} more than once.`;
+    if (!known.has(candidateId)) return `${option} names unknown candidate ${JSON.stringify(candidateId)}.`;
+    if (promotions.has(candidateId)) return `${option} names ${JSON.stringify(candidateId)} more than once.`;
     promotions.add(candidateId);
   }
   return promotions;
 }
-function applyOwnerPromotion(breakdown, ownerNote) {
+function ownerQuestionProblem(breakdown, verification2) {
+  const id = breakdown.candidateId;
+  const tier = breakdown.severity.severity;
+  if (tier === "question") return `--as-question ${id}: it is already a question.`;
+  if (tier === "blocking" || tier === "important") {
+    return `--as-question ${id}: its tier is ${tier}, and posting it as a question would soften a request for changes into a comment. Use --promote ${id} to post it at its tier, or lower it with --severity ${id}=<tier> first.`;
+  }
+  if (verification2?.verified !== true) {
+    return `--as-question ${id}: the verifier did not verify it (verified is not true), and a question still rests on checked facts.`;
+  }
+  return null;
+}
+function applyOwnerPromotion(breakdown, ownerNote, option = "--promote") {
   const gate = gateOf(breakdown.rejectedBecause);
-  if (breakdown.eligible) return `--promote ${breakdown.candidateId}: it is already eligible.`;
+  if (breakdown.eligible) return `${option} ${breakdown.candidateId}: it is already eligible.`;
   if (breakdown.confidenceSource === "unverifiable-cap" && breakdown.rejectedBecause === UNVERIFIABLE_REJECTION) {
     if (ownerNote === null) {
-      return `--promote ${breakdown.candidateId}: it is capped as unverifiable (${breakdown.unverifiableBecause}). Pass --allow-unverifiable with --owner-note "<why>" to post it on the owner's decision.`;
+      return `${option} ${breakdown.candidateId}: it is capped as unverifiable (${breakdown.unverifiableBecause}). Pass --allow-unverifiable with --owner-note "<why>" to post it on the owner's decision.`;
     }
     breakdown.ownerPromotion = { gate: "unverifiable", heldBecause: breakdown.rejectedBecause, ownerNote };
     breakdown.eligible = true;
@@ -32263,7 +32282,7 @@ function applyOwnerPromotion(breakdown, ownerNote) {
     return null;
   }
   if (breakdown.confidenceSource !== "verifier" || !Number.isFinite(breakdown.finalScore) || gate === null) {
-    return `--promote ${breakdown.candidateId}: only a verified finding held by the score or confidence gate alone can be promoted, and this one was rejected because ${breakdown.rejectedBecause}.`;
+    return `${option} ${breakdown.candidateId}: only a verified finding held by the score or confidence gate alone can be promoted, and this one was rejected because ${breakdown.rejectedBecause}.`;
   }
   breakdown.ownerPromotion = { gate, heldBecause: breakdown.rejectedBecause };
   breakdown.eligible = true;
@@ -32314,6 +32333,11 @@ function scoreCommand(argv) {
   const promotions = ownerPromotions(argv, candidates);
   if (typeof promotions === "string") {
     console.error(promotions);
+    return 2;
+  }
+  const questions = ownerPromotions(argv, candidates, "--as-question");
+  if (typeof questions === "string") {
+    console.error(questions);
     return 2;
   }
   const allowUnverifiable = argv.includes("--allow-unverifiable");
@@ -32500,9 +32524,9 @@ function scoreCommand(argv) {
       const breakdown = scoreCandidate(candidate, precedents, kept, thresholds, verification2, lane);
       const override = severityOverrides.get(candidate.candidateId);
       if (override !== void 0) {
-        const problem = applyOwnerSeverityOverride(breakdown, override, ownerRaiseCeiling(breakdown.severity, candidate, verification2, lane));
-        if (problem !== null) {
-          console.error(problem);
+        const problem2 = applyOwnerSeverityOverride(breakdown, override, ownerRaiseCeiling(breakdown.severity, candidate, verification2, lane));
+        if (problem2 !== null) {
+          console.error(problem2);
           return 2;
         }
       }
@@ -32576,12 +32600,17 @@ function scoreCommand(argv) {
           }
         }
       }
-      if (promotions.has(candidate.candidateId)) {
-        const problem = applyOwnerPromotion(breakdown, unverifiableNote);
-        if (problem !== null) {
-          console.error(problem);
-          return 2;
-        }
+      const asQuestion = questions.has(candidate.candidateId);
+      const promote = asQuestion ? !breakdown.eligible : promotions.has(candidate.candidateId);
+      const problem = (asQuestion ? ownerQuestionProblem(breakdown, verification2) : null) ?? (promote ? applyOwnerPromotion(breakdown, unverifiableNote, asQuestion ? "--as-question" : "--promote") : null);
+      if (problem !== null) {
+        console.error(problem);
+        return 2;
+      }
+      if (asQuestion) {
+        breakdown.ownerQuestionFrom = breakdown.severity.severity;
+        breakdown.severity = { ...breakdown.severity, severity: "question", reason: `${breakdown.severity.reason}, the owner posted this as a question` };
+        breakdown.ownerQuestion = true;
       }
       if (breakdown.eligible) kept.push(candidate);
       results.push({

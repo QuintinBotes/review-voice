@@ -27,7 +27,7 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0013](0013-ci-needs-rerun.md) | CI that needs a rerun holds every event | Accepted, amended 2026-10-06 and by 0028 |
 | [0014](0014-verifier-tie-break.md) | A tie-break settles a disputed traced impact | Accepted, amended 2026-10-06 and by 0019 |
 | [0015](0015-untraced-document-consumers.md) | A stale document may be reported untraced at nit | Accepted |
-| [0016](0016-what-the-verifier-could-not-check.md) | What the verifier could not check | Accepted, amended 2026-11-11 (a hold under the confidence gate caps an approval) |
+| [0016](0016-what-the-verifier-could-not-check.md) | What the verifier could not check | Accepted, amended 2026-11-11 (a hold under the confidence gate caps an approval), amended 2026-11-12 (the owner posts a held minor or nit as a question) |
 | [0017](0017-moving-a-verified-anchor.md) | Moving a verified candidate's anchor | Accepted |
 | [0018](0018-read-only-graphql-thread-state.md) | Reading review-thread state through a GraphQL query | Accepted |
 | [0019](0019-cross-check-may-raise-through-tie-break.md) | A cross-check may raise a severity only through the tie-break | Accepted |
