@@ -2359,3 +2359,43 @@ test('issue 352: the driver times every stage it runs, and an analyst that repor
   // record said so on stderr, which the driver keeps in the run's command log.
   assert.equal(readFileSync(join(report.runDir, 'commands.log'), 'utf8').match(/could not be judged, because the stage recorded no file count/g)?.length, 1);
 });
+
+// ---------------------------------------------------------------- issue 357: the slash command's resolver is the driver's
+
+test('issue 357: config resolve chooses the same file and source as the driver, case by case', async (t) => {
+  const own = scratch(t, 'own.yaml', LOOSE_CONFIG);
+  for (const { kind, baseFiles, config, env = {} } of [
+    { kind: 'base' },
+    { kind: 'flag', config: own },
+    { kind: 'env', env: { REVIEW_VOICE_CONFIG: own } },
+    { kind: 'default', baseFiles: {} },
+  ]) {
+    const repo = weakening(t, baseFiles);
+    const github = fakeGitHub(repo);
+    const { report } = await withEnv(env, () => review(t, repo, fakes(t, NO_FINDING_RUN), github, config === undefined ? {} : { config }));
+    assert.equal(report.exitCode, 0, `${kind}: ${report.error}`);
+    assert.equal(report.configSource.kind, kind);
+
+    const dir = mkdtempSync(join(tmpdir(), 'rv-driver-resolve-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const argv = ['config', 'resolve', '--pr', String(PR), '--repository', REPO, '--dir', dir, ...(config === undefined ? [] : ['--config', config])];
+    const cwd = process.cwd();
+    process.chdir(repo.dir);
+    let resolved;
+    try {
+      resolved = await withEnv({ GITHUB_TOKEN: 't', ...env }, () => runInProcess(argv, { fetchImpl: github }));
+    } finally {
+      process.chdir(cwd);
+    }
+    assert.equal(resolved.code, 0, `${kind}: ${resolved.stderr}`);
+    const printed = JSON.parse(resolved.stdout);
+    assert.equal(printed.source, report.configSource.kind, kind);
+    assert.equal(printed.ref, report.configSource.ref, kind);
+    // The base copy lands in each caller's own directory; an operator file is the same path for both.
+    if (kind === 'flag' || kind === 'env') assert.equal(printed.path, report.configSource.path, kind);
+    else assert.equal(printed.path, join(dir, 'config.yaml'), kind);
+    const content = (path) => (existsSync(path) ? readFileSync(path, 'utf8') : null);
+    assert.equal(content(printed.path), content(report.configSource.path), `${kind}: the stages read the same settings`);
+    assert.deepEqual(printed.notes, report.notes.filter((note) => note.startsWith('No .review-voice/config.yaml')), kind);
+  }
+});

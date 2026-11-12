@@ -1,18 +1,16 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { claudeBin } from '../agents/claude-cli.ts';
 import { ownSignals, readAgentTools, runAgent, stopAll, type AgentResult } from '../agents/runner.ts';
 import { DEFAULT_AGENT_PARALLELISM, type Family, type RunnerSpec } from '../agents/types.ts';
 import { seriousNotCarried, type NotCarriedFinding } from '../diff/carry.ts';
 import type { ComplexityAssessment } from '../diff/complexity.ts';
-import { originRepository } from '../diff/pull-request.ts';
 import { parseHunks } from '../diff/hunks.ts';
 import { stopCommands } from '../evidence/run.ts';
 import type { GitHubClient } from '../github/client.ts';
 import { descriptionOf, linkedIssuesOf } from '../intent.ts';
 import { blockingContext, isSuppressionExempt, type MissingContext } from '../scoring/score.ts';
-import { environmentSource, type ConfigSourceKind } from '../policy/load.ts';
 import { recordAudit } from '../store/audit.ts';
 import { openDatabase } from '../store/db.ts';
 import { dataDirectory } from '../store/paths.ts';
@@ -25,6 +23,7 @@ import type { Lane, LaneEligibility } from './lanes.ts';
 import { modelForFinding, type RequestedMode, type StagePlan } from './plan.ts';
 import * as prompts from './prompts.ts';
 import { STAGES, type StageId } from './stages.ts';
+import { CONFIG_PATH, resolveTrustedConfig, shortRef, type ConfigSource } from './config.ts';
 import { SAFE_GIT, addHeadWorktree, removeHeadWorktree } from './worktree.ts';
 import { terminalSafeDeep } from '../terminal.ts';
 
@@ -59,18 +58,6 @@ export interface ReviewOptions {
   config?: string | null | undefined;
   /** Who started the review; `driver` (the default) when a person ran it. See `RunProvenance`. */
   origin?: 'driver' | 'watch' | 'action' | undefined;
-}
-
-/**
- * Where a run's configuration came from. Local only, never posted: the pull
- * request's own checkout is never a source, so its author cannot set the bar.
- */
-export interface ConfigSource {
-  kind: 'flag' | 'env' | 'base' | 'default';
-  /** The base commit (or `refs/remotes/origin/<branch>`) read, for `base` and `default`. */
-  ref?: string;
-  /** The file the run's stages read. */
-  path?: string;
 }
 
 export interface ReviewDeps {
@@ -269,27 +256,11 @@ async function headOf(run: Run): Promise<{ sha: string; base: { sha: string | nu
   return { sha, base, author };
 }
 
-const CONFIG_PATH = '.review-voice/config.yaml';
-
-const shortRef = (ref: string): string => (/^[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 7) : ref);
-
-/** `git show` of one path at one ref, or null when git cannot read it (no such ref, no such file). */
-function showAt(ref: string, path: string): Buffer | null {
-  try {
-    return execFileSync('git', [...SAFE_GIT, 'show', `${ref}:${path}`], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 16 * 1024 * 1024 });
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Chooses the one configuration the whole run reads, then points
- * REVIEW_VOICE_CONFIG at it, so the checked-out head's own
- * .review-voice/config.yaml is never read: its author could otherwise lower
- * the bar the review applies to that very pull request. This is run setup, not
- * a stage, and it runs once, so `prep` calling twice does not repeat it.
- * Order: --config, an absolute REVIEW_VOICE_CONFIG (how `watch` works), then
- * the base commit. The previous value of the variable comes back on every exit.
+ * Points REVIEW_VOICE_CONFIG at the one configuration the whole run reads
+ * (`resolveTrustedConfig`), with its source beside it. This is run setup, not
+ * a stage, and it runs once, so `prep` calling twice does not repeat it. The
+ * previous value of each variable comes back on every exit.
  */
 function resolveConfig(run: Run): void {
   const previous = process.env['REVIEW_VOICE_CONFIG'];
@@ -301,45 +272,12 @@ function resolveConfig(run: Run): void {
     else process.env['REVIEW_VOICE_CONFIG_SOURCE'] = previousSource;
   });
 
-  // The loader honours `runners:` only from an operator source, so the stages get the source beside the path.
-  const chosen = (source: ConfigSource, stated: ConfigSourceKind = source.kind): void => {
-    run.configSource = source;
-    process.env['REVIEW_VOICE_CONFIG'] = source.path!;
-    process.env['REVIEW_VOICE_CONFIG_SOURCE'] = stated;
-  };
-  const flagged = run.options.config;
-  if (flagged != null && flagged !== '') {
-    const path = resolve(flagged);
-    if (!existsSync(path)) throw new Stop(2, `--config ${flagged} does not exist.`);
-    return chosen({ kind: 'flag', path });
-  }
-  if (previous !== undefined && previous !== '') {
-    // A file watch copied from a checkout arrives with that source beside it, and keeps it.
-    if (isAbsolute(previous)) return chosen({ kind: 'env', path: previous }, environmentSource());
-    run.notes.push('REVIEW_VOICE_CONFIG must be an absolute path, so it was ignored and the base commit supplied the configuration.');
-  }
-
-  const { sha, ref } = run.pullBase;
-  if (sha === null) throw new Stop(2, `GitHub returned no base commit for ${run.options.repository}#${run.options.pullNumber}, so there is no trusted configuration to read.`);
-  const path = at(run, 'config.yaml');
-  // A re-run into the same directory must not read a copy taken from another base.
-  rmSync(path, { force: true });
-  let from = sha;
-  let content = showAt(sha, CONFIG_PATH);
-  // A shallow clone may lack the base commit. The base branch's remote ref is
-  // the next best trusted copy only when origin is the repository under review:
-  // in a fork clone, origin/<ref> is the pull request author's own branch.
-  if (content === null && ref !== null && showAt(sha, '') === null && originRepository(process.cwd())?.toLowerCase() === run.options.repository.toLowerCase()) {
-    // Fully qualified: a local branch named origin/<ref> would otherwise win the lookup.
-    from = `refs/remotes/origin/${ref}`;
-    content = showAt(from, CONFIG_PATH);
-  }
-  if (content === null) {
-    run.notes.push(`No ${CONFIG_PATH} at the base commit ${shortRef(sha)}; the review ran with the built-in defaults.`);
-    return chosen({ kind: 'default', ref: sha, path });
-  }
-  writeFileSync(path, content, { mode: 0o600 });
-  chosen({ kind: 'base', ref: from, path });
+  const { repository, pullNumber, config } = run.options;
+  const chosen = resolveTrustedConfig({ repository, pullNumber, base: run.pullBase, dir: run.dir, flagged: config }, run.notes);
+  if (typeof chosen === 'string') throw new Stop(2, chosen);
+  run.configSource = chosen.source;
+  process.env['REVIEW_VOICE_CONFIG'] = chosen.source.path!;
+  process.env['REVIEW_VOICE_CONFIG_SOURCE'] = chosen.stated;
 }
 
 /** The pull request's changes to its own config were not applied; say so once it is known the change exists. */

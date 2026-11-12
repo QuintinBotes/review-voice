@@ -205,3 +205,29 @@ request's base commit (or `--config`, or an absolute `REVIEW_VOICE_CONFIG`),
 so a change cannot set `cap_approval: false` or empty `sensitive_paths` for its
 own review. `.review-voice/**` and `.github/workflows/**` are also sensitive
 whatever `sensitive_paths` says, listed once. The decision itself is unchanged.
+
+## Amendment - 2026-11-12
+
+The 2026-11-07 amendment covered `review --pr` and left the slash command
+out. `/review-voice:review --pr` runs the stage commands itself, and each read
+`.review-voice/config.yaml` from the checkout, so with the head checked out a
+pull request still chose its own limits, lanes and thresholds (issue 357). The
+slash command now resolves the configuration once, before any stage, with
+`review-voice config resolve`, which calls the resolver the driver calls. The
+order is `--config`, else an absolute `REVIEW_VOICE_CONFIG`, else the file at
+the base commit copied into the review's directory, else the built-in defaults.
+It writes that file and its source to `trusted-config.json` in the review's
+directory and runs every stage command with `--trusted-config <dir>`, which
+sets `REVIEW_VOICE_CONFIG` to the file and `REVIEW_VOICE_CONFIG_SOURCE` to its
+source for that command, so a `runners:` block in the base commit's file is
+still ignored. It is an option rather than a variable prefix so that the
+command documents' `Bash(node:*)` rule matches each stage command, and a file
+that is missing, malformed or names an unknown source or no file refuses the
+command with exit 2. `/review-voice:draft-review` runs
+`verdict` and `post`, the commands that apply this record's cap, so it resolves
+the configuration the same way before either, and a head that sets
+`cap_approval: false`, `verdict.never_approve: false` or
+`writes.github_posting_enabled: true` changes nothing about its own verdict.
+A review of the working tree with no
+`--pr`, and a stage command run by hand with neither the option nor the
+variables, read the checkout, which is the person's own. The decision itself is unchanged.

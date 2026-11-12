@@ -1361,7 +1361,26 @@ layer banned.
 `.review-voice/config.yaml` is the user's own file in their own checkout and is
 trusted. A PR review (`review --pr`) is the exception: it reads the base
 commit's config (or `--config`, or an absolute `REVIEW_VOICE_CONFIG`), never
-the head's, so a pull request cannot loosen its own review. `.review-voice/policy.yaml` is repository content and is not: it is
+the head's, so a pull request cannot loosen its own review. The slash command
+is under the same rule on a `--pr` review. It runs the stage commands itself
+and each reads `REVIEW_VOICE_CONFIG`, else the checkout, so
+`commands/review.md` first runs `review-voice config resolve`, which calls the
+driver's own resolver (`resolveTrustedConfig` in `src/review/config.ts`),
+prints the file and its source and writes both to `trusted-config.json` in the
+review's directory, and then runs every stage command of that review with
+`--trusted-config <dir>`. `main()` in `src/cli.ts` reads that file before it
+dispatches any command (`withTrustedConfig` in `src/cli/config.ts`), sets
+`REVIEW_VOICE_CONFIG` and `REVIEW_VOICE_CONFIG_SOURCE` for the process and
+drops the option, and refuses with exit 2 when the file is missing or
+malformed, names an unknown source, or a path that is not absolute or names no
+file. An option and not a variable prefix, so the command documents'
+`Bash(node:*)` rule matches each stage command. `commands/draft-review.md`
+does the same before `verdict` and `post`, which read the approval cap, the
+`verdict:` settings and the posting switch. The source travels with the path,
+so a `runners:` block in a base commit's file stays ignored. A review of the
+working tree with no `--pr`, and a stage command run by hand with neither the
+option nor the variables, read the checkout as before.
+`.review-voice/policy.yaml` is repository content and is not: it is
 parsed, hashed and reported as pending approval, never applied. Editing an
 approved file changes its hash and re-proposes it, so a quiet edit cannot
 inherit an old approval.
