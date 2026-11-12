@@ -67,10 +67,12 @@ Each figure below is reported and never a gate. A figure with no data prints
 | Second-pass drop, downgrade and tie-break rates, per family | Whether a second model family earns its cost; see below |
 | Challenge hold rate, per family | The challenge hold rate over the runs whose challenge ran on that family; see below |
 | Posted replies, replied fixed rate | How many findings got this tool's one reply, and what became of them; see below |
+| Approvals tracked | How many sent approvals have a recorded outcome |
+| Approval escape rate | Of the approvals that settled, the share a revert or a request for changes overturned, with a Wilson 95% upper bound; see below |
 
 `RV evaluate --json` also carries a top-level `stage_seconds` map of stage name
-to `{ median, p95, runs, unmeasured }`, beside `metrics` and `posted_breakdown`.
-It is not a metric, because its value is a map, and the text output does not
+to `{ median, p95, runs, unmeasured }`, beside `metrics`, `posted_breakdown` and
+`approval_breakdown`. It is not a metric, because its value is a map, and the text output does not
 print it.
 
 A stage may be recorded without its seconds, because a coordinator that hands
@@ -90,7 +92,8 @@ function so the JSON and the rendered report (see "The rendered report") cannot
 disagree. Its keys are `generated_at`, `window_days` (the window the `_recent`
 rates use), `metrics`, `posted_breakdown` (by severity, lane, rule and
 evidence block), `precision_breakdown` (below), `stage_seconds`,
-`rule_effectiveness` (below) and `by_family` (below). The text output is unchanged.
+`rule_effectiveness` (below), `by_family` (below) and `approval_breakdown`
+(below). The text output is unchanged.
 
 #### Precision by lane and rule
 
@@ -257,6 +260,45 @@ with no outcome yet, or a weak one, counts in `posted_replies` and nowhere else.
 Both are `no data` with none. Reply counts never appear on the pull request.
 The scope block takes no reply input, so a reply changes neither the posted body
 nor the review's idempotency key.
+
+#### Approval outcomes
+
+An approval is the one write that can unblock a merge, so ADR 0036 follows
+each APPROVE Review Voice sent to what the pull request and the default branch
+later show. `RV outcomes --approvals` checks on demand and `RV watch` checks
+each pass, with GET requests inside the allowlist only. The strength rules are
+ADR 0004's:
+
+| Outcome | Strength | When |
+|---|---|---|
+| `reverted` | strong | A merged pull request in the same repository reverts this one inside the window |
+| `changes_requested` | strong | A person who is not a bot and not the poster requested changes on the approved head after the approval |
+| `survived` | strong | Merged at the approved head, the window has passed, neither of the above |
+| `merged_other_head` | weak | Merged at a head the approval did not read |
+| `pending` | weak | Merged at the approved head, the window not over yet |
+| `closed`, `open`, `unknown` | weak | Not merged, or the pull request state, the merged head or the merge time could not be read |
+
+The window is `outcomes.approval_window_days`, default 14, counted from the
+merge. Silence before the window ends is `pending`, never `survived`. The rows
+are read top down: a revert or a request for changes on the approved head
+counts whichever head merged, and only then does a merge at another head make
+the outcome `merged_other_head`.
+
+```
+approval_escape_rate = (reverted + changes_requested) / (reverted + changes_requested + survived)
+```
+
+The rate counts settled approvals only and is `no data` until there is one.
+Beside it `RV evaluate` prints the Wilson 95% upper bound of the rate, which
+stays honest at small counts where 0 of 5 reads as certainly 0, and the basis
+`E escaped / N settled approvals; P pending, W weak excluded`, where W is the
+weak outcomes other than pending. `RV evaluate --json` adds
+`approval_breakdown` by provenance mode, complexity level, independence label
+and origin; a group with nothing settled reports `null`, never zero.
+
+`RV status` prints one line when the upper bound is above
+`outcomes.approval_escape_warn` (default 0.05) and at least 30 approvals are
+settled. Nothing is sent anywhere, and no verdict changes.
 
 #### Candidate set agreement
 
@@ -626,6 +668,11 @@ the command exits 1 when there are any. A figure with no denominator is
 The command never posts, never runs the repository's configured commands
 (`REVIEW_VOICE_NO_COMMANDS=1`) and never writes to the operator's data
 directory: it records into one temporary directory, removed unless `--keep`.
+Each run of `--runs` has a store of its own in that directory, and `--keep`
+keeps every one. In one store the first run of a fixture would be an earlier
+run of the same pull request to the second, and a finding the first held would
+be dropped from the second at the candidate check, so the runs would not be
+independent samples.
 
 The `Recall` workflow (`.github/workflows/recall.yml`) runs it weekly, on Monday
 at 04:00 UTC, and on demand with a `mode` input, using the repository's
@@ -639,7 +686,8 @@ or a deployment that supplies its own key.
 One pass per fixture is a noisy sample. Candidate-set agreement between two
 runs over the same diff has measured 0.25 to 0.60, so a single figure moves
 between runs with no change to the plugin, and a difference of one fixture is
-not a trend. The figures are goals, reported and not gated.
+not a trend. `--runs` measures that spread. The figures are goals, reported
+and not gated.
 
 The frozen fixture set must not be tuned against. Editing a prompt until these
 fixtures pass measures the prompt's fit to the fixtures, not the reviewer; a
@@ -654,6 +702,80 @@ defect. The fixtures now carry that context, so clean silence measures what the
 reviewer says about a consistent change. A positive that scored the finding
 its own `asserts` describes as a miss, because the finding sat on another line
 of the same defect, now names that line as an accepted anchor.
+
+### Where a miss was lost
+
+For every completed fixture the results file records `event`, the verdict the
+run reached, such as `APPROVE` or `COMMENT`. For every completed positive it
+also records `lostAt`, which is `null` on a hit and otherwise the stage that
+lost the expected finding. It is read from the run the harness already has
+(the candidates, the candidate check, the verification, the scores after the
+challenge, the held list and the posted findings), so it costs no model call.
+
+The harness takes the candidates the lanes raised on the path of an accepted
+anchor, within the 3-line tolerance of that anchor. With no such candidate
+there are two values:
+
+- `not-raised`: the review posted no finding, so nobody raised the defect.
+- `posted-elsewhere`: the review posted a finding, but none on an accepted
+  anchor.
+
+With at least one such candidate, `lostAt` is how far the one that got
+furthest went. From the nearest stage to the furthest:
+
+- `dropped-at-check`: the candidate check dropped it before verification, for
+  example as a repeat of a comment already on the pull request.
+- `verifier-rejected`: the verifier did not verify it, and nothing held it.
+- `held-other`: it was held, by neither a gate nor the challenger. An approved
+  suppression, a reproduction that did not fail and a claim held for context
+  the verifier could not obtain are of this kind. So is a verified candidate
+  the score turned away without a hold, and one that stayed eligible to the
+  end and that the editor left out of the review.
+- `challenge`: the challenger held it, or it was held because the challenger
+  did not run.
+- `below-gate`: it was verified, then held under a gate.
+
+A candidate that stayed eligible to the end on a positive that still missed
+had its line moved out of the tolerance by the challenger, or was left out by
+the editor. It reads as `posted-elsewhere` when a finding posted on the line
+the challenger moved it to, and that is further than any hold. Left out by the
+editor it reads as `held-other`, whatever else the review posted, so a
+finding from another candidate never hides where this one stopped.
+
+The summary counts the misses by these values under `lost`, and gives
+`approved`, the completed positives whose review ended in `APPROVE`, beside
+`completedPositives`. A positive that ended in `APPROVE` is a seeded defect the
+review waved through. The line `recall` prints for a miss names where it was
+lost.
+
+### Several runs
+
+Two runs of one diff raise different candidates, so one run cannot tell a
+regression from chance. `recall --runs <n>` runs every selected fixture n
+times (a positive whole number up to 1000, 1 by default). `--only`, `--class`, `--mode`,
+`--out` and `--keep` apply as they do to one run.
+
+With one run the results file is as described above. With more, a fixture
+carries `runs`, then `hits`, the number of runs that hit, or `silentRuns` for
+a clean fixture, and `attempts`. That list has one entry per run, holding the
+fields a single run records (`hit` or `silent`, `lineDelta`, `categoryMatch`,
+`findings`, `lostAt`, `event`, `seconds`, `costUsd`, `exitCode` and `error`).
+The single-run fields are not written beside it, so nothing reads one run as
+the answer. In the summary each of the three rates is the mean of the runs'
+rates, `runs` is the number of runs, and `ranges` gives each rate's `lowest`
+and `highest` run and the value of every run. A run that failed is left out of
+the denominators of its own run, as it is with one run. `failedRuns`,
+`completedPositives`, `approved` and `lost` are totals over every run.
+`evaluate --recall` reads either shape. For several runs each of its three
+fixture metrics is the mean, and the basis states the number of runs and the
+range.
+
+A recall figure is stated with its number of runs and its range, in the form
+`<mean> over <n> runs, <lowest> to <highest>`. A change is called a regression
+only when its range sits below the earlier range, which is when its highest
+run is lower than the earlier lowest run. Ranges that overlap are not a
+regression, whatever the two means are, and a figure from one run has no range
+to compare.
 
 ### Measured on 1.22.0
 
@@ -709,8 +831,10 @@ figures do not compare with a run of the present set. Both fixtures it missed
 outside the 3-line window now accept a further anchor, and the line numbers of
 several fixtures have moved since.
 
-This is a single run. One pass per fixture is a noisy sample, as this section
-says above, so a difference of one fixture is noise, not a trend. This
+These figures are one run, so they come with no range, and no later figure
+is a regression against them on the strength of one run of its own. One pass
+per fixture is a noisy sample, as this section says above, so a difference of
+one fixture is noise, not a trend. This
 repository has no `ANTHROPIC_API_KEY` secret, so the weekly `Recall` workflow
 skips here, and the figure is refreshed by a run the maintainer starts locally.
 

@@ -236,7 +236,74 @@ saying nothing about it.
 **Every exclusion carries a reason.** Lock files, generated output, vendored
 code and binaries are dropped by default, and each one reports why. A silent
 omission is indistinguishable from a bug, and `--include-generated` brings them
-back for the case where the dependency change *is* the review.
+back for the case where the dependency change *is* the review. A binary is the
+exception, because it has no lines to read. The local diff leaves out as
+`binary` every file git reports as binary, a tracked one by its `--numstat`
+line and an untracked one by asking git about it, whatever its name,
+`review.first_party_paths` or `--include-generated` say. The pull request diff
+leaves out every file GitHub serves no patch for, by the same reasoning. A
+binary under a first-party path was once counted as reviewed on its name
+alone, with `Binary files differ` as the whole of its patch (issue 351).
+
+**The diff counts what it left out.** A reason on each entry of a manifest is
+not a signal. A pull request changed twelve files, ten of them under a
+first-party directory named `vendor`, and the review read two with no word
+about the rest (issue 351). The diff therefore carries `exclusions`, the number
+of changed files it leaves out and the count for each reason, in its JSON, in
+`files.json` and in the `--out` summary, and prints one line on stderr,
+`Excluded 10 of 12 changed files: 10 vendored dependency.`
+It prints nothing when every changed file is read. The count is over the files
+of the scope being reviewed. For the whole pull request that is every changed
+file. For an incremental range, an interdiff or an unchanged scope it is the
+files that changed since the earlier review, which the scope planner reads
+from git for the left-out files as it does for the reviewed ones. A follow-up
+that touched one source file therefore says nothing, and one that touched a
+vendored file counts that file. `record` stores the counts with the run,
+`explain` prints the line, the driver's report carries it as a note, and the
+scope block's `Not checked` line names the count and the reasons, never a
+path. A stored reason that is not one of the diff's own wordings is counted as
+`other reason`, and a stored summary whose counts disagree with each other is
+not read at all, so a crafted manifest cannot put a path or a false figure
+into a posted review. The slash command prints the line after the findings,
+and records a change whose every file was left out, so that `explain` has it.
+
+**A follow-up never calls an unread file covered.** A narrowed scope marks
+every reviewed file outside it `unchanged since the last review`, and shows a
+file inside it only as what changed since. Neither is a read of a file the
+earlier review left out by its own rules, which happens once a repository
+names its `vendor` package in `review.first_party_paths` while a pull request
+is open, or once GitHub serves a patch it withheld before. `record` therefore
+keeps the paths the run left out, and when the next review would read one of
+them, touched since or not,
+the scope is `full` with the cause `not-read-before`. The same holds for a
+file a follow-up renamed out of a path that review left out, or that the
+default rules leave out. The narrowed patch would show such a file as a rename
+with none of its lines, and moving code out of `vendor/` after the first
+review would pass it by every review. A run recorded
+before the list was kept says nothing of the key or the flag it was read
+with, so it is taken to have left out every file the default rules leave out,
+which is every path whose class is not source with no first-party list and no
+`--include-generated`. A lock file left out by a default review and read by a
+follow-up under `--include-generated` is therefore read in full, not called
+unchanged since a review that never read it. A previous head with no
+recorded run, from `--since` or from a review on GitHub, has no record of
+what was read and is taken the same way, since a file read twice costs less
+than one called unchanged that no review read.
+
+**A repository can say a path is its own.** `review.first_party_paths` lists
+globs, in the dialect of the sensitive paths, for paths that are never
+classified as a vendored dependency. It lifts that class alone, so a lock
+file, generated output or a binary under such a path keeps its own rule. Every
+place that asks whether a path is reviewed reads the same list. Those are the
+two diff readers, the scope planner's absorbed files, the deleted-file check
+of `check-candidates` and `score`, reach and the symbol context. The
+complexity count, `plan` and `lanes` follow the class the manifest records, so
+a path cannot be reviewable in one place and vendored in another. It is a review
+setting, so `review --pr` reads it from the base commit, as the section on
+layer resolution describes, and a pull request cannot name its own files
+first-party. A value that is not a list of globs, or an entry that is not one,
+is ignored with a warning naming the key and the entry, and the files stay
+excluded. `--include-generated` keeps its meaning.
 
 ### Incremental re-review
 
@@ -248,8 +315,9 @@ review, while the recorded head is the boundary that was actually read.
 
 The happy path is deliberately smaller than the fallback path. A missing prior
 run, unchanged head, truncated file list, unavailable local objects, rewritten
-history, a merge, or a range that touches none of the pull request's reviewed
-files all produce a full review with a named cause. The implementation can
+history, a merge, a range that touches none of the pull request's reviewed
+files, or a file the earlier review left out that this one reads all produce a
+full review with a named cause. The implementation can
 prove only a simple descendant range is safe; every other shape is cheaper to
 read again than to explain away after it omits author work.
 

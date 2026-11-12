@@ -13,6 +13,7 @@ import {
   type LexicalDeclaration,
 } from './declarations.ts';
 import { globToRegExp } from '../conventions/globs.ts';
+import { firstPartyMatcher } from './classify.ts';
 import { DEFAULT_TEST_PATHS } from './complexity.ts';
 import {
   isCode,
@@ -109,6 +110,8 @@ export interface CollectSymbolContextOptions {
   headSearch?: PathSearcher;
   /** Globs that mark a hit as a test; the default is the repository default test paths. */
   testPaths?: readonly string[];
+  /** `review.first_party_paths`: a hit under one is code, not a vendored dependency. */
+  firstPartyPaths?: readonly string[];
   /** Time budget for the whole collection, enforced between and within searches. */
   maxMs?: number;
   /** Injectable clock, so a budget needs no real waiting to test. */
@@ -185,11 +188,12 @@ function possibleExisting(
   hits: ReturnType<LineSearcher>,
   addedNames: Set<string>,
   isTestPath: PathPredicate,
+  isCodePath: PathPredicate,
 ): NewDeclaration['possibleExisting'] {
   const matches: { path: string; line: number; name: string; score: number }[] = [];
   for (const hit of hits) {
     const path = normalisePath(hit.path);
-    if (!isCode(path) || isTestPath(path)) continue;
+    if (!isCodePath(path) || isTestPath(path)) continue;
     const name = declarationName(hit.text);
     if (name === null || addedNames.has(name)) continue;
     const hitTokens = new Set(declarationTokens(name));
@@ -294,6 +298,7 @@ function reportFile(
   head: string | null,
   headSearch: PathSearcher,
   isTestPath: PathPredicate,
+  isCodePath: PathPredicate,
 ): { file: SymbolContextFile; references: Set<string> } {
   const allSymbols = symbolsFromHunks(diff, path);
   const omitted = Math.max(0, allSymbols.length - MAX_SYMBOLS_PER_FILE);
@@ -331,7 +336,7 @@ function reportFile(
       break;
     }
 
-    const code = new Set(found.filter(isCode).map(normalisePath));
+    const code = new Set(found.filter(isCodePath).map(normalisePath));
 
     // This is deliberately the same threshold reach uses. A name in many
     // directories is a language-shaped word, not evidence that every listed
@@ -377,7 +382,7 @@ function reportFile(
       const entry: NewDeclaration = {
         name: declaration.name,
         line: declaration.line,
-        possibleExisting: possibleExisting(declaration, hits, addedNames, isTestPath),
+        possibleExisting: possibleExisting(declaration, hits, addedNames, isTestPath, isCodePath),
       };
       declared.push(entry);
       if (head === null) {
@@ -391,7 +396,7 @@ function reportFile(
           const callers = [
             ...new Set(
               headSearch(declaration.name, cwd, head, remaining())
-                .filter(isCode)
+                .filter(isCodePath)
                 .map(normalisePath)
                 .filter((candidate) => candidate !== normalisedPath && !isTestPath(candidate)),
             ),
@@ -437,6 +442,8 @@ export function collectSymbolContext(options: CollectSymbolContextOptions): Symb
   const headSearch = options.headSearch ?? gitGrepWordPaths;
   const head = options.head ?? null;
   const isTestPath = testPathMatcher(options.testPaths ?? DEFAULT_TEST_PATHS);
+  const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
+  const isCodePath: PathPredicate = (path) => isCode(path, firstParty);
   const now = options.now ?? Date.now;
   const maxMs = options.maxMs ?? DEFAULT_MAX_MS;
   const started = now();
@@ -462,6 +469,7 @@ export function collectSymbolContext(options: CollectSymbolContextOptions): Symb
         head,
         headSearch,
         isTestPath,
+        isCodePath,
       );
   });
   const changed = new Set(paths.map(normalisePath));

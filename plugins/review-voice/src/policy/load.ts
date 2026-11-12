@@ -22,6 +22,7 @@ import { defaultWatchConfig, MAX_REVIEW_TIMEOUT_MS, parseDuration, type WatchCon
 import { DEFAULT_RETENTION, type RetentionConfig } from '../store/retention.ts';
 import { defaultReproduction, type ReproductionConfig, type ReproductionRunner } from '../evidence/reproduce.ts';
 import { DEFAULT_AGENT_TIMEOUT_MS, FAMILIES, type ExternalFamily, type Family } from '../agents/types.ts';
+import { DEFAULT_OUTCOMES, type OutcomesConfig } from '../store/approvals.ts';
 
 /** One `runners.<family>` block: the argv that runs an agent on that family (docs/adr/0021, amended). */
 export interface ConfiguredRunner {
@@ -73,6 +74,8 @@ export interface LoadedConfig {
   watch: WatchConfig;
   /** How long run directories and audit events are kept; `watch` and `purge --runs` enforce it. */
   retention: RetentionConfig;
+  /** `outcomes:`, how sent approvals are followed and when `status` warns (docs/adr/0036). */
+  outcomes: OutcomesConfig;
   staticEvidence: {
     enabled: boolean;
     commands: { name: string; run: string; timeoutSeconds?: number; version?: string }[];
@@ -123,6 +126,11 @@ export interface LoadedConfig {
   thresholds: { technicalConfidence?: number; finalScore?: number };
   /** `review.linked_issues`: whether `thread` also reads the same-repository issues the description closes. Off by default. */
   linkedIssues: boolean;
+  /**
+   * `review.first_party_paths`: globs for paths that are never classified as
+   * a vendored dependency (issue 351). None by default.
+   */
+  firstPartyPaths: string[];
   layers: PolicyLayer[];
   /**
    * The structured suppressions of every layer, as `resolvePolicy` resolves
@@ -160,12 +168,12 @@ function positiveInt(value: unknown): number | undefined {
  * exactly these. review.models is a map of stages, checked against MODEL_KEYS.
  */
 export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
-  '': ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'reproduction', 'runners', 'verification', 'queue', 'watch', 'retention', 'writes'],
+  '': ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'reproduction', 'runners', 'verification', 'queue', 'watch', 'retention', 'outcomes', 'writes'],
   identity: ['owner_reviewer', 'reviewers'],
   repositories: ['include'],
   review: [
     'human_review', 'structure', 'mode', 'models', 'confidence_threshold', 'final_score_threshold', 'lanes', 'suggestions',
-    'linked_issues', 'max_findings', 'max_words_per_finding', 'max_total_words',
+    'linked_issues', 'max_findings', 'max_words_per_finding', 'max_total_words', 'first_party_paths',
   ],
   'review.human_review': [
     'max_decision_points', 'max_hunk_decision_points', 'sensitive_paths', 'sensitive_exempt_paths', 'test_paths',
@@ -199,6 +207,7 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
   'queue.skip.approved_at_head_by': ['logins', 'sources'],
   watch: ['workspace', 'interval', 'post', 'lock_port', 'run_repository_commands', 'review_timeout', 'max_attempts_per_head'],
   retention: ['runs_days', 'audit_days'],
+  outcomes: ['approval_window_days', 'approval_escape_warn'],
   writes: ['github_posting_enabled'],
 };
 
@@ -923,6 +932,24 @@ function readRetention(block: Record<string, unknown> | null, result: LoadedConf
   read('audit_days', 'auditDays');
 }
 
+/** `outcomes:` (docs/adr/0036). A bad value warns and keeps that setting's default. */
+function readOutcomes(block: Record<string, unknown> | null, result: LoadedConfig): void {
+  if (block === null) {
+    result.warnings.push('outcomes must be a mapping; using the defaults.');
+    return;
+  }
+  const days = block['approval_window_days'];
+  if (days !== undefined) {
+    if (typeof days === 'number' && Number.isInteger(days) && days > 0) result.outcomes.approvalWindowDays = days;
+    else result.warnings.push(`outcomes.approval_window_days must be a whole number above zero; using ${DEFAULT_OUTCOMES.approvalWindowDays}.`);
+  }
+  const warn = block['approval_escape_warn'];
+  if (warn !== undefined) {
+    if (typeof warn === 'number' && warn >= 0 && warn <= 1) result.outcomes.approvalEscapeWarn = warn;
+    else result.warnings.push(`outcomes.approval_escape_warn must be a number from 0 to 1; using ${DEFAULT_OUTCOMES.approvalEscapeWarn}.`);
+  }
+}
+
 function contentHash(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
@@ -1143,6 +1170,7 @@ export function readConfigDocument(value: unknown, repositoryRoot: string, resul
   readQueue(section(doc['queue'], 'queue', result.warnings), result);
   if (doc['watch'] !== undefined) readWatch(section(doc['watch'], 'watch', result.warnings), result);
   if (doc['retention'] !== undefined) readRetention(section(doc['retention'], 'retention', result.warnings), result);
+  if (doc['outcomes'] !== undefined) readOutcomes(section(doc['outcomes'], 'outcomes', result.warnings), result);
 
   const staticEvidence = section(doc['static_evidence'], 'static_evidence', result.warnings);
   if (staticEvidence !== null) {
@@ -1286,6 +1314,7 @@ export function readConfigDocument(value: unknown, repositoryRoot: string, resul
     const linkedIssues = review['linked_issues'];
     if (typeof linkedIssues === 'boolean') result.linkedIssues = linkedIssues;
     else if (linkedIssues !== undefined) result.warnings.push('review.linked_issues must be true or false; using false.');
+    result.firstPartyPaths = readFirstPartyPaths(review['first_party_paths'], result.warnings);
     result.layers.push({
       scope: { type: 'repository', key: repositoryRoot },
       source: '.review-voice/config.yaml',
@@ -1301,6 +1330,40 @@ export function readConfigDocument(value: unknown, repositoryRoot: string, resul
         : { maxTotalWords: positiveInt(review['max_total_words'])! }),
     });
   }
+}
+
+/**
+ * `review.first_party_paths`. A value that is not a list, or an entry that is
+ * not a glob, is left out with a warning that names it: the files it was meant
+ * to name stay excluded, which is the default, and the warning says why.
+ */
+function readFirstPartyPaths(value: unknown, warnings: string[]): string[] {
+  if (value === undefined) return [];
+  const isGlob = (entry: unknown): entry is string => {
+    if (typeof entry !== 'string' || entry.trim() === '') return false;
+    try {
+      globToRegExp(entry);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const globs: string[] = [];
+  for (const entry of Array.isArray(value) ? value : [value]) {
+    if (Array.isArray(value) && isGlob(entry)) {
+      globs.push(entry);
+      continue;
+    }
+    // A YAML alias can make the list refer to itself, which JSON.stringify cannot show.
+    let shown: string;
+    try {
+      shown = JSON.stringify(entry);
+    } catch {
+      shown = 'a value that refers to itself';
+    }
+    warnings.push(`review.first_party_paths must be a list of globs; ${shown} is not one, so the files it names stay excluded as vendored.`);
+  }
+  return globs;
 }
 
 /**
@@ -1324,6 +1387,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     queue: defaultQueueConfig(),
     watch: defaultWatchConfig(),
     retention: { ...DEFAULT_RETENTION },
+    outcomes: { ...DEFAULT_OUTCOMES },
     staticEvidence: { enabled: false, commands: [], envPassthrough: [] },
     reproduction: defaultReproduction(),
     runners: { external: {}, use: { challenge: 'claude', agentAuthoredChallenge: null } },
@@ -1342,6 +1406,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     lanes: [DIFF_LANE],
     thresholds: {},
     linkedIssues: false,
+    firstPartyPaths: [],
     layers: [],
     suppressions: [],
     activePolicyVersions: [],

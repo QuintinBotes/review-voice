@@ -80,6 +80,17 @@ replacement, a deletion, never matches this way, and a file that cannot be
 read falls through to the rules above. It is one read per such finding, and
 nothing is written.
 
+## Amendment - 2026-11-09 (approvals)
+
+[0036](0036-approvals-are-followed-to-an-outcome.md) follows the verdict as
+well as the findings. Each APPROVE Review Voice sent is followed, from the same
+`review_post_sent` audit rows `sentRuns` walks, to `reverted`,
+`changes_requested` or `survived` (strong), or to `merged_other_head`,
+`pending`, `closed`, `open` or `unknown` (weak), in a separate
+`approval_outcomes` table with the same replace-on-recheck rule. `sentRuns`
+and the finding outcomes above are unchanged, and the silence rule holds: a
+merge the window has not closed on is `pending`, never `survived`.
+
 ## Amendment - 2026-11-10 (replies)
 
 [0035](0035-one-bounded-reply-per-own-finding.md) lets a person post one reply

@@ -417,7 +417,7 @@ async function prep(run: Run): Promise<void> {
     if (typeof run.summary[key] === 'string') run.notes.push(run.summary[key] as string);
   }
   noteConfigChange(run);
-  for (const key of ['suspectedWrongBase', 'squashedParentSuspected'] as const) {
+  for (const key of ['suspectedWrongBase', 'squashedParentSuspected', 'exclusions'] as const) {
     const note = isRecord(run.summary[key]) ? run.summary[key]['note'] : null;
     if (typeof note === 'string') run.notes.push(note);
   }
@@ -549,6 +549,9 @@ async function carry(run: Run): Promise<void> {
 async function reviewInFull(run: Run, why: string): Promise<void> {
   run.notes.push(`${why}, so the whole pull request is reviewed.`);
   skip(run, 'carry', why);
+  // The abandoned scope counted its own files; prep adds the line for the whole pull request.
+  const abandoned = isRecord(run.summary['exclusions']) ? run.summary['exclusions']['note'] : null;
+  run.notes = run.notes.filter((note) => note !== abandoned);
   run.options = { ...run.options, full: true };
   await prep(run);
 }

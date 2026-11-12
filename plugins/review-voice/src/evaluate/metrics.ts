@@ -6,6 +6,7 @@ import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { hashDiff, storedFamilies } from '../store/runs.ts';
 import { FAMILIES } from '../agents/types.ts';
 import { postedBreakdown, postedStats, precisionBreakdown, replyStats, type PostedStats, type PrecisionStats } from '../store/outcomes.ts';
+import { approvalBasis, approvalBreakdown, approvalStats, type ApprovalStats } from '../store/approvals.ts';
 import { activeSuppressions } from '../policy/versions.ts';
 import { POLICY_SUPPRESSED_PREFIX } from '../scoring/score.ts';
 
@@ -478,12 +479,20 @@ export interface EvaluationReport {
   rule_effectiveness: RuleEffectiveness[];
   /** Per model family (docs/adr/0034), as `byFamily` returns it. */
   by_family: ByFamily;
+  /** Sent approvals by what the run recorded (docs/adr/0036), as `approvalBreakdown` returns it. */
+  approval_breakdown: {
+    by_mode: Record<string, ApprovalStats>;
+    by_complexity: Record<string, ApprovalStats>;
+    by_independence: Record<string, ApprovalStats>;
+    by_origin: Record<string, ApprovalStats>;
+  };
 }
 
 /** The caller passes `metrics` so the recall figures ride along when `--recall` is given. */
 export function evaluationReport(db: Database, metrics: Metric[], options: ComputeOptions = {}): EvaluationReport {
   const { bySeverity, byLane, byRule, byEvidenceBlock } = postedBreakdown(db);
   const precision = precisionBreakdown(db);
+  const approvals = approvalBreakdown(db);
   return {
     generated_at: (options.now ?? (() => new Date()))().toISOString(),
     window_days: options.windowDays ?? DEFAULT_WINDOW_DAYS,
@@ -493,6 +502,12 @@ export function evaluationReport(db: Database, metrics: Metric[], options: Compu
     stage_seconds: stageSeconds(db),
     rule_effectiveness: ruleEffectiveness(db),
     by_family: byFamily(db),
+    approval_breakdown: {
+      by_mode: approvals.byMode,
+      by_complexity: approvals.byComplexity,
+      by_independence: approvals.byIndependence,
+      by_origin: approvals.byOrigin,
+    },
   };
 }
 
@@ -607,6 +622,7 @@ export function computeMetrics(db: Database, options: ComputeOptions = {}): Metr
   const recent = postedStats(db, { since: windowStart(windowDays, options.now) });
   const recentDecided = recent.fixed + recent.dismissed;
   const replies = replyStats(db);
+  const approvals = approvalStats(db);
 
   const metric = (
     name: string,
@@ -809,6 +825,19 @@ export function computeMetrics(db: Database, options: ComputeOptions = {}): Metr
       `${replies.fixed} fixed / (${replies.fixed + replies.dismissed} fixed or dismissed) of ${replies.replied} replied finding(s); weak outcomes excluded`,
       'goal',
     ),
+    // What became of the approvals this tool sent (docs/adr/0036). Settled
+    // means strong: a revert or a request for changes against a merge that
+    // outlived the window. Pending and weak rows are counted and left out, so a
+    // merge the window has not closed on is never a survival.
+    metric(
+      'approvals_tracked',
+      approvals.tracked === 0 ? null : approvals.tracked,
+      'no target',
+      () => true,
+      'sent approvals with a recorded outcome; run `review-voice outcomes --approvals` to check',
+      'goal',
+    ),
+    metric('approval_escape_rate', approvals.rate, 'no target', () => true, approvalBasis(approvals), 'goal'),
   ];
 }
 

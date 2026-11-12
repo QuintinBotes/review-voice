@@ -79,6 +79,7 @@ export function explainCommand(argv: string[]): number {
     if (detail.pullNumber !== null) console.log(`Pull request #${detail.pullNumber}`);
     const recordedScope = describeReviewScope(detail.scope);
     if (recordedScope !== null) console.log(`Scope ${recordedScope}`);
+    if (detail.exclusions !== null) console.log(detail.exclusions.note);
     console.log(describeProvenance(detail.provenance));
     console.log(describeChecks(detail.checks));
     console.log(describeStructure(detail.structure));
