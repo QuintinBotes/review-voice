@@ -1,0 +1,5144 @@
+{
+  "pluginVersion": "1.24.1",
+  "mode": "auto",
+  "runner": "claude",
+  "fixtures": [
+    {
+      "name": "positive/aspnetcore-pull-1-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 174,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "below-gate",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 74.9,
+      "costUsd": 0.8129,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-1-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "below-gate",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 57.59,
+      "costUsd": 0.6,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-1-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "below-gate",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 92.15,
+      "costUsd": 0.701,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-1-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 62.07,
+      "costUsd": 0.5934,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-1-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 65.64,
+      "costUsd": 0.6839,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-1-7",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "below-gate",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 78.42,
+      "costUsd": 0.6933,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-10-1",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 126.42,
+      "costUsd": 1.0405,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-10-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 5,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 132.69,
+      "costUsd": 0.9515,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-10-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 128.98,
+      "costUsd": 0.9448,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-10-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "below-gate",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 134.2,
+      "costUsd": 0.9003,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-10-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 106.03,
+      "costUsd": 0.8637,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-2-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 68.13,
+      "costUsd": 0.292,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-2-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 77.34,
+      "costUsd": 0.2939,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-2-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 71.01,
+      "costUsd": 0.3582,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-2-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 61.81,
+      "costUsd": 0.2999,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-2-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 4,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 54.75,
+      "costUsd": 0.2993,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-2-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 78.43,
+      "costUsd": 0.3246,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-2-7",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 61.87,
+      "costUsd": 0.2921,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-2-8",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 37.63,
+      "costUsd": 0.2621,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-2-9",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 74.75,
+      "costUsd": 0.3259,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-3-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 629,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 102.15,
+      "costUsd": 0.4295,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-3-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 8,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 87.29,
+      "costUsd": 0.3406,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-3-3",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 108.88,
+      "costUsd": 0.4042,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-3-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "verifier-rejected",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 133.88,
+      "costUsd": 0.474,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-3-5",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 3,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 84.59,
+      "costUsd": 0.3916,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-4-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 38,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 170.68,
+      "costUsd": 1.4925,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-4-10",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 161.46,
+      "costUsd": 1.5108,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-4-11",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 120.51,
+      "costUsd": 1.1444,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-4-12",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 158.66,
+      "costUsd": 1.5087,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-4-13",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 188.78,
+      "costUsd": 1.6504,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-4-14",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 140.96,
+      "costUsd": 1.5667,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-4-15",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 118.58,
+      "costUsd": 1.138,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-4-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 160.46,
+      "costUsd": 1.4051,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-4-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 23,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 119.98,
+      "costUsd": 1.1875,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-4-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 54,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 129.58,
+      "costUsd": 1.2081,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-4-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 162.61,
+      "costUsd": 1.3967,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-4-7",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 131.04,
+      "costUsd": 1.3433,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-4-8",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 162.83,
+      "costUsd": 1.4501,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-4-9",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 148.46,
+      "costUsd": 1.3299,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-5-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 74,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "below-gate",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 86.09,
+      "costUsd": 0.3172,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-5-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 47.73,
+      "costUsd": 0.1679,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-5-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 49.17,
+      "costUsd": 0.1669,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-5-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 5,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 74.89,
+      "costUsd": 0.1987,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-5-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 118,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 46.52,
+      "costUsd": 0.1569,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-5-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 100,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 44.52,
+      "costUsd": 0.1632,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-5-7",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 50,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 71.67,
+      "costUsd": 0.2241,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-5-8",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "APPROVE",
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 57.67,
+      "costUsd": 0.1697,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-6-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "below-gate",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 163.37,
+      "costUsd": 1.3029,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-6-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 10,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "verifier-rejected",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 167.93,
+      "costUsd": 1.2,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-6-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "verifier-rejected",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 157.14,
+      "costUsd": 1.436,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-7-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 20,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 73.13,
+      "costUsd": 0.3496,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-7-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 76.17,
+      "costUsd": 0.3511,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-7-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 6,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 76.81,
+      "costUsd": 0.3406,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-7-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 77.64,
+      "costUsd": 0.3214,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-8-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 381,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "below-gate",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 121.43,
+      "costUsd": 0.7898,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-8-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 2,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 109.53,
+      "costUsd": 0.8027,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-8-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 67,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 85.77,
+      "costUsd": 0.7165,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-8-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 82,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 101.85,
+      "costUsd": 0.761,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-8-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 88.66,
+      "costUsd": 0.7771,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-8-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 106.77,
+      "costUsd": 0.8446,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-8-7",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 107.93,
+      "costUsd": 0.8262,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-8-8",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 425,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 108.92,
+      "costUsd": 0.7535,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-8-9",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 98.21,
+      "costUsd": 0.8646,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-9-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 141.25,
+      "costUsd": 1.5383,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-9-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 2,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 152.17,
+      "costUsd": 1.5244,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-9-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 137.64,
+      "costUsd": 1.599,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/aspnetcore-pull-9-4",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 120.48,
+      "costUsd": 1.5919,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-1-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 70.17,
+      "costUsd": 0.3599,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-1-10",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 99.57,
+      "costUsd": 0.4505,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-1-11",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 96.45,
+      "costUsd": 0.4023,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-1-12",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 109.83,
+      "costUsd": 0.4964,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-1-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "verifier-rejected",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 76.28,
+      "costUsd": 0.3671,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-1-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 75.07,
+      "costUsd": 0.3992,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-1-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 99.91,
+      "costUsd": 0.4291,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-1-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 84.13,
+      "costUsd": 0.4186,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-1-7",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 100.61,
+      "costUsd": 0.4392,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-1-8",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 77.27,
+      "costUsd": 0.3588,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-1-9",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 76.22,
+      "costUsd": 0.355,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-10-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 93.08,
+      "costUsd": 0.509,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-10-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 14,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 103.25,
+      "costUsd": 0.5054,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-10-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 85.02,
+      "costUsd": 0.5226,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-10-4",
+      "class": "positive",
+      "hit": null,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 79.81,
+      "costUsd": 0.4429,
+      "exitCode": 1,
+      "error": "challenge exited 2: Challenge refused:   cand_001: corrected_line 26 is the line it is already anchored on"
+    },
+    {
+      "name": "positive/firefox-ios-pull-10-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 67.31,
+      "costUsd": 0.4606,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-11-1",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 97.09,
+      "costUsd": 0.5322,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-11-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 76.91,
+      "costUsd": 0.5472,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-11-3",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 3,
+      "categoryMatch": null,
+      "findings": 4,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 75.43,
+      "costUsd": 0.5843,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-11-4",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 4,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 78.26,
+      "costUsd": 0.5779,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-11-5",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 4,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 91.52,
+      "costUsd": 0.6126,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-12-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 69.51,
+      "costUsd": 0.3161,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-12-10",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 69.86,
+      "costUsd": 0.3009,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-12-11",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 72.02,
+      "costUsd": 0.2945,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-12-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 74.74,
+      "costUsd": 0.2806,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-12-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 72.18,
+      "costUsd": 0.2501,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-12-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 11,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 89.69,
+      "costUsd": 0.3187,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-12-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 16,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 70.68,
+      "costUsd": 0.3181,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-12-6",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 107.17,
+      "costUsd": 0.3378,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-12-7",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 19,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 70.69,
+      "costUsd": 0.3201,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-12-8",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "verifier-rejected",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 67.12,
+      "costUsd": 0.3134,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-12-9",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 64.91,
+      "costUsd": 0.2903,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-13-1",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 94.95,
+      "costUsd": 0.4317,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-13-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 4,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 63.54,
+      "costUsd": 0.3143,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-13-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 74.72,
+      "costUsd": 0.3365,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-13-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 196,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 80.72,
+      "costUsd": 0.3948,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-2-1",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 145.26,
+      "costUsd": 1.7647,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-2-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 3,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 139.39,
+      "costUsd": 1.5123,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-2-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "challenge",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 134.5,
+      "costUsd": 1.6255,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-2-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 121.88,
+      "costUsd": 1.6015,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-2-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "verifier-rejected",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 132.7,
+      "costUsd": 1.5958,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-2-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 152.7,
+      "costUsd": 1.6525,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-3-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "verifier-rejected",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 31.81,
+      "costUsd": 0.2972,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-3-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "verifier-rejected",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 50.44,
+      "costUsd": 0.2985,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-3-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 48.87,
+      "costUsd": 0.2939,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-3-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 104.26,
+      "costUsd": 0.4852,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-3-7",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 93.71,
+      "costUsd": 0.6391,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-3-8",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 88.61,
+      "costUsd": 0.5987,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-3-9",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 49.19,
+      "costUsd": 0.287,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-4-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 68.32,
+      "costUsd": 0.3538,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-4-3",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 2,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 61.67,
+      "costUsd": 0.3444,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-4-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 65.99,
+      "costUsd": 0.3462,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-4-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 67.49,
+      "costUsd": 0.368,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-5-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "challenge",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 214.88,
+      "costUsd": 2.0372,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-5-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 13,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 123.98,
+      "costUsd": 1.772,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-5-3",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 146.16,
+      "costUsd": 1.965,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-5-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 111.92,
+      "costUsd": 1.906,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-6-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "below-gate",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 45.59,
+      "costUsd": 0.2274,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-6-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 34.41,
+      "costUsd": 0.2331,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-6-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 41.61,
+      "costUsd": 0.2628,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-6-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 37.64,
+      "costUsd": 0.2317,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-6-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 49.55,
+      "costUsd": 0.2675,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-6-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 40.49,
+      "costUsd": 0.2287,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-7-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "verifier-rejected",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 155.47,
+      "costUsd": 1.5033,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-7-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 14,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 160.07,
+      "costUsd": 1.8864,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-7-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "verifier-rejected",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 186.97,
+      "costUsd": 1.6324,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-7-4",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 2,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 197.4,
+      "costUsd": 1.6312,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-7-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "verifier-rejected",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 164.37,
+      "costUsd": 1.5265,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-7-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "verifier-rejected",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 200.96,
+      "costUsd": 1.9275,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-7-7",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 213.22,
+      "costUsd": 2.0286,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-7-8",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 180.35,
+      "costUsd": 1.8793,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-8-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "below-gate",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 140.47,
+      "costUsd": 1.7085,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-8-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 71.64,
+      "costUsd": 0.8696,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-8-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 79.42,
+      "costUsd": 1.0921,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-8-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 73.43,
+      "costUsd": 0.9253,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-9-1",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 4,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 175,
+      "costUsd": 1.2865,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/firefox-ios-pull-9-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 3,
+      "categoryMatch": null,
+      "findings": 4,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 134.24,
+      "costUsd": 1.011,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-1-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 39,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 110.58,
+      "costUsd": 0.3584,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-1-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 96.24,
+      "costUsd": 0.3289,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-1-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 4,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "verifier-rejected",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 84.17,
+      "costUsd": 0.3096,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-1-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 15,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "verifier-rejected",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 80.16,
+      "costUsd": 0.271,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-10-1",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 4,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 202.03,
+      "costUsd": 1.5069,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-10-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 50,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 161.9,
+      "costUsd": 1.2157,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-10-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 13,
+      "categoryMatch": null,
+      "findings": 4,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 179.87,
+      "costUsd": 1.4384,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-10-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 111,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "verifier-rejected",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 203.47,
+      "costUsd": 1.4441,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-10-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 107,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 167.31,
+      "costUsd": 1.3254,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-11-1",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 2,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 96.49,
+      "costUsd": 0.4331,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-11-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 102.29,
+      "costUsd": 0.4942,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-11-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 150,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 97.57,
+      "costUsd": 0.3307,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-11-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 894,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 88.93,
+      "costUsd": 0.3643,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-11-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 182,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 113.16,
+      "costUsd": 0.4937,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-12-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 37,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 81.7,
+      "costUsd": 0.5945,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-12-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "challenge",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 91.7,
+      "costUsd": 0.7857,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-12-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 64,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "verifier-rejected",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 71.02,
+      "costUsd": 0.618,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-12-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 49,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 72.39,
+      "costUsd": 0.7502,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-13-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 164.53,
+      "costUsd": 1.6873,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-13-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 160.95,
+      "costUsd": 1.8221,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-2-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 81.74,
+      "costUsd": 0.3405,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-2-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 47,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 82.85,
+      "costUsd": 0.3914,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-3-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 9,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 109.49,
+      "costUsd": 0.8417,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-3-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 126.3,
+      "costUsd": 0.9586,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-3-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 8,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 121.1,
+      "costUsd": 0.907,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-3-4",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 4,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 129.66,
+      "costUsd": 1.0485,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-4-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 8,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 109.11,
+      "costUsd": 1.026,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-4-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 4,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 118.47,
+      "costUsd": 1.1846,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-4-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 40,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 112.03,
+      "costUsd": 1.0852,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-4-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 5,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 123.76,
+      "costUsd": 1.234,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-4-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 12,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 111.12,
+      "costUsd": 1.0154,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-5-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "verifier-rejected",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 104.01,
+      "costUsd": 0.761,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-5-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 134.23,
+      "costUsd": 0.9003,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-5-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 105.89,
+      "costUsd": 0.6587,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-5-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 105.89,
+      "costUsd": 0.6906,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-6-1",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 2,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 74.27,
+      "costUsd": 0.479,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-6-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 74.04,
+      "costUsd": 0.4523,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-6-3",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 85.15,
+      "costUsd": 0.4824,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-7-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 9,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 89.98,
+      "costUsd": 1.5598,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-7-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 8,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 107.75,
+      "costUsd": 1.3291,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-7-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 91.79,
+      "costUsd": 1.569,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-8-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 105,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 42.4,
+      "costUsd": 0.136,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-8-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "below-gate",
+      "event": "COMMENT",
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 38.42,
+      "costUsd": 0.1094,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-8-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 66.34,
+      "costUsd": 0.1403,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-8-7",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "COMMENT",
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 70.88,
+      "costUsd": 0.183,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-9-1",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 2,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 132.06,
+      "costUsd": 0.8492,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-9-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 10,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "below-gate",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 140.9,
+      "costUsd": 0.9163,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-9-3",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 153.39,
+      "costUsd": 0.9522,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/ghost-pull-9-4",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 162.02,
+      "costUsd": 1.0977,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-1-1",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 115.97,
+      "costUsd": 0.7679,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-1-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "challenge",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 115.91,
+      "costUsd": 0.6832,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-1-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 217,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "verifier-rejected",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 148.3,
+      "costUsd": 0.7486,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-1-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 177,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "verifier-rejected",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 131.49,
+      "costUsd": 0.7211,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-10-1",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 216.67,
+      "costUsd": 1.4024,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-10-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 177.47,
+      "costUsd": 1.2784,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-10-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "verifier-rejected",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 209.7,
+      "costUsd": 1.2668,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-10-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "below-gate",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 180.7,
+      "costUsd": 1.2211,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-10-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 179.34,
+      "costUsd": 1.0538,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-10-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 200.3,
+      "costUsd": 1.331,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-10-7",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 4,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 226.52,
+      "costUsd": 1.7113,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-10-8",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 190.23,
+      "costUsd": 1.2104,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-11-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 37.38,
+      "costUsd": 0.1776,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-12-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 93,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 142.53,
+      "costUsd": 1.0529,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-12-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 19,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 122.63,
+      "costUsd": 0.8959,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-12-4",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 3,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 155.12,
+      "costUsd": 1.1441,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-13-1",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 98.12,
+      "costUsd": 0.8552,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-13-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 37,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 119.63,
+      "costUsd": 0.9555,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-13-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 101,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 121.14,
+      "costUsd": 0.9987,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-2-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "verifier-rejected",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 90.1,
+      "costUsd": 0.5888,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-2-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 56.35,
+      "costUsd": 0.4409,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-3-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 56.93,
+      "costUsd": 0.6401,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-3-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "held-other",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 91.18,
+      "costUsd": 0.7772,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-3-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "below-gate",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 71.76,
+      "costUsd": 0.6814,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-4-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 114.56,
+      "costUsd": 0.9728,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-4-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 150.2,
+      "costUsd": 1.3067,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-4-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 118.05,
+      "costUsd": 1.1139,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-4-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 156.11,
+      "costUsd": 1.224,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-5-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 36,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 66.88,
+      "costUsd": 0.3069,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-5-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 73.85,
+      "costUsd": 0.3388,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-5-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 76.44,
+      "costUsd": 0.3111,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-5-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 88.38,
+      "costUsd": 0.3706,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-5-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 724,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 87.97,
+      "costUsd": 0.3896,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-6-1",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 105.88,
+      "costUsd": 0.6758,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-6-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 116.79,
+      "costUsd": 0.6343,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-6-3",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 106.87,
+      "costUsd": 0.5822,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-6-4",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 2,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 109.48,
+      "costUsd": 0.7818,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-6-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 225,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 78,
+      "costUsd": 0.5163,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-7-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 71.07,
+      "costUsd": 0.3651,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-7-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "below-gate",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 67.47,
+      "costUsd": 0.3445,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-7-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 82.36,
+      "costUsd": 0.4148,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-7-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 109.56,
+      "costUsd": 0.5103,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-7-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 86.17,
+      "costUsd": 0.4036,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-8-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 65,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 156.42,
+      "costUsd": 1.0622,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-8-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "below-gate",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 121.25,
+      "costUsd": 0.7864,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-8-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 5,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 124.41,
+      "costUsd": 0.8363,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-8-4",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 154.07,
+      "costUsd": 1.0644,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-9-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 38.72,
+      "costUsd": 0.2015,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-9-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 6,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 44.44,
+      "costUsd": 0.1692,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/prefect-pull-9-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 8,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 49.6,
+      "costUsd": 0.1751,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-1-1",
+      "class": "positive",
+      "hit": null,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 58.75,
+      "costUsd": 0.3365,
+      "exitCode": 1,
+      "error": "challenge exited 2: Challenge refused:   cand_001: corrected_line 652 is the line it is already anchored on"
+    },
+    {
+      "name": "positive/tauri-pull-1-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 10,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 80.6,
+      "costUsd": 0.4272,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-1-3",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 3,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 63.24,
+      "costUsd": 0.364,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-1-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 24,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 66.29,
+      "costUsd": 0.3566,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-1-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 28,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 60.08,
+      "costUsd": 0.3258,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-1-7",
+      "class": "positive",
+      "hit": null,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 57.7,
+      "costUsd": 0.3246,
+      "exitCode": 1,
+      "error": "challenge exited 2: Challenge refused:   cand_001: corrected_line 652 is the line it is already anchored on"
+    },
+    {
+      "name": "positive/tauri-pull-1-8",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 62.88,
+      "costUsd": 0.3707,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-10-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 17.32,
+      "costUsd": 0.0919,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-10-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 42.43,
+      "costUsd": 0.2153,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-10-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 45.12,
+      "costUsd": 0.1767,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-10-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 27.22,
+      "costUsd": 0.1394,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-10-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 45.66,
+      "costUsd": 0.2248,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-11-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 36,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 102.42,
+      "costUsd": 0.4882,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-11-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "challenge",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 76.74,
+      "costUsd": 0.3935,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-11-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "verifier-rejected",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 109.91,
+      "costUsd": 0.5804,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-12-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 5,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 64.95,
+      "costUsd": 0.4515,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-12-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 79.81,
+      "costUsd": 0.5597,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-12-3",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 0,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 60.19,
+      "costUsd": 0.4417,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-12-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 5,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 89.73,
+      "costUsd": 0.5538,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-12-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 11,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 72.27,
+      "costUsd": 0.5334,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-13-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 153,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "verifier-rejected",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 72.7,
+      "costUsd": 0.6255,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-13-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 93,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 82.75,
+      "costUsd": 0.6426,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-13-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 56,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "below-gate",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 62.52,
+      "costUsd": 0.5232,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-13-7",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 156,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 63.97,
+      "costUsd": 0.5362,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-13-8",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 6,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 72.06,
+      "costUsd": 0.5848,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-2-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 27,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 127.99,
+      "costUsd": 1.1196,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-2-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 118.31,
+      "costUsd": 1.1422,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-2-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 66,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 112.18,
+      "costUsd": 1.0409,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-2-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 8,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 101.54,
+      "costUsd": 0.9644,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-2-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 108.61,
+      "costUsd": 0.9724,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-2-7",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 121.41,
+      "costUsd": 1.0634,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-3-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 3,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 74.76,
+      "costUsd": 0.3448,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-3-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 58.37,
+      "costUsd": 0.3089,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-4-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 24,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 69.21,
+      "costUsd": 0.4061,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-4-2",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 2,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 67.06,
+      "costUsd": 0.3475,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-4-3",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 78.84,
+      "costUsd": 0.4269,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-4-4",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 3,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 74.46,
+      "costUsd": 0.4518,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-4-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 27,
+      "categoryMatch": null,
+      "findings": 3,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 80.63,
+      "costUsd": 0.4884,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-5-1",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 2,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": null,
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 156.57,
+      "costUsd": 1.8575,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-5-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 237.9,
+      "costUsd": 2.6132,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-5-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 206.02,
+      "costUsd": 2.3128,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-5-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 243.22,
+      "costUsd": 2.7229,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-5-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 207.24,
+      "costUsd": 2.2955,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-5-6",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 234.04,
+      "costUsd": 2.5349,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-5-7",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 277.26,
+      "costUsd": 2.8993,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-6-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "held-other",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 109.89,
+      "costUsd": 0.634,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-6-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 132.08,
+      "costUsd": 0.8099,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-6-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 172.01,
+      "costUsd": 1.227,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-7-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 39,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 43.38,
+      "costUsd": 0.245,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-7-3",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 46.42,
+      "costUsd": 0.2522,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-7-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 45.71,
+      "costUsd": 0.2638,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-7-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "COMMENT",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 62.23,
+      "costUsd": 0.3198,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-8-1",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 2,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 116.71,
+      "costUsd": 1.0156,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-8-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": 4,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 78.14,
+      "costUsd": 0.7468,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-8-3",
+      "class": "positive",
+      "hit": true,
+      "lineDelta": 1,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": null,
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 128.01,
+      "costUsd": 1.0566,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-8-4",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 1,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 90.43,
+      "costUsd": 0.7924,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-8-5",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 2,
+      "lostAt": "posted-elsewhere",
+      "event": "REQUEST_CHANGES",
+      "lanes": [
+        "diff",
+        "structure"
+      ],
+      "seconds": 147.35,
+      "costUsd": 1.154,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-9-1",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 33.99,
+      "costUsd": 0.1888,
+      "exitCode": 0
+    },
+    {
+      "name": "positive/tauri-pull-9-2",
+      "class": "positive",
+      "hit": false,
+      "lineDelta": null,
+      "categoryMatch": null,
+      "findings": 0,
+      "lostAt": "not-raised",
+      "event": "APPROVE",
+      "lanes": [
+        "diff"
+      ],
+      "seconds": 16.85,
+      "costUsd": 0.0571,
+      "exitCode": 0
+    }
+  ],
+  "summary": {
+    "keyBugRecall": 0.1939799331103679,
+    "causalLineHit": 0.40559440559440557,
+    "cleanSilence": null,
+    "positives": 302,
+    "skipped": 0,
+    "cleanFixtures": 0,
+    "failedRuns": 3,
+    "completedPositives": 299,
+    "approved": 69,
+    "lost": {
+      "not-raised": 41,
+      "dropped-at-check": 0,
+      "verifier-rejected": 23,
+      "held-other": 2,
+      "challenge": 5,
+      "below-gate": 17,
+      "posted-elsewhere": 153
+    }
+  }
+}
