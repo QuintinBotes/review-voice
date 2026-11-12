@@ -833,10 +833,14 @@ reproduction runs twice at most, in its own throwaway copy of the head
 worktree, after a probe through the same wrapper has shown that the network, a
 write outside the copy and its scratch directory, an overwrite of the runner's
 own files and a read of the run directory are refused. On Linux the wrapper is
-`unshare` with user, mount, network and pid namespaces and a read-only root; on
-macOS it is `sandbox-exec` with a profile that denies everything it does not
-allow, and the probe there also shows that a signal, a preference write and a
-notification are refused (a listener outside the sandbox must print a key the
+`unshare` with user, mount, network and pid namespaces and a read-only root.
+On macOS nothing runs. The sandbox there is reported unavailable, without a
+probe, until each run executes under an identity or environment of its own,
+which would also close the two System V IPC limits the threat model states
+(issue #321, docs/adr/0003). What macOS would use is in place and tested
+behind that one check. Its wrapper is `sandbox-exec` with a profile that
+denies everything it does not allow, and the probe there also shows that a
+signal, a preference write and a notification are refused (a listener outside the sandbox must print a key the
 CLI posts before the probe, which shows it hears, and then, only after the CLI
 posts it once the probe is back, a second key, with the probe's key not
 printed, and the state the probe sets on its key, read from outside while the

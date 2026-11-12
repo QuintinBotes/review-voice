@@ -14566,6 +14566,7 @@ var runGit2 = (args, cwd) => execFileSync8("git", [...SAFE_GIT, ...args], {
 });
 var OUTPUT_CAP_BYTES = 8 * 1024;
 var PROBE_TIMEOUT_MS = 3e4;
+var DARWIN_OFF = "reproductions stay off on macOS until each run has an identity or environment of its own (issue #321)";
 var PROBE_DOMAIN = "review-voice.probe";
 var NOTIFYUTIL = "/usr/bin/notifyutil";
 var NOTIFY_READY_MS = 5e3;
@@ -14881,6 +14882,7 @@ function listenForNotify(spawn3, cwd) {
 }
 async function probeSandbox(ctx, given) {
   const platform = ctx.platform ?? process.platform;
+  if (platform === "darwin" && ctx.allowMacOS !== true) return { platform, mechanism: "none", probe: DARWIN_OFF };
   if (platform !== "linux" && platform !== "darwin") return { platform, mechanism: "none", probe: `no confinement mechanism on ${platform}` };
   return runProbe(ctx, given ?? layoutOf(ctx));
 }
@@ -20137,11 +20139,12 @@ var COMMAND_HELP = {
       "review-voice reproduce --worktree <dir> --run-dir <dir> --probe",
       "  Run each reproduction the verifier wrote for a blocking or important candidate in a throwaway copy",
       "  of the pull request's head worktree, through a runner configured under reproduction.runners only,",
-      "  twice at most, inside unshare namespaces on Linux or a sandbox-exec allowlist profile on macOS: no",
-      "  network, no signal to any process outside the sandbox, writes only in that copy and its scratch",
-      "  directory under a fresh directory per execution, <run dir>/reproductions/trees/<candidate id>-<random>/,",
-      "  CPU, memory and file-size limits, and an environment of PATH, LANG, LC_ALL and TERM with HOME and",
-      "  TMPDIR in the scratch directory. The file is written once, before run 1, and never removed or rewritten",
+      "  twice at most, inside unshare namespaces (Linux only): no network, no signal to any process outside",
+      "  the sandbox, writes only in that copy and its scratch directory under a fresh directory per execution,",
+      "  <run dir>/reproductions/trees/<candidate id>-<random>/, CPU, memory and file-size limits, and an",
+      "  environment of PATH, LANG, LC_ALL and TERM with HOME and TMPDIR in the scratch directory. On macOS",
+      "  nothing runs, and the probe there is none, until each run has an identity or environment of its own",
+      "  (issue #321). The file is written once, before run 1, and never removed or rewritten",
       "  between runs. The copy is checked by a walk that follows no link, after run 1, before run 2 and after",
       "  run 2, and no git runs in a copy once a run has. The head worktree is never writable, and each copy is",
       "  removed after its last run. A probe must show the sandbox holds first.",
@@ -21189,9 +21192,8 @@ var COMMAND_HELP = {
       "  neither (docs/adr/0016). A finding raised at the held path and line, or a claim held there as",
       "  unverified, refuted or partly, does not end either hold. In thorough mode, with a",
       "  reproduction block in the configuration, the verifier writes a reproduction for each blocking or",
-      "  important finding and `reproduce` runs it (Linux and macOS); one that does not fail holds its",
-      "  finding as reproduction-did-not-fail, unless its category is one no suppression may reach",
-      "  (docs/adr/0032).",
+      "  important finding and `reproduce` runs it (Linux only); one that does not fail holds its finding",
+      "  as reproduction-did-not-fail, unless its category is one no suppression may reach (docs/adr/0032).",
       "Writes: every stage's input and output under the run directory, score-input.json included,",
       "  and the recorded run; with --post, the one review `post` sends. The report on stdout, and",
       "  under verdict.held_queue inside GitHub Actions, the held list in the job summary. A run",

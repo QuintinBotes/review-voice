@@ -50,7 +50,8 @@ function scratchRepository(t) {
 const context = (repo, spawn, platform = 'darwin') => ({
   worktree: repo.worktree, runDir: repo.runDir, clone: repo.clone, dataDir: repo.dataDir, home: repo.home,
   config: { enabled: true, runners: [{ name: 'node-test', run: 'node --test {file}', extension: '.test.mjs', timeoutSeconds: 120 }], linkPaths: [], memoryMb: 1024, cpuSeconds: 60 },
-  env: { PATH: '/usr/bin:/bin' }, platform, spawn, execPath: '/opt/node/bin/node',
+  // macOS reports none in production; the opt-in keeps its probe and IPC checks under test.
+  env: { PATH: '/usr/bin:/bin' }, platform, spawn, execPath: '/opt/node/bin/node', allowMacOS: true,
 });
 
 const verification = { verifications: [{ candidate_id: 'cand_001', reproduction: { runner: 'node-test', path: 'src/add.repro.test.mjs', content: 'test\n', expected: 'add subtracts' } }] };

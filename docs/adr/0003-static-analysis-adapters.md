@@ -214,9 +214,15 @@ never runs a configured command: detection suggests, configuration enables.
 
 ## Amendment - 2026-11-10
 
-Reproductions now run on macOS too (issue #321), through `sandbox-exec` with an
-allowlist profile in place of the profile that started from `(allow default)`
-and denied what it named. The profile starts from `(deny default)` and allows
+The macOS reproduction sandbox is hardened (issue #321), but macOS still
+reports the sandbox unavailable, so nothing runs there. `probeSandbox` returns
+mechanism `none` on darwin, without running the probe, with a reason saying
+reproductions stay off until each run has an identity or environment of its
+own. The profile, the probe with its notification check, and the System V IPC
+check below are in place and tested, so turning macOS on is one change to
+`probeSandbox`. `sandbox-exec` gets an allowlist profile in place of the
+profile that started from `(allow default)` and denied what it named. The
+profile starts from `(deny default)` and allows
 only what a test runner such as `node --test` or `npm test` needs: process fork
 and exec, sysctl reads, signals to processes in the same sandbox, file reads
 outside the hidden locations, and file writes in the reproduction's copy, its
@@ -259,8 +265,8 @@ leaves behind can create an object after the listing that follows the run,
 which no check sees. And a stop signal that ends the CLI during a run ends it
 before the listing after the run, so what that run made is neither seen nor
 recorded. These limits, with the user identity a run shares with every other
-program of the user, are among the reasons macOS reproductions should stay off
-until runs execute under an identity or environment of their own. File reads of
+program of the user, are why macOS reproductions should stay off until runs
+execute under an identity or environment of their own. File reads of
 terminal devices (`/dev/tty*`, `/dev/pty*`, `/dev/cu.*` and `/dev/ptmx`) are
 denied after every read the profile allows, since a run, or a process it leaves
 behind, could otherwise take what is typed into another session. The probe
@@ -329,3 +335,10 @@ files stay allowed, read-only, outside the hidden locations, as on Linux.
 `sandbox-exec` is deprecated by Apple, so a macOS release can change what it
 enforces, and the probe before the first reproduction of each invocation is what
 shows it still holds.
+
+To turn macOS on, each run has to execute under an identity or environment of
+its own, such as a separate user account or a virtual machine, rather than the
+user's. Every process and System V IPC object a run leaves behind then belongs
+to that identity alone, so the CLI can list and remove them whole, which also
+closes the two System V IPC limits above. Until then `probeSandbox` keeps
+reporting macOS as `none`.

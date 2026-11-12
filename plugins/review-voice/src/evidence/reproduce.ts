@@ -104,10 +104,14 @@ export interface ReproduceContext {
   spawn?: CommandSpawner;
   git?: GitRunner;
   execPath?: string;
+  /** Tests only: lets probeSandbox probe macOS, which reports none in production. */
+  allowMacOS?: boolean;
 }
 
 const OUTPUT_CAP_BYTES = 8 * 1024;
 const PROBE_TIMEOUT_MS = 30_000;
+/** Why darwin is `none` before anything is written or spawned. */
+const DARWIN_OFF = 'reproductions stay off on macOS until each run has an identity or environment of its own (issue #321)';
 /** The named preference domain the macOS probe tries to write through cfprefsd. */
 const PROBE_DOMAIN = 'review-voice.probe';
 const NOTIFYUTIL = '/usr/bin/notifyutil';
@@ -548,10 +552,15 @@ function listenForNotify(spawn: CommandSpawner, cwd: string): NotifyListener {
 
 /**
  * The sandbox a reproduction gets on this platform: unshare namespaces on
- * Linux, sandbox-exec with the allowlist profile on macOS, and none elsewhere.
+ * Linux, and none elsewhere. macOS stays none, without a probe, until each
+ * run has an identity or environment of its own. Until then a process or
+ * System V IPC object a run leaves behind is the user's, and cannot be told
+ * apart from theirs or removed (docs/adr/0003). The allowlist profile and its
+ * probe stay ready for that day.
  */
 export async function probeSandbox(ctx: ReproduceContext, given?: Layout): Promise<SandboxState> {
   const platform = ctx.platform ?? process.platform;
+  if (platform === 'darwin' && ctx.allowMacOS !== true) return { platform, mechanism: 'none', probe: DARWIN_OFF };
   if (platform !== 'linux' && platform !== 'darwin') return { platform, mechanism: 'none', probe: `no confinement mechanism on ${platform}` };
   return runProbe(ctx, given ?? layoutOf(ctx));
 }

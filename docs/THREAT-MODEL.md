@@ -309,7 +309,10 @@ store, outlive the run, or simply pass on purpose.
 - A probe runs through the same wrapper first, and nothing runs unless it shows
   that a connection to a loopback listener, a write outside the reproduction's
   places, an overwrite of the runner's own files and a read of a canary in the
-  run directory are all refused. On macOS it also shows that a signal to the
+  run directory are all refused. On macOS nothing runs. The sandbox there is
+  reported unavailable, without a probe, until each run has an identity or
+  environment of its own (issue #321), and the macOS profile, probe and System
+  V IPC check below are in place for that day. On macOS the probe also shows that a signal to the
   CLI, a preference write and a notification post are refused. A refused post
   still exits 0, so a listener the CLI starts outside the sandbox judges it.
   The listener hears three fresh random keys over one port, which notifyd sends
@@ -351,7 +354,7 @@ store, outlive the run, or simply pass on purpose.
   and `urandom`, with the links to the process's own descriptors, and no
   terminal or other device of the host. The probe fails if `/dev/pts` is still
   there. A reproduction's own output is a pipe the CLI reads.
-- On macOS the runner uses `sandbox-exec` with an allowlist profile. It starts
+- On macOS the runner, while it stays off, keeps `sandbox-exec` with an allowlist profile. It starts
   from `(deny default)` and allows only what a test runner needs: starting
   processes, reading kernel settings other than those under `kern.proc`, which
   list every process and give another process's command line, signals within
@@ -430,8 +433,11 @@ behind can create an object after the listing that follows the run, which no
 check sees. And a stop signal that ends the CLI during a run ends it before
 the listing after the run, so what that run made is neither seen nor
 recorded. These limits, with the user identity a run shares with every other
-program of the user, are among the reasons macOS reproductions should stay
-off until runs execute under an identity or environment of their own. A
+program of the user, are why macOS reproductions should stay off until runs
+execute under an identity or environment of their own, and why macOS reports
+the sandbox unavailable until then. Under one, every process and System V IPC object a run leaves
+behind belongs to that identity alone, so it can be listed and removed whole,
+which closes both limits; turning macOS on is then one change to the probe. A
 reproduction can still spend its whole time limit.
 
 ### 5. Policy drift and poisoning

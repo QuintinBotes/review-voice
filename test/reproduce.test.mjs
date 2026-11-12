@@ -15,7 +15,7 @@ import { randomInt } from 'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadConfig } from '../plugins/review-voice/src/policy/load.ts';
 import { layoutOf, limitsLine, linuxSetup, probeSandbox, reproduce, runProbe, sandboxProfile, shellQuote, wrapperArgv } from '../plugins/review-voice/src/evidence/reproduce.ts';
 import { spawnCommand, stopCommands } from '../plugins/review-voice/src/evidence/run.ts';
@@ -131,6 +131,8 @@ function context(repo, over = {}) {
     // The runner's rules are shown through the Linux wrapper, whose inner command innerOf reads back.
     platform: 'linux',
     execPath: '/opt/node/bin/node',
+    // macOS reports none in production; the opt-in keeps its profile, probe and IPC checks under test.
+    allowMacOS: true,
     ...over,
   };
 }
@@ -1410,6 +1412,20 @@ test('on macOS a listener that cannot say whether the probe posted fails the pro
   }
 });
 
+test('on macOS without the test opt-in the probe is none until issue 321, and nothing is spawned or written', async (t) => {
+  const repo = scratchRepository(t);
+  const off = { platform: 'darwin', mechanism: 'none', probe: 'reproductions stay off on macOS until each run has an identity or environment of its own (issue #321)' };
+  const fake = fakeSpawn([]);
+  assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', spawn: fake.spawn, allowMacOS: undefined })), off);
+  assert.equal(existsSync(reproDir(repo)), false, 'no profile, probe or canary was written');
+  const report = await reproduce({ verifications: [entry()] }, candidates('blocking'), context(repo, { platform: 'darwin', spawn: fake.spawn, allowMacOS: undefined }));
+  assert.deepEqual(report.sandbox, off);
+  assert.deepEqual(report.reproductions.map((r) => [r.outcome, r.reason, r.runs.length]), [['did-not-run', `the sandbox probe did not pass: ${off.probe}`, 0]]);
+  assert.equal(fake.calls.length, 0, 'not even the probe');
+  assert.equal(existsSync(join(reproDir(repo), 'sandbox.sb')), false, 'no profile');
+  assertHeadUntouched(repo);
+});
+
 test('a platform with no mechanism, or a worktree that holds a hidden path, runs nothing', async (t) => {
   const repo = scratchRepository(t);
   const fake = fakeSpawn([]);
@@ -1896,18 +1912,35 @@ test('the runner confines a real reproduction, or names why it cannot and runs n
   if (process.env.REVIEW_VOICE_REQUIRE_SANDBOX === '1') assert.fail(`REVIEW_VOICE_REQUIRE_SANDBOX=1 and the sandbox is unavailable: ${sandbox.probe}`);
 });
 
+/** This host's real sandbox, macOS through the test opt-in, since the CLI reports macOS as none. */
+function liveContext(repo, runner, { cpuSeconds = 60, linkPaths = [] } = {}) {
+  const config = { enabled: true, runners: [runner], linkPaths, memoryMb: 1024, cpuSeconds };
+  return context(repo, { platform: process.platform, env: { PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ''}` }, execPath: process.execPath, config });
+}
+
+/** reproduce run on its own as the CLI runs it, with the CLI's stop handler, so a stop signal can reach it. */
+const STOPPABLE = [
+  "import { writeFileSync } from 'node:fs';",
+  `import { reproduce } from ${JSON.stringify(pathToFileURL(join(root, 'plugins/review-voice/src/evidence/reproduce.ts')).href)};`,
+  `import { stopCommandsOnSignal } from ${JSON.stringify(pathToFileURL(join(root, 'plugins/review-voice/src/evidence/run.ts')).href)};`,
+  'stopCommandsOnSignal();',
+  'const [verification, ctx, out] = JSON.parse(process.argv[1]);',
+  "const report = await reproduce(verification, new Map([['cand_001', { candidate_id: 'cand_001', path: 'src/add.mjs', line: 1, severity: 'blocking' }]]), ctx);",
+  'writeFileSync(out, JSON.stringify(report));',
+].join('\n');
+
 test('a stop signal to reproduce kills the running reproduction, removes its copy and leaves the head worktree as it found it', async (t) => {
-  const env = { PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ''}` };
   for (const [signal, code] of [['SIGTERM', 143], ['SIGINT', 130]]) {
-    const runner = { name: 'sh', run: '/bin/sh {file}', extension: '.sh', timeout_seconds: 120 };
-    const repo = scratchRepository(t, { config: { reproduction: { enabled: true, runners: [runner], link_paths: ['node_modules'] } } });
+    const runner = { name: 'sh', run: '/bin/sh {file}', extension: '.sh', timeoutSeconds: 120 };
+    const repo = scratchRepository(t);
     mkdirSync(join(repo.clone, 'node_modules'));
-    const probe = JSON.parse(cli(repo, ['reproduce', '--worktree', repo.worktree, '--run-dir', repo.runDir, '--probe'], env).stdout);
+    const ctx = liveContext(repo, runner, { linkPaths: ['node_modules'] });
+    const probe = await probeSandbox(ctx);
     if (probe.probe !== 'passed') {
       t.skip(`needs a sandbox that holds: ${probe.probe}`);
       return;
     }
-    const { out, args } = inputs(repo);
+    const out = join(repo.runDir, 'reproductions.json');
     // The fresh directory of the execution, once mkdtemp has made it.
     const places = () => readdirSync(treesDir(repo)).filter((name) => name.startsWith('cand_001-')).map((name) => join(treesDir(repo), name))[0] ?? join(treesDir(repo), 'none');
     // TMPDIR is the scratch directory inside the sandbox, so the test sees when the reproduction has started.
@@ -1915,11 +1948,8 @@ test('a stop signal to reproduce kills the running reproduction, removes its cop
     // Found by its arguments, which the host sees, since a pid written inside a pid namespace is 1 there.
     const seconds = `600.${randomInt(1e9)}`;
     const running = () => spawnSync('ps', ['-A', '-o', 'args='], { encoding: 'utf8' }).stdout.split('\n').some((line) => line.trim() === `sleep ${seconds}`);
-    writeFileSync(join(repo.runDir, 'verification.json'), JSON.stringify({ verifications: [entry({ runner: 'sh', path: 'src/stop.sh', content: `echo started > "$TMPDIR/started"\nexec sleep ${seconds}\n` })] }));
-    const childEnv = { ...process.env, REVIEW_VOICE_DATA_DIR: repo.dataDir, ...env };
-    delete childEnv.REVIEW_VOICE_CONFIG;
-    delete childEnv.REVIEW_VOICE_NO_COMMANDS;
-    const child = spawnChild(process.execPath, [bundle, ...args], { cwd: repo.clone, env: childEnv, stdio: 'ignore' });
+    const verification = { verifications: [entry({ runner: 'sh', path: 'src/stop.sh', content: `echo started > "$TMPDIR/started"\nexec sleep ${seconds}\n` })] };
+    const child = spawnChild(process.execPath, ['--input-type=module', '-e', STOPPABLE, JSON.stringify([verification, ctx, out])], { cwd: repo.clone, stdio: 'ignore' });
     const exited = new Promise((done) => child.on('exit', (status) => done(status)));
     const deadline = Date.now() + 30_000;
     while (!started() || !running()) {
@@ -1940,10 +1970,10 @@ test('a stop signal to reproduce kills the running reproduction, removes its cop
 
 test('a process a reproduction leaves behind never writes the head worktree', async (t) => {
   // On macOS a child started with setsid leaves the process group, outlives the run and its group kill, and keeps the sandbox it was started in.
-  const runner = { name: 'node', run: 'node {file}', extension: '.mjs', timeout_seconds: 60 };
-  const repo = scratchRepository(t, { config: { reproduction: { enabled: true, runners: [runner] } } });
-  const env = { PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ''}` };
-  const probe = JSON.parse(cli(repo, ['reproduce', '--worktree', repo.worktree, '--run-dir', repo.runDir, '--probe'], env).stdout);
+  const runner = { name: 'node', run: 'node {file}', extension: '.mjs', timeoutSeconds: 60 };
+  const repo = scratchRepository(t);
+  const ctx = liveContext(repo, runner);
+  const probe = await probeSandbox(ctx);
   if (probe.probe !== 'passed') {
     t.skip(`needs a sandbox that holds: ${probe.probe}`);
     return;
@@ -1958,14 +1988,7 @@ test('a process a reproduction leaves behind never writes the head worktree', as
     `spawn(process.execPath, ['-e', ${JSON.stringify(child)}], { detached: true, stdio: 'ignore' }).unref();`,
     '',
   ].join('\n');
-  const verification = join(repo.runDir, 'verification.json');
-  const checked = join(repo.runDir, 'checked.json');
-  const out = join(repo.runDir, 'reproductions.json');
-  writeFileSync(verification, JSON.stringify({ verifications: [entry({ runner: 'node', path: 'src/leave.mjs', content })] }));
-  writeFileSync(checked, JSON.stringify({ kept: [{ candidate_id: 'cand_001', path: 'src/add.mjs', line: 1, severity: 'blocking' }] }));
-  const result = cli(repo, ['reproduce', '--worktree', repo.worktree, '--verification', verification, '--candidates', checked, '--out', out, '--run-dir', repo.runDir], env);
-  assert.equal(result.status, 0, result.stderr);
-  const [record] = JSON.parse(readFileSync(out, 'utf8')).reproductions;
+  const [record] = (await reproduce({ verifications: [entry({ runner: 'node', path: 'src/leave.mjs', content })] }, candidates('blocking'), ctx)).reproductions;
   assert.deepEqual([record.outcome, record.reason], ['did-not-fail', 'run 1 exited 0'], record.runs.map((run) => run.output).join('\n'));
   await new Promise((done) => setTimeout(done, 2500));
   assert.equal(git(repo.worktree, 'status', '--porcelain', '--ignored'), '', 'the head worktree is as the driver made it');
@@ -1982,12 +2005,15 @@ function onMacOS(t) {
 }
 
 const macEnv = () => ({ PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ''}` });
+
+/** One reproduction under the real profile. */
+const reproduceOnMac = (repo, reproduction, runner = RUNNER, cpuSeconds = 60) => reproduce({ verifications: [entry(reproduction)] }, candidates('blocking'), liveContext(repo, runner, { cpuSeconds }));
 /** Listeners the probes of this process started, found by their key from outside. */
 const notifyListeners = () => spawnSync('ps', ['-A', '-o', 'args='], { encoding: 'utf8' }).stdout.split('\n').filter((line) => line.includes(`rv.probe.${process.pid}.`));
 
 test('on macOS the real probe passes, and a node --test reproduction runs under the allowlist and fails at its assertion', async (t) => {
   if (!onMacOS(t)) return;
-  const repo = scratchRepository(t, { config: { reproduction: { enabled: true, runners: [{ name: 'node-test', run: 'node --test {file}', extension: '.test.mjs' }] } } });
+  const repo = scratchRepository(t);
   const passed = { platform: 'darwin', mechanism: 'sandbox-exec', probe: 'passed' };
   assert.deepEqual(await probeSandbox(context(repo, { platform: 'darwin', env: macEnv(), execPath: process.execPath })), passed);
   assert.deepEqual(notifyListeners(), [], 'the listener is stopped once the probe has passed');
@@ -2004,11 +2030,7 @@ test('on macOS the real probe passes, and a node --test reproduction runs under 
     '});',
     '',
   ].join('\n');
-  const { out, args } = inputs(repo);
-  writeFileSync(join(repo.runDir, 'verification.json'), JSON.stringify({ verifications: [entry({ content })] }));
-  const result = cli(repo, args, macEnv());
-  assert.equal(result.status, 0, result.stderr);
-  const report = JSON.parse(readFileSync(out, 'utf8'));
+  const report = await reproduceOnMac(repo, { content });
   assert.deepEqual(report.sandbox, passed);
   const [record] = report.reproductions;
   assert.deepEqual([record.outcome, record.reason, record.runs.length], ['reproduced', undefined, 2], record.runs.map((run) => run.output).join('\n'));
@@ -2219,8 +2241,8 @@ test('the threat model and ADR 0003 say a run can create a System V IPC object, 
 
 test('on macOS a detached process a reproduction leaves is gone once it has used its CPU seconds, a stat loop included, and one that keeps reading its own CPU usage is not', async (t) => {
   if (!onMacOS(t)) return;
-  const runner = { name: 'node', run: 'node {file}', extension: '.mjs', timeout_seconds: 60 };
-  const repo = scratchRepository(t, { config: { reproduction: { enabled: true, runners: [runner], cpu_seconds: 2 } } });
+  const runner = { name: 'node', run: 'node {file}', extension: '.mjs', timeoutSeconds: 60 };
+  const repo = scratchRepository(t);
   // Each found from outside by an argument of its own, and killed when the test ends, so none outlives the test.
   const spin = `rv-spin-${randomInt(1e9)}`;
   const stat = `rv-stat-${randomInt(1e9)}`;
@@ -2238,11 +2260,7 @@ test('on macOS a detached process a reproduction leaves is gone once it has used
   const child = (code, token) => `spawn(process.execPath, ['-e', ${JSON.stringify(code)}, ${JSON.stringify(token)}], { detached: true, stdio: 'ignore' }).unref();`;
   // A stat loop makes an ordinary system call on every turn, and process.cpuUsage() reads its own CPU usage (getrusage).
   const content = ["import { spawn } from 'node:child_process';", child('for (;;) {}', spin), child("for (;;) require('fs').statSync('/')", stat), child('for (;;) process.cpuUsage()', busy), ''].join('\n');
-  const { out, args } = inputs(repo);
-  writeFileSync(join(repo.runDir, 'verification.json'), JSON.stringify({ verifications: [entry({ runner: 'node', path: 'src/spin.mjs', content })] }));
-  const result = cli(repo, args, macEnv());
-  assert.equal(result.status, 0, result.stderr);
-  const [record] = JSON.parse(readFileSync(out, 'utf8')).reproductions;
+  const [record] = (await reproduceOnMac(repo, { runner: 'node', path: 'src/spin.mjs', content }, runner, 2)).reproductions;
   assert.deepEqual([record.outcome, record.reason], ['did-not-fail', 'run 1 exited 0'], record.runs.map((run) => run.output).join('\n'));
   assert.deepEqual([pidsOf(spin).length, pidsOf(stat).length, pidsOf(busy).length], [1, 1, 1], 'each outlived the run and its group kill');
   // Two CPU seconds take longer than two seconds on a loaded machine.
@@ -2285,8 +2303,8 @@ const ipcListed = () => spawnSync('/usr/bin/ipcs', ['-c'], { encoding: 'utf8' })
 
 test('on macOS a System V IPC object a reproduction creates is left in place and named, the run is not run, and one from before is left alone', async (t) => {
   if (!onMacOS(t)) return;
-  const runner = { name: 'node', run: 'node {file}', extension: '.mjs', timeout_seconds: 60 };
-  const repo = scratchRepository(t, { config: { reproduction: { enabled: true, runners: [runner] } } });
+  const runner = { name: 'node', run: 'node {file}', extension: '.mjs', timeoutSeconds: 60 };
+  const repo = scratchRepository(t);
   // Random keys of the test's own, so the clean-up below, the test's and never the CLI's, can only ever reach these two objects.
   const [mine, theirs] = [randomInt(0x10000000, 0x7fffffff), randomInt(0x10000000, 0x7fffffff)].map((key) => `0x${key.toString(16)}`);
   const make = (key) => `my $id = shmget(${key}, 4096, 0600 | 01000); print defined $id ? "$id\\n" : "refused\\n";`;
@@ -2305,11 +2323,7 @@ test('on macOS a System V IPC object a reproduction creates is left in place and
     'process.exit(1);',
     '',
   ].join('\n');
-  const { out, args } = inputs(repo);
-  writeFileSync(join(repo.runDir, 'verification.json'), JSON.stringify({ verifications: [entry({ runner: 'node', path: 'src/ipc.mjs', content })] }));
-  const result = cli(repo, args, macEnv());
-  assert.equal(result.status, 0, result.stderr);
-  const [record] = JSON.parse(readFileSync(out, 'utf8')).reproductions;
+  const [record] = (await reproduceOnMac(repo, { runner: 'node', path: 'src/ipc.mjs', content }, runner)).reproductions;
   const made = /made (\d+)/.exec(record.runs[0]?.output ?? '')?.[1];
   assert.ok(made !== undefined, record.runs.map((run) => run.output).join('\n'));
   assert.deepEqual([record.outcome, record.reason, record.runs.length], ['did-not-run', `System V IPC objects appeared during the run and were left in place: m ${made}`, 1]);
