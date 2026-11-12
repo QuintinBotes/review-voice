@@ -22451,13 +22451,6 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
   if (missing.length > 0) problems.push(`no verdict for eligible ${missing.join(", ")}`);
   const unknown = [...byId.keys()].filter((id) => !eligibleIds.includes(id));
   if (unknown.length > 0) problems.push(`verdict for ${unknown.join(", ")}, which is not eligible`);
-  for (const finding of eligible) {
-    const id = idOf2(finding);
-    const verdict2 = id === null ? void 0 : byId.get(id);
-    if (verdict2?.corrected_line !== void 0 && verdict2.corrected_line === finding["line"]) {
-      problems.push(`${String(id)}: corrected_line ${verdict2.corrected_line} is the line it is already anchored on`);
-    }
-  }
   if (problems.length > 0) return { ok: false, problems };
   const summary2 = { confirmed: [], held: [], moved: [] };
   const held = [];
@@ -22507,7 +22500,7 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
       summary2.confirmed.push(id);
       continue;
     }
-    const moved = reanchorScores(document, id, { path: null, line: verdict2.corrected_line }, hunks);
+    const moved = verdict2.corrected_line === finding["line"] ? { ok: false, refused: `${id} names line ${verdict2.corrected_line}, the line it is already anchored on` } : reanchorScores(document, id, { path: null, line: verdict2.corrected_line }, hunks);
     if (moved.ok) {
       document = moved.updated;
       summary2.confirmed.push(id);

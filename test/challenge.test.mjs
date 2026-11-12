@@ -298,6 +298,22 @@ test('confirmed with corrected_line moves the anchor through reanchor; a refused
   });
 });
 
+test('a corrected line that is the line already anchored holds that finding and the rest go on', () => {
+  withFiles(({ apply }) => {
+    // cand_001 is anchored at src/a.ts:3; a correction to line 3 settles nothing.
+    const r = apply([confirmed('cand_001', { line_ok: false, corrected_line: 3 }), confirmed('cand_002'), confirmed('cand_003')]);
+    assert.equal(r.code, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.eligible.some((e) => e.candidateId === 'cand_001'), false);
+    const held = out.challengeHeld.find((h) => h.candidateId === 'cand_001');
+    assert.equal(held.verdict, 'challenge-partly');
+    assert.equal(held.line, 3);
+    assert.match(held.reason, /^corrected line refused: cand_001 names line 3, the line it is already anchored on$/);
+    assert.deepEqual(out.challenge.confirmed, ['cand_002', 'cand_003']);
+    assert.deepEqual(out.challenge.moved, []);
+  });
+});
+
 test('a corrected line another eligible finding holds is refused and held', () => {
   withFiles(({ apply }) => {
     const out = JSON.parse(apply([confirmed('cand_001', { line_ok: false, corrected_line: 4 }), confirmed('cand_002'), confirmed('cand_003')]).stdout);
