@@ -716,7 +716,7 @@ var STATUS = {
 };
 var PATCH_OPTIONS = ["--no-ext-diff", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/"];
 function parseNameStatus(raw) {
-  const fields = raw.split("\0").filter((field) => field.length > 0);
+  const fields = raw.split("\0").filter((field2) => field2.length > 0);
   const out = [];
   for (let i = 0; i < fields.length; ) {
     const code3 = fields[i];
@@ -861,8 +861,8 @@ function unquoteGitPath(raw) {
   return Buffer.from(bytes).toString("utf8");
 }
 function headerPath(raw) {
-  const field = raw.startsWith('"') ? raw : raw.split("	", 1)[0] ?? raw;
-  const path = unquoteGitPath(field.trimEnd());
+  const field2 = raw.startsWith('"') ? raw : raw.split("	", 1)[0] ?? raw;
+  const path = unquoteGitPath(field2.trimEnd());
   if (path === "/dev/null") return null;
   return path.replace(/^[ab]\//, "").replace(/^\.\/+/, "");
 }
@@ -1411,6 +1411,24 @@ var MIGRATIONS = [
   // as a team signal rather than an owner one.
   `
   ALTER TABLE finding_outcomes ADD COLUMN decided_by TEXT;
+  `,
+  // v14 - what became of each approval Review Voice sent (docs/adr/0036).
+  //
+  // One row per run, replaced by a newer check, as finding_outcomes is. The
+  // evidence is JSON because an outcome rests on several facts (merged head,
+  // revert pull request, who requested changes) that a report wants apart.
+  `
+  CREATE TABLE IF NOT EXISTS approval_outcomes (
+    review_run_id TEXT PRIMARY KEY,
+    repository TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    head TEXT NOT NULL,
+    review_id INTEGER,
+    outcome TEXT NOT NULL,
+    strength TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    checked_at TEXT NOT NULL
+  );
   `
 ];
 function migrate(db) {
@@ -6667,8 +6685,8 @@ visit2.SKIP = SKIP2;
 visit2.REMOVE = REMOVE2;
 visit2.itemAtPath = (cst, path) => {
   let item = cst;
-  for (const [field, index] of path) {
-    const tok = item?.[field];
+  for (const [field2, index] of path) {
+    const tok = item?.[field2];
     if (tok && "items" in tok) {
       item = tok.items[index];
     } else
@@ -6678,8 +6696,8 @@ visit2.itemAtPath = (cst, path) => {
 };
 visit2.parentCollection = (cst, path) => {
   const parent = visit2.itemAtPath(cst, path.slice(0, -1));
-  const field = path[path.length - 1][0];
-  const coll = parent?.[field];
+  const field2 = path[path.length - 1][0];
+  const coll = parent?.[field2];
   if (coll && "items" in coll)
     return coll;
   throw new Error("Parent collection not found");
@@ -6688,11 +6706,11 @@ function _visit(path, item, visitor) {
   let ctrl = visitor(item, path);
   if (typeof ctrl === "symbol")
     return ctrl;
-  for (const field of ["key", "value"]) {
-    const token = item[field];
+  for (const field2 of ["key", "value"]) {
+    const token = item[field2];
     if (token && "items" in token) {
       for (let i = 0; i < token.items.length; ++i) {
-        const ci = _visit(Object.freeze(path.concat([[field, i]])), token.items[i], visitor);
+        const ci = _visit(Object.freeze(path.concat([[field2, i]])), token.items[i], visitor);
         if (typeof ci === "number")
           i = ci - 1;
         else if (ci === BREAK2)
@@ -6702,7 +6720,7 @@ function _visit(path, item, visitor) {
           i -= 1;
         }
       }
-      if (typeof ctrl === "function" && field === "key")
+      if (typeof ctrl === "function" && field2 === "key")
         ctrl = ctrl(item, path);
     }
   }
@@ -9729,6 +9747,7 @@ var SEARCH_PATH = /^\/search(\/|$|\?)/i;
 var ID_REPO_PATH = /^\/repositories(\/|$|\?)/i;
 var PATH_ESCAPE = /(^|\/)\.\.?(\/|$)|%2e|%2f|%5c|\\/i;
 var GITHUB_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+var REPOSITORY_NAME = /^(?!\.\.?$)[A-Za-z0-9._-]+$/;
 function allowlistEntryProblem(entry) {
   const parts = entry.split("/");
   if (entry.includes("*")) {
@@ -9741,7 +9760,7 @@ function allowlistEntryProblem(entry) {
 var SEARCH_BASE = "is:pr is:open draft:false";
 var SEARCH_PER_PAGE = 100;
 var SEARCH_MAX_PAGES = 5;
-function searchQuery(source) {
+function searchQuery(source, allows) {
   if (source === "requested") return `${SEARCH_BASE} user-review-requested:@me`;
   if (source === "assigned") return `${SEARCH_BASE} assignee:@me`;
   if (source === "reviewed") return `${SEARCH_BASE} reviewed-by:@me`;
@@ -9749,6 +9768,12 @@ function searchQuery(source) {
     const [org, slug, ...rest] = source.slice("team:".length).split("/");
     if (org !== void 0 && slug !== void 0 && rest.length === 0 && GITHUB_NAME.test(org) && GITHUB_NAME.test(slug)) {
       return `${SEARCH_BASE} team-review-requested:${org}/${slug}`;
+    }
+  }
+  if (typeof source === "string" && source.startsWith("reverts:")) {
+    const match = /^([^/#]+)\/([^/#]+)#([1-9]\d*)$/.exec(source.slice("reverts:".length));
+    if (match !== null && GITHUB_NAME.test(match[1]) && REPOSITORY_NAME.test(match[2]) && allows(`${match[1]}/${match[2]}`)) {
+      return `is:pr is:merged repo:${match[1]}/${match[2]} "Reverts ${match[1]}/${match[2]}#${match[3]}" in:body`;
     }
   }
   throw new NotAllowlisted(`Refused a search source that is not one Review Voice builds: ${JSON.stringify(source)}.`);
@@ -9978,7 +10003,8 @@ var GitHubClient = class {
     return body.data;
   }
   /**
-   * Open, non-draft pull requests from one GitHub search (docs/adr/0026).
+   * Open, non-draft pull requests from one GitHub search (docs/adr/0026), or
+   * the merged ones a `reverts:` source names (docs/adr/0036).
    *
    * The only request this client sends outside a repository path. The query is
    * built here from `source`, never from caller text, because a query is the
@@ -9989,7 +10015,7 @@ var GitHubClient = class {
    * at five.
    */
   async searchPullRequests(source) {
-    const q = encodeURIComponent(searchQuery(source));
+    const q = encodeURIComponent(searchQuery(source, (repository) => this.allows(repository)));
     const pullRequests = [];
     let outsideAllowlist = 0;
     let truncated = false;
@@ -15073,6 +15099,800 @@ async function reproduce(verification2, candidates, ctx) {
   return { enabled: true, sandbox, reproductions };
 }
 
+// plugins/review-voice/src/publish/suggestion.ts
+async function fileAtRef(client, repository, path, ref) {
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
+  try {
+    const { data } = await client.get(
+      `/repos/${repository}/contents/${encoded}?ref=${encodeURIComponent(ref)}`
+    );
+    if (data?.type !== "file" || data.encoding !== "base64" || typeof data.content !== "string") return null;
+    return Buffer.from(data.content, "base64").toString("utf8");
+  } catch {
+    return null;
+  }
+}
+function linesAt(text5, start, count4) {
+  const lines2 = text5.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
+  if (start < 1 || start - 1 + count4 > lines2.length) return null;
+  return lines2.slice(start - 1, start - 1 + count4).join("\n");
+}
+function suggestionApplied(reviewed, current, patch) {
+  const before = reviewed.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
+  const after = current.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
+  const start = patch.start_line - 1;
+  const original = unixLines(patch.original);
+  const replacement = unixLines(patch.replacement);
+  const replaced2 = replacement.split("\n");
+  if (original === replacement || before.join("\n") === after.join("\n")) return false;
+  if (after.slice(start, patch.end_line).join("\n") === original) return false;
+  if (before.slice(start, patch.end_line).join("\n") !== original) return false;
+  if (after.slice(start, start + replaced2.length).join("\n") !== replacement) return false;
+  if (before.slice(0, start).join("\n") !== after.slice(0, start).join("\n")) return false;
+  return after[start + replaced2.length] === before[patch.end_line];
+}
+function unixLines(text5) {
+  return text5.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3).join("\n");
+}
+
+// plugins/review-voice/src/store/outcomes.ts
+var NEGATED_ACK = /\bnot (?:yet )?(?:fixed|done|addressed|changed|updated)\b/i;
+var REJECT = /\b(?:won'?t fix|wontfix|not a (?:bug|issue|problem)|false positive|by design|intentional(?:ly)?|working as (?:intended|designed)|disagree|(?:does not|doesn'?t) apply|not applicable|not needed|unnecessary|incorrect|this is wrong|that'?s wrong)\b/i;
+var ACKNOWLEDGE = /\b(?:fixed|done|addressed|good catch|nice catch|will fix|will do|updated|applied|agreed|makes sense|you'?re right|thanks|thank you)\b/i;
+function classifyReply(body) {
+  if (REJECT.test(body)) return "reject";
+  if (NEGATED_ACK.test(body)) return "other";
+  if (ACKNOWLEDGE.test(body)) return "acknowledge";
+  return "other";
+}
+function patchTouches(patch, first, last) {
+  let oldLine = 0;
+  for (const line3 of patch.split("\n")) {
+    const header = /^@@ -(\d+)(?:,\d+)? \+\d+/.exec(line3);
+    if (header !== null) {
+      oldLine = Number(header[1]);
+      continue;
+    }
+    if (line3.startsWith("\\")) continue;
+    if (line3.startsWith("-")) {
+      if (oldLine >= first && oldLine <= last) return true;
+      oldLine += 1;
+    } else if (line3.startsWith("+")) {
+      if (oldLine > first && oldLine <= last) return true;
+    } else {
+      oldLine += 1;
+    }
+  }
+  return false;
+}
+var READ_LIMIT = 1e3;
+async function readStates(client, repository, pullNumber) {
+  const states = /* @__PURE__ */ new Map();
+  let cursor = null;
+  for (let read = 0; read < READ_LIMIT; read += 100) {
+    const data = await client.graphql(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
+    const threads = data?.repository?.pullRequest?.reviewThreads;
+    if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
+    for (const thread of threads.nodes) {
+      const state = { resolved: thread?.isResolved === true, outdated: thread?.isOutdated === true };
+      for (const comment of thread?.comments?.nodes ?? []) {
+        if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
+      }
+    }
+    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== "string") break;
+    cursor = threads.pageInfo.endCursor;
+  }
+  return states;
+}
+function attemptRuns(db) {
+  const attempts = /* @__PURE__ */ new Map();
+  for (const row of db.prepare(`SELECT audit_id, json_extract(metadata_json, '$.run') AS run FROM audit_events WHERE action = 'review_post_attempted'`).all()) {
+    if (typeof row.run === "string") attempts.set(row.audit_id, row.run);
+  }
+  return attempts;
+}
+function sentRuns(db, options) {
+  const attempts = attemptRuns(db);
+  const reviewIdsByRun = /* @__PURE__ */ new Map();
+  for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ?`).all(options.since)) {
+    let meta;
+    try {
+      meta = JSON.parse(row.metadata_json);
+    } catch {
+      continue;
+    }
+    const run = typeof meta.attempt === "string" ? attempts.get(meta.attempt) : void 0;
+    if (run === void 0) continue;
+    const ids = reviewIdsByRun.get(run) ?? [];
+    const id = Number(meta.reviewId);
+    if (Number.isInteger(id) && id > 0) ids.push(id);
+    reviewIdsByRun.set(run, ids);
+  }
+  const rows = db.prepare(
+    `SELECT review_run_id, repository, pull_number, head_ref FROM review_runs
+       WHERE repository IS NOT NULL AND pull_number IS NOT NULL ORDER BY created_at, rowid`
+  ).all();
+  const wanted = options.repository?.toLowerCase();
+  const runs = [];
+  for (const row of rows) {
+    const reviewIds = reviewIdsByRun.get(row.review_run_id);
+    if (reviewIds === void 0) continue;
+    if (wanted !== void 0 && row.repository.toLowerCase() !== wanted) continue;
+    runs.push({ runId: row.review_run_id, repository: row.repository, pullNumber: row.pull_number, headRef: row.head_ref, reviewIds });
+  }
+  return runs;
+}
+function approvedRuns(db, options) {
+  const attempts = attemptRuns(db);
+  const approvals = /* @__PURE__ */ new Map();
+  for (const row of db.prepare(`SELECT metadata_json, created_at FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ? ORDER BY created_at, rowid`).all(options.since)) {
+    let meta;
+    try {
+      meta = JSON.parse(row.metadata_json);
+    } catch {
+      continue;
+    }
+    if (meta.event !== "APPROVE") continue;
+    const run = typeof meta.attempt === "string" ? attempts.get(meta.attempt) : void 0;
+    if (run === void 0) continue;
+    const id = Number(meta.reviewId);
+    approvals.set(run, {
+      head: typeof meta.head === "string" ? meta.head : "",
+      reviewId: Number.isInteger(id) && id > 0 ? id : null,
+      sentAt: row.created_at
+    });
+  }
+  const wanted = options.repository?.toLowerCase();
+  const runs = [];
+  for (const row of db.prepare(
+    `SELECT review_run_id, repository, pull_number, head_ref FROM review_runs
+       WHERE repository IS NOT NULL AND pull_number IS NOT NULL ORDER BY created_at, rowid`
+  ).all()) {
+    const sent = approvals.get(row.review_run_id);
+    if (sent === void 0) continue;
+    if (wanted !== void 0 && row.repository.toLowerCase() !== wanted) continue;
+    const head = sent.head !== "" ? sent.head : row.head_ref;
+    if (head === null) continue;
+    runs.push({ runId: row.review_run_id, repository: row.repository, pullNumber: row.pull_number, head, reviewId: sent.reviewId, sentAt: sent.sentAt });
+  }
+  return runs;
+}
+var isBot = (user) => user?.type === "Bot" || (user?.login ?? "").endsWith("[bot]");
+var asksQuestion = (body) => body.split("\n").some((line3) => !/^\s*>/.test(line3) && line3.includes("?"));
+function replyWanted(root, replies, state, ownerReviewer) {
+  if (state === null || state.resolved) return null;
+  const login = (user) => user?.login?.toLowerCase() ?? null;
+  const poster = login(root.user);
+  if (poster === null) return null;
+  const under = replies.filter((reply) => reply.in_reply_to_id === root.id).sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
+  if (under.some((reply) => login(reply.user) === poster)) return null;
+  const owner = ownerReviewer?.toLowerCase() ?? null;
+  const latest = [...under].reverse().find((reply) => {
+    const author = login(reply.user);
+    return author !== null && !isBot(reply.user) && author !== owner;
+  });
+  if (latest === void 0) return null;
+  const body = latest.body ?? "";
+  const stance = classifyReply(body);
+  if (stance === "acknowledge" || !asksQuestion(body)) return null;
+  return { askedBy: latest.user.login, askedAt: latest.created_at ?? "", stance: stance === "reject" ? "reject" : "question" };
+}
+function sameHead(a, b) {
+  const left = a.toLowerCase();
+  const right = b.toLowerCase();
+  return left === right || left.length >= 7 && right.startsWith(left) || right.length >= 7 && left.startsWith(right);
+}
+async function checkOutcomes(options) {
+  const allowed = new Set(options.allowlist.map((name) => name.toLowerCase()));
+  const result = { outcomes: [], skipped: [], warnings: [], questions: [] };
+  const byPull = /* @__PURE__ */ new Map();
+  for (const run of sentRuns(options.db, { since: options.since, repository: options.repository })) {
+    if (options.pullNumber !== void 0 && run.pullNumber !== options.pullNumber) continue;
+    const key2 = `${run.repository.toLowerCase()}#${run.pullNumber}`;
+    byPull.set(key2, [...byPull.get(key2) ?? [], run]);
+  }
+  let viewer = null;
+  const viewerLogin = () => {
+    viewer ??= options.client.get("/user").then(({ data }) => data.login?.toLowerCase() ?? null).catch(() => null);
+    return viewer;
+  };
+  for (const runs of byPull.values()) {
+    const first = runs[0];
+    const { repository, pullNumber } = first;
+    if (!allowed.has(repository.toLowerCase())) {
+      result.skipped.push({ repository, pullNumber, reason: "not in the allowlist" });
+      continue;
+    }
+    try {
+      const context2 = await readPull(options.client, repository, pullNumber, result.warnings);
+      const cut4 = context2.replies.length >= READ_LIMIT;
+      if (cut4 && options.pullNumber !== void 0) result.warnings.push(`${repository}#${pullNumber}: only the first ${READ_LIMIT} inline comments were read, so no reply is offered on it`);
+      for (const run of runs) {
+        const followed = await followRun(options, context2, run, viewerLogin);
+        result.outcomes.push(...followed.outcomes);
+        if (!cut4) result.questions.push(...followed.questions);
+      }
+    } catch (error) {
+      result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
+    }
+  }
+  return terminalSafeDeep(result);
+}
+async function readPull(client, repository, pullNumber, warnings) {
+  const { data: pull } = await client.get(`/repos/${repository}/pulls/${pullNumber}`);
+  const replies = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/comments?per_page=100`, READ_LIMIT);
+  let states = null;
+  try {
+    states = await readStates(client, repository, pullNumber);
+  } catch (error) {
+    warnings.push(
+      `${repository}#${pullNumber}: could not read which threads are resolved (${error instanceof Error ? error.message.slice(0, 120) : String(error)}); resolution is unknown`
+    );
+  }
+  const sha = pull?.head?.sha;
+  return { repository, pullNumber, currentHead: typeof sha === "string" ? sha : null, replies, states, compares: /* @__PURE__ */ new Map() };
+}
+async function reviewIdsOf(options, run, viewerLogin) {
+  if (run.reviewIds.length > 0) return { ids: run.reviewIds, source: "audit" };
+  const login = await viewerLogin();
+  if (login === null || run.headRef === null) return { ids: [], source: "reviews-list" };
+  const reviews = await options.client.paginate(`/repos/${run.repository}/pulls/${run.pullNumber}/reviews?per_page=100`, READ_LIMIT);
+  const ids = reviews.filter((review2) => typeof review2.id === "number" && review2.user?.login?.toLowerCase() === login).filter((review2) => typeof review2.commit_id === "string" && sameHead(review2.commit_id, run.headRef)).map((review2) => review2.id);
+  return { ids, source: "reviews-list" };
+}
+function severityPrefix(finding) {
+  return `**${finding.severity}** - `;
+}
+function postedProse(body) {
+  const prose = stripEvidenceBlock(body);
+  const block = prose.lastIndexOf("\n\n```suggestion\n");
+  return block >= 0 && prose.endsWith("```") ? prose.slice(0, block) : prose;
+}
+function postedAs(comment, finding) {
+  return postedProse(comment.body ?? "") === `${severityPrefix(finding)}${parseFinding(finding.text, 0).prose}`;
+}
+function matchComments(findings, comments) {
+  const taken = /* @__PURE__ */ new Set();
+  const matched = /* @__PURE__ */ new Map();
+  const at2 = (comment, finding) => typeof comment.id === "number" && !taken.has(comment.id) && comment.in_reply_to_id == null && comment.path === finding.path && (comment.original_line === finding.line || comment.line === finding.line);
+  for (const finding of findings) {
+    const exact = comments.find((comment) => at2(comment, finding) && postedAs(comment, finding));
+    if (exact !== void 0) {
+      taken.add(exact.id);
+      matched.set(finding.findingId, exact);
+    }
+  }
+  for (const finding of findings) {
+    if (matched.has(finding.findingId)) continue;
+    const words = significantWords(finding.text);
+    const candidates = comments.filter((comment) => at2(comment, finding));
+    let best;
+    let bestScore = -1;
+    for (const comment of candidates) {
+      const body = stripEvidenceBlock(comment.body ?? "");
+      const score2 = overlap(words, significantWords(body)) + (body.startsWith(severityPrefix(finding)) ? 0.01 : 0);
+      if (score2 > bestScore) {
+        best = comment;
+        bestScore = score2;
+      }
+    }
+    if (best !== void 0) {
+      taken.add(best.id);
+      matched.set(finding.findingId, best);
+    }
+  }
+  return matched;
+}
+async function followRun(options, context2, run, viewerLogin) {
+  const detail = runDetail(options.db, run.runId);
+  if (detail === null) return { outcomes: [], questions: [] };
+  const { ids, source } = await reviewIdsOf(options, run, viewerLogin);
+  const comments = [];
+  for (const id of ids) {
+    comments.push(
+      ...await options.client.paginate(
+        `/repos/${run.repository}/pulls/${run.pullNumber}/reviews/${id}/comments?per_page=100`,
+        READ_LIMIT
+      )
+    );
+  }
+  const matched = matchComments(detail.findings, comments);
+  const checkedAt = (options.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+  const outcomes = [];
+  const questions = [];
+  for (const finding of detail.findings) {
+    const comment = matched.get(finding.findingId);
+    if (comment === void 0) continue;
+    const wanted = source === "audit" && postedAs(comment, finding) ? replyWanted(comment, context2.replies, context2.states?.get(comment.id) ?? null, options.ownerReviewer ?? null) : null;
+    if (wanted !== null) {
+      questions.push({
+        reviewRunId: run.runId,
+        findingId: finding.findingId,
+        repository: run.repository,
+        pullNumber: run.pullNumber,
+        rootCommentId: comment.id,
+        path: finding.path,
+        line: finding.line,
+        ...wanted
+      });
+    }
+    const decided = await decide2(options, context2, run, finding, comment);
+    const outcome = {
+      reviewRunId: run.runId,
+      findingId: finding.findingId,
+      repository: run.repository,
+      pullNumber: run.pullNumber,
+      commentId: comment.id,
+      ...decided,
+      evidence: source === "reviews-list" ? `${decided.evidence}; review found by commit and author` : decided.evidence,
+      checkedAt,
+      path: finding.path,
+      line: finding.line,
+      reviewIdSource: source
+    };
+    options.db.prepare("DELETE FROM finding_outcomes WHERE review_run_id = ? AND comment_id = ? AND finding_id <> ?").run(run.runId, outcome.commentId, outcome.findingId);
+    saveOutcome(options.db, outcome);
+    outcomes.push(outcome);
+  }
+  return { outcomes, questions };
+}
+async function linesChanged(options, context2, run, comment, finding) {
+  if (run.headRef === null || context2.currentHead === null) return null;
+  if (sameHead(run.headRef, context2.currentHead)) return false;
+  const key2 = run.headRef.toLowerCase();
+  let compare = context2.compares.get(key2);
+  if (compare === void 0) {
+    compare = options.client.paginateWrapped(`/repos/${run.repository}/compare/${run.headRef}...${context2.currentHead}?per_page=100`, "files", READ_LIMIT).catch(() => null);
+    context2.compares.set(key2, compare);
+  }
+  const files2 = await compare;
+  if (files2 === null) return null;
+  const file2 = files2.find((entry) => entry.filename === finding.path || entry.previous_filename === finding.path);
+  if (file2 === void 0) return false;
+  if (typeof file2.patch !== "string") return null;
+  const start = comment.start_line ?? comment.original_start_line ?? finding.line;
+  return patchTouches(file2.patch, Math.min(start, finding.line), finding.line);
+}
+async function decide2(options, context2, run, finding, comment) {
+  const dismissedByOwner = options.db.prepare(`SELECT 1 FROM feedback WHERE review_run_id = ? AND finding_id = ? AND action = 'dismiss'`).get(run.runId, finding.findingId);
+  if (dismissedByOwner !== void 0) {
+    return {
+      outcome: "dismissed",
+      strength: "strong",
+      evidence: "the owner recorded dismiss for this finding",
+      decidedBy: options.ownerReviewer ?? null
+    };
+  }
+  const poster = comment.user?.login?.toLowerCase();
+  const owner = options.ownerReviewer?.toLowerCase();
+  const classified = context2.replies.filter((reply) => reply.in_reply_to_id === comment.id && !isBot(reply.user)).map((reply) => ({
+    stance: classifyReply(reply.body ?? ""),
+    at: reply.created_at ?? "",
+    author: reply.user?.login ?? "unknown",
+    login: reply.user?.login ?? null
+  })).filter((answer2) => answer2.stance !== "other").sort((a, b) => a.at.localeCompare(b.at));
+  const ownerLatest = owner === void 0 ? void 0 : [...classified].reverse().find((answer2) => answer2.login?.toLowerCase() === owner);
+  if (ownerLatest?.stance === "reject") {
+    return { outcome: "dismissed", strength: "strong", evidence: `${ownerLatest.author} replied turning it down`, decidedBy: ownerLatest.login };
+  }
+  const answers = classified.filter((answer2) => answer2.login?.toLowerCase() !== poster);
+  const latest = answers[answers.length - 1];
+  if (latest?.stance === "reject") {
+    return { outcome: "dismissed", strength: "strong", evidence: `${latest.author} replied turning it down`, decidedBy: latest.login };
+  }
+  const state = context2.states?.get(comment.id) ?? null;
+  const changed = await linesChanged(options, context2, run, comment, finding) ?? (state?.outdated === true ? true : null);
+  const resolved = state === null ? null : state.resolved;
+  const agreed = latest?.stance === "acknowledge";
+  const patch = suggestedPatchOf(finding.suggestedPatch);
+  const offered = (comment.body ?? "").includes("\n```suggestion\n");
+  if (offered && patch !== null && patch.replacement !== "" && patch.replacement !== patch.original && context2.currentHead !== null && run.headRef !== null && !sameHead(run.headRef, context2.currentHead)) {
+    const [reviewed, current] = await Promise.all([
+      fileAtRef(options.client, run.repository, finding.path, run.headRef),
+      fileAtRef(options.client, run.repository, finding.path, context2.currentHead)
+    ]);
+    if (reviewed !== null && current !== null && suggestionApplied(reviewed, current, patch)) {
+      return { outcome: "fixed", strength: "strong", evidence: "suggestion applied", decidedBy: null };
+    }
+  }
+  if (changed === true && (resolved === true || agreed)) {
+    return {
+      outcome: "fixed",
+      strength: "strong",
+      evidence: `the anchored lines changed after the comment and ${resolved === true ? "the thread was resolved" : `${latest.author} agreed`}`,
+      decidedBy: null
+    };
+  }
+  if (resolved === true) {
+    return {
+      outcome: "resolved",
+      strength: "weak",
+      evidence: changed === false ? "the thread was resolved and the anchored lines are unchanged" : "the thread was resolved; whether the lines changed could not be read",
+      decidedBy: null
+    };
+  }
+  if (resolved === false && changed === true) {
+    return { outcome: "outdated", strength: "weak", evidence: "the anchored lines changed and the thread is still open", decidedBy: null };
+  }
+  if (resolved === false && changed === false) {
+    return {
+      outcome: "open",
+      strength: "weak",
+      evidence: agreed ? "agreed in reply, but the lines are unchanged and the thread is open" : "nothing has changed and the thread is open",
+      decidedBy: null
+    };
+  }
+  return { outcome: "unknown", strength: "weak", evidence: "the thread state or the later commits could not be read", decidedBy: null };
+}
+function saveOutcome(db, outcome) {
+  db.prepare(
+    `INSERT INTO finding_outcomes
+       (review_run_id, finding_id, repository, pull_number, comment_id, outcome, strength, evidence, checked_at, decided_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (review_run_id, finding_id) DO UPDATE SET
+       repository = excluded.repository, pull_number = excluded.pull_number, comment_id = excluded.comment_id,
+       outcome = excluded.outcome, strength = excluded.strength, evidence = excluded.evidence, checked_at = excluded.checked_at,
+       decided_by = excluded.decided_by`
+  ).run(
+    outcome.reviewRunId,
+    outcome.findingId,
+    outcome.repository,
+    outcome.pullNumber,
+    outcome.commentId,
+    outcome.outcome,
+    outcome.strength,
+    outcome.evidence,
+    outcome.checkedAt,
+    // Only a strong dismissal names its decider; anything else is stored as null.
+    outcome.outcome === "dismissed" && outcome.strength === "strong" ? outcome.decidedBy ?? null : null
+  );
+}
+function statsOf(rows) {
+  const strong = rows.filter((row) => row.strength === "strong");
+  const fixed = strong.filter((row) => row.outcome === "fixed").length;
+  const dismissed = strong.filter((row) => row.outcome === "dismissed").length;
+  const decided = fixed + dismissed;
+  return {
+    tracked: rows.length,
+    fixed,
+    dismissed,
+    fixedRate: decided === 0 ? null : fixed / decided,
+    dismissedRate: decided === 0 ? null : dismissed / decided
+  };
+}
+function postedStats(db, { since } = {}) {
+  if (since === void 0) {
+    return statsOf(db.prepare("SELECT outcome, strength FROM finding_outcomes").all());
+  }
+  return statsOf(
+    db.prepare(
+      `SELECT o.outcome AS outcome, o.strength AS strength FROM finding_outcomes o
+         JOIN review_runs r ON r.review_run_id = o.review_run_id WHERE r.created_at >= ?`
+    ).all(since)
+  );
+}
+function replyStats(db) {
+  const rows = db.prepare(
+    `SELECT o.outcome AS outcome, o.strength AS strength FROM (
+         SELECT DISTINCT json_extract(metadata_json, '$.run') AS run, json_extract(metadata_json, '$.finding') AS finding
+         FROM audit_events WHERE action = 'review_reply_sent' AND json_valid(metadata_json)
+       ) r LEFT JOIN finding_outcomes o ON o.review_run_id = r.run AND o.finding_id = r.finding`
+  ).all();
+  const { tracked, fixed, dismissed, fixedRate } = statsOf(rows);
+  return { replied: tracked, fixed, dismissed, fixedRate };
+}
+function evidenceBlockGroups(db) {
+  const sent = /* @__PURE__ */ new Set();
+  for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent'`).all()) {
+    try {
+      const attempt = JSON.parse(row.metadata_json).attempt;
+      if (typeof attempt === "string") sent.add(attempt);
+    } catch {
+    }
+  }
+  const groups = /* @__PURE__ */ new Map();
+  for (const row of db.prepare(
+    `SELECT audit_id, json_extract(metadata_json, '$.run') AS run, json_extract(metadata_json, '$.evidenceBlocks') AS blocks
+       FROM audit_events WHERE action = 'review_post_attempted' AND json_valid(metadata_json)`
+  ).all()) {
+    if (!sent.has(row.audit_id) || typeof row.run !== "string" || typeof row.blocks !== "number") continue;
+    if (row.blocks > 0) groups.set(row.run, "with");
+    else if (!groups.has(row.run)) groups.set(row.run, "without");
+  }
+  return groups;
+}
+function findingPlacer(db) {
+  const findings = /* @__PURE__ */ new Map();
+  return (runId, findingId) => {
+    let known = findings.get(runId);
+    if (known === void 0) {
+      known = /* @__PURE__ */ new Map();
+      findings.set(runId, known);
+      const stored = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(runId);
+      try {
+        const parsed2 = JSON.parse(stored?.output_json ?? "{}");
+        for (const finding of parsed2.findings ?? []) {
+          const lane = typeof finding["lane"] === "string" ? finding["lane"] : "diff";
+          known.set(String(finding["findingId"]), {
+            severity: typeof finding["severity"] === "string" ? finding["severity"] : "unknown",
+            lane,
+            rule: typeof finding["ruleId"] === "string" && finding["ruleId"].length > 0 ? finding["ruleId"] : ruleIdFor(typeof finding["category"] === "string" ? finding["category"] : null, lane) ?? "unknown"
+          });
+        }
+      } catch {
+      }
+    }
+    return known.get(findingId) ?? { severity: "unknown", lane: "diff", rule: "unknown" };
+  };
+}
+var collect = (map2, statsOf3) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list3]) => [key2, statsOf3(list3)]));
+function postedBreakdown(db, { since } = {}) {
+  const rows = since === void 0 ? db.prepare("SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes").all() : db.prepare(
+    `SELECT o.review_run_id AS review_run_id, o.finding_id AS finding_id, o.outcome AS outcome, o.strength AS strength
+             FROM finding_outcomes o JOIN review_runs r ON r.review_run_id = o.review_run_id WHERE r.created_at >= ?`
+  ).all(since);
+  const place = findingPlacer(db);
+  const groups = { severity: /* @__PURE__ */ new Map(), lane: /* @__PURE__ */ new Map(), rule: /* @__PURE__ */ new Map() };
+  const blockGroups = evidenceBlockGroups(db);
+  const byBlock = { with: [], without: [], unknown: [] };
+  for (const row of rows) {
+    const info = place(row.review_run_id, row.finding_id);
+    groups.severity.set(info.severity, [...groups.severity.get(info.severity) ?? [], row]);
+    groups.lane.set(info.lane, [...groups.lane.get(info.lane) ?? [], row]);
+    groups.rule.set(info.rule, [...groups.rule.get(info.rule) ?? [], row]);
+    byBlock[blockGroups.get(row.review_run_id) ?? "unknown"].push(row);
+  }
+  return {
+    bySeverity: collect(groups.severity, statsOf),
+    byLane: collect(groups.lane, statsOf),
+    byRule: collect(groups.rule, statsOf),
+    byEvidenceBlock: { with: statsOf(byBlock.with), without: statsOf(byBlock.without), unknown: statsOf(byBlock.unknown) }
+  };
+}
+function precisionOf(rows) {
+  const kept = rows.filter((row) => row.action !== "dismiss").length;
+  const dismissed = rows.length - kept;
+  return { kept, dismissed, precision: rows.length === 0 ? null : kept / rows.length };
+}
+function precisionBreakdown(db, { since } = {}) {
+  const labels = `f.action IN ('keep', 'rewrite', 'dismiss')`;
+  const rows = since === void 0 ? db.prepare(`SELECT review_run_id, finding_id, action FROM feedback f WHERE ${labels}`).all() : db.prepare(
+    `SELECT f.review_run_id AS review_run_id, f.finding_id AS finding_id, f.action AS action
+             FROM feedback f JOIN review_runs r ON r.review_run_id = f.review_run_id WHERE ${labels} AND r.created_at >= ?`
+  ).all(since);
+  const place = findingPlacer(db);
+  const byLane = /* @__PURE__ */ new Map();
+  const byRule = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const info = place(row.review_run_id, row.finding_id);
+    byLane.set(info.lane, [...byLane.get(info.lane) ?? [], row]);
+    byRule.set(info.rule, [...byRule.get(info.rule) ?? [], row]);
+  }
+  return { byLane: collect(byLane, precisionOf), byRule: collect(byRule, precisionOf) };
+}
+
+// plugins/review-voice/src/store/approvals.ts
+var DEFAULT_OUTCOMES = { approvalWindowDays: 14, approvalEscapeWarn: 0.05 };
+var APPROVAL_WARN_MIN_SETTLED = 30;
+var READ_LIMIT2 = 1e3;
+var EPOCH = "0000-01-01T00:00:00.000Z";
+async function checkApprovals(options) {
+  const result = { outcomes: [], skipped: [], warnings: [] };
+  const settled = settledRuns(options.db);
+  const runs = approvedRuns(options.db, { since: EPOCH, repository: options.repository }).filter(
+    (run) => run.sentAt >= options.since || !settled.has(run.runId)
+  );
+  const reads2 = /* @__PURE__ */ new Map();
+  for (const run of runs) {
+    if (!options.client.allows(run.repository)) {
+      result.skipped.push({ repository: run.repository, pullNumber: run.pullNumber, reason: "not in the allowlist" });
+      continue;
+    }
+    try {
+      const key2 = `${run.repository.toLowerCase()}#${run.pullNumber}`;
+      let read = reads2.get(key2);
+      if (read === void 0) {
+        read = readPull2(options.client, run.repository, run.pullNumber);
+        reads2.set(key2, read);
+      }
+      const outcome = await followApproval(options, run, await read);
+      saveApprovalOutcome(options.db, outcome);
+      result.outcomes.push(outcome);
+    } catch (error) {
+      result.warnings.push(
+        `${run.repository}#${run.pullNumber}: approval not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`
+      );
+    }
+  }
+  return result;
+}
+async function readPull2(client, repository, pullNumber) {
+  const { data: pull } = await client.get(`/repos/${repository}/pulls/${pullNumber}`);
+  const reviews = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`, READ_LIMIT2);
+  return { pull, reviews, commits: null, revert: null };
+}
+function settledRuns(db) {
+  const rows = db.prepare(
+    `SELECT review_run_id FROM approval_outcomes
+       WHERE outcome IN ('reverted', 'changes_requested', 'survived')
+          OR (outcome IN ('merged_other_head', 'closed')
+              AND CASE WHEN json_valid(evidence_json) THEN json_extract(evidence_json, '$.windowEndsAt') END <= checked_at)`
+  ).all();
+  return new Set(rows.map((row) => row.review_run_id));
+}
+var escapeRegExp3 = (text5) => text5.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+async function findRevert(client, run, mergedAt, windowEndsAt) {
+  const found2 = await client.searchPullRequests(`reverts:${run.repository}#${run.pullNumber}`);
+  const reverts = new RegExp(`\\bReverts ${escapeRegExp3(run.repository)}#${run.pullNumber}\\b`, "i");
+  for (const candidate of found2.pullRequests) {
+    if (candidate.repository.toLowerCase() !== run.repository.toLowerCase() || candidate.number === run.pullNumber) continue;
+    const { data: revert } = await client.get(`/repos/${run.repository}/pulls/${candidate.number}`);
+    if (typeof revert.merged_at !== "string" || typeof revert.body !== "string" || !reverts.test(revert.body)) continue;
+    if (revert.merged_at < mergedAt || revert.merged_at > windowEndsAt) continue;
+    return candidate.number;
+  }
+  if (found2.truncated) throw new Error("the revert search was incomplete");
+  return null;
+}
+async function commitsAfter(client, run, reads2) {
+  reads2.commits ??= client.paginate(`/repos/${run.repository}/pulls/${run.pullNumber}/commits?per_page=100`, READ_LIMIT2);
+  const commits = await reads2.commits;
+  const index = commits.findIndex((commit) => typeof commit.sha === "string" && sameHead(commit.sha, run.head));
+  return index === -1 ? null : commits.length - index - 1;
+}
+async function followApproval(options, run, reads2) {
+  const windowDays = options.windowDays ?? DEFAULT_OUTCOMES.approvalWindowDays;
+  const now = options.now?.() ?? /* @__PURE__ */ new Date();
+  const { pull, reviews } = reads2;
+  const state = typeof pull.state === "string" ? pull.state : null;
+  const mergedAt = typeof pull.merged_at === "string" ? pull.merged_at : null;
+  const currentHead = typeof pull.head?.sha === "string" ? pull.head.sha : null;
+  const windowEnd = (from) => new Date(Date.parse(from) + windowDays * 864e5).toISOString();
+  const row = (outcome, strength, evidence) => ({
+    reviewRunId: run.runId,
+    repository: run.repository,
+    pullNumber: run.pullNumber,
+    head: run.head,
+    reviewId: run.reviewId,
+    outcome,
+    strength,
+    evidence: { state, mergedAt, currentHead, ...evidence },
+    checkedAt: now.toISOString()
+  });
+  if (typeof pull.merged !== "boolean" || state === null) {
+    return row("unknown", "weak", { summary: "the pull request state could not be read" });
+  }
+  const own = reviews.find((review2) => review2.id === run.reviewId);
+  const poster = own?.user?.login?.toLowerCase() ?? null;
+  const approvedAt = typeof own?.submitted_at === "string" ? own.submitted_at : run.sentAt;
+  const requestedBy = reviews.find(
+    (review2) => review2.state === "CHANGES_REQUESTED" && typeof review2.user?.login === "string" && !isBot(review2.user) && review2.user.login.toLowerCase() !== poster && typeof review2.commit_id === "string" && sameHead(review2.commit_id, run.head) && typeof review2.submitted_at === "string" && review2.submitted_at > approvedAt
+  )?.user?.login;
+  const changesRequested = (by) => row("changes_requested", "strong", { summary: `${by} requested changes on the approved head after the approval`, changesRequestedBy: by });
+  const reviewsComplete = reviews.length < READ_LIMIT2;
+  const unlessTruncated = (outcome) => {
+    if (!reviewsComplete) throw new Error(`the reviews ran past the read limit of ${READ_LIMIT2}`);
+    return outcome;
+  };
+  if (pull.merged) {
+    if (currentHead === null || mergedAt === null) {
+      return row("unknown", "weak", { summary: "the merged head or the merge time could not be read" });
+    }
+    const windowEndsAt = windowEnd(mergedAt);
+    reads2.revert ??= findRevert(options.client, run, mergedAt, windowEndsAt);
+    const revert = await reads2.revert;
+    if (revert !== null) return row("reverted", "strong", { summary: `reverted by #${revert} inside the window`, windowEndsAt, revertPull: revert });
+    if (requestedBy !== void 0) return changesRequested(requestedBy);
+    if (!sameHead(currentHead, run.head)) {
+      const after = await commitsAfter(options.client, run, reads2);
+      return unlessTruncated(row("merged_other_head", "weak", {
+        summary: after === null ? `merged at ${currentHead.slice(0, 8)}; the approved head is not among the pull request's commits` : `merged at ${currentHead.slice(0, 8)}, ${after} commit(s) after the approved head`,
+        commitsAfterHead: after,
+        // Kept so the row is read again until a revert can no longer count.
+        windowEndsAt
+      }));
+    }
+    if (now.toISOString() >= windowEndsAt) {
+      return unlessTruncated(row("survived", "strong", { summary: `merged at the approved head and not reverted in ${windowDays} days`, windowEndsAt }));
+    }
+    return unlessTruncated(row("pending", "weak", { summary: `merged at the approved head; the window ends ${windowEndsAt}`, windowEndsAt }));
+  }
+  if (requestedBy !== void 0) return changesRequested(requestedBy);
+  if (state === "closed") {
+    return unlessTruncated(row("closed", "weak", { summary: "closed without merging", ...typeof pull.closed_at === "string" ? { windowEndsAt: windowEnd(pull.closed_at) } : {} }));
+  }
+  if (state === "open") return unlessTruncated(row("open", "weak", { summary: "still open" }));
+  return unlessTruncated(row("unknown", "weak", { summary: `the pull request state is ${state}` }));
+}
+function saveApprovalOutcome(db, outcome) {
+  db.prepare(
+    `INSERT INTO approval_outcomes
+       (review_run_id, repository, pull_number, head, review_id, outcome, strength, evidence_json, checked_at)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+     WHERE EXISTS (SELECT 1 FROM review_runs WHERE review_run_id = ?)
+     ON CONFLICT (review_run_id) DO UPDATE SET
+       repository = excluded.repository, pull_number = excluded.pull_number, head = excluded.head, review_id = excluded.review_id,
+       outcome = excluded.outcome, strength = excluded.strength, evidence_json = excluded.evidence_json, checked_at = excluded.checked_at
+     WHERE excluded.checked_at >= approval_outcomes.checked_at`
+  ).run(
+    outcome.reviewRunId,
+    outcome.repository,
+    outcome.pullNumber,
+    outcome.head,
+    outcome.reviewId,
+    outcome.outcome,
+    outcome.strength,
+    JSON.stringify(outcome.evidence),
+    outcome.checkedAt,
+    outcome.reviewRunId
+  );
+}
+function wilsonUpper(k, n, z = 1.96) {
+  if (n <= 0) return 1;
+  const p2 = k / n;
+  const z2 = z * z;
+  const centre = p2 + z2 / (2 * n);
+  const margin = z * Math.sqrt(p2 * (1 - p2) / n + z2 / (4 * n * n));
+  return Math.min(1, (centre + margin) / (1 + z2 / n));
+}
+function statsOf2(rows) {
+  const strong = rows.filter((row) => row.strength === "strong");
+  const escaped = strong.filter((row) => row.outcome === "reverted" || row.outcome === "changes_requested").length;
+  const survived = strong.filter((row) => row.outcome === "survived").length;
+  const settled = escaped + survived;
+  const pending = rows.filter((row) => row.outcome === "pending").length;
+  return {
+    tracked: rows.length,
+    escaped,
+    survived,
+    settled,
+    pending,
+    weak: rows.length - settled - pending,
+    rate: settled === 0 ? null : escaped / settled,
+    upperBound: settled === 0 ? null : wilsonUpper(escaped, settled)
+  };
+}
+function approvalBasis(stats) {
+  const basis = `${stats.escaped} escaped / ${stats.settled} settled approvals; ${stats.pending} pending, ${stats.weak} weak excluded`;
+  return stats.upperBound === null ? basis : `${basis}; Wilson 95% upper bound ${stats.upperBound.toFixed(2)}`;
+}
+function approvalStats(db) {
+  return statsOf2(db.prepare("SELECT outcome, strength FROM approval_outcomes").all());
+}
+function field(raw, key2) {
+  if (typeof raw !== "string") return "unknown";
+  try {
+    const value = JSON.parse(raw)?.[key2];
+    return typeof value === "string" ? value : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+function approvalBreakdown(db) {
+  const rows = db.prepare(
+    `SELECT o.outcome AS outcome, o.strength AS strength, r.provenance_json AS provenance, r.complexity_json AS complexity
+       FROM approval_outcomes o LEFT JOIN review_runs r ON r.review_run_id = o.review_run_id`
+  ).all();
+  const groups = { mode: /* @__PURE__ */ new Map(), complexity: /* @__PURE__ */ new Map(), independence: /* @__PURE__ */ new Map(), origin: /* @__PURE__ */ new Map() };
+  const add = (map2, key2, row) => {
+    map2.set(key2, [...map2.get(key2) ?? [], row]);
+  };
+  for (const row of rows) {
+    const origin = ORIGINS.find((known) => known === field(row.provenance, "origin"));
+    add(groups.mode, field(row.provenance, "mode"), row);
+    add(groups.complexity, field(row.complexity, "level"), row);
+    add(groups.independence, origin === void 0 ? "unknown" : independenceOf(origin), row);
+    add(groups.origin, origin ?? "unknown", row);
+  }
+  const collect2 = (map2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list3]) => [key2, statsOf2(list3)]));
+  return { byMode: collect2(groups.mode), byComplexity: collect2(groups.complexity), byIndependence: collect2(groups.independence), byOrigin: collect2(groups.origin) };
+}
+function approvalEscapeWarning(input) {
+  const { escaped, settled, upperBound, threshold } = input;
+  if (settled < APPROVAL_WARN_MIN_SETTLED || upperBound === null || !(upperBound > threshold)) return null;
+  return `Warning: ${escaped} of ${settled} settled approvals escaped (reverted or changes requested); the 95% upper bound ${upperBound.toFixed(2)} is above outcomes.approval_escape_warn ${threshold}. Run \`review-voice outcomes --approvals\` to see them.`;
+}
+
 // plugins/review-voice/src/policy/load.ts
 function asRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
@@ -15084,7 +15904,7 @@ function positiveInt(value) {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : void 0;
 }
 var CONFIG_KEYS = {
-  "": ["identity", "repositories", "review", "ci", "verdict", "static_evidence", "reproduction", "runners", "verification", "queue", "watch", "retention", "writes"],
+  "": ["identity", "repositories", "review", "ci", "verdict", "static_evidence", "reproduction", "runners", "verification", "queue", "watch", "retention", "outcomes", "writes"],
   identity: ["owner_reviewer", "reviewers"],
   repositories: ["include"],
   review: [
@@ -15152,6 +15972,7 @@ var CONFIG_KEYS = {
   "queue.skip.approved_at_head_by": ["logins", "sources"],
   watch: ["workspace", "interval", "post", "lock_port", "run_repository_commands", "review_timeout", "max_attempts_per_head"],
   retention: ["runs_days", "audit_days"],
+  outcomes: ["approval_window_days", "approval_escape_warn"],
   writes: ["github_posting_enabled"]
 };
 function section(value, path, warnings) {
@@ -15385,11 +16206,11 @@ function readReproduction(value, result) {
       }
     }
   }
-  const limit = (key2, field, min, max) => {
+  const limit = (key2, field2, min, max) => {
     const value2 = block[key2];
     if (value2 === void 0) return;
-    if (typeof value2 === "number" && Number.isInteger(value2) && value2 >= min && value2 <= max) target[field] = value2;
-    else result.warnings.push(`reproduction.${key2} must be a whole number from ${min} to ${max}; using ${target[field]}.`);
+    if (typeof value2 === "number" && Number.isInteger(value2) && value2 >= min && value2 <= max) target[field2] = value2;
+    else result.warnings.push(`reproduction.${key2} must be a whole number from ${min} to ${max}; using ${target[field2]}.`);
   };
   limit("memory_mb", "memoryMb", 64, 16384);
   limit("cpu_seconds", "cpuSeconds", 1, 600);
@@ -15776,14 +16597,30 @@ function readRetention(block, result) {
     result.warnings.push("retention must be a mapping; using the defaults.");
     return;
   }
-  const read = (key2, field) => {
+  const read = (key2, field2) => {
     const value = block[key2];
     if (value === void 0) return;
-    if (value === null || typeof value === "number" && Number.isInteger(value) && value >= 0) result.retention[field] = value;
-    else result.warnings.push(`retention.${key2} must be a whole number of days, or 0 or null to keep it forever; using ${DEFAULT_RETENTION[field]}.`);
+    if (value === null || typeof value === "number" && Number.isInteger(value) && value >= 0) result.retention[field2] = value;
+    else result.warnings.push(`retention.${key2} must be a whole number of days, or 0 or null to keep it forever; using ${DEFAULT_RETENTION[field2]}.`);
   };
   read("runs_days", "runsDays");
   read("audit_days", "auditDays");
+}
+function readOutcomes(block, result) {
+  if (block === null) {
+    result.warnings.push("outcomes must be a mapping; using the defaults.");
+    return;
+  }
+  const days = block["approval_window_days"];
+  if (days !== void 0) {
+    if (typeof days === "number" && Number.isInteger(days) && days > 0) result.outcomes.approvalWindowDays = days;
+    else result.warnings.push(`outcomes.approval_window_days must be a whole number above zero; using ${DEFAULT_OUTCOMES.approvalWindowDays}.`);
+  }
+  const warn2 = block["approval_escape_warn"];
+  if (warn2 !== void 0) {
+    if (typeof warn2 === "number" && warn2 >= 0 && warn2 <= 1) result.outcomes.approvalEscapeWarn = warn2;
+    else result.warnings.push(`outcomes.approval_escape_warn must be a number from 0 to 1; using ${DEFAULT_OUTCOMES.approvalEscapeWarn}.`);
+  }
 }
 function contentHash(text5) {
   return createHash5("sha256").update(text5).digest("hex").slice(0, 16);
@@ -15937,6 +16774,7 @@ function readConfigDocument(value, repositoryRoot2, result, honourRunners) {
   readQueue(section(doc["queue"], "queue", result.warnings), result);
   if (doc["watch"] !== void 0) readWatch(section(doc["watch"], "watch", result.warnings), result);
   if (doc["retention"] !== void 0) readRetention(section(doc["retention"], "retention", result.warnings), result);
+  if (doc["outcomes"] !== void 0) readOutcomes(section(doc["outcomes"], "outcomes", result.warnings), result);
   const staticEvidence = section(doc["static_evidence"], "static_evidence", result.warnings);
   if (staticEvidence !== null) {
     result.staticEvidence.enabled = staticEvidence["enabled"] === true;
@@ -16108,6 +16946,7 @@ function loadConfig(repositoryRoot2, baselinePath, path, db, source) {
     queue: defaultQueueConfig(),
     watch: defaultWatchConfig(),
     retention: { ...DEFAULT_RETENTION },
+    outcomes: { ...DEFAULT_OUTCOMES },
     staticEvidence: { enabled: false, commands: [], envPassthrough: [] },
     reproduction: defaultReproduction(),
     runners: { external: {}, use: { challenge: "claude", agentAuthoredChallenge: null } },
@@ -16854,539 +17693,6 @@ async function readThreadStates(client, repository, pullNumber) {
   return states;
 }
 
-// plugins/review-voice/src/publish/suggestion.ts
-async function fileAtRef(client, repository, path, ref) {
-  const encoded = path.split("/").map(encodeURIComponent).join("/");
-  try {
-    const { data } = await client.get(
-      `/repos/${repository}/contents/${encoded}?ref=${encodeURIComponent(ref)}`
-    );
-    if (data?.type !== "file" || data.encoding !== "base64" || typeof data.content !== "string") return null;
-    return Buffer.from(data.content, "base64").toString("utf8");
-  } catch {
-    return null;
-  }
-}
-function linesAt(text5, start, count4) {
-  const lines2 = text5.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
-  if (start < 1 || start - 1 + count4 > lines2.length) return null;
-  return lines2.slice(start - 1, start - 1 + count4).join("\n");
-}
-function suggestionApplied(reviewed, current, patch) {
-  const before = reviewed.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
-  const after = current.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3);
-  const start = patch.start_line - 1;
-  const original = unixLines(patch.original);
-  const replacement = unixLines(patch.replacement);
-  const replaced2 = replacement.split("\n");
-  if (original === replacement || before.join("\n") === after.join("\n")) return false;
-  if (after.slice(start, patch.end_line).join("\n") === original) return false;
-  if (before.slice(start, patch.end_line).join("\n") !== original) return false;
-  if (after.slice(start, start + replaced2.length).join("\n") !== replacement) return false;
-  if (before.slice(0, start).join("\n") !== after.slice(0, start).join("\n")) return false;
-  return after[start + replaced2.length] === before[patch.end_line];
-}
-function unixLines(text5) {
-  return text5.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3).join("\n");
-}
-
-// plugins/review-voice/src/store/outcomes.ts
-var NEGATED_ACK = /\bnot (?:yet )?(?:fixed|done|addressed|changed|updated)\b/i;
-var REJECT = /\b(?:won'?t fix|wontfix|not a (?:bug|issue|problem)|false positive|by design|intentional(?:ly)?|working as (?:intended|designed)|disagree|(?:does not|doesn'?t) apply|not applicable|not needed|unnecessary|incorrect|this is wrong|that'?s wrong)\b/i;
-var ACKNOWLEDGE = /\b(?:fixed|done|addressed|good catch|nice catch|will fix|will do|updated|applied|agreed|makes sense|you'?re right|thanks|thank you)\b/i;
-function classifyReply(body) {
-  if (REJECT.test(body)) return "reject";
-  if (NEGATED_ACK.test(body)) return "other";
-  if (ACKNOWLEDGE.test(body)) return "acknowledge";
-  return "other";
-}
-function patchTouches(patch, first, last) {
-  let oldLine = 0;
-  for (const line3 of patch.split("\n")) {
-    const header = /^@@ -(\d+)(?:,\d+)? \+\d+/.exec(line3);
-    if (header !== null) {
-      oldLine = Number(header[1]);
-      continue;
-    }
-    if (line3.startsWith("\\")) continue;
-    if (line3.startsWith("-")) {
-      if (oldLine >= first && oldLine <= last) return true;
-      oldLine += 1;
-    } else if (line3.startsWith("+")) {
-      if (oldLine > first && oldLine <= last) return true;
-    } else {
-      oldLine += 1;
-    }
-  }
-  return false;
-}
-var READ_LIMIT = 1e3;
-async function readStates(client, repository, pullNumber) {
-  const states = /* @__PURE__ */ new Map();
-  let cursor = null;
-  for (let read = 0; read < READ_LIMIT; read += 100) {
-    const data = await client.graphql(repository, REVIEW_THREADS_QUERY, { number: pullNumber, cursor });
-    const threads = data?.repository?.pullRequest?.reviewThreads;
-    if (threads === void 0 || !Array.isArray(threads.nodes)) throw new Error("no reviewThreads in the answer");
-    for (const thread of threads.nodes) {
-      const state = { resolved: thread?.isResolved === true, outdated: thread?.isOutdated === true };
-      for (const comment of thread?.comments?.nodes ?? []) {
-        if (typeof comment?.databaseId === "number") states.set(comment.databaseId, state);
-      }
-    }
-    if (threads.pageInfo?.hasNextPage !== true || typeof threads.pageInfo.endCursor !== "string") break;
-    cursor = threads.pageInfo.endCursor;
-  }
-  return states;
-}
-function sentRuns(db, options) {
-  const attempts = /* @__PURE__ */ new Map();
-  for (const row of db.prepare(`SELECT audit_id, json_extract(metadata_json, '$.run') AS run FROM audit_events WHERE action = 'review_post_attempted'`).all()) {
-    if (typeof row.run === "string") attempts.set(row.audit_id, row.run);
-  }
-  const reviewIdsByRun = /* @__PURE__ */ new Map();
-  for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ?`).all(options.since)) {
-    let meta;
-    try {
-      meta = JSON.parse(row.metadata_json);
-    } catch {
-      continue;
-    }
-    const run = typeof meta.attempt === "string" ? attempts.get(meta.attempt) : void 0;
-    if (run === void 0) continue;
-    const ids = reviewIdsByRun.get(run) ?? [];
-    const id = Number(meta.reviewId);
-    if (Number.isInteger(id) && id > 0) ids.push(id);
-    reviewIdsByRun.set(run, ids);
-  }
-  const rows = db.prepare(
-    `SELECT review_run_id, repository, pull_number, head_ref FROM review_runs
-       WHERE repository IS NOT NULL AND pull_number IS NOT NULL ORDER BY created_at, rowid`
-  ).all();
-  const wanted = options.repository?.toLowerCase();
-  const runs = [];
-  for (const row of rows) {
-    const reviewIds = reviewIdsByRun.get(row.review_run_id);
-    if (reviewIds === void 0) continue;
-    if (wanted !== void 0 && row.repository.toLowerCase() !== wanted) continue;
-    runs.push({ runId: row.review_run_id, repository: row.repository, pullNumber: row.pull_number, headRef: row.head_ref, reviewIds });
-  }
-  return runs;
-}
-var isBot = (user) => user?.type === "Bot" || (user?.login ?? "").endsWith("[bot]");
-var asksQuestion = (body) => body.split("\n").some((line3) => !/^\s*>/.test(line3) && line3.includes("?"));
-function replyWanted(root, replies, state, ownerReviewer) {
-  if (state === null || state.resolved) return null;
-  const login = (user) => user?.login?.toLowerCase() ?? null;
-  const poster = login(root.user);
-  if (poster === null) return null;
-  const under = replies.filter((reply) => reply.in_reply_to_id === root.id).sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
-  if (under.some((reply) => login(reply.user) === poster)) return null;
-  const owner = ownerReviewer?.toLowerCase() ?? null;
-  const latest = [...under].reverse().find((reply) => {
-    const author = login(reply.user);
-    return author !== null && !isBot(reply.user) && author !== owner;
-  });
-  if (latest === void 0) return null;
-  const body = latest.body ?? "";
-  const stance = classifyReply(body);
-  if (stance === "acknowledge" || !asksQuestion(body)) return null;
-  return { askedBy: latest.user.login, askedAt: latest.created_at ?? "", stance: stance === "reject" ? "reject" : "question" };
-}
-function sameHead(a, b) {
-  const left = a.toLowerCase();
-  const right = b.toLowerCase();
-  return left === right || left.length >= 7 && right.startsWith(left) || right.length >= 7 && left.startsWith(right);
-}
-async function checkOutcomes(options) {
-  const allowed = new Set(options.allowlist.map((name) => name.toLowerCase()));
-  const result = { outcomes: [], skipped: [], warnings: [], questions: [] };
-  const byPull = /* @__PURE__ */ new Map();
-  for (const run of sentRuns(options.db, { since: options.since, repository: options.repository })) {
-    if (options.pullNumber !== void 0 && run.pullNumber !== options.pullNumber) continue;
-    const key2 = `${run.repository.toLowerCase()}#${run.pullNumber}`;
-    byPull.set(key2, [...byPull.get(key2) ?? [], run]);
-  }
-  let viewer = null;
-  const viewerLogin = () => {
-    viewer ??= options.client.get("/user").then(({ data }) => data.login?.toLowerCase() ?? null).catch(() => null);
-    return viewer;
-  };
-  for (const runs of byPull.values()) {
-    const first = runs[0];
-    const { repository, pullNumber } = first;
-    if (!allowed.has(repository.toLowerCase())) {
-      result.skipped.push({ repository, pullNumber, reason: "not in the allowlist" });
-      continue;
-    }
-    try {
-      const context2 = await readPull(options.client, repository, pullNumber, result.warnings);
-      const cut4 = context2.replies.length >= READ_LIMIT;
-      if (cut4 && options.pullNumber !== void 0) result.warnings.push(`${repository}#${pullNumber}: only the first ${READ_LIMIT} inline comments were read, so no reply is offered on it`);
-      for (const run of runs) {
-        const followed = await followRun(options, context2, run, viewerLogin);
-        result.outcomes.push(...followed.outcomes);
-        if (!cut4) result.questions.push(...followed.questions);
-      }
-    } catch (error) {
-      result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
-    }
-  }
-  return terminalSafeDeep(result);
-}
-async function readPull(client, repository, pullNumber, warnings) {
-  const { data: pull } = await client.get(`/repos/${repository}/pulls/${pullNumber}`);
-  const replies = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/comments?per_page=100`, READ_LIMIT);
-  let states = null;
-  try {
-    states = await readStates(client, repository, pullNumber);
-  } catch (error) {
-    warnings.push(
-      `${repository}#${pullNumber}: could not read which threads are resolved (${error instanceof Error ? error.message.slice(0, 120) : String(error)}); resolution is unknown`
-    );
-  }
-  const sha = pull?.head?.sha;
-  return { repository, pullNumber, currentHead: typeof sha === "string" ? sha : null, replies, states, compares: /* @__PURE__ */ new Map() };
-}
-async function reviewIdsOf(options, run, viewerLogin) {
-  if (run.reviewIds.length > 0) return { ids: run.reviewIds, source: "audit" };
-  const login = await viewerLogin();
-  if (login === null || run.headRef === null) return { ids: [], source: "reviews-list" };
-  const reviews = await options.client.paginate(`/repos/${run.repository}/pulls/${run.pullNumber}/reviews?per_page=100`, READ_LIMIT);
-  const ids = reviews.filter((review2) => typeof review2.id === "number" && review2.user?.login?.toLowerCase() === login).filter((review2) => typeof review2.commit_id === "string" && sameHead(review2.commit_id, run.headRef)).map((review2) => review2.id);
-  return { ids, source: "reviews-list" };
-}
-function severityPrefix(finding) {
-  return `**${finding.severity}** - `;
-}
-function postedProse(body) {
-  const prose = stripEvidenceBlock(body);
-  const block = prose.lastIndexOf("\n\n```suggestion\n");
-  return block >= 0 && prose.endsWith("```") ? prose.slice(0, block) : prose;
-}
-function postedAs(comment, finding) {
-  return postedProse(comment.body ?? "") === `${severityPrefix(finding)}${parseFinding(finding.text, 0).prose}`;
-}
-function matchComments(findings, comments) {
-  const taken = /* @__PURE__ */ new Set();
-  const matched = /* @__PURE__ */ new Map();
-  const at2 = (comment, finding) => typeof comment.id === "number" && !taken.has(comment.id) && comment.in_reply_to_id == null && comment.path === finding.path && (comment.original_line === finding.line || comment.line === finding.line);
-  for (const finding of findings) {
-    const exact = comments.find((comment) => at2(comment, finding) && postedAs(comment, finding));
-    if (exact !== void 0) {
-      taken.add(exact.id);
-      matched.set(finding.findingId, exact);
-    }
-  }
-  for (const finding of findings) {
-    if (matched.has(finding.findingId)) continue;
-    const words = significantWords(finding.text);
-    const candidates = comments.filter((comment) => at2(comment, finding));
-    let best;
-    let bestScore = -1;
-    for (const comment of candidates) {
-      const body = stripEvidenceBlock(comment.body ?? "");
-      const score2 = overlap(words, significantWords(body)) + (body.startsWith(severityPrefix(finding)) ? 0.01 : 0);
-      if (score2 > bestScore) {
-        best = comment;
-        bestScore = score2;
-      }
-    }
-    if (best !== void 0) {
-      taken.add(best.id);
-      matched.set(finding.findingId, best);
-    }
-  }
-  return matched;
-}
-async function followRun(options, context2, run, viewerLogin) {
-  const detail = runDetail(options.db, run.runId);
-  if (detail === null) return { outcomes: [], questions: [] };
-  const { ids, source } = await reviewIdsOf(options, run, viewerLogin);
-  const comments = [];
-  for (const id of ids) {
-    comments.push(
-      ...await options.client.paginate(
-        `/repos/${run.repository}/pulls/${run.pullNumber}/reviews/${id}/comments?per_page=100`,
-        READ_LIMIT
-      )
-    );
-  }
-  const matched = matchComments(detail.findings, comments);
-  const checkedAt = (options.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
-  const outcomes = [];
-  const questions = [];
-  for (const finding of detail.findings) {
-    const comment = matched.get(finding.findingId);
-    if (comment === void 0) continue;
-    const wanted = source === "audit" && postedAs(comment, finding) ? replyWanted(comment, context2.replies, context2.states?.get(comment.id) ?? null, options.ownerReviewer ?? null) : null;
-    if (wanted !== null) {
-      questions.push({
-        reviewRunId: run.runId,
-        findingId: finding.findingId,
-        repository: run.repository,
-        pullNumber: run.pullNumber,
-        rootCommentId: comment.id,
-        path: finding.path,
-        line: finding.line,
-        ...wanted
-      });
-    }
-    const decided = await decide2(options, context2, run, finding, comment);
-    const outcome = {
-      reviewRunId: run.runId,
-      findingId: finding.findingId,
-      repository: run.repository,
-      pullNumber: run.pullNumber,
-      commentId: comment.id,
-      ...decided,
-      evidence: source === "reviews-list" ? `${decided.evidence}; review found by commit and author` : decided.evidence,
-      checkedAt,
-      path: finding.path,
-      line: finding.line,
-      reviewIdSource: source
-    };
-    options.db.prepare("DELETE FROM finding_outcomes WHERE review_run_id = ? AND comment_id = ? AND finding_id <> ?").run(run.runId, outcome.commentId, outcome.findingId);
-    saveOutcome(options.db, outcome);
-    outcomes.push(outcome);
-  }
-  return { outcomes, questions };
-}
-async function linesChanged(options, context2, run, comment, finding) {
-  if (run.headRef === null || context2.currentHead === null) return null;
-  if (sameHead(run.headRef, context2.currentHead)) return false;
-  const key2 = run.headRef.toLowerCase();
-  let compare = context2.compares.get(key2);
-  if (compare === void 0) {
-    compare = options.client.paginateWrapped(`/repos/${run.repository}/compare/${run.headRef}...${context2.currentHead}?per_page=100`, "files", READ_LIMIT).catch(() => null);
-    context2.compares.set(key2, compare);
-  }
-  const files2 = await compare;
-  if (files2 === null) return null;
-  const file2 = files2.find((entry) => entry.filename === finding.path || entry.previous_filename === finding.path);
-  if (file2 === void 0) return false;
-  if (typeof file2.patch !== "string") return null;
-  const start = comment.start_line ?? comment.original_start_line ?? finding.line;
-  return patchTouches(file2.patch, Math.min(start, finding.line), finding.line);
-}
-async function decide2(options, context2, run, finding, comment) {
-  const dismissedByOwner = options.db.prepare(`SELECT 1 FROM feedback WHERE review_run_id = ? AND finding_id = ? AND action = 'dismiss'`).get(run.runId, finding.findingId);
-  if (dismissedByOwner !== void 0) {
-    return {
-      outcome: "dismissed",
-      strength: "strong",
-      evidence: "the owner recorded dismiss for this finding",
-      decidedBy: options.ownerReviewer ?? null
-    };
-  }
-  const poster = comment.user?.login?.toLowerCase();
-  const owner = options.ownerReviewer?.toLowerCase();
-  const classified = context2.replies.filter((reply) => reply.in_reply_to_id === comment.id && !isBot(reply.user)).map((reply) => ({
-    stance: classifyReply(reply.body ?? ""),
-    at: reply.created_at ?? "",
-    author: reply.user?.login ?? "unknown",
-    login: reply.user?.login ?? null
-  })).filter((answer2) => answer2.stance !== "other").sort((a, b) => a.at.localeCompare(b.at));
-  const ownerLatest = owner === void 0 ? void 0 : [...classified].reverse().find((answer2) => answer2.login?.toLowerCase() === owner);
-  if (ownerLatest?.stance === "reject") {
-    return { outcome: "dismissed", strength: "strong", evidence: `${ownerLatest.author} replied turning it down`, decidedBy: ownerLatest.login };
-  }
-  const answers = classified.filter((answer2) => answer2.login?.toLowerCase() !== poster);
-  const latest = answers[answers.length - 1];
-  if (latest?.stance === "reject") {
-    return { outcome: "dismissed", strength: "strong", evidence: `${latest.author} replied turning it down`, decidedBy: latest.login };
-  }
-  const state = context2.states?.get(comment.id) ?? null;
-  const changed = await linesChanged(options, context2, run, comment, finding) ?? (state?.outdated === true ? true : null);
-  const resolved = state === null ? null : state.resolved;
-  const agreed = latest?.stance === "acknowledge";
-  const patch = suggestedPatchOf(finding.suggestedPatch);
-  const offered = (comment.body ?? "").includes("\n```suggestion\n");
-  if (offered && patch !== null && patch.replacement !== "" && patch.replacement !== patch.original && context2.currentHead !== null && run.headRef !== null && !sameHead(run.headRef, context2.currentHead)) {
-    const [reviewed, current] = await Promise.all([
-      fileAtRef(options.client, run.repository, finding.path, run.headRef),
-      fileAtRef(options.client, run.repository, finding.path, context2.currentHead)
-    ]);
-    if (reviewed !== null && current !== null && suggestionApplied(reviewed, current, patch)) {
-      return { outcome: "fixed", strength: "strong", evidence: "suggestion applied", decidedBy: null };
-    }
-  }
-  if (changed === true && (resolved === true || agreed)) {
-    return {
-      outcome: "fixed",
-      strength: "strong",
-      evidence: `the anchored lines changed after the comment and ${resolved === true ? "the thread was resolved" : `${latest.author} agreed`}`,
-      decidedBy: null
-    };
-  }
-  if (resolved === true) {
-    return {
-      outcome: "resolved",
-      strength: "weak",
-      evidence: changed === false ? "the thread was resolved and the anchored lines are unchanged" : "the thread was resolved; whether the lines changed could not be read",
-      decidedBy: null
-    };
-  }
-  if (resolved === false && changed === true) {
-    return { outcome: "outdated", strength: "weak", evidence: "the anchored lines changed and the thread is still open", decidedBy: null };
-  }
-  if (resolved === false && changed === false) {
-    return {
-      outcome: "open",
-      strength: "weak",
-      evidence: agreed ? "agreed in reply, but the lines are unchanged and the thread is open" : "nothing has changed and the thread is open",
-      decidedBy: null
-    };
-  }
-  return { outcome: "unknown", strength: "weak", evidence: "the thread state or the later commits could not be read", decidedBy: null };
-}
-function saveOutcome(db, outcome) {
-  db.prepare(
-    `INSERT INTO finding_outcomes
-       (review_run_id, finding_id, repository, pull_number, comment_id, outcome, strength, evidence, checked_at, decided_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (review_run_id, finding_id) DO UPDATE SET
-       repository = excluded.repository, pull_number = excluded.pull_number, comment_id = excluded.comment_id,
-       outcome = excluded.outcome, strength = excluded.strength, evidence = excluded.evidence, checked_at = excluded.checked_at,
-       decided_by = excluded.decided_by`
-  ).run(
-    outcome.reviewRunId,
-    outcome.findingId,
-    outcome.repository,
-    outcome.pullNumber,
-    outcome.commentId,
-    outcome.outcome,
-    outcome.strength,
-    outcome.evidence,
-    outcome.checkedAt,
-    // Only a strong dismissal names its decider; anything else is stored as null.
-    outcome.outcome === "dismissed" && outcome.strength === "strong" ? outcome.decidedBy ?? null : null
-  );
-}
-function statsOf(rows) {
-  const strong = rows.filter((row) => row.strength === "strong");
-  const fixed = strong.filter((row) => row.outcome === "fixed").length;
-  const dismissed = strong.filter((row) => row.outcome === "dismissed").length;
-  const decided = fixed + dismissed;
-  return {
-    tracked: rows.length,
-    fixed,
-    dismissed,
-    fixedRate: decided === 0 ? null : fixed / decided,
-    dismissedRate: decided === 0 ? null : dismissed / decided
-  };
-}
-function postedStats(db, { since } = {}) {
-  if (since === void 0) {
-    return statsOf(db.prepare("SELECT outcome, strength FROM finding_outcomes").all());
-  }
-  return statsOf(
-    db.prepare(
-      `SELECT o.outcome AS outcome, o.strength AS strength FROM finding_outcomes o
-         JOIN review_runs r ON r.review_run_id = o.review_run_id WHERE r.created_at >= ?`
-    ).all(since)
-  );
-}
-function replyStats(db) {
-  const rows = db.prepare(
-    `SELECT o.outcome AS outcome, o.strength AS strength FROM (
-         SELECT DISTINCT json_extract(metadata_json, '$.run') AS run, json_extract(metadata_json, '$.finding') AS finding
-         FROM audit_events WHERE action = 'review_reply_sent' AND json_valid(metadata_json)
-       ) r LEFT JOIN finding_outcomes o ON o.review_run_id = r.run AND o.finding_id = r.finding`
-  ).all();
-  const { tracked, fixed, dismissed, fixedRate } = statsOf(rows);
-  return { replied: tracked, fixed, dismissed, fixedRate };
-}
-function evidenceBlockGroups(db) {
-  const sent = /* @__PURE__ */ new Set();
-  for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent'`).all()) {
-    try {
-      const attempt = JSON.parse(row.metadata_json).attempt;
-      if (typeof attempt === "string") sent.add(attempt);
-    } catch {
-    }
-  }
-  const groups = /* @__PURE__ */ new Map();
-  for (const row of db.prepare(
-    `SELECT audit_id, json_extract(metadata_json, '$.run') AS run, json_extract(metadata_json, '$.evidenceBlocks') AS blocks
-       FROM audit_events WHERE action = 'review_post_attempted' AND json_valid(metadata_json)`
-  ).all()) {
-    if (!sent.has(row.audit_id) || typeof row.run !== "string" || typeof row.blocks !== "number") continue;
-    if (row.blocks > 0) groups.set(row.run, "with");
-    else if (!groups.has(row.run)) groups.set(row.run, "without");
-  }
-  return groups;
-}
-function findingPlacer(db) {
-  const findings = /* @__PURE__ */ new Map();
-  return (runId, findingId) => {
-    let known = findings.get(runId);
-    if (known === void 0) {
-      known = /* @__PURE__ */ new Map();
-      findings.set(runId, known);
-      const stored = db.prepare("SELECT output_json FROM review_runs WHERE review_run_id = ?").get(runId);
-      try {
-        const parsed2 = JSON.parse(stored?.output_json ?? "{}");
-        for (const finding of parsed2.findings ?? []) {
-          const lane = typeof finding["lane"] === "string" ? finding["lane"] : "diff";
-          known.set(String(finding["findingId"]), {
-            severity: typeof finding["severity"] === "string" ? finding["severity"] : "unknown",
-            lane,
-            rule: typeof finding["ruleId"] === "string" && finding["ruleId"].length > 0 ? finding["ruleId"] : ruleIdFor(typeof finding["category"] === "string" ? finding["category"] : null, lane) ?? "unknown"
-          });
-        }
-      } catch {
-      }
-    }
-    return known.get(findingId) ?? { severity: "unknown", lane: "diff", rule: "unknown" };
-  };
-}
-var collect = (map2, statsOf2) => Object.fromEntries([...map2.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key2, list3]) => [key2, statsOf2(list3)]));
-function postedBreakdown(db, { since } = {}) {
-  const rows = since === void 0 ? db.prepare("SELECT review_run_id, finding_id, outcome, strength FROM finding_outcomes").all() : db.prepare(
-    `SELECT o.review_run_id AS review_run_id, o.finding_id AS finding_id, o.outcome AS outcome, o.strength AS strength
-             FROM finding_outcomes o JOIN review_runs r ON r.review_run_id = o.review_run_id WHERE r.created_at >= ?`
-  ).all(since);
-  const place = findingPlacer(db);
-  const groups = { severity: /* @__PURE__ */ new Map(), lane: /* @__PURE__ */ new Map(), rule: /* @__PURE__ */ new Map() };
-  const blockGroups = evidenceBlockGroups(db);
-  const byBlock = { with: [], without: [], unknown: [] };
-  for (const row of rows) {
-    const info = place(row.review_run_id, row.finding_id);
-    groups.severity.set(info.severity, [...groups.severity.get(info.severity) ?? [], row]);
-    groups.lane.set(info.lane, [...groups.lane.get(info.lane) ?? [], row]);
-    groups.rule.set(info.rule, [...groups.rule.get(info.rule) ?? [], row]);
-    byBlock[blockGroups.get(row.review_run_id) ?? "unknown"].push(row);
-  }
-  return {
-    bySeverity: collect(groups.severity, statsOf),
-    byLane: collect(groups.lane, statsOf),
-    byRule: collect(groups.rule, statsOf),
-    byEvidenceBlock: { with: statsOf(byBlock.with), without: statsOf(byBlock.without), unknown: statsOf(byBlock.unknown) }
-  };
-}
-function precisionOf(rows) {
-  const kept = rows.filter((row) => row.action !== "dismiss").length;
-  const dismissed = rows.length - kept;
-  return { kept, dismissed, precision: rows.length === 0 ? null : kept / rows.length };
-}
-function precisionBreakdown(db, { since } = {}) {
-  const labels = `f.action IN ('keep', 'rewrite', 'dismiss')`;
-  const rows = since === void 0 ? db.prepare(`SELECT review_run_id, finding_id, action FROM feedback f WHERE ${labels}`).all() : db.prepare(
-    `SELECT f.review_run_id AS review_run_id, f.finding_id AS finding_id, f.action AS action
-             FROM feedback f JOIN review_runs r ON r.review_run_id = f.review_run_id WHERE ${labels} AND r.created_at >= ?`
-  ).all(since);
-  const place = findingPlacer(db);
-  const byLane = /* @__PURE__ */ new Map();
-  const byRule = /* @__PURE__ */ new Map();
-  for (const row of rows) {
-    const info = place(row.review_run_id, row.finding_id);
-    byLane.set(info.lane, [...byLane.get(info.lane) ?? [], row]);
-    byRule.set(info.rule, [...byRule.get(info.rule) ?? [], row]);
-  }
-  return { byLane: collect(byLane, precisionOf), byRule: collect(byRule, precisionOf) };
-}
-
 // plugins/review-voice/src/evaluate/metrics.ts
 function formatMetricValue(metric) {
   if (metric.value === null) return "no data";
@@ -17641,6 +17947,7 @@ function ruleEffectiveness(db) {
 function evaluationReport(db, metrics, options = {}) {
   const { bySeverity, byLane, byRule, byEvidenceBlock } = postedBreakdown(db);
   const precision = precisionBreakdown(db);
+  const approvals = approvalBreakdown(db);
   return {
     generated_at: (options.now ?? (() => /* @__PURE__ */ new Date()))().toISOString(),
     window_days: options.windowDays ?? DEFAULT_WINDOW_DAYS,
@@ -17649,7 +17956,13 @@ function evaluationReport(db, metrics, options = {}) {
     precision_breakdown: { by_lane: precision.byLane, by_rule: precision.byRule },
     stage_seconds: stageSeconds(db),
     rule_effectiveness: ruleEffectiveness(db),
-    by_family: byFamily(db)
+    by_family: byFamily(db),
+    approval_breakdown: {
+      by_mode: approvals.byMode,
+      by_complexity: approvals.byComplexity,
+      by_independence: approvals.byIndependence,
+      by_origin: approvals.byOrigin
+    }
   };
 }
 function reproductionCounts(db) {
@@ -17722,6 +18035,7 @@ function computeMetrics(db, options = {}) {
   const recent = postedStats(db, { since: windowStart(windowDays, options.now) });
   const recentDecided = recent.fixed + recent.dismissed;
   const replies = replyStats(db);
+  const approvals = approvalStats(db);
   const metric = (name, value, target, meets, basis, kind = "gate") => ({
     name,
     value,
@@ -17914,7 +18228,20 @@ function computeMetrics(db, options = {}) {
       () => true,
       `${replies.fixed} fixed / (${replies.fixed + replies.dismissed} fixed or dismissed) of ${replies.replied} replied finding(s); weak outcomes excluded`,
       "goal"
-    )
+    ),
+    // What became of the approvals this tool sent (docs/adr/0036). Settled
+    // means strong: a revert or a request for changes against a merge that
+    // outlived the window. Pending and weak rows are counted and left out, so a
+    // merge the window has not closed on is never a survival.
+    metric(
+      "approvals_tracked",
+      approvals.tracked === 0 ? null : approvals.tracked,
+      "no target",
+      () => true,
+      "sent approvals with a recorded outcome; run `review-voice outcomes --approvals` to check",
+      "goal"
+    ),
+    metric("approval_escape_rate", approvals.rate, "no target", () => true, approvalBasis(approvals), "goal")
   ];
 }
 var AGREEMENT_LINE_TOLERANCE = 3;
@@ -19045,7 +19372,7 @@ async function runPass(options, json2) {
       lines2.push(...listed);
       held.push(...listed);
     }
-    const followed = await followOutcomes(client, db, deps, config2.ownerReviewer);
+    const followed = await followOutcomes(client, db, deps, config2.ownerReviewer, config2.outcomes?.approvalWindowDays);
     const swept = sweepRetention(db, config2, deps);
     if (json2) {
       deps.out(JSON.stringify(rows, null, 2));
@@ -19173,17 +19500,24 @@ async function verdict(options, client, db, entry, recheck) {
   const status = waiting(sent.exitCode) ?? "failed";
   return { row: { ...base, event: output.event, status, detail: result.reasons.join("; ") || `post exited ${sent.exitCode}` } };
 }
-async function followOutcomes(client, db, deps, ownerReviewer) {
+async function followOutcomes(client, db, deps, ownerReviewer, approvalWindowDays) {
   const weekAgo = new Date(deps.now().getTime() - OUTCOME_DAYS * 864e5).toISOString();
   const pulls = recentlySentPulls(db, weekAgo, OUTCOME_PULLS);
-  if (pulls.length === 0) return 0;
   const since = pulls.length === OUTCOME_PULLS ? pulls.at(-1).sentAt : weekAgo;
   const allowlist = [...new Set(pulls.map((pull) => pull.repository).filter((repository) => client.allows(repository)))];
+  if (pulls.length > 0) {
+    try {
+      const result = await checkOutcomes({ db, client, allowlist, since, now: deps.now, ownerReviewer });
+      for (const warning of result.warnings) deps.err(warning);
+    } catch (error) {
+      deps.err(`Outcomes were not followed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   try {
-    const result = await checkOutcomes({ db, client, allowlist, since, now: deps.now, ownerReviewer });
+    const result = await checkApprovals({ db, client, since, windowDays: approvalWindowDays, now: deps.now });
     for (const warning of result.warnings) deps.err(warning);
   } catch (error) {
-    deps.err(`Outcomes were not followed: ${error instanceof Error ? error.message : String(error)}`);
+    deps.err(`Approvals were not followed: ${error instanceof Error ? error.message : String(error)}`);
   }
   return pulls.filter((pull) => allowlist.includes(pull.repository)).length;
 }
@@ -19930,7 +20264,8 @@ var COMMAND_HELP = {
       "",
       "Flags:",
       "  --json                 Emit the report as JSON, with posted-finding outcomes by severity, lane and rule,",
-      "                         owner precision by lane and rule, and each active suppression since its approval",
+      "                         owner precision by lane and rule, each active suppression since its approval, and",
+      "                         approval outcomes by mode, complexity, independence and origin",
       "  --html                 Emit the same report as an HTML fragment a job summary renders (exclusive with --json)",
       "  --out <path>           With --html, write a complete static page to the file, or evaluation.html in the directory",
       "  --recall <results.json>  Also report the fixture recall figures from a file `review-voice recall` wrote.",
@@ -20024,13 +20359,21 @@ var COMMAND_HELP = {
       '  more line prints: "<repo>#<pr> <finding> <path>:<line> question from <login>',
       '  awaiting a reply; run reply --pr <pr>". A disagreement counts only when it asks; an',
       "  acknowledgement never does, even with a question mark. Nothing is posted here.",
+      "  With --approvals, follow each APPROVE Review Voice sent instead: reverted, changes_requested",
+      "  and survived are strong; merged_other_head, pending, closed, open and unknown are weak. A merge",
+      "  inside outcomes.approval_window_days (default 14) is pending, never survived.",
       "",
       "Flags:",
+      "  --approvals            Follow sent approvals rather than posted findings",
       "  --repository <name>    Only runs for owner/repo; naming it allows reading it",
-      "  --since <Nd>           Only reviews sent in the last N days (default 30d)",
-      "  --json                 Emit one row per finding as JSON (the pending-question lines are text mode only)",
+      "  --since <Nd>           Only reviews sent in the last N days (default 30d). With --approvals, an approval",
+      "                         not yet settled is checked whatever its age, and --since limits only which",
+      "                         settled ones are read again",
+      "  --json                 Emit one row per finding (or approval) as JSON (the pending-question lines are",
+      "                         text mode only)",
       "Reads: the local store, the allowlist in the repository config, and GitHub comments, threads and commits,",
-      "  and for a finding with a suggestion, its file at the current head.",
+      "  and for a finding with a suggestion, its file at the current head; with --approvals, the pull request,",
+      "  its reviews and commits, and one search of the same repository for a revert.",
       "Writes: one line per finding and totals on stdout (JSON with --json); outcomes in the local store.",
       "Exit codes: 0 ok, 2 bad invocation."
     )
@@ -25430,6 +25773,7 @@ function executePurge(db, scope, runDirectories) {
       db.prepare("DELETE FROM review_runs").run();
       db.prepare("DELETE FROM feedback").run();
       db.prepare("DELETE FROM finding_outcomes").run();
+      db.prepare("DELETE FROM approval_outcomes").run();
     } else if (scope.repository !== void 0) {
       db.prepare("DELETE FROM sync_watermarks WHERE repository = ?").run(scope.repository);
     }
@@ -25886,8 +26230,8 @@ function readRecallResults(path) {
   const runs = summary2["runs"] === void 0 ? 1 : summary2["runs"];
   if (typeof runs !== "number" || !Number.isInteger(runs) || runs < (summary2["runs"] === void 0 ? 1 : 2)) throw bad("summary.runs is not a whole number above 1");
   const checked = (entry, label2) => {
-    const field = fieldProblem(entry);
-    if (field !== null) throw bad(`${label2}.${field}`);
+    const field2 = fieldProblem(entry);
+    if (field2 !== null) throw bad(`${label2}.${field2}`);
     const problem = recordProblem(entry);
     if (problem !== null) throw bad(`${label2}: ${problem}`);
   };
@@ -25907,7 +26251,7 @@ function readRecallResults(path) {
     if (single.length > 0) throw bad(`${label2} carries ${single.join(", ")} beside its attempts, and one run is not the answer`);
     for (const [run, attempt] of attempts.entries()) {
       if (!isRecord6(attempt) || attempt["skipped"] !== void 0) throw bad(`${label2}.attempts[${run}] is not one run's result`);
-      const foreign = Object.keys(attempt).filter((key2) => !RUN_FIELDS.some((field) => field === key2));
+      const foreign = Object.keys(attempt).filter((key2) => !RUN_FIELDS.some((field2) => field2 === key2));
       if (foreign.length > 0) throw bad(`${label2}.attempts[${run}] carries ${foreign.join(", ")}, which one run does not record`);
       checked({ ...attempt, class: entry["class"] }, `${label2}.attempts[${run}]`);
     }
@@ -28715,8 +29059,8 @@ function normalisePath2(path) {
   return path.replaceAll("\\", "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
 }
 function headerPath4(raw) {
-  const field = raw.startsWith('"') ? raw : raw.split("	", 1)[0] ?? raw;
-  const path = unquoteGitPath(field.trimEnd());
+  const field2 = raw.startsWith('"') ? raw : raw.split("	", 1)[0] ?? raw;
+  const path = unquoteGitPath(field2.trimEnd());
   if (path === "/dev/null") return null;
   return normalisePath2(path.replace(/^[ab]\//, ""));
 }
@@ -30109,14 +30453,31 @@ async function outcomesCommand(argv) {
   const since = new Date(Date.now() - Number(days) * 864e5).toISOString();
   let allowlist = repository === null ? [] : [repository];
   let ownerReviewer = null;
+  let windowDays = DEFAULT_OUTCOMES.approvalWindowDays;
   try {
     const config2 = loadConfig(repositoryRoot(process.cwd()));
     ownerReviewer = config2.ownerReviewer;
+    windowDays = config2.outcomes.approvalWindowDays;
     if (repository === null) allowlist = config2.allowlist;
   } catch {
   }
   const db = openDatabase();
   try {
+    if (argv.includes("--approvals")) {
+      const result2 = await checkApprovals({ db, client: githubClient(allowlist), repository: repository ?? void 0, since, windowDays });
+      for (const warning of result2.warnings) console.error(warning);
+      for (const skipped of result2.skipped) console.error(`${skipped.repository}#${skipped.pullNumber}: skipped, ${skipped.reason}`);
+      if (argv.includes("--json")) {
+        console.log(JSON.stringify(result2.outcomes.map((o) => ({ run: o.reviewRunId, repository: o.repository, pull: o.pullNumber, head: o.head, reviewId: o.reviewId, outcome: o.outcome, strength: o.strength, evidence: o.evidence, checkedAt: o.checkedAt })), null, 2));
+        return 0;
+      }
+      for (const o of result2.outcomes) console.log(`${o.repository}#${o.pullNumber} ${o.head.slice(0, 8)} ${o.outcome} (${o.strength}): ${o.evidence.summary}`);
+      const count5 = (name) => result2.outcomes.filter((o) => o.outcome === name).length;
+      console.log(
+        `${result2.outcomes.length} approval(s) tracked: ${count5("reverted")} reverted, ${count5("changes_requested")} changes requested, ${count5("survived")} survived, ${count5("merged_other_head")} merged at another head, ${count5("pending")} pending, ${count5("closed")} closed, ${count5("open")} open, ${count5("unknown")} unknown`
+      );
+      return 0;
+    }
     const result = await checkOutcomes({
       db,
       client: githubClient(allowlist),
@@ -31189,9 +31550,11 @@ function statusCommand() {
     let allowlist = [];
     let maxRepositoryShare;
     let ownerReviewer = null;
+    let escapeWarn = DEFAULT_OUTCOMES.approvalEscapeWarn;
     try {
       const config2 = loadConfig(repositoryRoot(process.cwd()));
       ownerReviewer = config2.ownerReviewer;
+      escapeWarn = config2.outcomes.approvalEscapeWarn;
       allowlist = namedRepositories(config2.allowlist, "status");
       maxRepositoryShare = scaledRepositoryShare(allowlist.length);
     } catch {
@@ -31225,6 +31588,8 @@ function statusCommand() {
       windowDays: DEFAULT_WINDOW_DAYS
     });
     if (dismissalWarning !== null) console.log(dismissalWarning);
+    const approvalWarning = approvalEscapeWarning({ ...approvalStats(db), threshold: escapeWarn });
+    if (approvalWarning !== null) console.log(approvalWarning);
     if (last !== null) {
       const origin = lastDetail?.provenance == null ? "" : `; ${describeOrigin(lastDetail.provenance)}`;
       console.log(
@@ -31808,7 +32173,7 @@ function deletedFileCheck(argv) {
     try {
       const from = git6(["merge-base", base, head]).trim();
       const listing = git6(["diff", "--no-ext-diff", "--name-status", "-M", "-z", "--diff-filter=D", from, head]);
-      const fields = listing.split("\0").filter((field) => field !== "");
+      const fields = listing.split("\0").filter((field2) => field2 !== "");
       const paths = /* @__PURE__ */ new Set();
       for (let index = 0; index + 1 < fields.length; index += 2) if (fields[index] === "D") paths.add(fields[index + 1]);
       deleted = { from, paths };

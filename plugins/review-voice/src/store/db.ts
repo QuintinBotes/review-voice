@@ -272,6 +272,25 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE finding_outcomes ADD COLUMN decided_by TEXT;
   `,
+
+  // v14 - what became of each approval Review Voice sent (docs/adr/0036).
+  //
+  // One row per run, replaced by a newer check, as finding_outcomes is. The
+  // evidence is JSON because an outcome rests on several facts (merged head,
+  // revert pull request, who requested changes) that a report wants apart.
+  `
+  CREATE TABLE IF NOT EXISTS approval_outcomes (
+    review_run_id TEXT PRIMARY KEY,
+    repository TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    head TEXT NOT NULL,
+    review_id INTEGER,
+    outcome TEXT NOT NULL,
+    strength TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    checked_at TEXT NOT NULL
+  );
+  `,
 ];
 
 function migrate(db: Database): void {

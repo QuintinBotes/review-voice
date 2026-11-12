@@ -10,6 +10,7 @@ import { heldQueueLines } from '../review/held-queue.ts';
 import { MODES } from '../review/plan.ts';
 import type { Database } from '../store/db.ts';
 import { checkOutcomes } from '../store/outcomes.ts';
+import { checkApprovals } from '../store/approvals.ts';
 import { recordedRunsForPull, runDetail } from '../store/runs.ts';
 import { applyRetention, DEFAULT_RETENTION, retentionLine } from '../store/retention.ts';
 import { isFailure, recentlySentPulls, saveWatchHead, type HeadStatus, type WatchHead } from '../store/watch.ts';
@@ -24,7 +25,7 @@ type WatchSettings = Pick<
   'allowlist' | 'queue' | 'watch' | 'warnings' | 'postingEnabled' | 'ciGateChecks' | 'ciRules' | 'ownerReviewer' | 'verdictPolicy'
 > &
   // Optional so a settings reader that predates the block still gets the documented defaults.
-  Partial<Pick<LoadedConfig, 'retention'>>;
+  Partial<Pick<LoadedConfig, 'retention' | 'outcomes'>>;
 
 export interface WatchCommandDeps {
   /** The config file watch was started with (`watchConfigSource`); null when there is none. */
@@ -280,7 +281,7 @@ async function runPass(options: PassOptions, json: boolean): Promise<boolean> {
       held.push(...listed);
     }
 
-    const followed = await followOutcomes(client, db, deps, config.ownerReviewer);
+    const followed = await followOutcomes(client, db, deps, config.ownerReviewer, config.outcomes?.approvalWindowDays);
     const swept = sweepRetention(db, config, deps);
     if (json) {
       deps.out(JSON.stringify(rows, null, 2));
@@ -444,24 +445,37 @@ async function verdict(options: PassOptions, client: GitHubClient, db: Database,
 /**
  * Outcomes for the pull requests with a review sent in the last week, this
  * pass's included, at most twenty. `since` is the twentieth one's newest send,
- * so no older pull request is read. Returns how many were followed.
+ * so no older pull request is read. Approvals are followed beside the findings
+ * (docs/adr/0036), and the approval check itself takes up every approval with
+ * no settled row, so one past this `since` is still followed once. Returns how many pull requests the finding check covered.
  */
 async function followOutcomes(
   client: GitHubClient,
   db: Database,
   deps: WatchCommandDeps,
   ownerReviewer: string | null,
+  approvalWindowDays: number | undefined,
 ): Promise<number> {
   const weekAgo = new Date(deps.now().getTime() - OUTCOME_DAYS * 86_400_000).toISOString();
   const pulls = recentlySentPulls(db, weekAgo, OUTCOME_PULLS);
-  if (pulls.length === 0) return 0;
   const since = pulls.length === OUTCOME_PULLS ? pulls.at(-1)!.sentAt : weekAgo;
   const allowlist = [...new Set(pulls.map((pull) => pull.repository).filter((repository) => client.allows(repository)))];
+  if (pulls.length > 0) {
+    try {
+      const result = await checkOutcomes({ db, client, allowlist, since, now: deps.now, ownerReviewer });
+      for (const warning of result.warnings) deps.err(warning);
+    } catch (error) {
+      deps.err(`Outcomes were not followed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  // Its own try, and not behind the gate above: a failure here never fails the
+  // pass, and an approval with no settled row is checked on a quiet pass with
+  // nothing sent in the week, since its window is longer than the week.
   try {
-    const result = await checkOutcomes({ db, client, allowlist, since, now: deps.now, ownerReviewer });
+    const result = await checkApprovals({ db, client, since, windowDays: approvalWindowDays, now: deps.now });
     for (const warning of result.warnings) deps.err(warning);
   } catch (error) {
-    deps.err(`Outcomes were not followed: ${error instanceof Error ? error.message : String(error)}`);
+    deps.err(`Approvals were not followed: ${error instanceof Error ? error.message : String(error)}`);
   }
   return pulls.filter((pull) => allowlist.includes(pull.repository)).length;
 }

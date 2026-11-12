@@ -14,6 +14,7 @@ import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
 import { recordRun } from '../plugins/review-voice/src/store/runs.ts';
 import { recordFeedback } from '../plugins/review-voice/src/store/feedback.ts';
 import { postedBreakdown, precisionBreakdown, saveOutcome } from '../plugins/review-voice/src/store/outcomes.ts';
+import { approvalBreakdown } from '../plugins/review-voice/src/store/approvals.ts';
 import { byFamily,
   computeMetrics,
   evaluationReport,
@@ -515,7 +516,7 @@ test('evaluate --json prints the EvaluationReport shape, with every key equal to
     const result = cli(['evaluate', '--json'], dir);
     assert.equal(result.code, 0, result.stderr);
     const parsed = JSON.parse(result.stdout);
-    assert.deepEqual(Object.keys(parsed), ['generated_at', 'window_days', 'metrics', 'posted_breakdown', 'precision_breakdown', 'stage_seconds', 'rule_effectiveness', 'by_family']);
+    assert.deepEqual(Object.keys(parsed), ['generated_at', 'window_days', 'metrics', 'posted_breakdown', 'precision_breakdown', 'stage_seconds', 'rule_effectiveness', 'by_family', 'approval_breakdown']);
     assert.match(parsed.generated_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     assert.equal(parsed.window_days, 30);
     assert.equal(JSON.parse(cli(['evaluate', '--json', '--since', '7d'], dir).stdout).window_days, 7);
@@ -527,6 +528,8 @@ test('evaluate --json prints the EvaluationReport shape, with every key equal to
       assert.deepEqual(parsed.precision_breakdown, { by_lane: precision.byLane, by_rule: precision.byRule });
       assert.deepEqual(parsed.rule_effectiveness, ruleEffectiveness(db));
       assert.deepEqual(parsed.by_family, byFamily(db));
+      const approvals = approvalBreakdown(db);
+      assert.deepEqual(parsed.approval_breakdown, { by_mode: approvals.byMode, by_complexity: approvals.byComplexity, by_independence: approvals.byIndependence, by_origin: approvals.byOrigin });
       assert.deepEqual(parsed.stage_seconds, { analyst: { median: 9, p95: 9, runs: 3, unmeasured: 0 } });
       assert.deepEqual(parsed.metrics.map((m) => m.name), [...computeMetrics(db), ...recallMetrics(null)].map((m) => m.name));
     } finally {

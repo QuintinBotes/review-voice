@@ -37,13 +37,14 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0023](0023-analyst-lanes-are-configured.md) | Analyst lanes are configured, each with its own severity rule | Accepted, amended 2026-11-08 (`when.signals`; security and concurrency analysts) |
 | [0024](0024-an-independent-challenge-gates-every-posted-finding.md) | An independent challenge gates every posted finding | Accepted, amended 2026-11-08 (evidence block), amended 2026-11-09 (reproductions), amended 2026-11-10 by 0034 (the challenge family) |
 | [0025](0025-cost-modes-choose-stages-and-models.md) | Cost modes choose stages and models | Accepted, amended 2026-11-08 (`auto` and a removed control), amended 2026-11-09 (reproductions) |
-| [0026](0026-the-queue-reads-github-search-inside-the-allowlist.md) | The queue reads GitHub search, inside the allowlist | Accepted |
+| [0026](0026-the-queue-reads-github-search-inside-the-allowlist.md) | The queue reads GitHub search, inside the allowlist | Accepted, amended 2026-11-09 by 0036 (revert search) |
 | [0027](0027-one-watcher-remembers-every-head.md) | One watcher remembers every head | Accepted, amended 2026-11-07 (failure statuses, retention) |
 | [0028](0028-verdict-policies-are-configurable.md) | Verdict policies for CI and complexity are configurable | Accepted, amended 2026-11-07 (`never_approve`), amended 2026-11-08 (scope block), amended 2026-11-08 (evidence block), amended 2026-11-09 (`never_approve_paths` and `only_approve_paths`), amended 2026-11-09 (`min_posted_tier`, `reading_guide`), amended 2026-11-11 (files left out) |
-| [0029](0029-posted-findings-are-followed-to-an-outcome.md) | Posted findings are followed to an outcome | Accepted, amended 2026-11-08, and by 0033 (applied suggestions), amended 2026-11-10 by 0035 (replies: questions, the reply row and two metrics) |
+| [0029](0029-posted-findings-are-followed-to-an-outcome.md) | Posted findings are followed to an outcome | Accepted, amended 2026-11-08, and by 0033 (applied suggestions), amended 2026-11-09 by 0036 (approvals), amended 2026-11-10 by 0035 (replies: questions, the reply row and two metrics) |
 | [0030](0030-team-profiles-and-cold-start.md) | Team profiles pool reviewers, and a new install starts from a baseline | Accepted |
 | [0031](0031-a-github-action-runs-one-review-per-pull-request-event.md) | A GitHub Action runs one review per pull request event | Accepted, amended 2026-11-07 (config read from the base commit), amended 2026-11-10 (`held_queue` in the job summary) |
 | [0032](0032-approved-policies-are-enforced-at-scoring.md) | Approved policies are enforced at scoring | Accepted |
 | [0033](0033-committable-suggestions-are-verified-patches.md) | Committable suggestions are verified patches | Accepted |
 | [0034](0034-a-cross-family-runner-is-configured-never-detected-into-use.md) | A cross-family runner is configured, never detected into use | Accepted |
 | [0035](0035-one-bounded-reply-per-own-finding.md) | One bounded reply per own finding | Accepted |
+| [0036](0036-approvals-are-followed-to-an-outcome.md) | Approvals are followed to an outcome | Accepted |
