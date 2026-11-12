@@ -745,11 +745,17 @@ function acquireDiff(options) {
       deletions: match[2] === "-" ? 0 : Number(match[2])
     });
   }
-  if (mode === "worktree") {
-    for (const path of untrackedFiles(root)) {
-      entries.push({ status: "A", path });
-    }
+  const untracked = new Set(mode === "worktree" ? untrackedFiles(root) : []);
+  for (const path of untracked) entries.push({ status: "A", path });
+  const binary2 = /* @__PURE__ */ new Set();
+  const stats = git(["diff", "--numstat", "-z", ...range], root).split("\0");
+  for (let i = 0; i < stats.length; i += 1) {
+    const match = /^(-|\d+)\t(-|\d+)\t([^]*)$/.exec(stats[i]);
+    if (match === null) continue;
+    const path = match[3] !== "" ? match[3] : stats[i += 2];
+    if (match[1] === "-" && path !== void 0) binary2.add(path);
   }
+  const isBinary = (path) => untracked.has(path) ? gitAllowingDifference(["diff", "--numstat", "--no-index", "--", "/dev/null", path], root).startsWith("-	-	") : binary2.has(path);
   const readHead3 = (path) => {
     try {
       if (mode === "worktree") return readFileSync2(join2(root, path), "utf8");
@@ -767,7 +773,9 @@ function acquireDiff(options) {
     const cls = classify(entry.path, firstParty);
     const deleted = entry.status === "D";
     const suspected = handEdited.has(entry.path);
-    const reviewed = !deleted && (suspected || isReviewable(entry.path, options.includeGenerated, firstParty));
+    const wanted = !deleted && (suspected || isReviewable(entry.path, options.includeGenerated, firstParty));
+    const unreadable = wanted && isBinary(entry.path);
+    const reviewed = wanted && !unreadable;
     return {
       path: entry.path,
       ...entry.previousPath === void 0 ? {} : { previousPath: entry.previousPath },
@@ -778,11 +786,10 @@ function acquireDiff(options) {
       deletions: numstat.get(entry.path)?.deletions ?? 0,
       reviewed,
       ...suspected ? { handEditSuspected: true } : {},
-      ...reviewed ? {} : { excludedBecause: deleted ? FILE_DELETED : excludedReason(cls) }
+      ...reviewed ? {} : { excludedBecause: deleted ? FILE_DELETED : excludedReason(unreadable ? "binary" : cls) }
     };
   });
   const reviewable = files2.filter((file2) => file2.reviewed).map((file2) => file2.path);
-  const untracked = new Set(mode === "worktree" ? untrackedFiles(root) : []);
   const trackedReviewable = reviewable.filter((path) => !untracked.has(path));
   const untrackedReviewable = reviewable.filter((path) => untracked.has(path));
   const parts = [];
@@ -19437,7 +19444,7 @@ var COMMAND_HELP = {
       "  --full                 On --pr, review the complete pull request again",
       "  --since <sha>          On --pr, the head last reviewed (overrides the record)",
       "  --repository <name>    owner/repo for --pr (default: the git remote)",
-      "  --include-generated    Include lock files, generated, vendored and binary files",
+      "  --include-generated    Include lock files, generated and vendored files",
       "  --out <dir>            Write diff.patch and files.json, print a summary",
       "Excluded files: a changed file the diff leaves out (a lock file, generated or minified output,",
       "  a vendored dependency, a binary, a deleted file) is counted in `exclusions`, with the count",
@@ -19448,9 +19455,15 @@ var COMMAND_HELP = {
       "  that would read a file the earlier review left out, or is not known to have read, whether or",
       "  not it changed since, or a file renamed since out of a path that review did not read, reads the",
       "  whole pull request instead (scope full, cause not-read-before), so no file is called unchanged",
-      "  since a review that never read it. A path matching review.first_party_paths (globs, in",
+      "  since a review that never read it. An earlier review with no record of what it left out (a run",
+      "  from before that list was kept, or a head from --since or from GitHub) is taken to have left",
+      "  out every file the default rules leave out, so a lock file read now under --include-generated",
+      "  is read in full. A path matching review.first_party_paths (globs, in",
       "  .review-voice/config.yaml) is never a vendored dependency; a lock file, generated output or a",
-      "  binary under it is still left out. --include-generated reads every one of them, as before.",
+      "  binary under it is still left out. --include-generated reads the lock files, the generated",
+      "  output and the vendored files. A file git reports as binary, or one GitHub serves no patch",
+      "  for, has no lines to read, so it is left out and counted whatever its name, the key or the",
+      "  flag say.",
       "Reads: nothing on stdin (--pr reads the pull request from GitHub, read-only).",
       "Writes: the diff as JSON on stdout, or with --out, diff.patch and files.json in <dir>.",
       "Exit codes: 0 ok, 2 bad invocation or unreadable input."
@@ -27856,7 +27869,7 @@ async function pullRequestDiffCommand(argv) {
   if (uncoveredPrior !== null && since === null) {
     console.error(`Run ${uncoveredPrior} carried candidates without reviewing the commits before it, so the whole pull request is read.`);
   }
-  const priorLeftOut = prior === null ? [] : (prior.reviewRunId === null ? null : leftOutBy(prior.reviewRunId)) ?? result.files.filter((file2) => file2.class !== "vendored" && classify(file2.path) === "vendored").map((file2) => file2.path);
+  const priorLeftOut = prior === null ? [] : (prior.reviewRunId === null ? null : leftOutBy(prior.reviewRunId)) ?? result.files.filter((file2) => !isReviewable(file2.path, false)).map((file2) => file2.path);
   let planned;
   try {
     planned = planScope({

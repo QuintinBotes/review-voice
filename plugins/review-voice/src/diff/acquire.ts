@@ -235,11 +235,24 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
 
   // Only the working tree can have untracked files; --staged and --base both
   // describe content git already knows about.
-  if (mode === 'worktree') {
-    for (const path of untrackedFiles(root)) {
-      entries.push({ status: 'A', path });
-    }
+  const untracked = new Set(mode === 'worktree' ? untrackedFiles(root) : []);
+  for (const path of untracked) entries.push({ status: 'A', path });
+
+  // What git itself calls binary, whatever the name says, since git gives no
+  // hunk for it. With -z, so a renamed or quoted path is found under its new name.
+  const binary = new Set<string>();
+  const stats = git(['diff', '--numstat', '-z', ...range], root).split('\0');
+  for (let i = 0; i < stats.length; i += 1) {
+    const match = /^(-|\d+)\t(-|\d+)\t([^]*)$/.exec(stats[i]!);
+    if (match === null) continue;
+    // A rename leaves the path empty and gives the old and the new one next.
+    const path = match[3] !== '' ? match[3] : stats[(i += 2)];
+    if (match[1] === '-' && path !== undefined) binary.add(path);
   }
+  const isBinary = (path: string): boolean =>
+    untracked.has(path)
+      ? gitAllowingDifference(['diff', '--numstat', '--no-index', '--', '/dev/null', path], root).startsWith('-\t-\t')
+      : binary.has(path);
 
   // Head content of a generated file, read from where the compared side lives.
   const readHead = (path: string): string | null => {
@@ -262,7 +275,11 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
     // diff of whatever referenced it.
     const deleted = entry.status === 'D';
     const suspected = handEdited.has(entry.path);
-    const reviewed = !deleted && (suspected || isReviewable(entry.path, options.includeGenerated, firstParty));
+    const wanted = !deleted && (suspected || isReviewable(entry.path, options.includeGenerated, firstParty));
+    // Whatever its class, the key or the flag say. "Binary files differ" is
+    // no content to review, and counting it read hides that (issue 351).
+    const unreadable = wanted && isBinary(entry.path);
+    const reviewed = wanted && !unreadable;
     return {
       path: entry.path,
       ...(entry.previousPath === undefined ? {} : { previousPath: entry.previousPath }),
@@ -273,13 +290,12 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
       deletions: numstat.get(entry.path)?.deletions ?? 0,
       reviewed,
       ...(suspected ? { handEditSuspected: true } : {}),
-      ...(reviewed ? {} : { excludedBecause: deleted ? FILE_DELETED : excludedReason(cls) }),
+      ...(reviewed ? {} : { excludedBecause: deleted ? FILE_DELETED : excludedReason(unreadable ? 'binary' : cls) }),
     };
   });
 
   const reviewable = files.filter((file) => file.reviewed).map((file) => file.path);
 
-  const untracked = new Set(mode === 'worktree' ? untrackedFiles(root) : []);
   const trackedReviewable = reviewable.filter((path) => !untracked.has(path));
   const untrackedReviewable = reviewable.filter((path) => untracked.has(path));
 

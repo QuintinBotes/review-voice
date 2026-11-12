@@ -662,6 +662,72 @@ test('a follow-up reads the whole pull request when it would read a file the ear
   }
 });
 
+/** `diff --pr --out` in the clone, as the driver runs it, with any further flags; returns the manifest and the patch. */
+async function pullDiff(t, repo, data, extra = []) {
+  const out = mkdtempSync(join(tmpdir(), 'rv-351-out-'));
+  t.after(() => rmSync(out, { recursive: true, force: true }));
+  const saved = { cwd: process.cwd(), env: { ...process.env } };
+  process.chdir(repo.dir);
+  Object.assign(process.env, { REVIEW_VOICE_DATA_DIR: data, GITHUB_TOKEN: 't' });
+  try {
+    const run = await runInProcess(['diff', '--pr', String(PR), '--repository', REPO, '--out', out, ...extra], { fetchImpl: fakeGitHub(repo) });
+    assert.equal(run.code, 0, run.stderr);
+    return { manifest: JSON.parse(readFileSync(join(out, 'files.json'), 'utf8')), patch: readFileSync(join(out, 'diff.patch'), 'utf8') };
+  } finally {
+    process.chdir(saved.cwd);
+    for (const key of ['REVIEW_VOICE_DATA_DIR', 'GITHUB_TOKEN']) {
+      if (saved.env[key] === undefined) delete process.env[key];
+      else process.env[key] = saved.env[key];
+    }
+  }
+}
+
+test('a lock file the earlier review left out is read by a follow-up with --include-generated, never called unchanged since a review with no list of what it left out', async (t) => {
+  const lock = 'package-lock.json';
+  for (const narrowed of ['interdiff', 'incremental']) {
+    for (const onRecord of ['a run without the list', 'no run']) {
+      const name = `${narrowed}, ${onRecord}`;
+      const repo = repository(t, { 'src/app.ts': APP_HEAD, [lock]: '{\n  "lockfileVersion": 3\n}\n' });
+      const first = await review(t, repo, ['diff-analyst']);
+      assert.deepEqual(excludedNotes(first.report), ['Excluded 1 of 2 changed files: 1 lock file.'], name);
+      if (onRecord === 'a run without the list') forgetLeftOut(first.data, first.report.runId);
+      const reviewedHead = repo.head;
+
+      // One commit to the source file, so the lock file is as the earlier review met it, unread.
+      followUp(repo, TOUCHED_APP);
+      // A base this clone does not hold leaves the planner the commit range alone, which is the incremental scope.
+      if (narrowed === 'incremental') repo.base = 'b'.repeat(40);
+      const [data, since] = onRecord === 'no run' ? [dataDir(t), ['--since', reviewedHead]] : [first.data, []];
+      const entry = (manifest) => manifest.files.find((file) => file.path === lock);
+
+      // By the default rules the follow-up leaves the lock file out again, for the reason it always had.
+      const plain = await pullDiff(t, repo, data, since);
+      assert.equal(plain.manifest.scope.kind, narrowed, `${name}: ${JSON.stringify(plain.manifest.scope)}`);
+      assert.deepEqual(plain.manifest.scope.files, ['src/app.ts'], name);
+      assert.equal(entry(plain.manifest).reviewed, false, name);
+      assert.match(entry(plain.manifest).excludedBecause, /^lock file/, name);
+      assert.deepEqual(coveredEarlier(plain.manifest), [], name);
+
+      const all = await pullDiff(t, repo, data, [...since, '--include-generated']);
+      assert.deepEqual(
+        all.manifest.scope,
+        {
+          kind: 'full',
+          cause: 'not-read-before',
+          since: reviewedHead,
+          priorRunId: onRecord === 'no run' ? null : first.report.runId,
+          detail: '1 file the earlier review is not known to have read is read now',
+        },
+        name,
+      );
+      assert.equal(entry(all.manifest).reviewed, true, name);
+      assert.deepEqual(coveredEarlier(all.manifest), [], name);
+      assert.match(all.patch, /^\+ {2}"lockfileVersion": 3$/m, name);
+      assert.equal(all.manifest.exclusions, null, name);
+    }
+  }
+});
+
 test('a carry that falls back to a full read reports the excluded files of the pull request once, not those of the scope it left', async (t) => {
   const repo = repository(t, CHANGE);
   const reviewedHead = repo.head;
@@ -930,6 +996,88 @@ test('every reason a pull request file is left out for reaches the file list, th
   assert.ok(block.split('\n').includes(`Not checked: UI behaviour, product policy, load behaviour, 6 of 7 changed files left out (${reasons.map((reason) => `1 ${reason}`).join(', ')}).`), block);
 });
 
+/** Bytes git takes for binary, since they hold a NUL. Synthetic. */
+const BINARY = Buffer.from(Array.from({ length: 4096 }, (_, index) => (index * 7) % 251));
+const OWN_VENDOR = ['vendor/**'];
+
+test('a file git reports as binary is left out as binary and counted, whatever its name, the first-party list or --include-generated say, and a text file beside it is read', (t) => {
+  const repo = repository(
+    t,
+    // One binary under the first-party path, one whose name the classifier takes for source, and a text file beside them.
+    { 'vendor/data.dat': BINARY, 'assets/table.dat': BINARY, 'vendor/rate.ts': vendorSource(1) },
+    { '.review-voice/config.yaml': `review:\n  first_party_paths:\n    - "${OWN_VENDOR[0]}"\n`, 'vendor/old.dat': BINARY },
+  );
+  // A third, renamed with two bytes changed, which git lists under both of its names.
+  onFeature(repo, () => {
+    repo.git('mv', 'vendor/old.dat', 'vendor/moved.dat');
+    repo.write({ 'vendor/moved.dat': Buffer.concat([Buffer.from([9, 9]), BINARY.subarray(2)]) });
+    repo.git('add', '-A');
+    repo.git('commit', '-q', '-m', 'move the table');
+  });
+  const binaries = ['assets/table.dat', 'vendor/data.dat', 'vendor/moved.dat'];
+  for (const name of binaries) assert.equal(classify(name, firstPartyMatcher(OWN_VENDOR)), 'source', name);
+  const note = 'Excluded 3 of 4 changed files: 3 binary.';
+
+  for (const flags of [[], ['--include-generated']]) {
+    const { stderr, summary, manifest, out } = diffOut(t, repo, flags);
+    assert.deepEqual(stderr.trim().split('\n'), [note], flags.join());
+    assert.deepEqual(summary.exclusions, { changedFiles: 4, excludedFiles: 3, reasons: [{ reason: 'binary', files: 3 }], note }, flags.join());
+    assert.deepEqual(reviewedPaths(manifest), ['vendor/rate.ts'], flags.join());
+    assert.equal(summary.reviewedFileCount, 1, flags.join());
+    for (const name of binaries) {
+      const file = manifest.files.find((entry) => entry.path === name);
+      assert.deepEqual([file.reviewed, file.excludedBecause], [false, 'binary'], `${name} ${flags.join()}`);
+    }
+    const patch = readFileSync(join(out, 'diff.patch'), 'utf8');
+    assert.match(patch, /^\+export function rate1\(order\) \{$/m);
+    assert.doesNotMatch(patch, /^Binary files /m);
+  }
+
+  // Not yet tracked, so no numstat line names them and git is asked about each.
+  repo.write({ 'vendor/new.dat': BINARY, 'vendor/new.ts': UTIL });
+  for (const includeGenerated of [false, true]) {
+    const worktree = acquireDiff({ cwd: repo.dir, staged: false, base: null, includeGenerated, firstPartyPaths: OWN_VENDOR });
+    assert.deepEqual(
+      worktree.files.map((file) => [file.path, file.reviewed, file.excludedBecause]),
+      [['vendor/new.dat', false, 'binary'], ['vendor/new.ts', true, undefined]],
+    );
+    assert.equal(worktree.exclusions.note, 'Excluded 1 of 2 changed files: 1 binary.');
+    assert.equal(worktree.reviewedFileCount, 1);
+    assert.doesNotMatch(worktree.diff, /^Binary files /m);
+  }
+});
+
+test('on a pull request a binary has no patch, so under a first-party path or a source name it is left out and counted, and a text file beside it is read', async () => {
+  const listed = [
+    { filename: 'vendor/data.dat', status: 'added' },
+    { filename: 'assets/table.dat', status: 'modified' },
+    { filename: 'vendor/rate.ts', status: 'added', patch: '@@ -0,0 +1 @@\n+export const rate = 1;' },
+  ];
+  const pull = { number: PR, title: 'T', base: { sha: 'b'.repeat(40), ref: 'main' }, head: { sha: 'f'.repeat(40), ref: 'feature' }, changed_files: 3, additions: 1, deletions: 0 };
+  const fetchImpl = async (url) => json(/\/pulls\/\d+$/.test(new URL(String(url)).pathname) ? pull : listed);
+  const reason = 'no patch returned (binary or too large)';
+  for (const includeGenerated of [false, true]) {
+    const result = await acquirePullRequestDiff({
+      repository: REPO,
+      pullNumber: PR,
+      includeGenerated,
+      cwd: '/nonexistent',
+      firstPartyPaths: OWN_VENDOR,
+      client: new GitHubClient({ allowlist: [REPO], token: 't', fetchImpl, sleep: async () => {} }),
+    });
+    assert.deepEqual(
+      result.files.map((file) => [file.path, file.class, file.reviewed, file.excludedBecause]),
+      [
+        ['vendor/data.dat', 'source', false, reason],
+        ['assets/table.dat', 'source', false, reason],
+        ['vendor/rate.ts', 'source', true, undefined],
+      ],
+    );
+    assert.deepEqual(result.exclusions, { changedFiles: 3, excludedFiles: 2, reasons: [{ reason, files: 2 }], note: `Excluded 2 of 3 changed files: 2 ${reason}.` });
+    assert.equal(result.reviewedFileCount, 1);
+  }
+});
+
 test('a hand-edited generated file under a first-party path is kept for review, as anywhere else', async (t) => {
   const HEADER = '// This file is generated. Do not edit manually.\n';
   const path = `${VENDOR}/sdk/generated/client.ts`;
@@ -1120,6 +1268,12 @@ test('the help, the example configuration, the architecture and the decision rec
   assert.match(architecture, /the scope is `full` with the cause `not-read-before`/);
   assert.match(architecture, /A previous head with no\s+recorded run, from `--since` or from a review on GitHub/);
   assert.match(help('diff'), /cause not-read-before/);
+  // With no list of what the earlier review left out the default rules say, and a binary is never read.
+  assert.match(architecture, /taken to have left out every file the default rules leave out/);
+  assert.match(help('diff'), /taken to have left\s+out every file the default rules leave out/);
+  assert.match(architecture, /every file git reports as binary/);
+  assert.match(help('diff'), /A file git reports as binary/);
+  assert.doesNotMatch(help('diff'), /--include-generated[^\n]*binary files/);
   const scopeRecord = read('docs/adr/0028-verdict-policies-are-configurable.md').split('## Amendment - 2026-11-11\n')[1];
   assert.ok(scopeRecord, 'ADR 0028 carries the dated amendment');
   assert.match(scopeRecord, /Not checked/);

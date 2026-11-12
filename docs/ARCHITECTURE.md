@@ -236,7 +236,14 @@ saying nothing about it.
 **Every exclusion carries a reason.** Lock files, generated output, vendored
 code and binaries are dropped by default, and each one reports why. A silent
 omission is indistinguishable from a bug, and `--include-generated` brings them
-back for the case where the dependency change *is* the review.
+back for the case where the dependency change *is* the review. A binary is the
+exception, because it has no lines to read. The local diff leaves out as
+`binary` every file git reports as binary, a tracked one by its `--numstat`
+line and an untracked one by asking git about it, whatever its name,
+`review.first_party_paths` or `--include-generated` say. The pull request diff
+leaves out every file GitHub serves no patch for, by the same reasoning. A
+binary under a first-party path was once counted as reviewed on its name
+alone, with `Binary files differ` as the whole of its patch (issue 351).
 
 **The diff counts what it left out.** A reason on each entry of a manifest is
 not a signal. A pull request changed twelve files, ten of them under a
@@ -273,8 +280,12 @@ file a follow-up renamed out of a path that review left out, or that the
 default rules leave out. The narrowed patch would show such a file as a rename
 with none of its lines, and moving code out of `vendor/` after the first
 review would pass it by every review. A run recorded
-before the list was kept predates the key, so it is taken to have left out
-every file that only the key brings into the review. A previous head with no
+before the list was kept says nothing of the key or the flag it was read
+with, so it is taken to have left out every file the default rules leave out,
+which is every path whose class is not source with no first-party list and no
+`--include-generated`. A lock file left out by a default review and read by a
+follow-up under `--include-generated` is therefore read in full, not called
+unchanged since a review that never read it. A previous head with no
 recorded run, from `--since` or from a review on GitHub, has no record of
 what was read and is taken the same way, since a file read twice costs less
 than one called unchanged that no review read.

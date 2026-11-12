@@ -23,7 +23,7 @@ import {
   type SquashedParentSuspected,
   type SuspectedWrongBase,
 } from '../diff/pull-request.ts';
-import { classify, firstPartyMatcher, isReviewable } from '../diff/classify.ts';
+import { firstPartyMatcher, isReviewable } from '../diff/classify.ts';
 import type { ExclusionSummary } from '../diff/exclusions.ts';
 import { planScope, type PlannedScope, type ReviewScope } from '../diff/incremental.ts';
 import { openDatabase } from '../store/db.ts';
@@ -115,14 +115,15 @@ export async function pullRequestDiffCommand(argv: string[]): Promise<number> {
 
   // What the review at the previous head left out by its own rules, so that
   // a file no review read is not called unchanged since it. A run recorded
-  // before that list was kept predates review.first_party_paths, and a
-  // previous head with no recorded run may, so neither is taken to have read
-  // a file that only the key brings into the review.
+  // before that list was kept, or a previous head with no recorded run, says
+  // nothing of the key or the flag it was read with, so it is taken to have
+  // read only what the default rules read. A lock file left out then and
+  // read now under --include-generated was never covered.
   const priorLeftOut =
     prior === null
       ? []
       : ((prior.reviewRunId === null ? null : leftOutBy(prior.reviewRunId)) ??
-        result.files.filter((file) => file.class !== 'vendored' && classify(file.path) === 'vendored').map((file) => file.path));
+        result.files.filter((file) => !isReviewable(file.path, false)).map((file) => file.path));
 
   let planned: PlannedScope;
   try {
