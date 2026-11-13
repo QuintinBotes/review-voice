@@ -5,6 +5,72 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.25.0] - 2026-11-13
+
+### Added
+
+- Every APPROVE Review Voice sent is followed to an outcome: reverted, changes
+  requested or survived, or a weaker one (merged at another head, pending,
+  closed, open, unknown). Outcomes are stored in `approval_outcomes`, read with
+  GETs to allowlisted repositories and one typed revert search, and silence
+  before `outcomes.approval_window_days` (default 14) ends is pending, never
+  survived. `evaluate` reports `approvals_tracked` and `approval_escape_rate`
+  with a Wilson 95% upper bound, `--json` breaks it down by mode, complexity,
+  independence and origin, `watch` follows approvals each pass, `outcomes
+  --approvals` runs the check on demand, and `status` warns once the bound
+  passes `outcomes.approval_escape_warn` (default 0.05) over at least 30
+  settled approvals. A full `purge` removes the outcomes. No GitHub write and
+  no verdict change. (#332, ADR 0036)
+
+- `score --as-question <id>` turns a verified minor or nit into a question and
+  posts it past the gate or suppression that held it, as `--promote` does and
+  with its checks. The score records `ownerQuestion`, `record` keeps it and
+  `explain` shows it. Blocking and important findings, unverified ones and
+  existing questions are refused; an owner question is not counted by the cap
+  of two questions; a nit raised this way is still checked against
+  `verdict.min_posted_tier` as a nit. (#363, closes #361)
+
+- `review.minor_confidence_threshold` (default 0.7) is the confidence floor
+  for a verified finding whose tier is minor or nit, with
+  `--min-minor-confidence` on `score`. `review.confidence_threshold` (0.8)
+  stays the floor for important and blocking findings and for every category
+  no suppression may reach. A minor floor above the main one is clamped to it,
+  and the rejection reason names the floor that applied. Measured over three
+  recall runs: key-bug recall 0.80 (0.73 to 0.86) against 0.76 (0.73 to 0.77),
+  clean silence 1.00 in both. (#367, closes #343)
+
+- `docs/EVALUATION.md` gains an External benchmark section: one run of 1.24.1
+  over 302 fixtures imported from the Qodo PR-Review-Bench set, with the raw
+  files under `docs/benchmarks/` and a test that keeps the section equal to
+  them. Key-bug recall 0.19, causal-line hit 0.41. (#365, #366, closes #285)
+
+### Changed
+
+- The default for verified minor and nit findings moves from 0.8 to 0.7
+  confidence (see Added). Set `review.minor_confidence_threshold: 0.8` to keep
+  the previous gate. (#367)
+
+### Fixed
+
+- `/review-voice:review --pr` and `/review-voice:draft-review` read one trusted
+  configuration, not the checked-out pull request head. `review-voice config
+  resolve` runs the driver's resolution once and writes the resolved copy with
+  a `trusted-config.json` bound to it by SHA-256; every stage command reads it
+  through the new global option `--trusted-config <dir>`. The file never
+  confers operator authority: a flag or checkout source is refused, and an
+  operator file only when the process already holds that absolute
+  `REVIEW_VOICE_CONFIG`. (#362, closes #357)
+
+- A challenger that names, as the corrected line, the line a finding is
+  already on holds that finding as `challenge-partly` instead of refusing the
+  whole review. (#364)
+
+- The macOS reproduction sandbox has a deny-default profile, a notify probe
+  judged from outside that fails closed, and a check that records a run that
+  leaves System V IPC objects as not run. macOS still reports no confinement
+  mechanism and runs no reproductions, until each run has an identity or
+  environment of its own. (#347, closes #321)
+
 ## [1.24.1] - 2026-11-12
 
 ### Added
