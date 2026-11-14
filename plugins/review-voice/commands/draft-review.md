@@ -20,7 +20,7 @@ posts has to be what was verified.
 
 ## 0 - Resolve the configuration
 
-Create a temporary directory and run
+Pick a new temporary directory path, which `config resolve` creates, and run
 `RV config resolve --pr <number> --repository <owner/repo> --dir <tmpdir>`
 before any other command. It chooses the one configuration the verdict reads,
 the way step 0 of `/review-voice:review` and the review driver do. That is an

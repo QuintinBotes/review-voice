@@ -324,7 +324,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '',
       'Flags:',
       '  --pr <n>               the pull request number (required)',
-      '  --dir <dir>            the review\'s directory, where the base commit\'s copy is written (required)',
+      '  --dir <dir>            the review\'s directory, where the base commit\'s copy is written; created if missing (required)',
       '  --repository <o/r>     default: the origin remote',
       '  --config <path>        read this file; beats REVIEW_VOICE_CONFIG and the base commit',
       'Reads: nothing on stdin; the pull request from GitHub (read-only) and the clone.',

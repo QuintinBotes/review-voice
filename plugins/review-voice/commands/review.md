@@ -29,7 +29,7 @@ the defect.
 
 ## Step 0 - Resolve the configuration
 
-On a `--pr` run, create the temporary directory and run
+On a `--pr` run, pick the temporary directory path, which `config resolve` creates, and run
 `RV config resolve --pr <number> --dir <tmpdir>` (with the same `--repository`,
 if you gave one) before any other command. It chooses the one configuration
 this review reads, the way the review driver does. That is an absolute
