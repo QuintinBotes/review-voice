@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { CONFIG_SOURCES } from '../policy/load.ts';
 import { resolveTrustedConfig } from '../review/config.ts';
@@ -22,6 +22,8 @@ export async function configCommand(argv: string[]): Promise<number> {
     console.error('--pr needs a pull request number.');
     return 2;
   }
+  // Created when missing, as `diff --out` does, because this runs first and the slash commands may run only node.
+  if (!existsSync(resolve(dir))) mkdirSync(resolve(dir), { recursive: true, mode: 0o700 });
   if (statSync(resolve(dir), { throwIfNoEntry: false })?.isDirectory() !== true) {
     console.error(`--dir ${dir} is not a directory.`);
     return 2;
