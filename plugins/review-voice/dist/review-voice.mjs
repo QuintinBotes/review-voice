@@ -20233,7 +20233,7 @@ var COMMAND_HELP = {
       "",
       "Flags:",
       "  --pr <n>               the pull request number (required)",
-      "  --dir <dir>            the review's directory, where the base commit's copy is written (required)",
+      "  --dir <dir>            the review's directory, where the base commit's copy is written; created if missing (required)",
       "  --repository <o/r>     default: the origin remote",
       "  --config <path>        read this file; beats REVIEW_VOICE_CONFIG and the base commit",
       "Reads: nothing on stdin; the pull request from GitHub (read-only) and the clone.",
@@ -28488,7 +28488,7 @@ function worktreeCommand(argv) {
 
 // plugins/review-voice/src/cli/config.ts
 import { createHash as createHash8 } from "node:crypto";
-import { lstatSync as lstatSync9, readFileSync as readFileSync26, realpathSync as realpathSync4, rmSync as rmSync14, statSync as statSync11, writeFileSync as writeFileSync13 } from "node:fs";
+import { existsSync as existsSync20, lstatSync as lstatSync9, mkdirSync as mkdirSync13, readFileSync as readFileSync26, realpathSync as realpathSync4, rmSync as rmSync14, statSync as statSync11, writeFileSync as writeFileSync13 } from "node:fs";
 import { dirname as dirname18, isAbsolute as isAbsolute6, join as join29, resolve as resolve13 } from "node:path";
 async function configCommand(argv) {
   const dir = flag(argv, "--dir");
@@ -28501,6 +28501,7 @@ async function configCommand(argv) {
     console.error("--pr needs a pull request number.");
     return 2;
   }
+  if (!existsSync20(resolve13(dir))) mkdirSync13(resolve13(dir), { recursive: true, mode: 448 });
   if (statSync11(resolve13(dir), { throwIfNoEntry: false })?.isDirectory() !== true) {
     console.error(`--dir ${dir} is not a directory.`);
     return 2;
@@ -28595,7 +28596,7 @@ function withTrustedConfig(argv) {
 }
 
 // plugins/review-voice/src/cli/diff.ts
-import { readFileSync as readFileSync27, writeFileSync as writeFileSync14, mkdirSync as mkdirSync13 } from "node:fs";
+import { readFileSync as readFileSync27, writeFileSync as writeFileSync14, mkdirSync as mkdirSync14 } from "node:fs";
 import { join as join30 } from "node:path";
 
 // plugins/review-voice/src/diff/prior.ts
@@ -28883,7 +28884,7 @@ function emitDiff(acquired, outDir) {
     return 0;
   }
   try {
-    mkdirSync13(outDir, { recursive: true });
+    mkdirSync14(outDir, { recursive: true });
     const patchPath2 = join30(outDir, "diff.patch");
     const metaPath = join30(outDir, "files.json");
     writeFileSync14(patchPath2, result.diff);
@@ -31952,7 +31953,7 @@ function statusCommand() {
 }
 
 // plugins/review-voice/src/cli/carry.ts
-import { readFileSync as readFileSync36, writeFileSync as writeFileSync19, mkdirSync as mkdirSync14 } from "node:fs";
+import { readFileSync as readFileSync36, writeFileSync as writeFileSync19, mkdirSync as mkdirSync15 } from "node:fs";
 import { dirname as dirname20, join as join31 } from "node:path";
 
 // plugins/review-voice/src/diff/held.ts
@@ -32370,7 +32371,7 @@ function carryCandidatesCommand(argv) {
     ...heldIn === null ? {} : { held: { kept: heldKept.length, dropped: heldDropped } }
   };
   try {
-    mkdirSync14(outDir, { recursive: true });
+    mkdirSync15(outDir, { recursive: true });
     writeFileSync19(
       join31(outDir, "candidates.json"),
       `${JSON.stringify(candidatesIn.rebuild([...carriedCandidates, ...interdiffCandidates]), null, 2)}

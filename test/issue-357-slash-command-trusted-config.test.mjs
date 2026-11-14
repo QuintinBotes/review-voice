@@ -199,15 +199,27 @@ test('config resolve follows the driver rules for a clone that lacks the base co
   assert.equal(readFileSync(fromUpstream.json.path, 'utf8'), BASE_CONFIG);
 });
 
+test('config resolve creates a missing run directory, private to the owner, since it runs before any other command', async (t) => {
+  const repo = repository(t);
+  const run = join(temporary(t, 'rv-357-parent-'), 'run');
+  const { code, stderr, json } = await resolveConfig(repo, ['--dir', run]);
+  assert.equal(code, 0, stderr);
+  assert.equal(statSync(run).mode & 0o777, 0o700);
+  assert.equal(json.path, join(run, 'config.yaml'));
+  assert.equal(readFileSync(json.path, 'utf8'), BASE_CONFIG);
+  assert.equal(existsSync(join(run, 'trusted-config.json')), true);
+});
+
 test('config resolve refuses a bad invocation with exit 2 and writes nothing', async (t) => {
   const repo = repository(t);
   const run = temporary(t, 'rv-357-run-');
   const pull = ['--pr', String(PR), '--repository', REPO];
+  writeFileSync(join(run, 'a-file'), '');
   for (const [argv, message] of [
     [['config', 'show', ...pull, '--dir', run], /Usage: review-voice config resolve/],
     [['config', 'resolve', ...pull], /Usage: review-voice config resolve/],
     [['config', 'resolve', '--repository', REPO, '--dir', run], /--pr needs a pull request number/],
-    [['config', 'resolve', ...pull, '--dir', join(run, 'missing')], /is not a directory/],
+    [['config', 'resolve', ...pull, '--dir', join(run, 'a-file')], /is not a directory/],
     [['config', 'resolve', ...pull, '--dir', run, '--config'], /--config needs a value/],
   ]) {
     // Each is refused before GitHub is asked anything.
