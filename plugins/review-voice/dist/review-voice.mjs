@@ -29175,10 +29175,14 @@ function isPath(symbol) {
 var LOOSE_ABSENCE = [
   /\b(?:does|do|did)\s*(?:not|n't)\s+exist|\bmissing\b|\babsent\b|\b(?:deleted|removed)\b|\bnot\s+(?:found|present)\b/i
 ];
-var CLAUSE_BREAK = /[.;!?](?=\s|$)|\b(?:which|that|who|but|whereas|while)\b/gi;
+var CLAUSE_WORDS = "which|that|who|but|whereas|while|when|whenever|if|unless|because";
+var CLAUSE_BREAK = new RegExp(`[.;!?](?=\\s|$)|\\b(?:${CLAUSE_WORDS})\\b`, "gi");
+var CLAUSE_OPENER = new RegExp(`^\\s*(?:${CLAUSE_WORDS})\\b`, "i");
+var PRONOUN_SUBJECT = /\b(?:both|they|them|it|neither|none|these|those|all|each|either)\b/i;
+var ADJACENT = /^\W*(?:\w+\W*)?$/;
 function tiedToAbsence(text5, symbols) {
   const strict = tiedBy(ASSERTS_ABSENCE, text5, symbols);
-  return strict.size > 0 ? strict : tiedBy(LOOSE_ABSENCE, text5, symbols);
+  return strict === null || strict.size > 0 ? strict : tiedBy(LOOSE_ABSENCE, text5, symbols);
 }
 function tiedBy(phrases, text5, symbols) {
   const masked = text5.replace(/`[^`]*`/g, (span) => `\`${"x".repeat(span.length - 2)}\``);
@@ -29195,25 +29199,35 @@ function tiedBy(phrases, text5, symbols) {
     return at2;
   });
   const tied = /* @__PURE__ */ new Set();
+  let unnamed = false;
+  let unsettled = false;
   for (let i = 0; i + 1 < starts.length; i += 1) {
     const start = starts[i] ?? 0;
     const end = starts[i + 1] ?? text5.length;
     const clause = masked.slice(start, end);
-    if (!phrases.some((phrase) => phrase.test(clause))) continue;
-    const inClause = occurrences.filter(({ index }) => index >= start && index < end);
-    if (inClause.length > 0) {
-      for (const { symbol } of inClause) tied.add(symbol);
-    } else if (/^\s*(?:which|that|who)\b/i.test(clause)) {
-      let antecedent;
-      for (const occurrence of occurrences) {
-        if (occurrence.index < start && (antecedent === void 0 || occurrence.index > antecedent.index)) {
-          antecedent = occurrence;
-        }
-      }
+    const phrase = phrases.map((pattern) => pattern.exec(clause)).find((match) => match !== null);
+    if (phrase === void 0 || phrase === null) continue;
+    const at2 = start + phrase.index;
+    const follows = /^no\s+such/i.test(phrase[0]);
+    const subjects = occurrences.filter(
+      ({ index }) => index >= start && index < end && (follows ? index > at2 : index < at2)
+    );
+    const lead = clause.slice(0, phrase.index).replace(CLAUSE_OPENER, "");
+    if (subjects.length > 0) {
+      for (const { symbol } of subjects) tied.add(symbol);
+    } else if (!follows && /^\s*(?:which|that|who)\b/i.test(clause)) {
+      const antecedent = occurrences.find(
+        ({ symbol, index }) => index < start && ADJACENT.test(masked.slice(index + symbol.length, start))
+      );
       if (antecedent !== void 0) tied.add(antecedent.symbol);
+      else unnamed = true;
+    } else if (follows || !/\w/.test(lead) || PRONOUN_SUBJECT.test(lead)) {
+      unsettled = true;
+    } else {
+      unnamed = true;
     }
   }
-  return tied;
+  return tied.size === 0 && unnamed && !unsettled ? null : tied;
 }
 function generatedAccessor(symbol) {
   return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
@@ -29238,7 +29252,8 @@ function checkAbsenceClaim(text5, cwd, ref = null, search = gitGrep, repository 
     (symbol) => text5.split(symbol).slice(0, -1).some((before) => !before.endsWith("/"))
   );
   const tied = tiedToAbsence(text5, stated);
-  const symbols = stated.filter((symbol) => !isPath(symbol) || tied.size === 0 || tied.has(symbol));
+  if (tied === null) return null;
+  const symbols = stated.filter((symbol) => tied.size === 0 || tied.has(symbol));
   if (symbols.length === 0) return null;
   const searchedRef = ref ?? "working tree";
   const found2 = [];
