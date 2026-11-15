@@ -9285,8 +9285,8 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const missingContext = missing.length > 0;
   const admitted = admitsUnverifiable(candidate);
   const verifierEngaged = verification2?.technicalConfidence !== void 0;
-  if ((missingContext || admitted && !verifierEngaged) && confidence > UNVERIFIABLE_CONFIDENCE) {
-    confidence = UNVERIFIABLE_CONFIDENCE;
+  if (missingContext || admitted && !verifierEngaged && confidence > UNVERIFIABLE_CONFIDENCE) {
+    confidence = Math.min(confidence, UNVERIFIABLE_CONFIDENCE);
     confidenceSource = "unverifiable-cap";
   }
   const unverifiableBecause = confidenceSource !== "unverifiable-cap" ? null : missingContext ? `the verifier listed required_context_missing the claim depends on: ${missing.join("; ")}` : "the analyst's evidence says the claim could not be checked, and the verifier gave no technical_confidence of its own";
@@ -20425,7 +20425,9 @@ var COMMAND_HELP = {
       "  suppression held is listed in suppressed[] with its ruleId and policyVersion, and",
       "  --promote posts it past that policy. --as-question sets the tier to question with",
       "  ownerQuestion: true, which record stores and explain shows, and ownerQuestionFrom, the",
-      "  tier verdict.min_posted_tier still ranks it by. Every entry names its candidate as candidate_id,",
+      "  tier verdict.min_posted_tier still ranks it by. A candidate that is not eligible is in exactly",
+      "  one of belowGate[], suppressed[], unverified[], absenceContradicted[] and rejected[]; rejected[]",
+      "  holds every other one, with its rejectedBecause. Every entry names its candidate as candidate_id,",
       "  like candidates and verification; candidateId is still written beside it",
       "  but is deprecated.",
       "Exit codes: 0 ok, 2 malformed candidates or bad invocation."
@@ -33148,6 +33150,20 @@ function scoreCommand(argv) {
         rejectedBecause: r.rejectedBecause
       })
     );
+    const listed = new Set(
+      [...belowGate, ...suppressed, ...unverified, ...absenceContradicted].map((entry) => entry.candidateId)
+    );
+    const rejected = results.filter((r) => !r.eligible && !listed.has(r.candidateId)).map(
+      (r) => boundLists({
+        candidateId: r.candidateId,
+        path: r.path,
+        line: r.line,
+        severity: r.severity.severity,
+        claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? "",
+        verified: verifications.get(r.candidateId)?.verified === true,
+        rejectedBecause: r.rejectedBecause
+      })
+    );
     const scoreOf = new Map(results.map((r) => [r.candidateId, r]));
     const rank2 = (c) => {
       const scored = scoreOf.get(c.candidateId);
@@ -33243,6 +33259,7 @@ function scoreCommand(argv) {
           suppressed: suppressed.map(withSnakeCaseId),
           unverified: unverified.map(withSnakeCaseId),
           absenceContradicted: absenceContradicted.map(withSnakeCaseId),
+          rejected: rejected.map(withSnakeCaseId),
           policyVersions
         },
         null,

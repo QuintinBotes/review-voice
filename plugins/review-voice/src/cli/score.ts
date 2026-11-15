@@ -844,6 +844,28 @@ export function scoreCommand(argv: string[]): number {
           rejectedBecause: r.rejectedBecause,
         }),
       );
+    // Everything else that is not eligible: an untraced stale consumer, a
+    // repeat of the thread, a refused anchor or citation, a question past the
+    // cap, a claim the verifier rejected. Each used to appear in `scores[]`
+    // alone, which no step reads, so a real finding could vanish (#382). With
+    // the four lists above, every candidate that is not eligible is in
+    // exactly one list.
+    const listed = new Set(
+      [...belowGate, ...suppressed, ...unverified, ...absenceContradicted].map((entry) => (entry as { candidateId: string }).candidateId),
+    );
+    const rejected = results
+      .filter((r) => !r.eligible && !listed.has(r.candidateId))
+      .map((r) =>
+        boundLists({
+          candidateId: r.candidateId,
+          path: r.path,
+          line: r.line,
+          severity: r.severity.severity,
+          claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? '',
+          verified: verifications.get(r.candidateId)?.verified === true,
+          rejectedBecause: r.rejectedBecause,
+        }),
+      );
     // Render order, the one validate-output enforces: severity, then the higher
     // final score. Handing the editor sorted input means it never has to
     // re-sort, which it did not reliably do (#144).
@@ -950,6 +972,7 @@ export function scoreCommand(argv: string[]): number {
           suppressed: suppressed.map(withSnakeCaseId),
           unverified: unverified.map(withSnakeCaseId),
           absenceContradicted: absenceContradicted.map(withSnakeCaseId),
+          rejected: rejected.map(withSnakeCaseId),
           policyVersions,
         },
         null,

@@ -1724,8 +1724,12 @@ export function scoreCandidate(
   const admitted = admitsUnverifiable(candidate);
   const verifierEngaged = verification?.technicalConfidence !== undefined;
 
-  if ((missingContext || (admitted && !verifierEngaged)) && confidence > UNVERIFIABLE_CONFIDENCE) {
-    confidence = UNVERIFIABLE_CONFIDENCE;
+  // Context the verifier could not obtain caps the claim whatever number came
+  // with it. A rejection at a confidence already under the cap used to keep
+  // the verifier as its source, so it was rejected as plainly unverified and
+  // listed nowhere (#382).
+  if (missingContext || (admitted && !verifierEngaged && confidence > UNVERIFIABLE_CONFIDENCE)) {
+    confidence = Math.min(confidence, UNVERIFIABLE_CONFIDENCE);
     confidenceSource = 'unverifiable-cap';
   }
   const unverifiableBecause =

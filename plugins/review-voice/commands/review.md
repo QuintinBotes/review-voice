@@ -859,6 +859,17 @@ Only a name the claim says is absent is looked up: a name it merely mentions,
 or a claim about a run-time value that does not exist, contradicts nothing.
 Like `belowGate`, it is never posted.
 
+`rejected` lists every other candidate that is not eligible, each with its
+`rejectedBecause`: a stale consumer whose impact the verifier did not trace, a
+repeat of the thread, a refused anchor or cited path, a question past the cap
+of two. So a candidate that is not in `eligible[]` is in exactly one of
+`belowGate`, `suppressed`, `unverified`, `absenceContradicted` and `rejected`.
+Keep it for step 6. It is never posted and is not part of the validated
+output. An entry with `verified: true` is a finding the verifier confirmed and
+a rule still stopped, so read its reason: an anchor reason is one the analyst
+can act on in step 2, and an untraced stale consumer's reason says how to
+refile it.
+
 `eligible[]` is already in render order: by severity, `blocking`, `important`,
 `minor`, `nit`, then `question`, and within a tier the higher final score first.
 That is the order `validate-output` enforces as `severity_order`. Hand it to the
@@ -1041,7 +1052,9 @@ stray directory and another project's notes took the reviewed count from 11 to
   `Absence contradicted (not posted)` and then one line per entry:
   `[severity] path:line - claim (found: <found>)`. The verifier confirmed them
   but the repository holds what the claim says is absent; they are never
-  posted either. When `challengeHeld[]` from step 4b is not empty, print after
+  posted either. When `rejected` from step 4 is not empty, print after that a
+  line `Rejected by another check (not posted)` and then one line per entry:
+  `[severity] path:line - claim (rejectedBecause)`. When `challengeHeld[]` from step 4b is not empty, print after
   that a line `Held by the challenge (not posted)` and then one line per entry:
   `[severity] path:line - text (verdict: reason)`. Then
   record it. Write the scored candidates, the challenged scores' `eligible[]`
@@ -1207,8 +1220,7 @@ heads by hand.
 
 No greeting. No summary. No praise. No description of the process or of how
 many files you looked at. No markdown headings. No commentary after the
-findings, except the `Below the gate (not posted)` and `Unverified (not posted)`
-lists from step 6 when they are not empty. If you have nothing that clears the
+findings, except the `(not posted)` lists from step 6 when they are not empty. If you have nothing that clears the
 bar, the entire output is:
 
 ```
