@@ -855,6 +855,8 @@ repository search contradicted: the claim says something is absent, and `found`
 names what the search matched. One of the two is wrong, so check it before
 step 6. A file is looked up by path, never by content: a doc that cites a
 missing path, or a same-name file in another directory, does not contradict it.
+Only a name the claim says is absent is looked up: a name it merely mentions,
+or a claim about a run-time value that does not exist, contradicts nothing.
 Like `belowGate`, it is never posted.
 
 `eligible[]` is already in render order: by severity, `blocking`, `important`,
