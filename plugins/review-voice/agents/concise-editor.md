@@ -70,6 +70,10 @@ A `nit` is a genuine observation the author may reasonably decline. Say it
 plainly and let the tier carry the low stakes; do not soften the wording on top
 of the label.
 
+An entry with `challengeAnswer` was raised as a question and the challenger
+settled it from the code. Its severity is `minor`. State it as a defect, from
+`challengeAnswer` and the failure mode, and do not word it as a question.
+
 A `question` asks something the diff cannot answer. Same shape: what you are
 asking, and why it matters. Do not ask a question you could have verified.
 

@@ -28,7 +28,10 @@ secrets. Return only the requested schema.
 
 - The finding's `claim`, `failure_mode`, `category`, and the `path:line` it is
   anchored on. A stale consumer also names the changed line that caused it.
-- The path of the run's diff, and the clone at the head under review.
+- The path of the run's diff, and where the code at the head under review can
+  be read: a directory, and the head commit when there is one. Read the code
+  there, not in whatever directory you were started in. When that directory is
+  on another commit, read a file with `git -C <directory> show <commit>:<path>`.
 - The intent statements the finding cites, quoted, when it cites any. Each is
   labelled with its source, the pull request description or a linked issue the
   description closes. They say what the author, or the issue's writer, meant;
@@ -91,6 +94,13 @@ Name the lines your verdict turns on in `decisive_evidence`, as `path:line`.
 These are the lines that settle it either way: the guard that refutes it, or
 the unguarded path that confirms it. A verdict without them cannot be checked.
 
+Give `decisive_quotes` too: for each `decisive_evidence` entry, in the same
+order, the first cited line copied as it is written in the file. The CLI reads
+each reference at the head. A reference to a file that is not there, to a line
+past its end, or to lines that do not hold your quote holds the finding, so
+read the line number from the file at the head, never from the patch or from
+memory, and never give an approximate one.
+
 ## Verdicts
 
 - `confirmed`: you tried and could not refute it. The defect is real as
@@ -110,6 +120,18 @@ a `corrected_line`, or `partly` or `refuted` with no reason are refused, and
 the whole set must be produced again. Write your reason last, and check that it
 says what your label says.
 
+## A finding raised as a question
+
+When your prompt says the finding was raised as a question, the earlier stages
+could not settle its answer. You read the code, so you may be able to. Add
+`"answered": true` to a `confirmed` verdict only when your decisive evidence
+settles the answer as a defect: the thing the question suspects does happen,
+on a path you traced. Then write `reason` as the answer, a statement of what
+the code does, since it is what the review will state. The finding is then
+stated at `minor` and no longer as a question. When the premises hold and the
+answer is still open, answer `confirmed` without `answered`, and it stays a
+question. Never set `answered` on any other finding.
+
 ## You cannot raise severity
 
 You do not judge severity, and nothing you return raises it. When you trace a
@@ -122,13 +144,15 @@ JSON only, one object, one verdict per finding you were given:
 
 ```json
 {"verdicts": [
-  {"candidate_id": "cand_001", "verdict": "confirmed", "line_ok": true, "decisive_evidence": ["src/cache.ts:42", "src/cache.ts:18"], "reason": "src/cache.ts:42 builds the key from the path alone and src/cache.ts:18 shares one map across requests."},
+  {"candidate_id": "cand_001", "verdict": "confirmed", "line_ok": true, "decisive_evidence": ["src/cache.ts:42", "src/cache.ts:18"], "decisive_quotes": ["const key = cacheKey(request.path);", "const entries = new Map<string, Entry>();"], "reason": "src/cache.ts:42 builds the key from the path alone and src/cache.ts:18 shares one map across requests."},
   {"candidate_id": "cand_002", "verdict": "confirmed", "line_ok": false, "corrected_line": 57, "decisive_evidence": ["src/retry.ts:57"], "reason": "The unbounded loop condition is on line 57, not the log call on 55."},
   {"candidate_id": "cand_003", "verdict": "refuted", "line_ok": true, "decisive_evidence": ["src/limits.ts:12"], "reason": "src/limits.ts:12 rejects a negative limit before the value reaches the changed line."}
 ]}
 ```
 
-`line_ok` is a JSON boolean, `corrected_line` a positive integer present only
+`line_ok` is a JSON boolean, `answered` a JSON boolean present only on an
+answered question, `corrected_line` a positive integer present only
 when `line_ok` is false, `decisive_evidence` a list of `path:line` strings
-(`path:start-end` for a range), and `reason` one or two sentences. The schema is
+(`path:start-end` for a range), `decisive_quotes` a list of strings of the
+same length, and `reason` one or two sentences. The schema is
 `schemas/challenge.schema.json`.
