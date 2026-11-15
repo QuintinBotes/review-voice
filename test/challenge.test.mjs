@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -177,6 +177,20 @@ test('--emit-prompts prints one prompt per eligible finding with the claim, loca
   });
 });
 
+test('#373: each prompt names where the code at the head can be read', () => {
+  withFiles(({ dir, files, run }) => {
+    const base = ['challenge', '--scores', files.scores, '--candidates', files.candidates, '--emit-prompts'];
+    const named = JSON.parse(run([...base, '--cwd', dir, '--head', 'abc1234']).stdout).prompts;
+    for (const { prompt } of named) assert.ok(prompt.includes(`Code at the head: ${dir} (commit abc1234)`), prompt);
+
+    // Without --cwd it is the clone the command ran in.
+    const inClone = JSON.parse(run(base).stdout).prompts[0].prompt;
+    assert.ok(inClone.includes(`Code at the head: ${root}`), inClone);
+  });
+  assert.ok(!challengePrompt(eligibleEntry('cand_001', 3), candidate('cand_001', 3), []).includes('Code at the head'));
+  assert.ok(challengePrompt(eligibleEntry('cand_001', 3), candidate('cand_001', 3), [], null, undefined, { sha: 'abc1234' }).includes('Head under review: commit abc1234'));
+});
+
 test('challengePrompt never carries a verification field, whatever the finding holds', () => {
   const finding = {
     ...eligibleEntry('cand_001', 3),
@@ -232,7 +246,7 @@ test('confirmed verdicts with the line confirmed keep every finding eligible', (
     const out = JSON.parse(r.stdout);
     assert.deepEqual(out.eligible.map((e) => e.candidateId), ['cand_001', 'cand_002', 'cand_003']);
     assert.deepEqual(out.challengeHeld, []);
-    assert.deepEqual(out.challenge, { confirmed: ['cand_001', 'cand_002', 'cand_003'], held: [], moved: [] });
+    assert.deepEqual(out.challenge, { confirmed: ['cand_001', 'cand_002', 'cand_003'], held: [], moved: [], answered: [] });
     assert.equal(out.scores.find((s) => s.candidateId === 'cand_001').challenge.verdict, 'confirmed');
   });
 });
@@ -436,3 +450,118 @@ for (const verdict of ['challenge-refuted', 'challenge-partly']) {
     }
   });
 }
+
+// #393: a challenger reading the wrong tree cited lines that held something
+// else, and the reference was accepted as confirming the finding.
+
+/** A head checkout whose src/a.ts has the quoted sentence on line 9. */
+function withHead(fn) {
+  return withFiles((ctx) => {
+    const head = join(ctx.dir, 'head');
+    mkdirSync(join(head, 'src'), { recursive: true });
+    const lines = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`);
+    lines[8] = '  const key = cacheKey(request.path);';
+    writeFileSync(join(head, 'src/a.ts'), lines.join('\n'));
+    const applyAt = (first) => {
+      const r = ctx.apply([first, confirmed('cand_002'), confirmed('cand_003')], ['--cwd', head]);
+      assert.equal(r.code, 0, r.stderr);
+      return JSON.parse(r.stdout);
+    };
+    return fn({ ...ctx, applyAt });
+  });
+}
+
+test('#393: a decisive reference past the end of the file, or to a file that is not there, holds the finding', () => {
+  withHead(({ applyAt }) => {
+    for (const [ref, why] of [
+      ['src/a.ts:101-102', 'past the end of the file at the head'],
+      ['src/missing.ts:3', 'names a file that is not at the head'],
+      ['../outside.ts:1', 'names a file that is not at the head'],
+    ]) {
+      const out = applyAt(confirmed('cand_001', { decisive_evidence: [ref] }));
+      assert.deepEqual(out.eligible.map((e) => e.candidate_id), ['cand_002', 'cand_003'], ref);
+      assert.equal(out.challengeHeld[0].verdict, 'challenge-partly');
+      assert.ok(out.challengeHeld[0].reason.includes(why), out.challengeHeld[0].reason);
+    }
+  });
+});
+
+test('#393: a quoted line is looked for at the reference, and moves it when it is on one other line', () => {
+  withHead(({ applyAt }) => {
+    const quoted = (ref, quote) => confirmed('cand_001', { decisive_evidence: [ref], decisive_quotes: [quote] });
+    const stored = (out) => out.scores.find((s) => s.candidate_id === 'cand_001').challenge;
+
+    const right = applyAt(quoted('src/a.ts:9', 'const key = cacheKey(request.path);'));
+    assert.deepEqual(stored(right).decisive_evidence, ['src/a.ts:9']);
+    assert.equal(stored(right).decisive_quotes, undefined, 'the quote is checked, not stored');
+
+    const moved = applyAt(quoted('src/a.ts:3-4', 'const key =   cacheKey(request.path);'));
+    assert.deepEqual(stored(moved).decisive_evidence, ['src/a.ts:9-10']);
+    assert.equal(moved.eligible.length, 3);
+
+    const nowhere = applyAt(quoted('src/a.ts:3', 'const key = tenantKey(request);'));
+    assert.ok(nowhere.challengeHeld[0].reason.includes('does not hold the line the challenger quoted'));
+  });
+});
+
+test('#393: without --cwd, and for a reference with no quote, nothing more is asked', () => {
+  withHead(({ apply, applyAt }) => {
+    assert.equal(applyAt(confirmed('cand_001')).eligible.length, 3);
+    const r = apply([confirmed('cand_001', { decisive_evidence: ['src/a.ts:101'] }), confirmed('cand_002'), confirmed('cand_003')]);
+    assert.equal(JSON.parse(r.stdout).eligible.length, 3);
+    const bad = apply([confirmed('cand_001', { decisive_quotes: [] }), confirmed('cand_002'), confirmed('cand_003')]);
+    assert.equal(bad.code, 2);
+    assert.match(bad.stderr, /decisive_quotes must be a list of strings, one per decisive_evidence entry/);
+  });
+});
+
+// #392: a question its challenger answered with evidence stayed a question,
+// rendered last, though it was the most serious finding of the review.
+
+test('#392: a question confirmed with answered: true is stated at minor, above a nit', () => {
+  withFiles(({ files, apply, run }) => {
+    const asQuestion = (id, line, extra = {}) => ({
+      ...scoreEntry(id, line),
+      finalScore: 0.4,
+      severity: { severity: 'question', reason: 'a question is a kind of finding, not a tier' },
+      ...extra,
+    });
+    const scores = {
+      ...SCORES,
+      scores: [
+        { ...scoreEntry('cand_001', 3), severity: { severity: 'nit', reason: 'style' } },
+        asQuestion('cand_002', 4),
+        asQuestion('cand_003', 5, { ownerQuestion: true }),
+      ],
+      eligible: [
+        { ...eligibleEntry('cand_001', 3), severity: 'nit' },
+        { ...eligibleEntry('cand_002', 4), severity: 'question', severityReason: 'a question is a kind of finding, not a tier' },
+        { ...eligibleEntry('cand_003', 5), severity: 'question' },
+      ],
+    };
+    writeFileSync(files.scores, JSON.stringify(scores));
+    const answer = 'src/a.ts:4 retries without a limit, so the loop does not stop.';
+    const r = apply([
+      confirmed('cand_001', { answered: true, reason: 'not a question' }),
+      confirmed('cand_002', { answered: true, reason: answer }),
+      confirmed('cand_003', { answered: true, reason: 'the owner asked this one' }),
+    ]);
+    assert.equal(r.code, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.deepEqual(out.eligible.map((e) => [e.candidate_id, e.severity]), [['cand_002', 'minor'], ['cand_001', 'nit'], ['cand_003', 'question']]);
+    assert.equal(out.eligible[0].challengeAnswer, answer);
+    assert.match(out.eligible[0].severityReason, /the challenger answered the question with evidence/);
+    const stored = out.scores.find((s) => s.candidate_id === 'cand_002');
+    assert.equal(stored.severity.severity, 'minor');
+    assert.equal(stored.challenge.answered, undefined);
+    assert.deepEqual(out.challenge.answered, ['cand_002']);
+
+    const prompts = JSON.parse(run(['challenge', '--scores', files.scores, '--candidates', files.candidates, '--emit-prompts']).stdout).prompts;
+    assert.ok(prompts[1].prompt.includes('Raised as a question'));
+    assert.ok(!prompts[0].prompt.includes('Raised as a question'));
+
+    const silent = apply([confirmed('cand_001'), confirmed('cand_002', { answered: true }), confirmed('cand_003')]);
+    assert.equal(silent.code, 2);
+    assert.match(silent.stderr, /answered gives no reason/);
+  });
+});

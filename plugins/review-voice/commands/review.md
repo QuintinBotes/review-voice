@@ -903,8 +903,12 @@ with the line confirmed, or moved, lets a finding through.
 
 Write the JSON `RV score` printed to `<tmpdir>/scores.json`, then run
 `RV challenge --scores <tmpdir>/scores.json --candidates <tmpdir>/checked.json --diff-file <tmpdir>/diff.patch --emit-prompts`,
-adding `--intent <tmpdir>/intent.json` when step 1f wrote one. It prints
-`{"prompts": [{"candidate_id", "prompt"}]}`, one per eligible finding.
+adding `--intent <tmpdir>/intent.json` when step 1f wrote one, `--head <head sha>`
+when the head is a commit, and `--cwd <tmpdir>/head` when step 1c added the
+head worktree. It prints `{"prompts": [{"candidate_id", "prompt"}]}`, one per
+eligible finding. Each prompt names the directory to read the code in, which
+is `--cwd` or else the root of the repository the command ran in, so it is
+usable from a session whose working directory is another repository.
 
 Launch the `challenger` agent **once per prompt**, with that prompt as it is.
 **Do not add the verifier's reasoning, confidence or evidence, the analyst's
@@ -912,13 +916,21 @@ evidence, the score, or your own view of the finding.** That framing is what
 the challenger exists to break, and a challenger shown it agrees with it. Each
 returns `{"verdicts": [...]}` with one verdict; gather every verdict into one
 `{"verdicts": [...]}` and pipe it into
-`RV challenge --scores <tmpdir>/scores.json --candidates <tmpdir>/checked.json --diff-file <tmpdir>/diff.patch --out <tmpdir>/scores.challenged.json`.
+`RV challenge --scores <tmpdir>/scores.json --candidates <tmpdir>/checked.json --diff-file <tmpdir>/diff.patch --out <tmpdir>/scores.challenged.json`,
+adding `--cwd <tmpdir>/head` when step 1c added the head worktree, or
+`--cwd <repository root>` when the review is of the current checkout (a
+working-tree, staged or `--base` review). With `--cwd` it reads each confirmed
+verdict's `decisive_evidence` in that checkout.
 
 - Exit 0: `confirmed` with `line_ok` stays eligible. `confirmed` with
   `corrected_line` is moved by the `reanchor` rules and the editor renders it
   at the new line; a move `reanchor` would refuse holds the finding as
   `challenge-partly`. `partly` holds it as `challenge-partly` and `refuted` as
-  `challenge-refuted`, each with the challenger's reason. Held findings leave
+  `challenge-refuted`, each with the challenger's reason. A `confirmed`
+  verdict whose `decisive_evidence` names a file that is not at the head, a
+  line past its end, or lines that do not hold the quoted line is held as
+  `challenge-partly` too; a quoted line found on exactly one other line of the
+  file moves the reference there instead. Held findings leave
   `eligible[]` for `challengeHeld[]`, and `challenge.moved` lists each move.
 - Exit 2: it names every verdict it refused: an eligible finding with no
   verdict, a verdict for one that is not eligible, or a verdict whose label
@@ -928,7 +940,13 @@ returns `{"verdicts": [...]}` with one verdict; gather every verdict into one
   refused, hold those findings: they are not posted.
 
 A challenger cannot raise a tier. A worse impact it traced is in its `reason`
-only; the step 3c tie-break is the one way a tier rises.
+only; the step 3c tie-break is the one way a tier rises. The one change it
+makes to a tier is to a question it answered: a `question` confirmed with
+`answered: true` is no longer a question, so `challenge` states it at `minor`,
+re-sorts `eligible[]`, lists it in `challenge.answered` and gives the entry
+`challengeAnswer`, the challenger's reason, for the editor to state. `minor`
+leaves the review event where the question left it. A question the owner
+posted with `--as-question` stays a question.
 
 From here on, `<tmpdir>/scores.challenged.json` is the score file: steps 5 and
 6 read it wherever they say "the JSON `RV score` printed".

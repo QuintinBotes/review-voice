@@ -1,4 +1,4 @@
-import { posix } from 'node:path';
+import { isAbsolute, posix } from 'node:path';
 import type { FileHunks } from '../diff/hunks.ts';
 import { reanchorScores } from '../diff/reanchor.ts';
 import type { HeldFinding } from '../store/runs.ts';
@@ -20,8 +20,15 @@ export interface ChallengeVerdict {
   line_ok: boolean;
   corrected_line?: number;
   decisive_evidence: string[];
+  /** The first cited line of each decisive entry as written, in the same order. */
+  decisive_quotes?: string[];
+  /** Set on a finding raised as a question whose answer the decisive evidence settles. */
+  answered?: boolean;
   reason: string;
 }
+
+/** The lines of a repository-relative file at the head, or null when it is not there. */
+export type HeadReader = (path: string) => string[] | null;
 
 /** One statement of `intent.json`, as `check-intent` wrote it. */
 export interface IntentStatement {
@@ -72,6 +79,12 @@ export function intentStatements(parsed: unknown): IntentStatement[] {
   return list.filter((s): s is IntentStatement => isRecord(s) && typeof s['id'] === 'string');
 }
 
+/** Where the code under review can be read: a checkout of the head, and its commit. */
+export interface HeadLocation {
+  dir?: string | null;
+  sha?: string | null;
+}
+
 /**
  * The challenger's prompt for one finding.
  *
@@ -90,6 +103,7 @@ export function challengePrompt(
   statements: readonly IntentStatement[],
   diffFile?: string | null,
   reproduction?: ReproductionRecord,
+  head: HeadLocation = {},
 ): string {
   const pick = (snake: string, camel: string): string | null =>
     text(candidate?.[snake]) ?? text(candidate?.[camel]) ?? text(finding[snake]) ?? text(finding[camel]);
@@ -111,7 +125,15 @@ export function challengePrompt(
   if (causedBy !== null && typeof causedBy['path'] === 'string' && Number.isInteger(causedBy['line'])) {
     rows.push(`Stale consumer of the changed line: ${causedBy['path']}:${String(causedBy['line'])}`);
   }
+  if (finding['severity'] === 'question') {
+    rows.push('Raised as a question. Add "answered": true only when your decisive evidence settles its answer as a defect.');
+  }
   if (diffFile !== undefined && diffFile !== null) rows.push(`Diff under review: ${diffFile}`);
+  // Where to read. The challenger may run in another directory, or another
+  // repository, than the one under review (#373).
+  const commit = head.sha === undefined || head.sha === null ? null : `commit ${head.sha}`;
+  if (head.dir !== undefined && head.dir !== null) rows.push(`Code at the head: ${head.dir}${commit === null ? '' : ` (${commit})`}`);
+  else if (commit !== null) rows.push(`Head under review: ${commit}`);
   if (reproduction !== undefined) rows.push(...reproductionRows(reproduction));
   if (cited.length > 0) {
     const from = [...new Set(cited.map((s) => (typeof s.issue === 'number' ? `linked issue #${s.issue}` : 'the pull request description')))];
@@ -124,7 +146,7 @@ export function challengePrompt(
   rows.push(
     '',
     "You are not given the verifier's reasoning, confidence or evidence. Read the code at the head yourself.",
-    `Return {"verdicts": [{"candidate_id": "${id}", "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "reason"}]}.`,
+    `Return {"verdicts": [{"candidate_id": "${id}", "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "decisive_quotes", "reason"}]}.`,
   );
   return rows.join('\n');
 }
@@ -175,10 +197,11 @@ export function challengePrompts(
   statements: readonly IntentStatement[],
   diffFile?: string | null,
   reproductions: ReadonlyMap<string, ReproductionRecord> = new Map(),
+  head: HeadLocation = {},
 ): { candidate_id: string; prompt: string }[] {
   return eligibleFindings(scores).map((finding) => {
     const id = idOf(finding) ?? 'unknown';
-    return { candidate_id: id, prompt: challengePrompt(finding, candidates.get(id), statements, diffFile, reproductions.get(id)) };
+    return { candidate_id: id, prompt: challengePrompt(finding, candidates.get(id), statements, diffFile, reproductions.get(id), head) };
   });
 }
 
@@ -217,6 +240,14 @@ export function parseChallengeVerdicts(raw: unknown): { ok: true; verdicts: Chal
       problems.push(`${name}: decisive_evidence must be a list of "path:line" references`);
     }
     if (typeof entry['reason'] !== 'string') problems.push(`${name}: reason must be a string`);
+    const quotes = entry['decisive_quotes'];
+    if (
+      quotes !== undefined &&
+      (!Array.isArray(quotes) || quotes.some((q) => typeof q !== 'string') || (Array.isArray(decisive) && quotes.length !== decisive.length))
+    ) {
+      problems.push(`${name}: decisive_quotes must be a list of strings, one per decisive_evidence entry`);
+    }
+    if (entry['answered'] !== undefined && typeof entry['answered'] !== 'boolean') problems.push(`${name}: answered must be true or false`);
     if (problems.length > before) return;
 
     const lineOk = entry['line_ok'] as boolean;
@@ -230,12 +261,16 @@ export function parseChallengeVerdicts(raw: unknown): { ok: true; verdicts: Chal
     }
     if (lineOk && corrected !== undefined) problems.push(`${name}: line_ok true contradicts corrected_line`);
     if (label !== 'confirmed' && reason.length === 0) problems.push(`${name}: ${String(label)} gives no reason`);
+    const answered = label === 'confirmed' && entry['answered'] === true;
+    if (answered && reason.length === 0) problems.push(`${name}: answered gives no reason, which is the answer`);
     verdicts.push({
       candidate_id: id as string,
       verdict: label as ChallengeLabel,
       line_ok: lineOk,
       ...(corrected === undefined ? {} : { corrected_line: corrected as number }),
       decisive_evidence: evidence,
+      ...(quotes === undefined ? {} : { decisive_quotes: quotes as string[] }),
+      ...(answered ? { answered } : {}),
       reason,
     });
   });
@@ -262,10 +297,102 @@ function withoutReproductionFiles(evidence: readonly string[], reproductions: Re
   });
 }
 
+const squash = (value: string): string => value.replace(/\s+/g, ' ').trim();
+// A shorter quote, a closing brace say, matches too many lines to place anything.
+const MIN_QUOTE = 6;
+
+/**
+ * Checks the decisive references of a confirmed verdict against the code at
+ * the head (#393): a challenger reading the wrong tree cited lines 101-102 for
+ * a sentence at 330-331, and the reference was accepted and would have been
+ * posted. Each cited file must be at the head and hold the cited lines. When
+ * the verdict quotes the line, the cited range must hold it; a quote found on
+ * exactly one other line of the file moves the reference there. An absolute
+ * path (a reproduction's copy) is not read, and neither is a file missing at
+ * the head that the diff touches or the finding is anchored on or caused by:
+ * a deleted file has lines only at the base.
+ */
+function checkDecisive(
+  verdict: ChallengeVerdict,
+  read: HeadReader,
+  /** Files the change touches, the finding's own first: one of them may be gone at the head, and a bare file name means one of them. */
+  touched: readonly string[],
+  /** Entries left alone: a reproduction file is dropped later, not read here. */
+  skip: (entry: string) => boolean,
+): { evidence: string[] } | { problem: string } {
+  const evidence: string[] = [];
+  for (const [index, entry] of verdict.decisive_evidence.entries()) {
+    const parts = /^(.*):(\d+)(?:-(\d+))?$/.exec(entry.replace(/[\p{Cf}`]/gu, '').trim());
+    const path = parts === null ? '' : posix.normalize(parts[1]!.trim());
+    if (parts === null || isAbsolute(path) || skip(entry)) {
+      evidence.push(entry);
+      continue;
+    }
+    // A model often cites a changed file by its name alone.
+    const file = path.includes('/') ? path : (touched.find((known) => posix.basename(known) === path) ?? path);
+    const lines = read(file);
+    if (lines === null) {
+      if (!touched.includes(file)) return { problem: `${entry} names a file that is not at the head` };
+      evidence.push(entry);
+      continue;
+    }
+    const start = Number(parts[2]);
+    const end = Math.max(start, Number(parts[3] ?? parts[2]));
+    if (end > lines.length) return { problem: `${entry} is past the end of the file at the head (${lines.length} lines)` };
+    const quote = squash(verdict.decisive_quotes?.[index] ?? '');
+    const holds = (line: number): boolean => squash(lines[line - 1] ?? '').includes(quote);
+    if (quote.length < MIN_QUOTE || lines.slice(start - 1, end).some((_, offset) => holds(start + offset))) {
+      evidence.push(entry);
+      continue;
+    }
+    const elsewhere = lines.flatMap((_, at) => (holds(at + 1) ? [at + 1] : []));
+    if (elsewhere.length !== 1) return { problem: `${entry} does not hold the line the challenger quoted` };
+    const moved = elsewhere[0]!;
+    evidence.push(`${path}:${moved}${end > start ? `-${Math.min(lines.length, moved + end - start)}` : ''}`);
+  }
+  return { evidence };
+}
+
 export interface ChallengeSummary {
   confirmed: string[];
   held: { candidate_id: string; verdict: 'challenge-partly' | 'challenge-refuted'; reason: string }[];
   moved: { candidate_id: string; from: { path: string; line: number }; to: { path: string; line: number } }[];
+  /** Questions the challenger answered, now stated at minor. */
+  answered: string[];
+}
+
+const TIER_ORDER = ['blocking', 'important', 'minor', 'nit', 'question'];
+const ANSWERED = 'the challenger answered the question with evidence, so it is stated at minor';
+
+/**
+ * States a question the challenger answered (#392). The analyst asked because
+ * the diff could not settle it; a challenger whose decisive evidence settles
+ * it has made it a defect, and a defect rendered as `[question]` sorts last
+ * and reads as optional. It is stated at `minor`, the cap a question-framed
+ * claim already has and the tier that leaves the review event where a
+ * question left it. Nothing here raises it further (docs/adr/0024). A question
+ * the owner chose to ask with `score --as-question` stays one.
+ */
+function stateAnswered(document: Json, answers: ReadonlyMap<string, string>): Json {
+  if (answers.size === 0) return document;
+  const answerOf = (entry: unknown): string | undefined => (isRecord(entry) ? answers.get(idOf(entry) ?? '') : undefined);
+  const scores = (document['scores'] as unknown[]).map((entry) => {
+    const answer = answerOf(entry);
+    if (answer === undefined || !isRecord(entry)) return entry;
+    const severity = isRecord(entry['severity']) ? entry['severity'] : {};
+    return { ...entry, severity: { ...severity, severity: 'minor', reason: `${String(severity['reason'] ?? 'a question')}; ${ANSWERED}` }, challengeAnswer: answer };
+  });
+  const finalScore = new Map(scores.filter(isRecord).map((entry) => [idOf(entry), Number(entry['finalScore']) || 0]));
+  const eligible = (document['eligible'] as unknown[]).filter(isRecord).map((entry) => {
+    const answer = answerOf(entry);
+    return answer === undefined
+      ? entry
+      : { ...entry, severity: 'minor', severityReason: `${String(entry['severityReason'] ?? 'a question')}; ${ANSWERED}`, challengeAnswer: answer };
+  });
+  // Render order again: the tier, then the higher final score.
+  const rank = (entry: Json): number => TIER_ORDER.indexOf(String(entry['severity']));
+  eligible.sort((a, b) => rank(a) - rank(b) || (finalScore.get(idOf(b)) ?? 0) - (finalScore.get(idOf(a)) ?? 0));
+  return { ...document, scores, eligible };
 }
 
 export type ChallengeResult = { ok: true; document: Json; summary: ChallengeSummary } | { ok: false; problems: string[] };
@@ -286,6 +413,7 @@ export function applyChallenge(
   rawVerdicts: unknown,
   hunks: Map<string, FileHunks>,
   reproductions: ReadonlyMap<string, ReproductionRecord> = new Map(),
+  readHead: HeadReader | null = null,
 ): ChallengeResult {
   if (!isRecord(scores) || !Array.isArray(scores['scores']) || !Array.isArray(scores['eligible'])) {
     return { ok: false, problems: ['expected the JSON `RV score` printed, with `scores` and `eligible` lists'] };
@@ -307,7 +435,7 @@ export function applyChallenge(
   if (unknown.length > 0) problems.push(`verdict for ${unknown.join(', ')}, which is not eligible`);
   if (problems.length > 0) return { ok: false, problems };
 
-  const summary: ChallengeSummary = { confirmed: [], held: [], moved: [] };
+  const summary: ChallengeSummary = { confirmed: [], held: [], moved: [], answered: [] };
   const held: HeldFinding[] = [];
   const holdReasons = new Map<string, { verdict: 'challenge-partly' | 'challenge-refuted'; reason: string }>();
   const hold = (finding: Json, id: string, verdict: 'challenge-partly' | 'challenge-refuted', reason: string): void => {
@@ -334,7 +462,7 @@ export function applyChallenge(
     const id = idOf(entry);
     const verdict = id === null ? undefined : byId.get(id);
     if (verdict === undefined) return entry;
-    const { candidate_id: _id, ...cited } = verdict;
+    const { candidate_id: _id, decisive_quotes: _quotes, answered: _answered, ...cited } = verdict;
     const rest = { ...cited, decisive_evidence: withoutReproductionFiles(cited.decisive_evidence, reproductions) };
     const heldAs = holdReasons.get(id as string);
     return heldAs === undefined
@@ -347,6 +475,16 @@ export function applyChallenge(
     const verdict = byId.get(id) as ChallengeVerdict;
     if (verdict.verdict === 'partly') hold(finding, id, 'challenge-partly', verdict.reason);
     else if (verdict.verdict === 'refuted') hold(finding, id, 'challenge-refuted', verdict.reason);
+    else if (readHead !== null) {
+      // A confirmation that rests on lines the head does not hold confirms nothing.
+      // A finding on a deleted file, or caused by one, cites lines only the base has.
+      const causedBy = isRecord(finding['causedBy']) ? finding['causedBy']['path'] : undefined;
+      const touched = [String(finding['path']), ...(typeof causedBy === 'string' ? [causedBy] : []), ...hunks.keys()];
+      const citable = new Set(withoutReproductionFiles(verdict.decisive_evidence, reproductions));
+      const checked = checkDecisive(verdict, readHead, touched, (entry) => !citable.has(entry));
+      if ('problem' in checked) hold(finding, id, 'challenge-partly', `decisive evidence refused: ${checked.problem}`);
+      else verdict.decisive_evidence = checked.evidence;
+    }
   }
 
   let document: Json = {
@@ -358,7 +496,7 @@ export function applyChallenge(
   for (const finding of eligible) {
     const id = idOf(finding) as string;
     const verdict = byId.get(id) as ChallengeVerdict;
-    if (verdict.verdict !== 'confirmed') continue;
+    if (verdict.verdict !== 'confirmed' || holdReasons.has(id)) continue;
     if (verdict.corrected_line === undefined) {
       summary.confirmed.push(id);
       continue;
@@ -385,6 +523,19 @@ export function applyChallenge(
       eligible: (document['eligible'] as unknown[]).filter((e) => !(isRecord(e) && idOf(e) === id)),
     };
   }
+
+  // A question that was answered and is still eligible is stated.
+  const ownerAsked = new Set((scores['scores'] as unknown[]).filter((e) => isRecord(e) && e['ownerQuestion'] === true).map((e) => idOf(e as Json)));
+  const answers = new Map<string, string>();
+  for (const finding of eligible) {
+    const id = idOf(finding) as string;
+    const verdict = byId.get(id) as ChallengeVerdict;
+    if (verdict.answered === true && finding['severity'] === 'question' && !holdReasons.has(id) && !ownerAsked.has(id)) {
+      answers.set(id, verdict.reason);
+      summary.answered.push(id);
+    }
+  }
+  document = stateAnswered(document, answers);
 
   // Held findings are listed in render order, whichever pass held them.
   const order = new Map(eligibleIds.map((id, index) => [id, index]));

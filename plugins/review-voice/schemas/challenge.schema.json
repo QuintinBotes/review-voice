@@ -30,9 +30,18 @@
             "items": { "type": "string", "pattern": "^\\S(.*\\S)?:[0-9]+(-[0-9]+)?$" },
             "description": "The path:line references the verdict turns on."
           },
+          "decisive_quotes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The first cited line of each decisive_evidence entry as written in the file, in the same order. `challenge --cwd` checks each reference against it."
+          },
+          "answered": {
+            "type": "boolean",
+            "description": "True only on a confirmed finding that was raised as a question, when the decisive evidence settles its answer as a defect. `challenge` then states it at minor, with reason as the answer."
+          },
           "reason": {
             "type": "string",
-            "description": "Required non-empty on partly and refuted. A worse impact than the claim states is noted here; it never raises the tier."
+            "description": "Required non-empty on partly and refuted, and when answered is true. A worse impact than the claim states is noted here; it never raises the tier."
           }
         },
         "allOf": [
