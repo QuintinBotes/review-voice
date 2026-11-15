@@ -66,6 +66,12 @@
     "impact_traced": {
       "type": "boolean"
     },
+    "also_at": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^\\S(.*\\S)?:[0-9]+(-[0-9]+)?$" },
+      "maxItems": 10,
+      "description": "On a verified candidate: other places, as path:line, where you confirmed the same defect and the candidate did not list them. The finding is still the candidate's; these are stated after it as further instances."
+    },
     "impact_class": {
       "enum": [
         "no-exposure",

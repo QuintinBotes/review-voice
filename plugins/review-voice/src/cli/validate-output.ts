@@ -24,8 +24,14 @@ export function validateOutputCommand(argv: string[]): number {
     ...DEFAULT_LIMITS,
     maxFindings: argv.includes('--max-findings') ? maxFindings : null,
     maxWordsPerFinding: maxWords,
-    maxTotalWords: Math.max(scaledTotal, maxTotal === DEFAULT_LIMITS.maxTotalWords ? scaledTotal : maxTotal),
+    // The larger of the two: scaling never falls under the floor, which is the default.
+    maxTotalWords: Math.max(scaledTotal, maxTotal),
   };
+  // An explicit limit that scaling raised is said, not applied in silence (#377).
+  const scaledNote =
+    argv.includes('--max-total-words') && limits.maxTotalWords !== maxTotal
+      ? ` (--max-total-words ${maxTotal}, scaled to ${scaleTo} file${scaleTo === 1 ? '' : 's'})`
+      : '';
 
   const output = readStdin();
   const result = validateOutput(output, limits);
@@ -59,7 +65,7 @@ export function validateOutputCommand(argv: string[]): number {
 
   if (result.valid) {
     console.log(
-      `Contract satisfied: ${result.findingCount} finding(s), ${result.totalWords}/${limits.maxTotalWords} words.`,
+      `Contract satisfied: ${result.findingCount} finding(s), ${result.totalWords}/${limits.maxTotalWords} words${scaledNote}.`,
     );
     return 0;
   }
@@ -70,6 +76,6 @@ export function validateOutputCommand(argv: string[]): number {
     const where = violation.line === undefined ? '' : `line ${violation.line}: `;
     console.error(`[${violation.code}] ${where}${violation.message}`);
   }
-  console.error(`\n${result.violations.length} contract violation(s).`);
+  console.error(`\n${result.violations.length} contract violation(s).${scaledNote === '' ? '' : ` Total word limit ${limits.maxTotalWords}${scaledNote}.`}`);
   return 1;
 }

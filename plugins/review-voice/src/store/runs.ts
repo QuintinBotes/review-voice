@@ -359,13 +359,16 @@ export function describeFamilies(families: RunFamilies | null): string {
  * family, and the challenge stage's, `claude` when it names none (the only
  * runner before families were recorded).
  */
-function familiesOf(verdicts: unknown, stages: readonly StageTiming[]): RunFamilies {
+function familiesOf(verdicts: unknown, stages: readonly StageTiming[], scores: unknown): RunFamilies {
   const list = Array.isArray(verdicts) ? verdicts : [];
   const first = list.length === 0 ? undefined : (asRecord(list[0])?.['family'] as unknown);
   const challenge = stages.find((stage) => stage.name === 'challenge');
+  // A score that carries a challenger's verdict is a challenge that ran,
+  // whatever the stage list calls it or leaves out (#380).
+  const challenged = Array.isArray(scores) && scores.some((score) => asRecord(score)?.['challenge'] !== undefined);
   return {
     secondPass: list.length === 0 ? null : isFamily(first) ? first : 'unknown',
-    challenge: challenge === undefined ? null : isFamily(challenge.family) ? challenge.family : 'claude',
+    challenge: challenge === undefined ? (challenged ? 'claude' : null) : isFamily(challenge.family) ? challenge.family : 'claude',
   };
 }
 
@@ -1176,7 +1179,7 @@ export function recordRun(
           policyVersions,
         };
   // A run recorded without provenance has no families either.
-  const families = provenance === null ? null : familiesOf(input.verdicts, input.stages ?? []);
+  const families = provenance === null ? null : familiesOf(input.verdicts, input.stages ?? [], input.scores);
 
   // The run row and its audit event land together or not at all: a row left by
   // a failed audit write would read as a recorded review while the caller saw

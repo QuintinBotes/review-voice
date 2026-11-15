@@ -12202,13 +12202,14 @@ function describeFamilies(families) {
   if (families === null) return "Families not recorded";
   return `Families second-pass ${families.secondPass ?? "none"}, challenge ${families.challenge ?? "none"}`;
 }
-function familiesOf(verdicts, stages) {
+function familiesOf(verdicts, stages, scores) {
   const list3 = Array.isArray(verdicts) ? verdicts : [];
   const first = list3.length === 0 ? void 0 : asRecord(list3[0])?.["family"];
   const challenge2 = stages.find((stage) => stage.name === "challenge");
+  const challenged = Array.isArray(scores) && scores.some((score2) => asRecord(score2)?.["challenge"] !== void 0);
   return {
     secondPass: list3.length === 0 ? null : isFamily(first) ? first : "unknown",
-    challenge: challenge2 === void 0 ? null : isFamily(challenge2.family) ? challenge2.family : "claude"
+    challenge: challenge2 === void 0 ? challenged ? "claude" : null : isFamily(challenge2.family) ? challenge2.family : "claude"
   };
 }
 var reportedFamilies = /* @__PURE__ */ new Set();
@@ -12650,7 +12651,7 @@ function recordRun(db, input) {
     mode: input.provenance.mode,
     policyVersions
   };
-  const families = provenance === null ? null : familiesOf(input.verdicts, input.stages ?? []);
+  const families = provenance === null ? null : familiesOf(input.verdicts, input.stages ?? [], input.scores);
   db.exec("SAVEPOINT record_run");
   try {
     db.prepare(
@@ -20117,8 +20118,11 @@ var COMMAND_HELP = {
   "check-verification": {
     summary: "Validate verifier output from stdin, as score would",
     body: lines(
-      "review-voice check-verification [--candidates <path>]",
-      "  Validate verifier output the way score would read it.",
+      "review-voice check-verification [--candidates <path>] [--out <path>]",
+      "  Validate verifier output the way score would read it. A reply with text or a code fence",
+      "  around its JSON is read for the JSON alone, and says so on stderr.",
+      "  --out         Write the checked JSON, without the text around it, to this file.",
+      '  also_at, when present, is a list of at most 10 "path:line" references.',
       "  Use verified and technical_confidence; verdict and confidence belong to the second pass.",
       "  --candidates  check-candidates output (or a candidates array); refuses output that",
       "                skips a kept candidate, so the verifier can be re-asked for it.",
@@ -20188,7 +20192,8 @@ var COMMAND_HELP = {
       "  --ref <ref>            Read every document from this commit instead of the checkout; a pull",
       "                         request review passes its base. Symbolic links in it are not followed.",
       "Reads: nothing on stdin.",
-      "Writes: JSON on stdout.",
+      "Writes: JSON on stdout, with searched, every place looked in. When nothing was found, one",
+      "  line on stderr says so and where it looked.",
       "Exit codes: 0 ok, 2 bad invocation or --ref does not resolve."
     )
   },
@@ -21214,7 +21219,9 @@ var COMMAND_HELP = {
       "Flags:",
       "  --json                     Emit the result as JSON",
       "  --max-findings <n>         Default: no cap",
-      "  --scale-to-files <n>       Scale the total word budget to the change size",
+      "  --scale-to-files <n>       Scale the total word budget to the change size; the limit is the",
+      "                             larger of this and --max-total-words, and the output says when",
+      "                             scaling raised an explicit --max-total-words",
       `  --max-words-per-finding <n>  Default ${DEFAULT_LIMITS.maxWordsPerFinding}`,
       `  --max-total-words <n>      Default ${DEFAULT_LIMITS.maxTotalWords}`,
       "  --scores <path>            The JSON `score` printed; a severity tag that disagrees with its score,",
@@ -25024,6 +25031,10 @@ function verificationProblem(list3) {
     if (impactClass !== void 0 && !isImpactClass(impactClass)) {
       return `${who}: impact_class must be one of ${IMPACT_CLASSES.join(", ")}, not ${JSON.stringify(impactClass)}.`;
     }
+    const alsoAt = entry["also_at"] ?? entry["alsoAt"];
+    if (alsoAt !== void 0 && !(Array.isArray(alsoAt) && alsoAt.length <= 10 && alsoAt.every((ref) => typeof ref === "string" && /^\S(?:.*\S)?:\d+(?:-\d+)?$/.test(ref)))) {
+      return `${who}: also_at must be a list of at most 10 "path:line" references.`;
+    }
     const missing = entry["required_context_missing"] ?? entry["requiredContextMissing"];
     if (missing !== void 0 && !(Array.isArray(missing) && missing.every(isMissingContext))) {
       return `${who}: required_context_missing must be an array of strings, or of {"context": string, "kind": ${CONTEXT_KINDS.map((kind) => `"${kind}"`).join(" | ")}}.`;
@@ -25792,6 +25803,9 @@ function contextCommand() {
           // The review command needs the structural opt-ins after resolving
           // config, including the optional simplification pass.
           structure: config2.structure,
+          // Which analyst lanes are configured, so a review can see that only
+          // the diff lane runs unless review.lanes adds one (#378).
+          lanes: config2.lanes.map((lane) => ({ name: lane.name, agent: lane.agent, prefix: lane.prefix, when: lane.when })),
           // Reported whether or not it is configured. A config written before
           // second-pass verification existed has no `verification:` block at
           // all, so an upgrading user silently got none of it and nothing in
@@ -25938,8 +25952,10 @@ function validateOutputCommand(argv) {
     ...DEFAULT_LIMITS,
     maxFindings: argv.includes("--max-findings") ? maxFindings : null,
     maxWordsPerFinding: maxWords,
-    maxTotalWords: Math.max(scaledTotal, maxTotal === DEFAULT_LIMITS.maxTotalWords ? scaledTotal : maxTotal)
+    // The larger of the two: scaling never falls under the floor, which is the default.
+    maxTotalWords: Math.max(scaledTotal, maxTotal)
   };
+  const scaledNote = argv.includes("--max-total-words") && limits.maxTotalWords !== maxTotal ? ` (--max-total-words ${maxTotal}, scaled to ${scaleTo} file${scaleTo === 1 ? "" : "s"})` : "";
   const output = readStdin();
   const result = validateOutput(output, limits);
   const scoresFlag = flag(argv, "--scores");
@@ -25965,7 +25981,7 @@ function validateOutputCommand(argv) {
   }
   if (result.valid) {
     console.log(
-      `Contract satisfied: ${result.findingCount} finding(s), ${result.totalWords}/${limits.maxTotalWords} words.`
+      `Contract satisfied: ${result.findingCount} finding(s), ${result.totalWords}/${limits.maxTotalWords} words${scaledNote}.`
     );
     return 0;
   }
@@ -25974,7 +25990,7 @@ function validateOutputCommand(argv) {
     console.error(`[${violation.code}] ${where}${violation.message}`);
   }
   console.error(`
-${result.violations.length} contract violation(s).`);
+${result.violations.length} contract violation(s).${scaledNote === "" ? "" : ` Total word limit ${limits.maxTotalWords}${scaledNote}.`}`);
   return 1;
 }
 
@@ -26901,6 +26917,11 @@ var RULE_DIRECTORIES = [
   { path: join23(".agents", "rules"), kind: "rule" },
   { path: join23(".claude", "rules"), kind: "rule" }
 ];
+var SEARCHED_PLACES = [
+  ...REPOSITORY_FILES.map((file2) => file2.path),
+  ...NESTED_FILES.map((file2) => `<directory the change touches>/${file2.name}`),
+  ...RULE_DIRECTORIES.map((directory) => `<any directory>/${directory.path}/`)
+];
 var TOTAL_BYTES = 6e4;
 var PER_DOCUMENT_SHARE = 0.25;
 var PER_DOCUMENT_BYTES = Math.floor(TOTAL_BYTES * PER_DOCUMENT_SHARE);
@@ -27317,10 +27338,14 @@ function conventionsCommand(argv) {
     return 2;
   }
   const report = discoverConventions(root, changed, ref === null ? void 0 : gitTreeReader(root, ref));
+  if (report.documents.length === 0 && report.skipped.length === 0) {
+    console.error(`No convention documents found${ref === null ? "" : ` at ${ref}`}. Looked for: ${SEARCHED_PLACES.join(", ")}.`);
+  }
   console.log(
     JSON.stringify(
       {
         ...report,
+        searched: SEARCHED_PLACES,
         // Restated on the payload itself, because this is the one command
         // whose output is repository-authored text going into a prompt.
         trust: "evidence",
@@ -31262,11 +31287,26 @@ async function replyCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/check-verification.ts
-import { readFileSync as readFileSync30 } from "node:fs";
+import { readFileSync as readFileSync30, writeFileSync as writeFileSync17 } from "node:fs";
 function keptCandidateIds(value) {
   const record3 = value;
   const list3 = Array.isArray(value) ? value : Array.isArray(record3?.kept) ? record3.kept : Array.isArray(record3?.candidates) ? record3.candidates : [];
   return list3.map((entry) => entry?.candidate_id).filter((id) => typeof id === "string");
+}
+function jsonInReply(text5) {
+  const fences = [...text5.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)].map((match) => match[1]);
+  const spans = [
+    ["[", "]"],
+    ["{", "}"]
+  ].map(([open, close]) => [text5.indexOf(open), text5.lastIndexOf(close)]).filter(([from, to]) => from !== -1 && to > from).sort((a, b) => a[0] - b[0]).map(([from, to]) => text5.slice(from, to + 1));
+  for (const [index, candidate] of [text5, ...fences, ...spans].entries()) {
+    try {
+      return { value: JSON.parse(candidate), wrapped: index > 0 };
+    } catch {
+      continue;
+    }
+  }
+  return void 0;
 }
 function checkVerificationCommand(argv) {
   const candidatesFile = flag(argv, "--candidates");
@@ -31279,13 +31319,20 @@ function checkVerificationCommand(argv) {
       return 2;
     }
   }
-  let parsed2;
-  try {
-    parsed2 = JSON.parse(readStdin());
-  } catch {
-    console.error("Expected the evidence-verifier output as JSON on stdin.");
+  const outFile = flag(argv, "--out");
+  if (argv.includes("--out") && outFile === null) {
+    console.error("--out needs a file path.");
     return 2;
   }
+  const reply = jsonInReply(readStdin());
+  if (reply === void 0) {
+    console.error(
+      'Expected the evidence-verifier output as JSON on stdin: {"verifications": [...]}, or a bare array of the entries. Text or a code fence around the JSON is left out; no JSON was found in this reply.'
+    );
+    return 2;
+  }
+  const parsed2 = reply.value;
+  if (reply.wrapped) console.error("The reply had text around its JSON; only the JSON was read.");
   const list3 = verdictList(parsed2);
   if (list3.length === 0) {
     console.error(
@@ -31308,7 +31355,16 @@ function checkVerificationCommand(argv) {
       return 2;
     }
   }
-  console.log(JSON.stringify({ valid: true, verifications: list3.length }, null, 2));
+  if (outFile !== null) {
+    try {
+      writeFileSync17(outFile, `${JSON.stringify(parsed2, null, 2)}
+`);
+    } catch (error) {
+      console.error(`Cannot write ${outFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
+  console.log(JSON.stringify({ valid: true, verifications: list3.length, ...outFile === null ? {} : { out: outFile } }, null, 2));
   return 0;
 }
 
@@ -31554,7 +31610,7 @@ function reconcileCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/challenge.ts
-import { readFileSync as readFileSync33, writeFileSync as writeFileSync17 } from "node:fs";
+import { readFileSync as readFileSync33, writeFileSync as writeFileSync18 } from "node:fs";
 import { resolve as resolve15, sep as sep6 } from "node:path";
 function challengeCommand(argv) {
   const scoresFile = flag(argv, "--scores");
@@ -31652,7 +31708,7 @@ function challengeCommand(argv) {
     process.stdout.write(terminalInert(body));
   } else {
     try {
-      writeFileSync17(outFile, body);
+      writeFileSync18(outFile, body);
     } catch (error) {
       console.error(`Cannot write ${outFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -31663,7 +31719,7 @@ function challengeCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/reanchor.ts
-import { readFileSync as readFileSync34, writeFileSync as writeFileSync18, renameSync as renameSync5, rmSync as rmSync15 } from "node:fs";
+import { readFileSync as readFileSync34, writeFileSync as writeFileSync19, renameSync as renameSync5, rmSync as rmSync15 } from "node:fs";
 function reanchorCommand(argv) {
   const candidateId = flag(argv, "--candidate");
   const line3 = Number(flag(argv, "--line"));
@@ -31710,11 +31766,11 @@ function reanchorCommand(argv) {
   try {
     if (candidatesFile !== null) {
       staged.push([`${candidatesFile}.reanchor-${process.pid}`, candidatesFile]);
-      writeFileSync18(staged[staged.length - 1][0], `${JSON.stringify(candidates, null, 2)}
+      writeFileSync19(staged[staged.length - 1][0], `${JSON.stringify(candidates, null, 2)}
 `);
     }
     staged.push([`${scoresFile}.reanchor-${process.pid}`, scoresFile]);
-    writeFileSync18(staged[staged.length - 1][0], `${JSON.stringify(result.updated, null, 2)}
+    writeFileSync19(staged[staged.length - 1][0], `${JSON.stringify(result.updated, null, 2)}
 `);
     for (const [temporary, target] of staged) renameSync5(temporary, target);
   } catch (error) {
@@ -32184,7 +32240,7 @@ function statusCommand() {
 }
 
 // plugins/review-voice/src/cli/carry.ts
-import { readFileSync as readFileSync36, writeFileSync as writeFileSync19, mkdirSync as mkdirSync15 } from "node:fs";
+import { readFileSync as readFileSync36, writeFileSync as writeFileSync20, mkdirSync as mkdirSync15 } from "node:fs";
 import { dirname as dirname20, join as join31 } from "node:path";
 
 // plugins/review-voice/src/diff/held.ts
@@ -32603,19 +32659,19 @@ function carryCandidatesCommand(argv) {
   };
   try {
     mkdirSync15(outDir, { recursive: true });
-    writeFileSync19(
+    writeFileSync20(
       join31(outDir, "candidates.json"),
       `${JSON.stringify(candidatesIn.rebuild([...carriedCandidates, ...interdiffCandidates]), null, 2)}
 `
     );
-    writeFileSync19(
+    writeFileSync20(
       join31(outDir, "verification.json"),
       `${JSON.stringify(verificationIn.rebuild([...carriedVerification, ...interdiffVerification]), null, 2)}
 `
     );
-    if (heldIn !== null) writeFileSync19(join31(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
+    if (heldIn !== null) writeFileSync20(join31(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
 `);
-    writeFileSync19(join31(outDir, "carry.json"), `${JSON.stringify(record3, null, 2)}
+    writeFileSync20(join31(outDir, "carry.json"), `${JSON.stringify(record3, null, 2)}
 `);
   } catch (error) {
     console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
@@ -32959,6 +33015,8 @@ function scoreCommand(argv) {
           verified: typeof verified === "boolean" ? verified : void 0,
           blockerConfirmed: typeof blockerConfirmed === "boolean" ? blockerConfirmed : void 0,
           reason: typeof reason2 === "string" ? reason2 : void 0,
+          // Already checked by `verificationProblem`.
+          alsoAt: raw["also_at"] ?? raw["alsoAt"],
           requiredContextMissing: raw["required_context_missing"] ?? raw["requiredContextMissing"],
           // Already checked by `verificationProblem`.
           partlyAddressed: raw["partly_addressed"] ?? raw["partlyAddressed"]
@@ -33343,7 +33401,10 @@ function scoreCommand(argv) {
               // A contested point is marked so the editor leaves it out: the
               // second pass disputed how far the failure reaches and no
               // tie-break upheld the wider claim.
-              ...c.impactDisputed === true ? { impactDisputed: true } : {}
+              ...c.impactDisputed === true ? { impactDisputed: true } : {},
+              // More instances of the same defect than the candidate listed.
+              // The verifier used to reject a true finding for them (#388).
+              ...(verifications.get(c.candidateId)?.alsoAt?.length ?? 0) > 0 ? { alsoAt: verifications.get(c.candidateId).alsoAt } : {}
             };
           }),
           belowGate: belowGate.map(withSnakeCaseId),
