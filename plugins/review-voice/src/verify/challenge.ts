@@ -22,6 +22,8 @@ export interface ChallengeVerdict {
   decisive_evidence: string[];
   /** The first cited line of each decisive entry as written, in the same order. */
   decisive_quotes?: string[];
+  /** Set on a finding raised as a question whose answer the decisive evidence settles. */
+  answered?: boolean;
   reason: string;
 }
 
@@ -122,6 +124,9 @@ export function challengePrompt(
   ];
   if (causedBy !== null && typeof causedBy['path'] === 'string' && Number.isInteger(causedBy['line'])) {
     rows.push(`Stale consumer of the changed line: ${causedBy['path']}:${String(causedBy['line'])}`);
+  }
+  if (finding['severity'] === 'question') {
+    rows.push('Raised as a question. Add "answered": true only when your decisive evidence settles its answer as a defect.');
   }
   if (diffFile !== undefined && diffFile !== null) rows.push(`Diff under review: ${diffFile}`);
   // Where to read. The challenger may run in another directory, or another
@@ -242,6 +247,7 @@ export function parseChallengeVerdicts(raw: unknown): { ok: true; verdicts: Chal
     ) {
       problems.push(`${name}: decisive_quotes must be a list of strings, one per decisive_evidence entry`);
     }
+    if (entry['answered'] !== undefined && typeof entry['answered'] !== 'boolean') problems.push(`${name}: answered must be true or false`);
     if (problems.length > before) return;
 
     const lineOk = entry['line_ok'] as boolean;
@@ -255,6 +261,8 @@ export function parseChallengeVerdicts(raw: unknown): { ok: true; verdicts: Chal
     }
     if (lineOk && corrected !== undefined) problems.push(`${name}: line_ok true contradicts corrected_line`);
     if (label !== 'confirmed' && reason.length === 0) problems.push(`${name}: ${String(label)} gives no reason`);
+    const answered = label === 'confirmed' && entry['answered'] === true;
+    if (answered && reason.length === 0) problems.push(`${name}: answered gives no reason, which is the answer`);
     verdicts.push({
       candidate_id: id as string,
       verdict: label as ChallengeLabel,
@@ -262,6 +270,7 @@ export function parseChallengeVerdicts(raw: unknown): { ok: true; verdicts: Chal
       ...(corrected === undefined ? {} : { corrected_line: corrected as number }),
       decisive_evidence: evidence,
       ...(quotes === undefined ? {} : { decisive_quotes: quotes as string[] }),
+      ...(answered ? { answered } : {}),
       reason,
     });
   });
@@ -341,6 +350,42 @@ export interface ChallengeSummary {
   confirmed: string[];
   held: { candidate_id: string; verdict: 'challenge-partly' | 'challenge-refuted'; reason: string }[];
   moved: { candidate_id: string; from: { path: string; line: number }; to: { path: string; line: number } }[];
+  /** Questions the challenger answered, now stated at minor. */
+  answered: string[];
+}
+
+const TIER_ORDER = ['blocking', 'important', 'minor', 'nit', 'question'];
+const ANSWERED = 'the challenger answered the question with evidence, so it is stated at minor';
+
+/**
+ * States a question the challenger answered (#392). The analyst asked because
+ * the diff could not settle it; a challenger whose decisive evidence settles
+ * it has made it a defect, and a defect rendered as `[question]` sorts last
+ * and reads as optional. It is stated at `minor`, the cap a question-framed
+ * claim already has and the tier that leaves the review event where a
+ * question left it. Nothing here raises it further (docs/adr/0024). A question
+ * the owner chose to ask with `score --as-question` stays one.
+ */
+function stateAnswered(document: Json, answers: ReadonlyMap<string, string>): Json {
+  if (answers.size === 0) return document;
+  const answerOf = (entry: unknown): string | undefined => (isRecord(entry) ? answers.get(idOf(entry) ?? '') : undefined);
+  const scores = (document['scores'] as unknown[]).map((entry) => {
+    const answer = answerOf(entry);
+    if (answer === undefined || !isRecord(entry)) return entry;
+    const severity = isRecord(entry['severity']) ? entry['severity'] : {};
+    return { ...entry, severity: { ...severity, severity: 'minor', reason: `${String(severity['reason'] ?? 'a question')}; ${ANSWERED}` }, challengeAnswer: answer };
+  });
+  const finalScore = new Map(scores.filter(isRecord).map((entry) => [idOf(entry), Number(entry['finalScore']) || 0]));
+  const eligible = (document['eligible'] as unknown[]).filter(isRecord).map((entry) => {
+    const answer = answerOf(entry);
+    return answer === undefined
+      ? entry
+      : { ...entry, severity: 'minor', severityReason: `${String(entry['severityReason'] ?? 'a question')}; ${ANSWERED}`, challengeAnswer: answer };
+  });
+  // Render order again: the tier, then the higher final score.
+  const rank = (entry: Json): number => TIER_ORDER.indexOf(String(entry['severity']));
+  eligible.sort((a, b) => rank(a) - rank(b) || (finalScore.get(idOf(b)) ?? 0) - (finalScore.get(idOf(a)) ?? 0));
+  return { ...document, scores, eligible };
 }
 
 export type ChallengeResult = { ok: true; document: Json; summary: ChallengeSummary } | { ok: false; problems: string[] };
@@ -383,7 +428,7 @@ export function applyChallenge(
   if (unknown.length > 0) problems.push(`verdict for ${unknown.join(', ')}, which is not eligible`);
   if (problems.length > 0) return { ok: false, problems };
 
-  const summary: ChallengeSummary = { confirmed: [], held: [], moved: [] };
+  const summary: ChallengeSummary = { confirmed: [], held: [], moved: [], answered: [] };
   const held: HeldFinding[] = [];
   const holdReasons = new Map<string, { verdict: 'challenge-partly' | 'challenge-refuted'; reason: string }>();
   const hold = (finding: Json, id: string, verdict: 'challenge-partly' | 'challenge-refuted', reason: string): void => {
@@ -410,7 +455,7 @@ export function applyChallenge(
     const id = idOf(entry);
     const verdict = id === null ? undefined : byId.get(id);
     if (verdict === undefined) return entry;
-    const { candidate_id: _id, decisive_quotes: _quotes, ...cited } = verdict;
+    const { candidate_id: _id, decisive_quotes: _quotes, answered: _answered, ...cited } = verdict;
     const rest = { ...cited, decisive_evidence: withoutReproductionFiles(cited.decisive_evidence, reproductions) };
     const heldAs = holdReasons.get(id as string);
     return heldAs === undefined
@@ -467,6 +512,19 @@ export function applyChallenge(
       eligible: (document['eligible'] as unknown[]).filter((e) => !(isRecord(e) && idOf(e) === id)),
     };
   }
+
+  // A question that was answered and is still eligible is stated.
+  const ownerAsked = new Set((scores['scores'] as unknown[]).filter((e) => isRecord(e) && e['ownerQuestion'] === true).map((e) => idOf(e as Json)));
+  const answers = new Map<string, string>();
+  for (const finding of eligible) {
+    const id = idOf(finding) as string;
+    const verdict = byId.get(id) as ChallengeVerdict;
+    if (verdict.answered === true && finding['severity'] === 'question' && !holdReasons.has(id) && !ownerAsked.has(id)) {
+      answers.set(id, verdict.reason);
+      summary.answered.push(id);
+    }
+  }
+  document = stateAnswered(document, answers);
 
   // Held findings are listed in render order, whichever pass held them.
   const order = new Map(eligibleIds.map((id, index) => [id, index]));

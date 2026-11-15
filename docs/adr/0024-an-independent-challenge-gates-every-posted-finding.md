@@ -41,6 +41,13 @@ the finding through.**
   `thorough`. In `fast`, it still runs for any finding above a nit.
 - **No raising.** A challenger cannot raise a tier. A worse impact it traces is
   recorded as a note, and the existing 0019 path is how a tier rises.
+- **An answered question is stated** (amended, #392). A `question` is a kind
+  of finding and not a tier. When the challenger confirms one with
+  `answered: true`, its decisive evidence has settled what the analyst could
+  not, so `challenge` states it at `minor` with the challenger's reason as the
+  answer. `minor` is the cap a question-framed claim already has, and a
+  question and a minor finding lead to the same review event, so this raises
+  nothing. A question the owner posted with `score --as-question` stays one.
 
 ## Consequences
 

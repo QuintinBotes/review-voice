@@ -246,7 +246,7 @@ test('confirmed verdicts with the line confirmed keep every finding eligible', (
     const out = JSON.parse(r.stdout);
     assert.deepEqual(out.eligible.map((e) => e.candidateId), ['cand_001', 'cand_002', 'cand_003']);
     assert.deepEqual(out.challengeHeld, []);
-    assert.deepEqual(out.challenge, { confirmed: ['cand_001', 'cand_002', 'cand_003'], held: [], moved: [] });
+    assert.deepEqual(out.challenge, { confirmed: ['cand_001', 'cand_002', 'cand_003'], held: [], moved: [], answered: [] });
     assert.equal(out.scores.find((s) => s.candidateId === 'cand_001').challenge.verdict, 'confirmed');
   });
 });
@@ -512,5 +512,56 @@ test('#393: without --cwd, and for a reference with no quote, nothing more is as
     const bad = apply([confirmed('cand_001', { decisive_quotes: [] }), confirmed('cand_002'), confirmed('cand_003')]);
     assert.equal(bad.code, 2);
     assert.match(bad.stderr, /decisive_quotes must be a list of strings, one per decisive_evidence entry/);
+  });
+});
+
+// #392: a question its challenger answered with evidence stayed a question,
+// rendered last, though it was the most serious finding of the review.
+
+test('#392: a question confirmed with answered: true is stated at minor, above a nit', () => {
+  withFiles(({ files, apply, run }) => {
+    const asQuestion = (id, line, extra = {}) => ({
+      ...scoreEntry(id, line),
+      finalScore: 0.4,
+      severity: { severity: 'question', reason: 'a question is a kind of finding, not a tier' },
+      ...extra,
+    });
+    const scores = {
+      ...SCORES,
+      scores: [
+        { ...scoreEntry('cand_001', 3), severity: { severity: 'nit', reason: 'style' } },
+        asQuestion('cand_002', 4),
+        asQuestion('cand_003', 5, { ownerQuestion: true }),
+      ],
+      eligible: [
+        { ...eligibleEntry('cand_001', 3), severity: 'nit' },
+        { ...eligibleEntry('cand_002', 4), severity: 'question', severityReason: 'a question is a kind of finding, not a tier' },
+        { ...eligibleEntry('cand_003', 5), severity: 'question' },
+      ],
+    };
+    writeFileSync(files.scores, JSON.stringify(scores));
+    const answer = 'src/a.ts:4 retries without a limit, so the loop does not stop.';
+    const r = apply([
+      confirmed('cand_001', { answered: true, reason: 'not a question' }),
+      confirmed('cand_002', { answered: true, reason: answer }),
+      confirmed('cand_003', { answered: true, reason: 'the owner asked this one' }),
+    ]);
+    assert.equal(r.code, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.deepEqual(out.eligible.map((e) => [e.candidate_id, e.severity]), [['cand_002', 'minor'], ['cand_001', 'nit'], ['cand_003', 'question']]);
+    assert.equal(out.eligible[0].challengeAnswer, answer);
+    assert.match(out.eligible[0].severityReason, /the challenger answered the question with evidence/);
+    const stored = out.scores.find((s) => s.candidate_id === 'cand_002');
+    assert.equal(stored.severity.severity, 'minor');
+    assert.equal(stored.challenge.answered, undefined);
+    assert.deepEqual(out.challenge.answered, ['cand_002']);
+
+    const prompts = JSON.parse(run(['challenge', '--scores', files.scores, '--candidates', files.candidates, '--emit-prompts']).stdout).prompts;
+    assert.ok(prompts[1].prompt.includes('Raised as a question'));
+    assert.ok(!prompts[0].prompt.includes('Raised as a question'));
+
+    const silent = apply([confirmed('cand_001'), confirmed('cand_002', { answered: true }), confirmed('cand_003')]);
+    assert.equal(silent.code, 2);
+    assert.match(silent.stderr, /answered gives no reason/);
   });
 });

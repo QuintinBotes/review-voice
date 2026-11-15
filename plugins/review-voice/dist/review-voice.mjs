@@ -21021,7 +21021,9 @@ var COMMAND_HELP = {
       "  the verifier's reasoning, confidence or evidence. Otherwise check the challenger verdicts on",
       "  stdin and apply them: confirmed with line_ok passes; confirmed with corrected_line moves the",
       "  anchor by the reanchor rules (a refused move holds it as challenge-partly); partly holds it",
-      "  as challenge-partly and refuted as challenge-refuted.",
+      "  as challenge-partly and refuted as challenge-refuted. A question confirmed with answered:",
+      "  true is stated at minor, with the challenger's reason as challengeAnswer; nothing raises it",
+      "  further, and a question posted with score --as-question stays one.",
       "",
       "Flags:",
       "  --scores <path>        The JSON `score` printed (required)",
@@ -21045,11 +21047,11 @@ var COMMAND_HELP = {
       "  --head <sha>           With --emit-prompts, the head commit each prompt names",
       "  --out <path>           Write the challenged scores here instead of stdout",
       'Reads: with --emit-prompts nothing on stdin; otherwise {"verdicts": [{"candidate_id",',
-      '  "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "decisive_quotes"?, "reason"}]}',
+      '  "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "decisive_quotes"?, "answered"?, "reason"}]}',
       "  on stdin.",
       'Writes: with --emit-prompts {"prompts": [{"candidate_id", "prompt"}]} on stdout. Otherwise the',
       "  scores with held findings moved from eligible[] to challengeHeld[] (record --held entries),",
-      "  moved anchors updated, and challenge: {confirmed, held, moved}; to --out (a summary on",
+      "  moved anchors updated, and challenge: {confirmed, held, moved, answered}; to --out (a summary on",
       "  stdout) or stdout.",
       "Exit codes: 0 ok, 2 bad invocation, unreadable input, or a refused verdict set: an eligible",
       "  finding without a verdict, a verdict for one that is not eligible, or a verdict whose fields",
@@ -22362,6 +22364,9 @@ function challengePrompt(finding, candidate, statements, diffFile, reproduction,
   if (causedBy !== null && typeof causedBy["path"] === "string" && Number.isInteger(causedBy["line"])) {
     rows.push(`Stale consumer of the changed line: ${causedBy["path"]}:${String(causedBy["line"])}`);
   }
+  if (finding["severity"] === "question") {
+    rows.push('Raised as a question. Add "answered": true only when your decisive evidence settles its answer as a defect.');
+  }
   if (diffFile !== void 0 && diffFile !== null) rows.push(`Diff under review: ${diffFile}`);
   const commit = head.sha === void 0 || head.sha === null ? null : `commit ${head.sha}`;
   if (head.dir !== void 0 && head.dir !== null) rows.push(`Code at the head: ${head.dir}${commit === null ? "" : ` (${commit})`}`);
@@ -22448,6 +22453,7 @@ function parseChallengeVerdicts(raw) {
     if (quotes !== void 0 && (!Array.isArray(quotes) || quotes.some((q) => typeof q !== "string") || Array.isArray(decisive) && quotes.length !== decisive.length)) {
       problems.push(`${name}: decisive_quotes must be a list of strings, one per decisive_evidence entry`);
     }
+    if (entry["answered"] !== void 0 && typeof entry["answered"] !== "boolean") problems.push(`${name}: answered must be true or false`);
     if (problems.length > before) return;
     const lineOk = entry["line_ok"];
     const reason2 = entry["reason"].trim();
@@ -22460,6 +22466,8 @@ function parseChallengeVerdicts(raw) {
     }
     if (lineOk && corrected !== void 0) problems.push(`${name}: line_ok true contradicts corrected_line`);
     if (label2 !== "confirmed" && reason2.length === 0) problems.push(`${name}: ${String(label2)} gives no reason`);
+    const answered = label2 === "confirmed" && entry["answered"] === true;
+    if (answered && reason2.length === 0) problems.push(`${name}: answered gives no reason, which is the answer`);
     verdicts.push({
       candidate_id: id,
       verdict: label2,
@@ -22467,6 +22475,7 @@ function parseChallengeVerdicts(raw) {
       ...corrected === void 0 ? {} : { corrected_line: corrected },
       decisive_evidence: evidence,
       ...quotes === void 0 ? {} : { decisive_quotes: quotes },
+      ...answered ? { answered } : {},
       reason: reason2
     });
   });
@@ -22514,6 +22523,26 @@ function checkDecisive(verdict2, read, hunks) {
   }
   return { evidence };
 }
+var TIER_ORDER2 = ["blocking", "important", "minor", "nit", "question"];
+var ANSWERED = "the challenger answered the question with evidence, so it is stated at minor";
+function stateAnswered(document, answers) {
+  if (answers.size === 0) return document;
+  const answerOf = (entry) => isRecord4(entry) ? answers.get(idOf2(entry) ?? "") : void 0;
+  const scores = document["scores"].map((entry) => {
+    const answer2 = answerOf(entry);
+    if (answer2 === void 0 || !isRecord4(entry)) return entry;
+    const severity = isRecord4(entry["severity"]) ? entry["severity"] : {};
+    return { ...entry, severity: { ...severity, severity: "minor", reason: `${String(severity["reason"] ?? "a question")}; ${ANSWERED}` }, challengeAnswer: answer2 };
+  });
+  const finalScore = new Map(scores.filter(isRecord4).map((entry) => [idOf2(entry), Number(entry["finalScore"]) || 0]));
+  const eligible = document["eligible"].filter(isRecord4).map((entry) => {
+    const answer2 = answerOf(entry);
+    return answer2 === void 0 ? entry : { ...entry, severity: "minor", severityReason: `${String(entry["severityReason"] ?? "a question")}; ${ANSWERED}`, challengeAnswer: answer2 };
+  });
+  const rank2 = (entry) => TIER_ORDER2.indexOf(String(entry["severity"]));
+  eligible.sort((a, b) => rank2(a) - rank2(b) || (finalScore.get(idOf2(b)) ?? 0) - (finalScore.get(idOf2(a)) ?? 0));
+  return { ...document, scores, eligible };
+}
 function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = /* @__PURE__ */ new Map(), readHead3 = null) {
   if (!isRecord4(scores) || !Array.isArray(scores["scores"]) || !Array.isArray(scores["eligible"])) {
     return { ok: false, problems: ["expected the JSON `RV score` printed, with `scores` and `eligible` lists"] };
@@ -22533,7 +22562,7 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
   const unknown = [...byId.keys()].filter((id) => !eligibleIds.includes(id));
   if (unknown.length > 0) problems.push(`verdict for ${unknown.join(", ")}, which is not eligible`);
   if (problems.length > 0) return { ok: false, problems };
-  const summary2 = { confirmed: [], held: [], moved: [] };
+  const summary2 = { confirmed: [], held: [], moved: [], answered: [] };
   const held = [];
   const holdReasons = /* @__PURE__ */ new Map();
   const hold = (finding, id, verdict2, reason2) => {
@@ -22557,7 +22586,7 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
     const id = idOf2(entry);
     const verdict2 = id === null ? void 0 : byId.get(id);
     if (verdict2 === void 0) return entry;
-    const { candidate_id: _id, decisive_quotes: _quotes, ...cited } = verdict2;
+    const { candidate_id: _id, decisive_quotes: _quotes, answered: _answered, ...cited } = verdict2;
     const rest = { ...cited, decisive_evidence: withoutReproductionFiles(cited.decisive_evidence, reproductions) };
     const heldAs = holdReasons.get(id);
     return heldAs === void 0 ? { ...entry, challenge: rest } : { ...entry, challenge: rest, eligible: false, rejectedBecause: `${heldAs.verdict}: ${heldAs.reason}` };
@@ -22602,6 +22631,17 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
       eligible: document["eligible"].filter((e) => !(isRecord4(e) && idOf2(e) === id))
     };
   }
+  const ownerAsked = new Set(scores["scores"].filter((e) => isRecord4(e) && e["ownerQuestion"] === true).map((e) => idOf2(e)));
+  const answers = /* @__PURE__ */ new Map();
+  for (const finding of eligible) {
+    const id = idOf2(finding);
+    const verdict2 = byId.get(id);
+    if (verdict2.answered === true && finding["severity"] === "question" && !holdReasons.has(id) && !ownerAsked.has(id)) {
+      answers.set(id, verdict2.reason);
+      summary2.answered.push(id);
+    }
+  }
+  document = stateAnswered(document, answers);
   const order = new Map(eligibleIds.map((id, index) => [id, index]));
   const rank2 = (id) => order.get(id ?? "") ?? 0;
   held.sort((a, b) => rank2(a.candidateId) - rank2(b.candidateId));
@@ -25765,7 +25805,7 @@ function wordsOf(text5) {
   return new Set(prose.toLowerCase().match(WORD) ?? []);
 }
 function backingText(entry) {
-  const parts = [entry["claim"], entry["failureMode"], entry["failure_mode"]];
+  const parts = [entry["claim"], entry["failureMode"], entry["failure_mode"], entry["challengeAnswer"]];
   const evidence = entry["evidence"];
   if (Array.isArray(evidence)) parts.push(...evidence);
   const fix = entry["fix"];
@@ -31523,8 +31563,7 @@ function challengeCommand(argv) {
       console.error(`Cannot write ${outFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
     }
-    const { confirmed, held, moved } = result.summary;
-    console.log(JSON.stringify({ out: outFile, confirmed, held, moved }, null, 2));
+    console.log(JSON.stringify({ out: outFile, ...result.summary }, null, 2));
   }
   return 0;
 }

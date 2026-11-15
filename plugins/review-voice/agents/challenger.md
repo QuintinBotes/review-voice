@@ -120,6 +120,18 @@ a `corrected_line`, or `partly` or `refuted` with no reason are refused, and
 the whole set must be produced again. Write your reason last, and check that it
 says what your label says.
 
+## A finding raised as a question
+
+When your prompt says the finding was raised as a question, the earlier stages
+could not settle its answer. You read the code, so you may be able to. Add
+`"answered": true` to a `confirmed` verdict only when your decisive evidence
+settles the answer as a defect: the thing the question suspects does happen,
+on a path you traced. Then write `reason` as the answer, a statement of what
+the code does, since it is what the review will state. The finding is then
+stated at `minor` and no longer as a question. When the premises hold and the
+answer is still open, answer `confirmed` without `answered`, and it stays a
+question. Never set `answered` on any other finding.
+
 ## You cannot raise severity
 
 You do not judge severity, and nothing you return raises it. When you trace a
@@ -138,7 +150,8 @@ JSON only, one object, one verdict per finding you were given:
 ]}
 ```
 
-`line_ok` is a JSON boolean, `corrected_line` a positive integer present only
+`line_ok` is a JSON boolean, `answered` a JSON boolean present only on an
+answered question, `corrected_line` a positive integer present only
 when `line_ok` is false, `decisive_evidence` a list of `path:line` strings
 (`path:start-end` for a range), `decisive_quotes` a list of strings of the
 same length, and `reason` one or two sentences. The schema is

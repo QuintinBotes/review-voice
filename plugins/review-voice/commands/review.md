@@ -940,7 +940,13 @@ verdict's `decisive_evidence` in that checkout.
   refused, hold those findings: they are not posted.
 
 A challenger cannot raise a tier. A worse impact it traced is in its `reason`
-only; the step 3c tie-break is the one way a tier rises.
+only; the step 3c tie-break is the one way a tier rises. The one change it
+makes to a tier is to a question it answered: a `question` confirmed with
+`answered: true` is no longer a question, so `challenge` states it at `minor`,
+re-sorts `eligible[]`, lists it in `challenge.answered` and gives the entry
+`challengeAnswer`, the challenger's reason, for the editor to state. `minor`
+leaves the review event where the question left it. A question the owner
+posted with `--as-question` stays a question.
 
 From here on, `<tmpdir>/scores.challenged.json` is the score file: steps 5 and
 6 read it wherever they say "the JSON `RV score` printed".

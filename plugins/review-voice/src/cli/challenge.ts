@@ -127,8 +127,7 @@ export function challengeCommand(argv: string[]): number {
       console.error(`Cannot write ${outFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
     }
-    const { confirmed, held, moved } = result.summary;
-    console.log(JSON.stringify({ out: outFile, confirmed, held, moved }, null, 2));
+    console.log(JSON.stringify({ out: outFile, ...result.summary }, null, 2));
   }
   return 0;
 }

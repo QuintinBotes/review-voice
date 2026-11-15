@@ -21,7 +21,8 @@ function wordsOf(text: string): Set<string> {
 
 /** Every text of a scored entry that may back what the editor writes. */
 function backingText(entry: Record<string, unknown>): string {
-  const parts: unknown[] = [entry['claim'], entry['failureMode'], entry['failure_mode']];
+  // `challengeAnswer` is what the challenger settled for a question it answered.
+  const parts: unknown[] = [entry['claim'], entry['failureMode'], entry['failure_mode'], entry['challengeAnswer']];
   const evidence = entry['evidence'];
   if (Array.isArray(evidence)) parts.push(...evidence);
   const fix = entry['fix'];
