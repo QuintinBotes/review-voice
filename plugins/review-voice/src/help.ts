@@ -1104,10 +1104,11 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   challenge: {
     summary: 'Build challenger prompts, or apply challenger verdicts to scores',
     body: lines(
-      'review-voice challenge --scores <path> --candidates <path> [--intent <path>] [--reproductions <path>] --emit-prompts',
+      'review-voice challenge --scores <path> --candidates <path> [--intent <path>] [--reproductions <path>] [--cwd <dir>] [--head <sha>] --emit-prompts',
       'review-voice challenge --scores <path> --candidates <path> --diff-file <path> [--reproductions <path>] [--out <path>] < verdicts.json',
       '  The independent challenge (adr/0024). With --emit-prompts, print one challenger prompt per',
-      '  eligible finding: its claim, failure mode, category, location and the intent it cites, never',
+      '  eligible finding: its claim, failure mode, category, location, where the code at the head',
+      '  can be read and the intent it cites, never',
       "  the verifier's reasoning, confidence or evidence. Otherwise check the challenger verdicts on",
       '  stdin and apply them: confirmed with line_ok passes; confirmed with corrected_line moves the',
       '  anchor by the reanchor rules (a refused move holds it as challenge-partly); partly holds it',
@@ -1125,6 +1126,9 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '                         applying, a decisive entry naming a reproduction file is dropped',
       '  --diff-file <path>     The reviewed diff; a corrected line must be changed in it (required',
       '                         to apply; with --emit-prompts, named in each prompt)',
+      '  --cwd <dir>            With --emit-prompts, the checkout of the head each prompt names as',
+      '                         where to read the code (default: the root of the current repository)',
+      '  --head <sha>           With --emit-prompts, the head commit each prompt names',
       '  --out <path>           Write the challenged scores here instead of stdout',
       'Reads: with --emit-prompts nothing on stdin; otherwise {"verdicts": [{"candidate_id",',
       '  "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "reason"}]} on stdin.',

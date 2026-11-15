@@ -903,8 +903,12 @@ with the line confirmed, or moved, lets a finding through.
 
 Write the JSON `RV score` printed to `<tmpdir>/scores.json`, then run
 `RV challenge --scores <tmpdir>/scores.json --candidates <tmpdir>/checked.json --diff-file <tmpdir>/diff.patch --emit-prompts`,
-adding `--intent <tmpdir>/intent.json` when step 1f wrote one. It prints
-`{"prompts": [{"candidate_id", "prompt"}]}`, one per eligible finding.
+adding `--intent <tmpdir>/intent.json` when step 1f wrote one, `--head <head sha>`
+when the head is a commit, and `--cwd <tmpdir>/head` when step 1c added the
+head worktree. It prints `{"prompts": [{"candidate_id", "prompt"}]}`, one per
+eligible finding. Each prompt names the directory to read the code in, which
+is `--cwd` or else the root of the repository the command ran in, so it is
+usable from a session whose working directory is another repository.
 
 Launch the `challenger` agent **once per prompt**, with that prompt as it is.
 **Do not add the verifier's reasoning, confidence or evidence, the analyst's

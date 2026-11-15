@@ -9847,7 +9847,7 @@ var GitHubClient = class {
     }
     this.baseUrl = options.baseUrl ?? "https://api.github.com";
     this.doFetch = options.fetchImpl ?? fetch;
-    this.sleep = options.sleep ?? ((ms) => new Promise((resolve16) => setTimeout(resolve16, ms)));
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve17) => setTimeout(resolve17, ms)));
     this.token = options.token ?? null;
   }
   authorization() {
@@ -14509,9 +14509,9 @@ function stopCommandsOnSignal() {
   };
 }
 function spawnCommand(command, options) {
-  return new Promise((resolve16) => {
+  return new Promise((resolve17) => {
     if (options.signal?.aborted === true) {
-      resolve16({ status: null, stdout: "", stderr: "", error: Object.assign(new Error(`spawn ${command} ABORT_ERR`), { code: "ABORT_ERR" }) });
+      resolve17({ status: null, stdout: "", stderr: "", error: Object.assign(new Error(`spawn ${command} ABORT_ERR`), { code: "ABORT_ERR" }) });
       return;
     }
     const child = spawnChild(command, options.args ?? [], { cwd: options.cwd, env: options.env, shell: options.shell, detached: options.detached, stdio: "pipe" });
@@ -14549,7 +14549,7 @@ function spawnCommand(command, options) {
         killGroup(pid, "SIGKILL");
         runningGroups.delete(pid);
       }
-      resolve16({
+      resolve17({
         status,
         stdout: Buffer.concat(chunks.stdout).toString(options.encoding),
         stderr: Buffer.concat(chunks.stderr).toString(options.encoding),
@@ -19234,13 +19234,13 @@ function lockPort(dataDir) {
 var answer = (dataDir) => `review-voice-watch ${process.pid} ${dataDir}
 `;
 function probe(port) {
-  return new Promise((resolve16) => {
+  return new Promise((resolve17) => {
     const socket = connect({ host: "127.0.0.1", port });
     let text5 = "";
     const done = (pid) => {
       clearTimeout(timer);
       socket.destroy();
-      resolve16(pid);
+      resolve17(pid);
     };
     const timer = setTimeout(() => done(null), PROBE_MS);
     socket.setEncoding("utf8");
@@ -19265,16 +19265,16 @@ async function acquireLock(dataDir, port = lockPort(dataDir), patience = DEFAULT
       socket.once("data", () => socket.end(answer(dataDir)));
     });
     const listening = server;
-    const failure = await new Promise((resolve16) => {
-      listening.once("error", (error) => resolve16(error));
-      listening.listen({ host: "127.0.0.1", port, exclusive: true }, () => resolve16(null));
+    const failure = await new Promise((resolve17) => {
+      listening.once("error", (error) => resolve17(error));
+      listening.listen({ host: "127.0.0.1", port, exclusive: true }, () => resolve17(null));
     });
     if (failure === null) break;
     if (failure.code !== "EADDRINUSE") throw failure;
     const holder = await probe(port);
     if (holder !== null) return { holder };
     if (attempt >= patience.tries) return { foreign: port };
-    await new Promise((resolve16) => setTimeout(resolve16, patience.waitMs));
+    await new Promise((resolve17) => setTimeout(resolve17, patience.waitMs));
   }
   server.unref();
   const display = join9(dataDir, "watch.lock");
@@ -19738,7 +19738,7 @@ function killGroup2(pid, signal2) {
 function spawnReview(bundle, options) {
   const graceMs = options.graceMs ?? 1e4;
   const live2 = /* @__PURE__ */ new Map();
-  const review2 = ({ repository, pull, clone, post, mode, expectHead, timeoutMs, runRepositoryCommands }) => new Promise((resolve16) => {
+  const review2 = ({ repository, pull, clone, post, mode, expectHead, timeoutMs, runRepositoryCommands }) => new Promise((resolve17) => {
     const args = [bundle, "review", "--pr", String(pull), "--repository", repository, "--json", "--expect-head", expectHead, "--origin", "watch"];
     if (post) args.push("--post", "--recheck-thread");
     if (mode !== void 0) args.push("--mode", mode);
@@ -19775,10 +19775,10 @@ function spawnReview(bundle, options) {
       if (pid !== void 0) live2.delete(pid);
       markDone();
       if (timedOut) {
-        resolve16({ exitCode: 124, runId: null, event: null, reviewUrl: null, detail: `review timed out after ${formatDuration(timeoutMs)}` });
+        resolve17({ exitCode: 124, runId: null, event: null, reviewUrl: null, detail: `review timed out after ${formatDuration(timeoutMs)}` });
       } else {
         const why = stderr.length > 0 ? stderr : exitSignal !== null ? `killed by ${exitSignal}` : spawnError;
-        resolve16(reviewResult(exitCode ?? 1, stdout, why));
+        resolve17(reviewResult(exitCode ?? 1, stdout, why));
       }
     };
     const terminate = () => {
@@ -21013,10 +21013,11 @@ var COMMAND_HELP = {
   challenge: {
     summary: "Build challenger prompts, or apply challenger verdicts to scores",
     body: lines(
-      "review-voice challenge --scores <path> --candidates <path> [--intent <path>] [--reproductions <path>] --emit-prompts",
+      "review-voice challenge --scores <path> --candidates <path> [--intent <path>] [--reproductions <path>] [--cwd <dir>] [--head <sha>] --emit-prompts",
       "review-voice challenge --scores <path> --candidates <path> --diff-file <path> [--reproductions <path>] [--out <path>] < verdicts.json",
       "  The independent challenge (adr/0024). With --emit-prompts, print one challenger prompt per",
-      "  eligible finding: its claim, failure mode, category, location and the intent it cites, never",
+      "  eligible finding: its claim, failure mode, category, location, where the code at the head",
+      "  can be read and the intent it cites, never",
       "  the verifier's reasoning, confidence or evidence. Otherwise check the challenger verdicts on",
       "  stdin and apply them: confirmed with line_ok passes; confirmed with corrected_line moves the",
       "  anchor by the reanchor rules (a refused move holds it as challenge-partly); partly holds it",
@@ -21034,6 +21035,9 @@ var COMMAND_HELP = {
       "                         applying, a decisive entry naming a reproduction file is dropped",
       "  --diff-file <path>     The reviewed diff; a corrected line must be changed in it (required",
       "                         to apply; with --emit-prompts, named in each prompt)",
+      "  --cwd <dir>            With --emit-prompts, the checkout of the head each prompt names as",
+      "                         where to read the code (default: the root of the current repository)",
+      "  --head <sha>           With --emit-prompts, the head commit each prompt names",
       "  --out <path>           Write the challenged scores here instead of stdout",
       'Reads: with --emit-prompts nothing on stdin; otherwise {"verdicts": [{"candidate_id",',
       '  "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "reason"}]} on stdin.',
@@ -21473,7 +21477,7 @@ function interpretEnvelope(stdout, stderr, code3) {
   return { ok: false, output: null, costUsd, ...counted, error: detail };
 }
 function spawnWatched(bin, args, input, options) {
-  return new Promise((resolve16) => {
+  return new Promise((resolve17) => {
     const child = spawn2(process.execPath, ["-e", WATCHDOG, "--", bin, ...args], {
       cwd: options.cwd,
       env: options.env,
@@ -21492,7 +21496,7 @@ function spawnWatched(bin, args, input, options) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve16(result);
+      resolve17(result);
     };
     const stop = (reason2) => {
       stopped ??= reason2;
@@ -22333,7 +22337,7 @@ function intentStatements(parsed2) {
   const list3 = isRecord4(parsed2) && Array.isArray(parsed2["statements"]) ? parsed2["statements"] : Array.isArray(parsed2) ? parsed2 : [];
   return list3.filter((s) => isRecord4(s) && typeof s["id"] === "string");
 }
-function challengePrompt(finding, candidate, statements, diffFile, reproduction) {
+function challengePrompt(finding, candidate, statements, diffFile, reproduction, head = {}) {
   const pick = (snake, camel) => text3(candidate?.[snake]) ?? text3(candidate?.[camel]) ?? text3(finding[snake]) ?? text3(finding[camel]);
   const id = idOf2(finding) ?? (candidate === void 0 ? null : idOf2(candidate)) ?? "unknown";
   const path = text3(finding["path"]) ?? text3(candidate?.["path"]) ?? "unknown";
@@ -22353,6 +22357,9 @@ function challengePrompt(finding, candidate, statements, diffFile, reproduction)
     rows.push(`Stale consumer of the changed line: ${causedBy["path"]}:${String(causedBy["line"])}`);
   }
   if (diffFile !== void 0 && diffFile !== null) rows.push(`Diff under review: ${diffFile}`);
+  const commit = head.sha === void 0 || head.sha === null ? null : `commit ${head.sha}`;
+  if (head.dir !== void 0 && head.dir !== null) rows.push(`Code at the head: ${head.dir}${commit === null ? "" : ` (${commit})`}`);
+  else if (commit !== null) rows.push(`Head under review: ${commit}`);
   if (reproduction !== void 0) rows.push(...reproductionRows(reproduction));
   if (cited.length > 0) {
     const from = [...new Set(cited.map((s) => typeof s.issue === "number" ? `linked issue #${s.issue}` : "the pull request description"))];
@@ -22396,10 +22403,10 @@ function reproductionsById(parsed2) {
   }
   return out;
 }
-function challengePrompts(scores, candidates, statements, diffFile, reproductions = /* @__PURE__ */ new Map()) {
+function challengePrompts(scores, candidates, statements, diffFile, reproductions = /* @__PURE__ */ new Map(), head = {}) {
   return eligibleFindings(scores).map((finding) => {
     const id = idOf2(finding) ?? "unknown";
-    return { candidate_id: id, prompt: challengePrompt(finding, candidates.get(id), statements, diffFile, reproductions.get(id)) };
+    return { candidate_id: id, prompt: challengePrompt(finding, candidates.get(id), statements, diffFile, reproductions.get(id), head) };
   });
 }
 var DECISIVE2 = /^\S(?:.*\S)?:\d+(?:-\d+)?$/u;
@@ -24171,7 +24178,14 @@ async function challenge(run) {
   const emitted = parsed(
     (await must(
       run,
-      ["challenge", ...base, "--emit-prompts", ...run.intent ? ["--intent", at(run, "intent.json")] : []],
+      [
+        "challenge",
+        ...base,
+        "--emit-prompts",
+        ...run.head === "" ? [] : ["--head", run.head],
+        ...run.headDir === null ? [] : ["--cwd", run.headDir],
+        ...run.intent ? ["--intent", at(run, "intent.json")] : []
+      ],
       void 0,
       1
     )).stdout
@@ -31357,6 +31371,7 @@ function reconcileCommand(argv) {
 
 // plugins/review-voice/src/cli/challenge.ts
 import { readFileSync as readFileSync33, writeFileSync as writeFileSync17 } from "node:fs";
+import { resolve as resolve15 } from "node:path";
 function challengeCommand(argv) {
   const scoresFile = flag(argv, "--scores");
   const candidatesFile = flag(argv, "--candidates");
@@ -31367,13 +31382,13 @@ function challengeCommand(argv) {
   const outFile = flag(argv, "--out");
   if (scoresFile === null || candidatesFile === null || !emit && diffFile === null) {
     console.error(
-      "Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--reproductions <file>] [--diff-file <patch>] --emit-prompts\n       challenge --scores <file> --candidates <file> --diff-file <patch> [--reproductions <file>] [--out <file>] < verdicts.json"
+      "Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--reproductions <file>] [--diff-file <patch>] [--cwd <dir>] [--head <sha>] --emit-prompts\n       challenge --scores <file> --candidates <file> --diff-file <patch> [--reproductions <file>] [--out <file>] < verdicts.json"
     );
     return 2;
   }
-  for (const name of ["--intent", "--reproductions", "--diff-file", "--out"]) {
+  for (const name of ["--intent", "--reproductions", "--diff-file", "--out", "--cwd", "--head"]) {
     if (argv.includes(name) && flag(argv, name) === null) {
-      console.error(`${name} needs a file path.`);
+      console.error(`${name} needs a value.`);
       return 2;
     }
   }
@@ -31406,7 +31421,14 @@ function challengeCommand(argv) {
         return 2;
       }
     }
-    console.log(JSON.stringify({ prompts: challengePrompts(scores, candidates, statements, diffFile, reproductions) }, null, 2));
+    const cwd = flag(argv, "--cwd");
+    let dir = null;
+    try {
+      dir = cwd === null ? repositoryRoot(process.cwd()) : resolve15(cwd);
+    } catch {
+    }
+    const head = { dir, sha: flag(argv, "--head") };
+    console.log(JSON.stringify({ prompts: challengePrompts(scores, candidates, statements, diffFile, reproductions, head) }, null, 2));
     return 0;
   }
   let verdicts;
@@ -31512,7 +31534,7 @@ function reanchorCommand(argv) {
 
 // plugins/review-voice/src/cli/agent.ts
 import { readFileSync as readFileSync35, statSync as statSync13 } from "node:fs";
-import { dirname as dirname19, resolve as resolve15 } from "node:path";
+import { dirname as dirname19, resolve as resolve16 } from "node:path";
 async function agentCommand(argv) {
   const name = flag(argv, "--name");
   const model = flag(argv, "--model");
@@ -31543,7 +31565,7 @@ async function agentCommand(argv) {
     console.error(`The schema ${schemaPath} must be a JSON object.`);
     return 2;
   }
-  const schemaDir = dirname19(resolve15(schemaPath));
+  const schemaDir = dirname19(resolve16(schemaPath));
   try {
     schemaForRunner(schema4, schemaDir);
   } catch (error) {
@@ -34203,7 +34225,7 @@ ${topLevelHelp()}`);
         stopReview: review2.stop,
         prepareClone: gitPrepareClone(),
         now: () => /* @__PURE__ */ new Date(),
-        sleep: (ms) => new Promise((resolve16) => setTimeout(resolve16, ms)),
+        sleep: (ms) => new Promise((resolve17) => setTimeout(resolve17, ms)),
         out: (text5) => console.log(text5),
         err: (text5) => console.error(text5)
       });

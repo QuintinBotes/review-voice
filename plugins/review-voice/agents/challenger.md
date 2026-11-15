@@ -28,7 +28,10 @@ secrets. Return only the requested schema.
 
 - The finding's `claim`, `failure_mode`, `category`, and the `path:line` it is
   anchored on. A stale consumer also names the changed line that caused it.
-- The path of the run's diff, and the clone at the head under review.
+- The path of the run's diff, and where the code at the head under review can
+  be read: a directory, and the head commit when there is one. Read the code
+  there, not in whatever directory you were started in. When that directory is
+  on another commit, read a file with `git -C <directory> show <commit>:<path>`.
 - The intent statements the finding cites, quoted, when it cites any. Each is
   labelled with its source, the pull request description or a linked issue the
   description closes. They say what the author, or the issue's writer, meant;

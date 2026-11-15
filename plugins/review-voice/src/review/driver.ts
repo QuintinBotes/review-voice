@@ -1061,7 +1061,12 @@ async function challenge(run: Run): Promise<void> {
     (
       await must(
         run,
-        ['challenge', ...base, '--emit-prompts', ...(run.intent ? ['--intent', at(run, 'intent.json')] : [])],
+        [
+          'challenge', ...base, '--emit-prompts',
+          ...(run.head === '' ? [] : ['--head', run.head]),
+          ...(run.headDir === null ? [] : ['--cwd', run.headDir]),
+          ...(run.intent ? ['--intent', at(run, 'intent.json')] : []),
+        ],
         undefined,
         1,
       )

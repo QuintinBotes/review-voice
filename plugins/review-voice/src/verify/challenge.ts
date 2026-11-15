@@ -72,6 +72,12 @@ export function intentStatements(parsed: unknown): IntentStatement[] {
   return list.filter((s): s is IntentStatement => isRecord(s) && typeof s['id'] === 'string');
 }
 
+/** Where the code under review can be read: a checkout of the head, and its commit. */
+export interface HeadLocation {
+  dir?: string | null;
+  sha?: string | null;
+}
+
 /**
  * The challenger's prompt for one finding.
  *
@@ -90,6 +96,7 @@ export function challengePrompt(
   statements: readonly IntentStatement[],
   diffFile?: string | null,
   reproduction?: ReproductionRecord,
+  head: HeadLocation = {},
 ): string {
   const pick = (snake: string, camel: string): string | null =>
     text(candidate?.[snake]) ?? text(candidate?.[camel]) ?? text(finding[snake]) ?? text(finding[camel]);
@@ -112,6 +119,11 @@ export function challengePrompt(
     rows.push(`Stale consumer of the changed line: ${causedBy['path']}:${String(causedBy['line'])}`);
   }
   if (diffFile !== undefined && diffFile !== null) rows.push(`Diff under review: ${diffFile}`);
+  // Where to read. The challenger may run in another directory, or another
+  // repository, than the one under review (#373).
+  const commit = head.sha === undefined || head.sha === null ? null : `commit ${head.sha}`;
+  if (head.dir !== undefined && head.dir !== null) rows.push(`Code at the head: ${head.dir}${commit === null ? '' : ` (${commit})`}`);
+  else if (commit !== null) rows.push(`Head under review: ${commit}`);
   if (reproduction !== undefined) rows.push(...reproductionRows(reproduction));
   if (cited.length > 0) {
     const from = [...new Set(cited.map((s) => (typeof s.issue === 'number' ? `linked issue #${s.issue}` : 'the pull request description')))];
@@ -175,10 +187,11 @@ export function challengePrompts(
   statements: readonly IntentStatement[],
   diffFile?: string | null,
   reproductions: ReadonlyMap<string, ReproductionRecord> = new Map(),
+  head: HeadLocation = {},
 ): { candidate_id: string; prompt: string }[] {
   return eligibleFindings(scores).map((finding) => {
     const id = idOf(finding) ?? 'unknown';
-    return { candidate_id: id, prompt: challengePrompt(finding, candidates.get(id), statements, diffFile, reproductions.get(id)) };
+    return { candidate_id: id, prompt: challengePrompt(finding, candidates.get(id), statements, diffFile, reproductions.get(id), head) };
   });
 }
 

@@ -177,6 +177,20 @@ test('--emit-prompts prints one prompt per eligible finding with the claim, loca
   });
 });
 
+test('#373: each prompt names where the code at the head can be read', () => {
+  withFiles(({ dir, files, run }) => {
+    const base = ['challenge', '--scores', files.scores, '--candidates', files.candidates, '--emit-prompts'];
+    const named = JSON.parse(run([...base, '--cwd', dir, '--head', 'abc1234']).stdout).prompts;
+    for (const { prompt } of named) assert.ok(prompt.includes(`Code at the head: ${dir} (commit abc1234)`), prompt);
+
+    // Without --cwd it is the clone the command ran in.
+    const inClone = JSON.parse(run(base).stdout).prompts[0].prompt;
+    assert.ok(inClone.includes(`Code at the head: ${root}`), inClone);
+  });
+  assert.ok(!challengePrompt(eligibleEntry('cand_001', 3), candidate('cand_001', 3), []).includes('Code at the head'));
+  assert.ok(challengePrompt(eligibleEntry('cand_001', 3), candidate('cand_001', 3), [], null, undefined, { sha: 'abc1234' }).includes('Head under review: commit abc1234'));
+});
+
 test('challengePrompt never carries a verification field, whatever the finding holds', () => {
   const finding = {
     ...eligibleEntry('cand_001', 3),

@@ -1,4 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { repositoryRoot } from '../diff/acquire.ts';
 import { parseHunks, type FileHunks } from '../diff/hunks.ts';
 import { applyChallenge, candidatesById, challengePrompts, intentStatements, reproductionsById } from '../verify/challenge.ts';
 import { readStdin, flag } from './shared.ts';
@@ -19,14 +21,14 @@ export function challengeCommand(argv: string[]): number {
   const outFile = flag(argv, '--out');
   if (scoresFile === null || candidatesFile === null || (!emit && diffFile === null)) {
     console.error(
-      'Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--reproductions <file>] [--diff-file <patch>] --emit-prompts\n' +
+      'Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--reproductions <file>] [--diff-file <patch>] [--cwd <dir>] [--head <sha>] --emit-prompts\n' +
         '       challenge --scores <file> --candidates <file> --diff-file <patch> [--reproductions <file>] [--out <file>] < verdicts.json',
     );
     return 2;
   }
-  for (const name of ['--intent', '--reproductions', '--diff-file', '--out']) {
+  for (const name of ['--intent', '--reproductions', '--diff-file', '--out', '--cwd', '--head']) {
     if (argv.includes(name) && flag(argv, name) === null) {
-      console.error(`${name} needs a file path.`);
+      console.error(`${name} needs a value.`);
       return 2;
     }
   }
@@ -62,7 +64,17 @@ export function challengeCommand(argv: string[]): number {
         return 2;
       }
     }
-    console.log(JSON.stringify({ prompts: challengePrompts(scores, candidates, statements, diffFile, reproductions) }, null, 2));
+    // Each prompt names where the code is. Without --cwd that is the clone this
+    // command runs in, which is the one every other stage reads.
+    const cwd = flag(argv, '--cwd');
+    let dir: string | null = null;
+    try {
+      dir = cwd === null ? repositoryRoot(process.cwd()) : resolve(cwd);
+    } catch {
+      // Not a repository: the prompt names no directory.
+    }
+    const head = { dir, sha: flag(argv, '--head') };
+    console.log(JSON.stringify({ prompts: challengePrompts(scores, candidates, statements, diffFile, reproductions, head) }, null, 2));
     return 0;
   }
 
