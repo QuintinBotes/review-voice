@@ -113,3 +113,25 @@ prints it as a top-level `families` key, and `explain` and the driver report
 print it as a `Families` line. The runners
 themselves are configured under `runners:`, read only from the operator's own
 configuration, as the amendment of the same date to ADR 0003 decides.
+
+## Amendment - 2026-11-15 (#391)
+
+The interactive host was left to honour the agent files' `Bash(git:*)` on its
+own, and it does not: a subagent's `tools:` line takes tool names, so the
+declaration granted plain Bash. In five slash-command reviews one challenger
+ran the script under review, another dumped a binary to a 78 MB file, and the
+analyst ran a third-party build tool, while other agents in the same runs had
+no `node` at all. Plugin agents also ignore `hooks:` frontmatter.
+
+A plugin-level PreToolUse hook does run inside subagents, and its input names
+the agent in `agent_type`. The plugin now ships `hooks/hooks.json` with
+`hooks/agent-bash-guard.mjs`, which denies a Bash call from any of the
+plugin's own agents unless it is a read-only git command: one of a fixed list
+of subcommands (`show`, `log`, `diff`, `grep`, `blame`, `ls-files` and the
+like), no shell syntax, and none of the options that run a command or write a
+file (`-c`, `-O`, `--output`, `--ext-diff`). That is the narrower rule the
+alternative above rejected for the headless runner, where the hook could not
+run; there the runner still grants no shell. Every other caller, the main
+conversation included, passes through. The deny reason tells the agent to
+list what it could not check in `required_context_missing`, which `score`
+lists under `unverified` for the person.
