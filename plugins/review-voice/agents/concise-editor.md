@@ -44,7 +44,8 @@ The fix sentence is present only when `fix.render` is not `none`.
 - `fix`: state `fix.text`, shortened if needed without changing what it
   changes.
 - `direction`: state `fix.text` as the direction it is.
-- `none`: stop after the consequence. There is no fix text to state.
+- `none`: stop after the consequence. There is no fix text to state. `withheld`
+  says why, for the person reading the scores; never state it.
 
 A finding with `impactDisputed: true` had its reach contested: a second
 verifier disputed how far the failure goes, and no tie-break upheld the wider

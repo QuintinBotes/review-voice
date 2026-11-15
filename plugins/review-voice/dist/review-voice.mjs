@@ -8757,10 +8757,11 @@ function boundSeverityByEvidence(derived, candidate, verification2) {
       `the verifier traced impact beyond the changed code (impact_traced: true) at confidence ${confidence.toFixed(2)}, at least ${ESCALATION_CONFIDENCE}`
     );
   }
+  const tracedBelowBar = verification2?.impactTraced === true;
   return {
     ...result,
     severity: TIER_ORDER[asked],
-    reason: `${result.reason}, held at ${candidate.severity} because escalation needs the verifier to trace impact beyond the changed code`
+    reason: tracedBelowBar ? `${result.reason}, held at ${candidate.severity} because the verifier traced the impact at confidence ${confidence === null ? "unknown" : confidence.toFixed(2)}, and escalation needs at least ${ESCALATION_CONFIDENCE}` : `${result.reason}, held at ${candidate.severity} because escalation needs the verifier to trace impact beyond the changed code`
   };
 }
 function raisedBecause(result, requested, why) {
@@ -9176,7 +9177,7 @@ function isBareDirection(direction) {
 function editorFix(fix) {
   if (fix.render === "fix") return { render: "fix", text: fix.suggested };
   if (fix.render === "direction") return { render: "direction", text: fix.direction };
-  return { render: "none", text: null };
+  return { render: "none", text: null, ...fix.withheld === void 0 ? {} : { withheld: fix.withheld } };
 }
 function assertUniqueCandidateIds(candidates) {
   const seen = /* @__PURE__ */ new Set();
@@ -9244,7 +9245,9 @@ function renderFix(candidate, verification2, thresholds) {
     confidence,
     direction,
     render: "none",
-    reason: verifierReason ?? reason2
+    reason: verifierReason ?? reason2,
+    // Only a repair that was proposed can be withheld.
+    ...hasSuggested ? { withheld: reason2 } : {}
   };
 }
 function ownerRaiseCeiling(severity, candidate, verification2, lane) {
@@ -9283,8 +9286,8 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const missingContext = missing.length > 0;
   const admitted = admitsUnverifiable(candidate);
   const verifierEngaged = verification2?.technicalConfidence !== void 0;
-  if ((missingContext || admitted && !verifierEngaged) && confidence > UNVERIFIABLE_CONFIDENCE) {
-    confidence = UNVERIFIABLE_CONFIDENCE;
+  if (missingContext || admitted && !verifierEngaged && confidence > UNVERIFIABLE_CONFIDENCE) {
+    confidence = Math.min(confidence, UNVERIFIABLE_CONFIDENCE);
     confidenceSource = "unverifiable-cap";
   }
   const unverifiableBecause = confidenceSource !== "unverifiable-cap" ? null : missingContext ? `the verifier listed required_context_missing the claim depends on: ${missing.join("; ")}` : "the analyst's evidence says the claim could not be checked, and the verifier gave no technical_confidence of its own";
@@ -20423,7 +20426,9 @@ var COMMAND_HELP = {
       "  suppression held is listed in suppressed[] with its ruleId and policyVersion, and",
       "  --promote posts it past that policy. --as-question sets the tier to question with",
       "  ownerQuestion: true, which record stores and explain shows, and ownerQuestionFrom, the",
-      "  tier verdict.min_posted_tier still ranks it by. Every entry names its candidate as candidate_id,",
+      "  tier verdict.min_posted_tier still ranks it by. A candidate that is not eligible is in exactly",
+      "  one of belowGate[], suppressed[], unverified[], absenceContradicted[] and rejected[]; rejected[]",
+      "  holds every other one, with its rejectedBecause. Every entry names its candidate as candidate_id,",
       "  like candidates and verification; candidateId is still written beside it",
       "  but is deprecated.",
       "Exit codes: 0 ok, 2 malformed candidates or bad invocation."
@@ -29603,6 +29608,13 @@ function symbolsFromHunks(diff, changedPath) {
   }
   return [...found2];
 }
+function diffTouches(diff, path) {
+  const wanted = normalisePath3(path);
+  for (const match of diff.matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)) {
+    if (normalisePath3(match[1]) === wanted || normalisePath3(match[2]) === wanted) return true;
+  }
+  return false;
+}
 var REPOSITORY_WIDE_TOOLCHAIN_PATHS = [
   /(?:^|\/)(?:eslint\.config\.[^/]+|\.eslintrc(?:\.[^/]+)?|biome\.json|\.stylelintrc(?:\.[^/]+)?|\.prettierrc(?:\.[^/]+)?)$/i,
   /(?:^|\/)tsconfig(?:\.[^/]+)?\.json$/i,
@@ -29670,8 +29682,9 @@ function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths
   const isCodePath = (path) => isCode(path, firstParty);
   const searchedRef = ref ?? "working tree";
   const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
-  const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
-  const source = ownHunks.length > 0 ? "hunks" : anyHunks.length > 0 ? "diff" : "claim";
+  const inDiff = diff !== null && diffTouches(diff, changedPath);
+  const anyHunks = diff === null || inDiff ? [] : symbolsFromHunks(diff, null);
+  const source = inDiff || ownHunks.length > 0 ? "hunks" : anyHunks.length > 0 ? "diff" : "claim";
   const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text5)).slice(0, 12);
   const searched = [];
   const ignored = [];
@@ -32885,7 +32898,7 @@ function scoreCommand(argv) {
       return 2;
     }
     const known = new Set(candidates.map((candidate) => candidate.candidateId));
-    const unknown = [...verifications.keys()].filter((id) => !known.has(id));
+    const unknown = [...verifications].filter(([id, v]) => !known.has(id) && v.verified !== false).map(([id]) => id);
     if (unknown.length > 0) {
       console.error(`Warning: ${verificationFlag} verifies unknown candidate id(s): ${unknown.join(", ")}. Ignored.`);
     }
@@ -33150,6 +33163,20 @@ function scoreCommand(argv) {
         rejectedBecause: r.rejectedBecause
       })
     );
+    const listed = new Set(
+      [...belowGate, ...suppressed, ...unverified, ...absenceContradicted].map((entry) => entry.candidateId)
+    );
+    const rejected = results.filter((r) => !r.eligible && !listed.has(r.candidateId)).map(
+      (r) => boundLists({
+        candidateId: r.candidateId,
+        path: r.path,
+        line: r.line,
+        severity: r.severity.severity,
+        claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? "",
+        verified: verifications.get(r.candidateId)?.verified === true,
+        rejectedBecause: r.rejectedBecause
+      })
+    );
     const scoreOf = new Map(results.map((r) => [r.candidateId, r]));
     const rank2 = (c) => {
       const scored = scoreOf.get(c.candidateId);
@@ -33245,6 +33272,7 @@ function scoreCommand(argv) {
           suppressed: suppressed.map(withSnakeCaseId),
           unverified: unverified.map(withSnakeCaseId),
           absenceContradicted: absenceContradicted.map(withSnakeCaseId),
+          rejected: rejected.map(withSnakeCaseId),
           policyVersions
         },
         null,

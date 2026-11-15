@@ -798,7 +798,8 @@ only in case.
 
 **`--diff-file` is the diff from step 1.** Reach, which decides how far a defect
 carries and so which tier it is reported at, is measured from the symbols the
-hunks touch. Without the flag it falls back to the symbols the claim names,
+hunks of the finding's own file touch, and from the rest of the diff only when
+the diff does not touch that file. Without the flag it falls back to the symbols the claim names,
 which measures the words a finding used rather than the code it is about - a
 finding whose point is that some symbol is the wrong referent names that
 symbol, and its spread then sets the tier.
@@ -858,6 +859,17 @@ missing path, or a same-name file in another directory, does not contradict it.
 Only a name the claim says is absent is looked up: a name it merely mentions,
 or a claim about a run-time value that does not exist, contradicts nothing.
 Like `belowGate`, it is never posted.
+
+`rejected` lists every other candidate that is not eligible, each with its
+`rejectedBecause`: a stale consumer whose impact the verifier did not trace, a
+repeat of the thread, a refused anchor or cited path, a question past the cap
+of two. So a candidate that is not in `eligible[]` is in exactly one of
+`belowGate`, `suppressed`, `unverified`, `absenceContradicted` and `rejected`.
+Keep it for step 6. It is never posted and is not part of the validated
+output. An entry with `verified: true` is a finding the verifier confirmed and
+a rule still stopped, so read its reason: an anchor reason is one the analyst
+can act on in step 2, and an untraced stale consumer's reason says how to
+refile it.
 
 `eligible[]` is already in render order: by severity, `blocking`, `important`,
 `minor`, `nit`, then `question`, and within a tier the higher final score first.
@@ -964,7 +976,10 @@ never writes code, and the CLI renders the suggestion block itself at post
 time.
 
 `fix` holds only what may be stated: `render` is `fix` or `direction` with the
-text to state, or `none` with no text. An entry marked `impactDisputed` had its
+text to state, or `none` with no text. When a repair was proposed and is not
+stated, `withheld` gives the reason: the verifier refuted it, did not verify
+it, or verified it below the confidence threshold, which the reason names.
+That is for you and the person; the editor never states it. An entry marked `impactDisputed` had its
 wider impact disputed in step 3c with no tie-break upholding it; the editor
 leaves that wider impact out. The editor does not decide or invent a
 correction, and a withheld repair never reaches it. The full fix decision stays
@@ -1038,7 +1053,9 @@ stray directory and another project's notes took the reviewed count from 11 to
   `Absence contradicted (not posted)` and then one line per entry:
   `[severity] path:line - claim (found: <found>)`. The verifier confirmed them
   but the repository holds what the claim says is absent; they are never
-  posted either. When `challengeHeld[]` from step 4b is not empty, print after
+  posted either. When `rejected` from step 4 is not empty, print after that a
+  line `Rejected by another check (not posted)` and then one line per entry:
+  `[severity] path:line - claim (rejectedBecause)`. When `challengeHeld[]` from step 4b is not empty, print after
   that a line `Held by the challenge (not posted)` and then one line per entry:
   `[severity] path:line - text (verdict: reason)`. Then
   record it. Write the scored candidates, the challenged scores' `eligible[]`
@@ -1204,8 +1221,7 @@ heads by hand.
 
 No greeting. No summary. No praise. No description of the process or of how
 many files you looked at. No markdown headings. No commentary after the
-findings, except the `Below the gate (not posted)` and `Unverified (not posted)`
-lists from step 6 when they are not empty. If you have nothing that clears the
+findings, except the `(not posted)` lists from step 6 when they are not empty. If you have nothing that clears the
 bar, the entire output is:
 
 ```
