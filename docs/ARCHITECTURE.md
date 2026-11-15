@@ -526,7 +526,11 @@ in the manifest and summary. It lists added production-source lines in four
 kinds, `new-route`, `lock-or-async`, `string-built-query` and `unsafe`.
 `diff/risk-markers.ts` scans lexically with no parser, sharing the quote and
 comment handling of `typeEscapes`. Route, lock and unsafe patterns inside a
-string or comment do not match. A query marker needs a SQL keyword in a quoted
+string or comment do not match. In JavaScript and TypeScript `.exec(` is
+`unsafe` only as a bare call or on a child-process module, since any other
+receiver is a regular expression. A file with no extension is read in the
+language its shebang names when the diff shows its first line, as it does for
+a new script. A query marker needs a SQL keyword in a quoted
 segment with concatenation or interpolation on the same line; a plain SQL
 string does not match. At most 20 entries per file are kept, earliest first,
 with head-side line numbers and no source text. Scanning is line by line,

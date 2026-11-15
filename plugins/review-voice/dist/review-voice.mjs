@@ -10727,7 +10727,7 @@ var CODE_RULES = [
   {
     kind: "unsafe",
     in: "code",
-    pattern: /\bunsafe\b|\beval\s*\(|\bexec\s*\(|\bdangerouslySetInnerHTML\b|\bMarshal\.|\bpickle\.loads\b/g
+    pattern: /\bunsafe\b|\beval\s*\(|\bdangerouslySetInnerHTML\b|\bMarshal\.|\bpickle\.loads\b/g
   },
   {
     // A loader that names SafeLoader on the same line is the safe form.
@@ -10737,6 +10737,12 @@ var CODE_RULES = [
     accept: (_match, line3) => !/SafeLoader/.test(line3.code)
   }
 ];
+var EXEC_RULE = { kind: "unsafe", in: "code", pattern: /\bexec\s*\(/g };
+var SCRIPT_EXEC_RULE = {
+  kind: "unsafe",
+  in: "code",
+  pattern: /(?<![\w$.])exec\s*\(|\b(?:child_process|childProcess|cp)\.exec\s*\(/g
+};
 var URL_RULE = { kind: "new-route", in: "code", pattern: /(?<![\w.])path\s*\(/g };
 function buildsQuery(code3, raw, quotes, triple, at2) {
   let index = 0;
@@ -10773,7 +10779,8 @@ function queryRule(quotes, triple) {
 }
 function language2(quotes, lineComment2, blockComments, regexLiterals = false, tripleQuotes = false) {
   return {
-    rules: [...CODE_RULES, queryRule(quotes, tripleQuotes)],
+    // Only the script languages have regex literals, so the flag names them.
+    rules: [...CODE_RULES, regexLiterals ? SCRIPT_EXEC_RULE : EXEC_RULE, queryRule(quotes, tripleQuotes)],
     quotes,
     lineComment: lineComment2,
     blockComments,
@@ -10809,10 +10816,25 @@ function kindsIn3(text5, lang, urls) {
   }
   return [...kinds];
 }
+var INTERPRETERS = [
+  [/\b(?:node|bun|deno)\b/, ".js"],
+  [/\bpython[\d.]*\b/, ".py"],
+  [/\bruby\b/, ".rb"],
+  [/\bphp\b/, ".php"]
+];
+function languageOf2(path, firstLine3) {
+  const extension = extname3(path).toLowerCase();
+  if (extension !== "") return LANGUAGES4[extension];
+  if (firstLine3 === void 0 || firstLine3.line !== 1 || !firstLine3.text.startsWith("#!")) return void 0;
+  const interpreter = INTERPRETERS.find(([pattern]) => pattern.test(firstLine3.text));
+  return interpreter === void 0 ? void 0 : LANGUAGES4[interpreter[1]];
+}
 function findRiskMarkers(diff, paths) {
   const found2 = [];
+  const languages = /* @__PURE__ */ new Map();
   for (const hunk of countHunks(diff, new Set(paths))) {
-    const lang = LANGUAGES4[extname3(hunk.path).toLowerCase()];
+    if (!languages.has(hunk.path)) languages.set(hunk.path, languageOf2(hunk.path, hunk.added[0]));
+    const lang = languages.get(hunk.path);
     if (lang === void 0) continue;
     const urls = /^urls?$/i.test(basename2(hunk.path, extname3(hunk.path)));
     for (const { line: line3, text: text5 } of hunk.added) {

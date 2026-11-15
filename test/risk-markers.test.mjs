@@ -326,3 +326,26 @@ test('a triple-quoted Python string is one string: queries built in one are mark
   assert.deepEqual(kinds(PY, "doc = '''SELECT is a keyword'''"), [], 'a plain triple-quoted literal is plain text');
   assert.deepEqual(kinds(PY, 'empty = ""; eval(source)'), ['unsafe'], 'two quotes are still an empty string, not a triple');
 });
+
+// #375: RegExp.prototype.exec() was flagged as unsafe execution, and only in
+// files with an extension.
+
+test('#375: a RegExp exec call in a script file is not an unsafe marker; a command exec still is', () => {
+  for (const text of ['const match = HUNK_HEADER.exec(line);', 'while ((m = /a(b)/g.exec(text)) !== null) {', 'return pattern.exec(input)?.[1];']) {
+    assert.deepEqual(kinds('lib/parse.mjs', text), [], text);
+  }
+  for (const text of ["exec('rm -rf ' + dir);", "child_process.exec('ls ' + dir);", "cp.exec(command, done);", 'await exec (command);']) {
+    assert.deepEqual(kinds('lib/run.mjs', text), ['unsafe'], text);
+  }
+  // Elsewhere a method named exec runs a process.
+  assert.deepEqual(kinds(JAVA, 'Runtime.getRuntime().exec(command);'), ['unsafe']);
+  assert.deepEqual(kinds(PY, 'exec(source)'), ['unsafe']);
+});
+
+test('#375: a new script with no extension is read in the language its shebang names', () => {
+  const script = (shebang, ...lines) => findRiskMarkers(patch('bin/tool', [`+${shebang}`, ...lines.map((l) => `+${l}`)], 1), ['bin/tool']);
+  assert.deepEqual(script('#!/usr/bin/env node', "exec('git ' + args);", 'const m = RE.exec(text);'), [{ path: 'bin/tool', line: 2, kind: 'unsafe' }]);
+  assert.deepEqual(script('#!/usr/bin/env python3', 'eval(source)').map((m) => m.kind), ['unsafe']);
+  assert.deepEqual(script('#!/bin/bash', 'eval "$cmd"'), [], 'a shell has no table');
+  assert.deepEqual(findRiskMarkers(patch('bin/tool', ["+exec('git ' + args);"], 40), ['bin/tool']), [], 'no first line, no language');
+});
