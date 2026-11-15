@@ -98,6 +98,15 @@ export function symbolsFromHunks(diff: string, changedPath: string | null): stri
   return [...found];
 }
 
+/** Whether the diff has a section for the file, on either side of a rename or a deletion. */
+function diffTouches(diff: string, path: string): boolean {
+  const wanted = normalisePath(path);
+  for (const match of diff.matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)) {
+    if (normalisePath(match[1]!) === wanted || normalisePath(match[2]!) === wanted) return true;
+  }
+  return false;
+}
+
 /**
  * Initial, calibrated-by-guess recognition of files whose change reaches the
  * repository even when one named symbol happens to have few hits. Keep this
@@ -241,10 +250,14 @@ export function computeReach(
   // through and remains the honest fallback.
   const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
   // A finding whose file the diff does not touch still has a diff to measure:
-  // the symbol it is about was changed somewhere else.
-  const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
+  // the symbol it is about was changed somewhere else. A file the diff does
+  // touch is measured by its own hunks even when they hold no identifier: a
+  // finding on one line of a settings file was given the symbols of every
+  // other file in the diff, and their spread set its tier (#384).
+  const inDiff = diff !== null && diffTouches(diff, changedPath);
+  const anyHunks = diff === null || inDiff ? [] : symbolsFromHunks(diff, null);
   const source: 'hunks' | 'diff' | 'claim' =
-    ownHunks.length > 0 ? 'hunks' : anyHunks.length > 0 ? 'diff' : 'claim';
+    inDiff || ownHunks.length > 0 ? 'hunks' : anyHunks.length > 0 ? 'diff' : 'claim';
   const symbols = (
     source === 'hunks' ? ownHunks : source === 'diff' ? anyHunks : namedSymbols(text)
   ).slice(0, 12);

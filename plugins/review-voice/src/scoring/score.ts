@@ -436,12 +436,17 @@ export function boundSeverityByEvidence(
         `${confidence.toFixed(2)}, at least ${ESCALATION_CONFIDENCE}`,
     );
   }
+  // The reason names the condition that held the tier: a trace under the bar
+  // is not a missing trace, and saying so sent the owner looking for one (#384).
+  const tracedBelowBar = verification?.impactTraced === true;
   return {
     ...result,
     severity: TIER_ORDER[asked] as DerivedSeverity['severity'],
-    reason:
-      `${result.reason}, held at ${candidate.severity} because escalation needs the verifier ` +
-      'to trace impact beyond the changed code',
+    reason: tracedBelowBar
+      ? `${result.reason}, held at ${candidate.severity} because the verifier traced the impact at confidence ` +
+        `${confidence === null ? 'unknown' : confidence.toFixed(2)}, and escalation needs at least ${ESCALATION_CONFIDENCE}`
+      : `${result.reason}, held at ${candidate.severity} because escalation needs the verifier ` +
+        'to trace impact beyond the changed code',
   };
 }
 
@@ -541,6 +546,12 @@ export interface FixRendering {
   direction: string | null;
   render: 'fix' | 'direction' | 'none';
   reason: string;
+  /**
+   * Why a proposed repair is not stated, in the CLI's own words. `reason`
+   * prefers the verifier's sentence about the fix, which does not say that the
+   * threshold is what held it (#379). Absent when the fix is rendered.
+   */
+  withheld?: string;
 }
 
 export interface ScoreBreakdown {
@@ -1504,12 +1515,14 @@ function isBareDirection(direction: string | null): boolean {
 export interface EditorFix {
   render: FixRendering['render'];
   text: string | null;
+  /** Why no repair is stated. It names a rule, never the repair, so nothing withheld travels with it. */
+  withheld?: string;
 }
 
 export function editorFix(fix: FixRendering): EditorFix {
   if (fix.render === 'fix') return { render: 'fix', text: fix.suggested };
   if (fix.render === 'direction') return { render: 'direction', text: fix.direction };
-  return { render: 'none', text: null };
+  return { render: 'none', text: null, ...(fix.withheld === undefined ? {} : { withheld: fix.withheld }) };
 }
 
 /**
@@ -1611,6 +1624,8 @@ function renderFix(
     direction,
     render: 'none',
     reason: verifierReason ?? reason,
+    // Only a repair that was proposed can be withheld.
+    ...(hasSuggested ? { withheld: reason } : {}),
   };
 }
 
@@ -1714,8 +1729,12 @@ export function scoreCandidate(
   const admitted = admitsUnverifiable(candidate);
   const verifierEngaged = verification?.technicalConfidence !== undefined;
 
-  if ((missingContext || (admitted && !verifierEngaged)) && confidence > UNVERIFIABLE_CONFIDENCE) {
-    confidence = UNVERIFIABLE_CONFIDENCE;
+  // Context the verifier could not obtain caps the claim whatever number came
+  // with it. A rejection at a confidence already under the cap used to keep
+  // the verifier as its source, so it was rejected as plainly unverified and
+  // listed nowhere (#382).
+  if (missingContext || (admitted && !verifierEngaged && confidence > UNVERIFIABLE_CONFIDENCE)) {
+    confidence = Math.min(confidence, UNVERIFIABLE_CONFIDENCE);
     confidenceSource = 'unverifiable-cap';
   }
   const unverifiableBecause =
