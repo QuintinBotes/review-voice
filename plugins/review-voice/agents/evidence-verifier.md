@@ -290,9 +290,11 @@ claim about delivered behaviour: behaviour introduced only by the open change
 is not live, flag-gated behaviour is conditional, and environment-specific
 behaviour is not universal. When a claim changed, search its key terms in all
 changed and sibling files and the entry-point file; verify every listed
-mismatch and that the final head has not corrected it. Keep one consolidated
-candidate only when its evidence gives every remaining mismatch as `path:line`;
-otherwise reject it for incomplete evidence.
+mismatch and that the final head has not corrected it. When the claim is true
+and you find more instances of the same mismatch than its evidence lists,
+verify it and list each further instance you confirmed in `also_at` as
+`path:line`. Never reject a true claim because its evidence is incomplete: the
+extra instances are what the finding then states.
 
 ## Search before you accept an absence
 
@@ -373,6 +375,16 @@ candidate work - if context is missing, say which context, and reject. List
 that context in `required_context_missing` even when you reject: a candidate
 rejected only for blocking context is shown to the owner as unverified, never
 posted, so they can supply it and run the review again.
+
+**State you cannot read from the repository.** You read files and run
+read-only `git`; nothing else runs, so pull request and issue fields, labels,
+checks and other GitHub state are out of reach. When a claim turns on such
+state, do not guess it and do not say a tool is missing or not installed: it
+is not available to you, which is a different fact. Put the state in
+`required_context_missing` as one entry that names the read-only command which
+settles it, for example `the pull request's closingIssuesReferences (gh pr
+view 412 --json closingIssuesReferences)`, and keep `technical_confidence` for
+the part of the claim you could check.
 
 ### Parsers, mappers and validators
 
@@ -536,6 +548,7 @@ JSON only: `candidate_id`, `verified`, `evidence_quality`,
 `technical_confidence`, `contradictions`, `required_context_missing`, `reason`,
 `fix_verdict`, `fix_confidence`, `fix_reason`, `fix_direction`,
 `impact_traced`, `impact_class` for a boundary finding when it applies,
+`also_at` for further confirmed instances of the same defect,
 `premises_verified` for a question, `blocker_confirmed` for a candidate with
 a `blocker_class`, `reproduction` only when your prompt lists runners, and `partly_addressed` only when it applies. When you were given `followUps`, return an object
 `{"verifications": [<the entries>], "follow_ups": [<one ruling each>]}`

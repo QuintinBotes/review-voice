@@ -413,6 +413,8 @@ export function scoreCommand(argv: string[]): number {
           verified: typeof verified === 'boolean' ? verified : undefined,
           blockerConfirmed: typeof blockerConfirmed === 'boolean' ? blockerConfirmed : undefined,
           reason: typeof reason === 'string' ? reason : undefined,
+          // Already checked by `verificationProblem`.
+          alsoAt: (raw['also_at'] ?? raw['alsoAt']) as string[] | undefined,
           requiredContextMissing: (raw['required_context_missing'] ??
             raw['requiredContextMissing']) as MissingContext[] | undefined,
           // Already checked by `verificationProblem`.
@@ -967,6 +969,9 @@ export function scoreCommand(argv: string[]): number {
               // second pass disputed how far the failure reaches and no
               // tie-break upheld the wider claim.
               ...(c.impactDisputed === true ? { impactDisputed: true } : {}),
+              // More instances of the same defect than the candidate listed.
+              // The verifier used to reject a true finding for them (#388).
+              ...((verifications.get(c.candidateId)?.alsoAt?.length ?? 0) > 0 ? { alsoAt: verifications.get(c.candidateId)!.alsoAt } : {}),
             };
           }),
           belowGate: belowGate.map(withSnakeCaseId),

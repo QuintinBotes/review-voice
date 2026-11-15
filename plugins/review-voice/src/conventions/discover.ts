@@ -76,6 +76,16 @@ const RULE_DIRECTORIES: { path: string; kind: ConventionKind }[] = [
 ];
 
 /**
+ * Every place the search looks, so an empty result can say where it looked:
+ * "nothing found" and "nothing searched" printed the same empty list (#390).
+ */
+export const SEARCHED_PLACES: string[] = [
+  ...REPOSITORY_FILES.map((file) => file.path),
+  ...NESTED_FILES.map((file) => `<directory the change touches>/${file.name}`),
+  ...RULE_DIRECTORIES.map((directory) => `<any directory>/${directory.path}/`),
+];
+
+/**
  * Everything here is pasted into an agent prompt. The budget is what keeps a
  * repository with forty skill documents from crowding out the diff itself.
  */

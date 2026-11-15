@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { repositoryRoot } from '../diff/acquire.ts';
-import { changedPathsFrom, discoverConventions } from '../conventions/discover.ts';
+import { changedPathsFrom, discoverConventions, SEARCHED_PLACES } from '../conventions/discover.ts';
 import { gitTreeReader } from '../conventions/tree.ts';
 import { flag, refExists } from './shared.ts';
 
@@ -50,10 +50,15 @@ export function conventionsCommand(argv: string[]): number {
   }
 
   const report = discoverConventions(root, changed, ref === null ? undefined : gitTreeReader(root, ref));
+  // On stderr, where the reviewer reads it; the JSON below goes to a file.
+  if (report.documents.length === 0 && report.skipped.length === 0) {
+    console.error(`No convention documents found${ref === null ? '' : ` at ${ref}`}. Looked for: ${SEARCHED_PLACES.join(', ')}.`);
+  }
   console.log(
     JSON.stringify(
       {
         ...report,
+        searched: SEARCHED_PLACES,
         // Restated on the payload itself, because this is the one command
         // whose output is repository-authored text going into a prompt.
         trust: 'evidence',

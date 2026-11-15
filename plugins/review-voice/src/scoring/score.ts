@@ -230,6 +230,8 @@ export interface Verification {
   verified?: boolean | undefined;
   /** The verifier confirmed the candidate's `blocker_class`; read only by a lane escalate rule. */
   blockerConfirmed?: boolean | undefined;
+  /** Further places, as `path:line`, where the verifier confirmed the same defect (#388). */
+  alsoAt?: string[] | undefined;
 }
 
 /** Longest verifier reason quoted in a rejection. */

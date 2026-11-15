@@ -386,7 +386,12 @@ category.
 - `question` - you could not establish the answer from the diff and the
   repository, and the author can.
 
-When two tiers both fit, take the lower one.
+When two tiers both fit, take the lower one. The exception is a hang: work
+that stalls and never recovers (a queue that stops draining, a lock never
+released, a loop with no exit) is `important` on a path that will plausibly be
+taken and `blocking` on one that will certainly be taken, never `minor`. The
+tier you ask for is a ceiling unless the verifier traces the impact, so asking
+`minor` for a stall reports it as `minor`.
 
 ## Confidence
 
@@ -478,6 +483,22 @@ Control flow and error paths · authorization and trust boundaries · data
 persistence and transaction ordering · retry and idempotency behavior ·
 concurrency and resource lifecycle · CI, release and packaging correctness ·
 public API and user-visible behavior.
+
+### Patterns, permission rules and regular expressions
+
+For a glob, allow or deny rule, path filter or ignore pattern the diff adds
+(`Bash(*/tool sub *)`, an allowlist entry, a CI `paths:` filter, a CODEOWNERS
+line), list every way the guarded thing is invoked or named: the bare name
+found on `PATH`, a relative path, an absolute path, other argument orders.
+Flag a form the pattern does not match when that skips an approval, check or
+owner.
+
+For a regular expression the diff adds, check whether `\s`, `.` under the
+dotall flag, or a negated class such as `[^,]` can cross a line break or a
+field separator in the input it reads. `label:\s*\S` passes an empty label
+whenever text follows on a later line. Flag a pattern that accepts an empty or
+missing value because the next line fills it, and an anchor that means the
+line in one mode and the whole input in another.
 
 ### Parsers, mappers and validators
 
