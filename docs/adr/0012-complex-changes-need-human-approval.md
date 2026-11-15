@@ -27,7 +27,9 @@ review says so, and why, so a human picks it up.**
   enough:
   - *Added decision points*: a lexical count of branches (`if`, loops, `case`,
     `catch`, `&&`, `||`, ternaries) on lines added to reviewed source files,
-    for the change as a whole and for its densest hunk. (Amended 2026-10-06:
+    for the change as a whole and for its densest hunk. A new file is one
+    hunk, so its densest declaration is compared instead (amended 2026-11-15,
+    #387). (Amended 2026-10-06:
     production source only; see the second amendment below.) Lexical, like
     changed-symbol context: no parser, no language left out, and a count that
     is wrong by a few on comments or strings is still the right order.
@@ -134,7 +136,9 @@ kinds are left out of the count, not down-weighted:
   one spec into several files to get a hunk under the limit, and the change
   stayed high anyway. The defaults cover the common layouts: test and fixture
   directories (`**/test/**`, `**/tests/**`, `**/__tests__/**`,
-  `**/fixtures/**`, `**/testdata/**`, .NET `*.Tests/` projects), and only the
+  `**/fixtures/**`, `**/testdata/**`, .NET `*.Tests/` projects, and the
+  Markdown prompts and graders of an eval suite, `**/evals/**/*.md`, which
+  were counted as documentation until #389), and only the
   file names that mean a test in their language (`*.test.*`, `*.spec.*`, Go's
   `*_test.go`, Ruby's `spec/**/*.rb` and `*_spec.rb`). They are narrow on
   purpose, because a production file matched here goes uncounted: names such

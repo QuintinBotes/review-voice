@@ -75,6 +75,8 @@ const SENSITIVE_NEVER_EXEMPT = ['.review-voice/**', '.github/workflows/**'];
 export const DEFAULT_TEST_PATHS = [
   '**/test/**', '**/tests/**', '**/__tests__/**',
   '**/fixtures/**', '**/__fixtures__/**', '**/testdata/**',
+  // The prompts and graders of an eval suite are test input, not documentation (#389).
+  '**/evals/**/*.md',
   '**/*.test.*', '**/*.spec.*', '**/*_test.go',
   '**/spec/**/*.rb', '**/*_spec.rb',
   '**/*.Tests/**', '**/*.UnitTests/**', '**/*.IntegrationTests/**',
@@ -155,7 +157,18 @@ const HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/;
  * a function compares equal however it was found.
  */
 const DECLARATION = /^[A-Za-z_$]/;
-const STATEMENT = /^(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|when)\b/;
+// `name=value` with no space is an assignment in a shell and everywhere else it parses.
+const STATEMENT = /^(?:(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|when)\b|[A-Za-z_$][\w$]*=)/;
+/**
+ * A shell function: `name() {` or `function name`. Every command of a script
+ * starts in the first column, so the heuristic above named statements as
+ * functions (#389).
+ */
+const SHELL_DECLARATION = /^(?:function\s+[\w:.-]+|[\w:.-]+\s*\(\s*\))/;
+const SHELL_PATH = /\.(?:sh|bash|zsh|ksh)$/i;
+const SHELL_SHEBANG = /^#!.*\b(?:ba|z|k|da)?sh\b/;
+/** A closing brace or `end` in the first column ends the declaration above it. */
+const CLOSES_DECLARATION = /^(?:\}|end\b)/;
 const MAX_SCOPE_LENGTH = 80;
 
 function count(text: string, pattern: RegExp): number {
@@ -210,8 +223,9 @@ export interface HunkCount {
 }
 
 /** The declaration a line names, cut as git cuts it, or null. Indentation is the caller's to keep or strip. */
-function declarationIn(text: string): string | null {
-  return DECLARATION.test(text) && !STATEMENT.test(text) ? text.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
+function declarationIn(text: string, shell = false): string | null {
+  const declares = shell ? SHELL_DECLARATION.test(text) : DECLARATION.test(text) && !STATEMENT.test(text);
+  return declares ? text.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
 }
 
 /** The new-side path of a `+++` header, or null for a deletion. */
@@ -243,6 +257,8 @@ export function countHunks(diff: string, wanted: { has(path: string): boolean })
   let remainingOld = 0;
   let remainingNew = 0;
   let newLine = 0;
+  // A shell script, by its extension or by the shebang when the diff shows line 1.
+  let shell = false;
 
   const record = (hunk: HunkCount, text: string, removed: boolean): void => {
     const decisionPoints = decisionPointsIn(text);
@@ -266,8 +282,11 @@ export function countHunks(diff: string, wanted: { has(path: string): boolean })
 
     if (current !== null && (remainingOld > 0 || remainingNew > 0)) {
       const text = line.slice(1);
+      if (newLine === 1 && !line.startsWith('-') && text.startsWith('#!')) shell = SHELL_SHEBANG.test(text);
+      // Past its closing line, code is no longer inside the declaration.
+      if (!line.startsWith('-') && CLOSES_DECLARATION.test(text)) scope = null;
       if (line.startsWith('+')) {
-        if (declarationIn(text) !== null) {
+        if (declarationIn(text, shell) !== null) {
           if (!replacing) scope = null;
           replacing = false;
         }
@@ -278,7 +297,7 @@ export function countHunks(diff: string, wanted: { has(path: string): boolean })
         continue;
       }
       if (line.startsWith('-')) {
-        const declaration = declarationIn(text);
+        const declaration = declarationIn(text, shell);
         if (declaration !== null) {
           scope = declaration;
           replacing = true;
@@ -291,7 +310,7 @@ export function countHunks(diff: string, wanted: { has(path: string): boolean })
         continue;
       }
       if (line.startsWith(' ') || line === '') {
-        scope = declarationIn(text) ?? scope;
+        scope = declarationIn(text, shell) ?? scope;
         replacing = false;
         remainingOld -= 1;
         remainingNew -= 1;
@@ -311,6 +330,7 @@ export function countHunks(diff: string, wanted: { has(path: string): boolean })
     }
     if (line.startsWith('+++ ')) {
       path = headerPath(line.slice(4));
+      shell = path !== null && SHELL_PATH.test(path);
       continue;
     }
     const header = HUNK_HEADER.exec(line);
@@ -321,13 +341,31 @@ export function countHunks(diff: string, wanted: { has(path: string): boolean })
       current = { path, line: Number(header[2]), decisionPoints: 0, branches: [], added: [], removed: [] };
       newLine = Number(header[2]);
       // A language diff driver may name an indented method; keep it, minus the indent.
-      scope = declarationIn((header[4] ?? '').trim());
+      scope = declarationIn((header[4] ?? '').trim(), shell);
       replacing = false;
       if (wanted.has(path)) hunks.push(current);
     }
   }
   finish();
   return hunks;
+}
+
+/** What the per-hunk limit compares: a hunk, or one declaration of a new file. */
+interface DenseUnit {
+  path: string;
+  line: number;
+  decisionPoints: number;
+  declaration?: true;
+}
+
+/** A new file's one hunk, cut at each declaration it adds; lines before the first are their own unit. */
+function declarationsOf(hunk: HunkCount): DenseUnit[] {
+  const units: DenseUnit[] = [];
+  for (const { line, text } of hunk.added) {
+    if (units.length === 0 || declarationIn(text) !== null) units.push({ path: hunk.path, line, decisionPoints: 0, declaration: true });
+    units[units.length - 1]!.decisionPoints += decisionPointsIn(text);
+  }
+  return units;
 }
 
 function config(partial: HumanReviewConfigInput | undefined): HumanReviewConfig {
@@ -470,9 +508,14 @@ export function assessComplexity(
   const pointsOf = (kind: Kind): number =>
     allHunks.filter((hunk) => kinds.get(hunk.path) === kind).reduce((sum, hunk) => sum + hunk.decisionPoints, 0);
   const decisionPoints = hunks.reduce((sum, hunk) => sum + hunk.decisionPoints, 0);
-  // The first of equally dense hunks wins, so the report is stable.
-  const densest = hunks.reduce<HunkCount | null>(
-    (best, hunk) => (hunk.decisionPoints > 0 && (best === null || hunk.decisionPoints > best.decisionPoints) ? hunk : best),
+  // A new file arrives as one hunk, so the per-hunk limit read every new
+  // script of ordinary size as one dense hunk (#387). Its densest declaration
+  // is compared instead; the total above still counts every line of it.
+  const added = new Set(files.filter((file) => file.status === 'added').map((file) => file.path));
+  const units = hunks.flatMap((hunk): DenseUnit[] => (added.has(hunk.path) ? declarationsOf(hunk) : [hunk]));
+  // The first of equally dense units wins, so the report is stable.
+  const densest = units.reduce<DenseUnit | null>(
+    (best, unit) => (unit.decisionPoints > 0 && (best === null || unit.decisionPoints > best.decisionPoints) ? unit : best),
     null,
   );
 
@@ -507,7 +550,8 @@ export function assessComplexity(
   }
   if (densest !== null && densest.decisionPoints > limits.maxHunkDecisionPoints) {
     reasons.push(
-      `${densest.decisionPoints} decision points in one hunk at ${densest.path}:${densest.line} (limit ${limits.maxHunkDecisionPoints})`,
+      `${densest.decisionPoints} decision points in one ${densest.declaration === true ? 'declaration of the new file' : 'hunk at'} ` +
+        `${densest.path}:${densest.line} (limit ${limits.maxHunkDecisionPoints})`,
     );
   }
   if (sensitive.length > 0) {

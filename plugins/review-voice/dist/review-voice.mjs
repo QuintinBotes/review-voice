@@ -805,11 +805,23 @@ function acquireDiff(options) {
     const path = match[1];
     if (path !== void 0 && path !== "/dev/null") hunkPaths.add(path);
   }
+  const head = git(["rev-parse", "HEAD"], root).trim();
+  let refs;
+  if (options.base !== null) {
+    const baseSha = git(["rev-parse", `${options.base}^{commit}`], root).trim();
+    let mergeBase = null;
+    try {
+      mergeBase = git(["merge-base", baseSha, head], root).trim() || null;
+    } catch {
+    }
+    refs = { base: { sha: baseSha, available: true }, head: { sha: head, available: true }, mergeBase };
+  }
   return {
     repositoryRoot: root,
     mode,
     base: options.base,
-    head: git(["rev-parse", "HEAD"], root).trim(),
+    ...refs === void 0 ? {} : { refs },
+    head,
     files: files2,
     reviewedFileCount: reviewable.length,
     // Counted from the diff itself, not from the file list: a file can be
@@ -1480,6 +1492,8 @@ var DEFAULT_TEST_PATHS = [
   "**/fixtures/**",
   "**/__fixtures__/**",
   "**/testdata/**",
+  // The prompts and graders of an eval suite are test input, not documentation (#389).
+  "**/evals/**/*.md",
   "**/*.test.*",
   "**/*.spec.*",
   "**/*_test.go",
@@ -1511,7 +1525,11 @@ var TERNARY = / \? /g;
 var COMMENT_START = /^(?:\/\/|#|\*|\/\*|--)/;
 var HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/;
 var DECLARATION = /^[A-Za-z_$]/;
-var STATEMENT = /^(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|when)\b/;
+var STATEMENT = /^(?:(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|when)\b|[A-Za-z_$][\w$]*=)/;
+var SHELL_DECLARATION = /^(?:function\s+[\w:.-]+|[\w:.-]+\s*\(\s*\))/;
+var SHELL_PATH = /\.(?:sh|bash|zsh|ksh)$/i;
+var SHELL_SHEBANG = /^#!.*\b(?:ba|z|k|da)?sh\b/;
+var CLOSES_DECLARATION = /^(?:\}|end\b)/;
 var MAX_SCOPE_LENGTH = 80;
 function count(text5, pattern) {
   return text5.match(pattern)?.length ?? 0;
@@ -1521,8 +1539,9 @@ function decisionPointsIn(text5) {
   if (trimmed.length === 0 || COMMENT_START.test(trimmed)) return 0;
   return count(trimmed, KEYWORDS) + count(trimmed, /&&/g) + count(trimmed, /\|\|/g) + count(trimmed, TERNARY);
 }
-function declarationIn(text5) {
-  return DECLARATION.test(text5) && !STATEMENT.test(text5) ? text5.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
+function declarationIn(text5, shell = false) {
+  const declares = shell ? SHELL_DECLARATION.test(text5) : DECLARATION.test(text5) && !STATEMENT.test(text5);
+  return declares ? text5.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
 }
 function headerPath2(raw) {
   const text5 = raw.replace(/\t.*$/, "");
@@ -1539,6 +1558,7 @@ function countHunks(diff, wanted) {
   let remainingOld = 0;
   let remainingNew = 0;
   let newLine = 0;
+  let shell = false;
   const record3 = (hunk, text5, removed) => {
     const decisionPoints = decisionPointsIn(text5);
     if (decisionPoints === 0) return;
@@ -1555,8 +1575,10 @@ function countHunks(diff, wanted) {
     const line3 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     if (current !== null && (remainingOld > 0 || remainingNew > 0)) {
       const text5 = line3.slice(1);
+      if (newLine === 1 && !line3.startsWith("-") && text5.startsWith("#!")) shell = SHELL_SHEBANG.test(text5);
+      if (!line3.startsWith("-") && CLOSES_DECLARATION.test(text5)) scope = null;
       if (line3.startsWith("+")) {
-        if (declarationIn(text5) !== null) {
+        if (declarationIn(text5, shell) !== null) {
           if (!replacing) scope = null;
           replacing = false;
         }
@@ -1567,7 +1589,7 @@ function countHunks(diff, wanted) {
         continue;
       }
       if (line3.startsWith("-")) {
-        const declaration = declarationIn(text5);
+        const declaration = declarationIn(text5, shell);
         if (declaration !== null) {
           scope = declaration;
           replacing = true;
@@ -1578,7 +1600,7 @@ function countHunks(diff, wanted) {
         continue;
       }
       if (line3.startsWith(" ") || line3 === "") {
-        scope = declarationIn(text5) ?? scope;
+        scope = declarationIn(text5, shell) ?? scope;
         replacing = false;
         remainingOld -= 1;
         remainingNew -= 1;
@@ -1597,6 +1619,7 @@ function countHunks(diff, wanted) {
     }
     if (line3.startsWith("+++ ")) {
       path = headerPath2(line3.slice(4));
+      shell = path !== null && SHELL_PATH.test(path);
       continue;
     }
     const header = HUNK_HEADER.exec(line3);
@@ -1606,13 +1629,21 @@ function countHunks(diff, wanted) {
       remainingNew = header[3] === void 0 ? 1 : Number(header[3]);
       current = { path, line: Number(header[2]), decisionPoints: 0, branches: [], added: [], removed: [] };
       newLine = Number(header[2]);
-      scope = declarationIn((header[4] ?? "").trim());
+      scope = declarationIn((header[4] ?? "").trim(), shell);
       replacing = false;
       if (wanted.has(path)) hunks.push(current);
     }
   }
   finish();
   return hunks;
+}
+function declarationsOf(hunk) {
+  const units = [];
+  for (const { line: line3, text: text5 } of hunk.added) {
+    if (units.length === 0 || declarationIn(text5) !== null) units.push({ path: hunk.path, line: line3, decisionPoints: 0, declaration: true });
+    units[units.length - 1].decisionPoints += decisionPointsIn(text5);
+  }
+  return units;
 }
 function config(partial) {
   return {
@@ -1695,8 +1726,10 @@ function assessComplexity(diff, files2, partial, markedGenerated2 = /* @__PURE__
   const ofKind = (kind) => [...kinds.values()].filter((value) => value === kind).length;
   const pointsOf = (kind) => allHunks.filter((hunk) => kinds.get(hunk.path) === kind).reduce((sum, hunk) => sum + hunk.decisionPoints, 0);
   const decisionPoints = hunks.reduce((sum, hunk) => sum + hunk.decisionPoints, 0);
-  const densest = hunks.reduce(
-    (best, hunk) => hunk.decisionPoints > 0 && (best === null || hunk.decisionPoints > best.decisionPoints) ? hunk : best,
+  const added = new Set(files2.filter((file2) => file2.status === "added").map((file2) => file2.path));
+  const units = hunks.flatMap((hunk) => added.has(hunk.path) ? declarationsOf(hunk) : [hunk]);
+  const densest = units.reduce(
+    (best, unit) => unit.decisionPoints > 0 && (best === null || unit.decisionPoints > best.decisionPoints) ? unit : best,
     null
   );
   const sensitiveGlobs = [.../* @__PURE__ */ new Set([...limits.sensitivePaths, ...SENSITIVE_NEVER_EXEMPT])];
@@ -1723,7 +1756,7 @@ function assessComplexity(diff, files2, partial, markedGenerated2 = /* @__PURE__
   }
   if (densest !== null && densest.decisionPoints > limits.maxHunkDecisionPoints) {
     reasons.push(
-      `${densest.decisionPoints} decision points in one hunk at ${densest.path}:${densest.line} (limit ${limits.maxHunkDecisionPoints})`
+      `${densest.decisionPoints} decision points in one ${densest.declaration === true ? "declaration of the new file" : "hunk at"} ${densest.path}:${densest.line} (limit ${limits.maxHunkDecisionPoints})`
     );
   }
   if (sensitive.length > 0) {
@@ -10727,7 +10760,7 @@ var CODE_RULES = [
   {
     kind: "unsafe",
     in: "code",
-    pattern: /\bunsafe\b|\beval\s*\(|\bexec\s*\(|\bdangerouslySetInnerHTML\b|\bMarshal\.|\bpickle\.loads\b/g
+    pattern: /\bunsafe\b|\beval\s*\(|\bdangerouslySetInnerHTML\b|\bMarshal\.|\bpickle\.loads\b/g
   },
   {
     // A loader that names SafeLoader on the same line is the safe form.
@@ -10737,6 +10770,12 @@ var CODE_RULES = [
     accept: (_match, line3) => !/SafeLoader/.test(line3.code)
   }
 ];
+var EXEC_RULE = { kind: "unsafe", in: "code", pattern: /\bexec\s*\(/g };
+var SCRIPT_EXEC_RULE = {
+  kind: "unsafe",
+  in: "code",
+  pattern: /(?<![\w$.])exec\s*\(|\b(?:child_process|childProcess|cp)\.exec\s*\(/g
+};
 var URL_RULE = { kind: "new-route", in: "code", pattern: /(?<![\w.])path\s*\(/g };
 function buildsQuery(code3, raw, quotes, triple, at2) {
   let index = 0;
@@ -10773,7 +10812,8 @@ function queryRule(quotes, triple) {
 }
 function language2(quotes, lineComment2, blockComments, regexLiterals = false, tripleQuotes = false) {
   return {
-    rules: [...CODE_RULES, queryRule(quotes, tripleQuotes)],
+    // Only the script languages have regex literals, so the flag names them.
+    rules: [...CODE_RULES, regexLiterals ? SCRIPT_EXEC_RULE : EXEC_RULE, queryRule(quotes, tripleQuotes)],
     quotes,
     lineComment: lineComment2,
     blockComments,
@@ -10809,10 +10849,25 @@ function kindsIn3(text5, lang, urls) {
   }
   return [...kinds];
 }
+var INTERPRETERS = [
+  [/\b(?:node|bun|deno)\b/, ".js"],
+  [/\bpython[\d.]*\b/, ".py"],
+  [/\bruby\b/, ".rb"],
+  [/\bphp\b/, ".php"]
+];
+function languageOf2(path, firstLine3) {
+  const extension = extname3(path).toLowerCase();
+  if (extension !== "") return LANGUAGES4[extension];
+  if (firstLine3 === void 0 || firstLine3.line !== 1 || !firstLine3.text.startsWith("#!")) return void 0;
+  const interpreter = INTERPRETERS.find(([pattern]) => pattern.test(firstLine3.text));
+  return interpreter === void 0 ? void 0 : LANGUAGES4[interpreter[1]];
+}
 function findRiskMarkers(diff, paths) {
   const found2 = [];
+  const languages = /* @__PURE__ */ new Map();
   for (const hunk of countHunks(diff, new Set(paths))) {
-    const lang = LANGUAGES4[extname3(hunk.path).toLowerCase()];
+    if (!languages.has(hunk.path)) languages.set(hunk.path, languageOf2(hunk.path, hunk.added[0]));
+    const lang = languages.get(hunk.path);
     if (lang === void 0) continue;
     const urls = /^urls?$/i.test(basename2(hunk.path, extname3(hunk.path)));
     for (const { line: line3, text: text5 } of hunk.added) {
@@ -25391,9 +25446,21 @@ var STOPWORDS = /* @__PURE__ */ new Set([
   "used"
 ]);
 var EXCERPT_CHARS = 220;
+function scopeClause(query) {
+  if (query.allowlist === void 0) return { sql: "", params: [] };
+  const exact = query.allowlist.filter((entry) => !entry.endsWith("/*"));
+  if (query.repository !== void 0) exact.push(query.repository);
+  const owners = query.allowlist.filter((entry) => entry.endsWith("/*")).map((entry) => `${entry.slice(0, -1).replace(/[\\%_]/g, "\\$&")}%`);
+  const clauses = [
+    ...exact.length === 0 ? [] : [`e.repository COLLATE NOCASE IN (${exact.map(() => "?").join(", ")})`],
+    ...owners.map(() => "e.repository LIKE ? ESCAPE '\\'")
+  ];
+  return { sql: `AND (${clauses.length === 0 ? "0" : clauses.join(" OR ")})`, params: [...exact, ...owners] };
+}
 function retrievePrecedents(db, query) {
   const match = toMatchQuery(query.text);
   if (match.length === 0) return [];
+  const scope = scopeClause(query);
   let rows;
   try {
     rows = db.prepare(
@@ -25408,6 +25475,7 @@ function retrievePrecedents(db, query) {
          WHERE review_events_fts MATCH ?
            AND (? IS NULL OR e.pull_number IS NULL OR e.pull_number != ?
                 OR (? IS NOT NULL AND e.repository != ?))
+           ${scope.sql}
          ORDER BY rank
          LIMIT 200`
     ).all(
@@ -25415,7 +25483,8 @@ function retrievePrecedents(db, query) {
       query.excludePullNumber ?? null,
       query.excludePullNumber ?? null,
       query.repository ?? null,
-      query.repository ?? null
+      query.repository ?? null,
+      ...scope.params
     );
   } catch {
     return [];
@@ -25502,6 +25571,7 @@ function retrieveCommand(argv) {
     const precedents = retrievePrecedents(db, {
       text: text5,
       repository: flag(argv, "--repository") ?? void 0,
+      allowlist: repositoryConfig()?.allowlist,
       filePath: flag(argv, "--path") ?? void 0,
       language: flag(argv, "--language") ?? void 0,
       maxPositive: numericFlag(argv, "--max-positive", 3) ?? 3,
@@ -25642,7 +25712,7 @@ function anchorsCommand(argv) {
 
 // plugins/review-voice/src/cli/context.ts
 import { existsSync as existsSync14 } from "node:fs";
-import { join as join21 } from "node:path";
+import { basename as basename6, join as join21 } from "node:path";
 
 // plugins/review-voice/src/policy/schema.ts
 function resolvePolicy(layers) {
@@ -25701,12 +25771,19 @@ function contextCommand() {
     }
     const configPath = join21(root, ".review-voice", "config.yaml");
     const policy = resolvePolicy(config2.layers);
+    const notSetUp = config2.ownerReviewer === null && config2.allowlist.length === 0 ? "Review Voice is not set up for this repository: its configuration names no identity.owner_reviewer and no repositories.include. Run /review-voice:init. Until then the review is scored without review history from any other repository." : null;
     console.log(
       JSON.stringify(
         {
           repositoryRoot: root,
+          // The Claude Code version of the session running this review, for
+          // `record --claude-version`, which has no other way to learn it
+          // (#386). Claude Code names its versioned binary in this variable;
+          // null when it is unset or is not a version.
+          claudeCodeVersion: /^\d+\.\d+\.\d+[\w.-]*$/.exec(basename6(process.env["CLAUDE_CODE_EXECPATH"] ?? ""))?.[0] ?? null,
           ownerReviewer: config2.ownerReviewer,
           allowlist: config2.allowlist,
+          notSetUp,
           staticEvidence: config2.staticEvidence,
           // The driver reads the runners from context.json, as it reads the configured check names.
           reproduction: { enabled: config2.reproduction.enabled, runners: config2.reproduction.runners },
@@ -26078,14 +26155,14 @@ function followUpsCommand(argv) {
 }
 
 // plugins/review-voice/src/consent/purge.ts
-function scopeClause(scope) {
+function scopeClause2(scope) {
   if (scope.all === true) return { where: "1=1", params: [] };
   if (scope.repository !== void 0) return { where: "repository = ?", params: [scope.repository] };
   if (scope.before !== void 0) return { where: "created_at < ?", params: [scope.before] };
   return { where: "1=0", params: [] };
 }
 function previewPurge(db, scope) {
-  const { where, params } = scopeClause(scope);
+  const { where, params } = scopeClause2(scope);
   const events = db.prepare(`SELECT COUNT(*) AS n FROM review_events WHERE ${where}`).get(...params).n;
   const byRepository = Object.fromEntries(
     db.prepare(`SELECT repository, COUNT(*) AS n FROM review_events WHERE ${where} GROUP BY repository`).all(...params).map((row) => [row.repository, row.n])
@@ -26099,7 +26176,7 @@ function previewPurge(db, scope) {
 }
 function executePurge(db, scope, runDirectories) {
   const preview = previewPurge(db, scope);
-  const { where, params } = scopeClause(scope);
+  const { where, params } = scopeClause2(scope);
   db.exec("BEGIN");
   try {
     db.prepare(`DELETE FROM review_events WHERE ${where}`).run(...params);
@@ -27320,7 +27397,7 @@ import {
   writeFileSync as writeFileSync10
 } from "node:fs";
 import { tmpdir as tmpdir3 } from "node:os";
-import { basename as basename6, dirname as dirname15, join as join24, relative as relative3, resolve as resolve8, sep as sep4 } from "node:path";
+import { basename as basename7, dirname as dirname15, join as join24, relative as relative3, resolve as resolve8, sep as sep4 } from "node:path";
 var AUTHOR_NAME = "review-voice-fixtures";
 var AUTHOR_EMAIL = "fixtures@example.com";
 var COMMIT_DATE = "2026-01-01T00:00:00Z";
@@ -27468,7 +27545,7 @@ function patchMoves(normalised2) {
   return moves;
 }
 function fillerFor(path) {
-  const extension = basename6(path).includes(".") ? basename6(path).split(".").pop().toLowerCase() : "";
+  const extension = basename7(path).includes(".") ? basename7(path).split(".").pop().toLowerCase() : "";
   const hash2 = ["yml", "yaml", "tf", "py", "rb", "sh", "toml", "ini", "cfg", "conf", "md", "txt"];
   return hash2.includes(extension) ? "# filler" : "// filler";
 }
@@ -27571,7 +27648,7 @@ function git3(cwd, label2, args) {
   }
 }
 function materializeFixture(fixtureDir, targetDir, options = {}) {
-  const label2 = options.name ?? `${basename6(dirname15(resolve8(fixtureDir)))}/${basename6(resolve8(fixtureDir))}`;
+  const label2 = options.name ?? `${basename7(dirname15(resolve8(fixtureDir)))}/${basename7(resolve8(fixtureDir))}`;
   const patchPath2 = join24(fixtureDir, "diff.patch");
   if (!existsSync16(patchPath2)) throw new Error(`${label2}: fixture has no diff.patch`);
   if (existsSync16(targetDir) && readdirSync5(targetDir).length > 0) {
@@ -32993,6 +33070,7 @@ function scoreCommand(argv) {
       const precedents = retrievePrecedents(db, {
         text: `${candidate.claim} ${candidate.failureMode}`,
         repository: flag(argv, "--repository") ?? void 0,
+        allowlist: loadedConfig?.allowlist,
         filePath: candidate.path,
         // A comment on the pull request under review is the conversation, not
         // precedent, and it is the route by which a posted review comes back

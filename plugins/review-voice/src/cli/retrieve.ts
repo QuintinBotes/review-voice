@@ -1,7 +1,7 @@
 import { openDatabase } from '../store/db.ts';
 import { retrievePrecedents } from '../retrieval/retrieve.ts';
 import { baselineVoice, isCorpusEmpty } from '../retrieval/baseline.ts';
-import { numericFlag, flag } from './shared.ts';
+import { numericFlag, flag, repositoryConfig } from './shared.ts';
 
 export function retrieveCommand(argv: string[]): number {
   const text = flag(argv, '--text');
@@ -15,6 +15,7 @@ export function retrieveCommand(argv: string[]): number {
     const precedents = retrievePrecedents(db, {
       text,
       repository: flag(argv, '--repository') ?? undefined,
+      allowlist: repositoryConfig()?.allowlist,
       filePath: flag(argv, '--path') ?? undefined,
       language: flag(argv, '--language') ?? undefined,
       maxPositive: numericFlag(argv, '--max-positive', 3) ?? 3,
