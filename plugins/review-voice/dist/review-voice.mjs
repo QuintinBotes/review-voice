@@ -32881,7 +32881,7 @@ function scoreCommand(argv) {
       return 2;
     }
     const known = new Set(candidates.map((candidate) => candidate.candidateId));
-    const unknown = [...verifications.keys()].filter((id) => !known.has(id));
+    const unknown = [...verifications].filter(([id, v]) => !known.has(id) && v.verified !== false).map(([id]) => id);
     if (unknown.length > 0) {
       console.error(`Warning: ${verificationFlag} verifies unknown candidate id(s): ${unknown.join(", ")}. Ignored.`);
     }

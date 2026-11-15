@@ -443,7 +443,9 @@ export function scoreCommand(argv: string[]): number {
     // candidate it skipped falls back to the analyst's confidence, which the
     // gate already reports as confidenceSource 'analyst'.
     const known = new Set(candidates.map((candidate) => candidate.candidateId));
-    const unknown = [...verifications.keys()].filter((id) => !known.has(id));
+    // A candidate the verifier rejected is discarded before scoring, so its
+    // entry in the verifier's full output is expected to match nothing (#383).
+    const unknown = [...verifications].filter(([id, v]) => !known.has(id) && v.verified !== false).map(([id]) => id);
     if (unknown.length > 0) {
       console.error(`Warning: ${verificationFlag} verifies unknown candidate id(s): ${unknown.join(', ')}. Ignored.`);
     }
