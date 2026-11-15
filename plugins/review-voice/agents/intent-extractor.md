@@ -62,7 +62,8 @@ description, so do not paraphrase, fix typos, or join sentences that are
 apart. A statement whose sentence is longer than 600 characters is left out.
 A short answer under a heading (`None.` under "Database changes") may be
 quoted as it stands when it is all the section says; the CLI records the
-heading with it. Any other short quote is kept when it is a whole sentence or
+heading with it. When the same answer sits under several headings, set
+`heading` to the one your statement is about. Any other short quote is kept when it is a whole sentence or
 list item (`No flag.`, `Behind a flag (off).`); the CLI records the heading of
 its section, if any. A heading or a bare label is never a quote. Keep `statement` itself under 300 characters.
 A leading link or bold label (`[label](url): `, `**Label.** `) is not part of

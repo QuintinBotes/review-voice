@@ -22117,6 +22117,7 @@ var COMMENT_LINE = /^ {0,3}<!--(?:(?!--!?>).)*--!?>\s*$/u;
 var COMMENT_OPEN = /^ {0,3}<!--(?!-?>)(?:(?!--!?>).)*$/u;
 var COMMENT_CLOSE = /^(?:(?!--!?>).)*--!?>\s*$/u;
 var BOLD_LABEL = /^\*\*([^*]*[^*\s.!?])\*\*$/u;
+var THEMATIC_BREAK = /^ {0,3}([-*_])(?: *\1){2,} *$/u;
 var collapse2 = (text5) => text5.replace(/\s+/gu, " ").trim();
 var isBoldLabel = (line3) => !LIST_OR_HEADING.test(line3) && BOLD_LABEL.test(collapse2(line3));
 function lineKinds(lines2) {
@@ -22163,7 +22164,7 @@ function sentencesOf(description) {
   for (const [index, line3] of lines2.entries()) {
     const marked = LIST_OR_HEADING.test(line3);
     const content = collapse2(line3.replace(LIST_OR_HEADING, ""));
-    if (content === "") {
+    if (content === "" || THEMATIC_BREAK.test(line3) && (blank || text5 === "") && !fenced.has(index)) {
       blank = true;
       continue;
     }
@@ -22246,14 +22247,15 @@ function widenToSentence(quote3, sentences) {
   const sentence = sentences.text.slice(from, to);
   return sentence.length <= MAX_QUOTE ? sentence : null;
 }
-function answeredHeading(quote3, sentences) {
+function answeredHeadings(quote3, sentences) {
   const wanted = collapse2(quote3.replace(LIST_OR_HEADING, ""));
-  if (wanted === "" || wanted.split(" ").length >= MIN_QUOTE_WORDS) return null;
+  if (wanted === "" || wanted.split(" ").length >= MIN_QUOTE_WORDS) return [];
   const matches = ({ from, to }) => {
     const body = sentences.text.slice(from, to);
     return body === wanted || body === `${wanted}.`;
   };
-  return (sentences.sections.find(matches) ?? sentences.answers.find(matches))?.heading ?? null;
+  const found2 = sentences.sections.filter(matches);
+  return [...new Set((found2.length > 0 ? found2 : sentences.answers.filter(matches)).map(({ heading }) => heading))];
 }
 var whereOf = (source) => source.issue === null ? "the description" : `issue #${source.issue}`;
 function excerptOf(value, sentences, name, id, notes, where) {
@@ -22272,8 +22274,8 @@ function quoteFrom(value, sources, name, id, notes) {
   let problem = null;
   const notFound = `${name} does not occur in the pull request description`;
   for (const source of sources) {
-    const answered = answeredHeading(value, source.sentences);
-    const quote3 = answered === null ? excerptOf(value, source.sentences, name, id, notes, whereOf(source)) : { value, problem: null };
+    const answered = answeredHeadings(value, source.sentences);
+    const quote3 = answered.length === 0 ? excerptOf(value, source.sentences, name, id, notes, whereOf(source)) : { value, problem: null };
     if (quote3.problem === null) return { value: quote3.value, source, answered, problem: null };
     if (problem === null && quote3.problem !== notFound) problem = quote3.problem;
   }
@@ -22319,11 +22321,15 @@ function statementOf(rawEntry, at2, sources, removed) {
   if (rawQuote.problem !== null) return { value: null, problem: rawQuote.problem };
   const quote3 = quoteFrom(rawQuote.value, sources, `${at2}.quote`, id, removed);
   if (quote3.problem !== null) return { value: null, problem: quote3.problem };
-  const { source, answered } = quote3;
+  const { source } = quote3;
+  const statementWords = significantWords(statement.value);
+  const shared = (heading2) => [...significantWords(heading2)].filter((word) => statementWords.has(word)).length;
+  const supplied = entry["heading"];
+  const answered = quote3.answered.find((heading2) => heading2 === supplied) ?? quote3.answered.reduce((best, heading2) => best === null || shared(heading2) > shared(best) ? heading2 : best, null);
   const heading = answered ?? (isShort(quote3.value) ? sectionHeading(quote3.value, source.sentences) : null);
   if (kind !== "non-goal") {
     const quoted = significantWords(answered === null ? quote3.value : `${answered} ${quote3.value}`);
-    if (![...significantWords(statement.value)].some((word) => quoted.has(word))) {
+    if (![...statementWords].some((word) => quoted.has(word))) {
       return { value: null, problem: `${at2}.quote shares no significant word with its statement` };
     }
   }
