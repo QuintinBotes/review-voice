@@ -187,3 +187,13 @@ test('AC-4: the driver report prints the Families line on the line after Provena
     assert.equal(lines[at + 1], line);
   }
 });
+
+test('#380: a score carrying a challenger verdict is a challenge that ran, whatever the stage list says', (t) => {
+  inStore(dataDir(t), (db) => {
+    const scores = [{ candidateId: 'cand_001', path: 'src/a.ts', line: 1, eligible: false, challenge: { verdict: 'partly', line_ok: true, decisive_evidence: [], reason: 'narrower' } }];
+    assert.deepEqual(record(db, { scores, stages: [{ name: 'analyst' }] }).families, { secondPass: null, challenge: 'claude' });
+    assert.deepEqual(record(db, { scores: [{ candidateId: 'cand_001', path: 'src/a.ts', line: 1 }] }).families, { secondPass: null, challenge: null });
+    const notRun = [{ candidateId: 'cand_001', path: 'src/a.ts', line: 1, challenge: { verdict: 'partly', line_ok: true, decisive_evidence: [], reason: 'challenger not run: runners.codex is not configured' } }];
+    assert.deepEqual(record(db, { scores: notRun }).families, { secondPass: null, challenge: null }, 'a stand-in verdict is not a challenge');
+  });
+});

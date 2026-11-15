@@ -71,6 +71,10 @@ A `nit` is a genuine observation the author may reasonably decline. Say it
 plainly and let the tier carry the low stakes; do not soften the wording on top
 of the label.
 
+An entry with `alsoAt` lists further places where the verifier confirmed the
+same defect. After the consequence, name them as `Also at <path:line>, ...`,
+as they are written; do not describe them.
+
 An entry with `challengeAnswer` was raised as a question and the challenger
 settled it from the code. Its severity is `minor`. State it as a defect, from
 `challengeAnswer` and the failure mode, and do not word it as a question.

@@ -69,7 +69,7 @@ test('conventions --ref reads the base commit with the head checked out, and wit
 
   const checkout = cli(dir, ['conventions', '--path', 'src/app.ts']);
   assert.equal(checkout.status, 0, checkout.stderr);
-  const { trust: _trust, note: _note, ...withoutRef } = JSON.parse(checkout.stdout);
+  const { trust: _trust, note: _note, searched: _searched, ...withoutRef } = JSON.parse(checkout.stdout);
   assert.deepEqual(withoutRef, discoverConventions(dir, ['src/app.ts'], filesystemReader(dir)));
   assert.match(withoutRef.documents.find((document) => document.path === 'CLAUDE.md').content, /optional/);
 });

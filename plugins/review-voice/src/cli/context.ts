@@ -48,6 +48,9 @@ export function contextCommand(): number {
           // The review command needs the structural opt-ins after resolving
           // config, including the optional simplification pass.
           structure: config.structure,
+          // Which analyst lanes are configured, so a review can see that only
+          // the diff lane runs unless review.lanes adds one (#378).
+          lanes: config.lanes.map((lane) => ({ name: lane.name, agent: lane.agent, prefix: lane.prefix, when: lane.when })),
           // Reported whether or not it is configured. A config written before
           // second-pass verification existed has no `verification:` block at
           // all, so an upgrading user silently got none of it and nothing in
