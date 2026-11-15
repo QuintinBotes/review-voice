@@ -1,8 +1,8 @@
 import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, sep } from 'node:path';
 import { repositoryRoot } from '../diff/acquire.ts';
 import { parseHunks, type FileHunks } from '../diff/hunks.ts';
-import { applyChallenge, candidatesById, challengePrompts, intentStatements, reproductionsById } from '../verify/challenge.ts';
+import { applyChallenge, candidatesById, challengePrompts, intentStatements, reproductionsById, type HeadReader } from '../verify/challenge.ts';
 import { readStdin, flag } from './shared.ts';
 import { terminalInert } from '../terminal.ts';
 
@@ -22,7 +22,7 @@ export function challengeCommand(argv: string[]): number {
   if (scoresFile === null || candidatesFile === null || (!emit && diffFile === null)) {
     console.error(
       'Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--reproductions <file>] [--diff-file <patch>] [--cwd <dir>] [--head <sha>] --emit-prompts\n' +
-        '       challenge --scores <file> --candidates <file> --diff-file <patch> [--reproductions <file>] [--out <file>] < verdicts.json',
+        '       challenge --scores <file> --candidates <file> --diff-file <patch> [--reproductions <file>] [--cwd <dir>] [--out <file>] < verdicts.json',
     );
     return 2;
   }
@@ -93,7 +93,24 @@ export function challengeCommand(argv: string[]): number {
     return 2;
   }
 
-  const result = applyChallenge(scores, candidates, verdicts, hunks, reproductions);
+  // With --cwd, the decisive references are read in that checkout of the head.
+  // Without it nothing says which tree holds the head, so they are not read.
+  const headDir = flag(argv, '--cwd');
+  const root = headDir === null ? null : resolve(headDir);
+  const readHead: HeadReader | null =
+    root === null
+      ? null
+      : (path) => {
+          const file = resolve(root, path);
+          if (!file.startsWith(root + sep)) return null;
+          try {
+            return readFileSync(file, 'utf8').split('\n');
+          } catch {
+            return null;
+          }
+        };
+
+  const result = applyChallenge(scores, candidates, verdicts, hunks, reproductions, readHead);
   if (!result.ok) {
     console.error('Challenge refused:');
     for (const problem of result.problems) console.error(`  ${problem}`);

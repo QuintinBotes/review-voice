@@ -916,13 +916,21 @@ evidence, the score, or your own view of the finding.** That framing is what
 the challenger exists to break, and a challenger shown it agrees with it. Each
 returns `{"verdicts": [...]}` with one verdict; gather every verdict into one
 `{"verdicts": [...]}` and pipe it into
-`RV challenge --scores <tmpdir>/scores.json --candidates <tmpdir>/checked.json --diff-file <tmpdir>/diff.patch --out <tmpdir>/scores.challenged.json`.
+`RV challenge --scores <tmpdir>/scores.json --candidates <tmpdir>/checked.json --diff-file <tmpdir>/diff.patch --out <tmpdir>/scores.challenged.json`,
+adding `--cwd <tmpdir>/head` when step 1c added the head worktree, or
+`--cwd <repository root>` when the review is of the current checkout (a
+working-tree, staged or `--base` review). With `--cwd` it reads each confirmed
+verdict's `decisive_evidence` in that checkout.
 
 - Exit 0: `confirmed` with `line_ok` stays eligible. `confirmed` with
   `corrected_line` is moved by the `reanchor` rules and the editor renders it
   at the new line; a move `reanchor` would refuse holds the finding as
   `challenge-partly`. `partly` holds it as `challenge-partly` and `refuted` as
-  `challenge-refuted`, each with the challenger's reason. Held findings leave
+  `challenge-refuted`, each with the challenger's reason. A `confirmed`
+  verdict whose `decisive_evidence` names a file that is not at the head, a
+  line past its end, or lines that do not hold the quoted line is held as
+  `challenge-partly` too; a quoted line found on exactly one other line of the
+  file moves the reference there instead. Held findings leave
   `eligible[]` for `challengeHeld[]`, and `challenge.moved` lists each move.
 - Exit 2: it names every verdict it refused: an eligible finding with no
   verdict, a verdict for one that is not eligible, or a verdict whose label

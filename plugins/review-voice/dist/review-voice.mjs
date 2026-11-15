@@ -5471,10 +5471,10 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
   let offset = bm.offset;
   let commentEnd = null;
   for (const collItem of bm.items) {
-    const { start, key: key2, sep: sep6, value } = collItem;
+    const { start, key: key2, sep: sep7, value } = collItem;
     const keyProps = resolveProps(start, {
       indicator: "explicit-key-ind",
-      next: key2 ?? sep6?.[0],
+      next: key2 ?? sep7?.[0],
       offset,
       onError,
       parentIndent: bm.indent,
@@ -5488,7 +5488,7 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
         else if ("indent" in key2 && key2.indent !== bm.indent)
           onError(offset, "BAD_INDENT", startColMsg);
       }
-      if (!keyProps.anchor && !keyProps.tag && !sep6) {
+      if (!keyProps.anchor && !keyProps.tag && !sep7) {
         commentEnd = keyProps.end;
         if (keyProps.comment) {
           if (map2.comment)
@@ -5512,7 +5512,7 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
     ctx.atKey = false;
     if (mapIncludes(ctx, map2.items, keyNode))
       onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-    const valueProps = resolveProps(sep6 ?? [], {
+    const valueProps = resolveProps(sep7 ?? [], {
       indicator: "map-value-ind",
       next: value,
       offset: keyNode.range[2],
@@ -5528,7 +5528,7 @@ function resolveBlockMap({ composeNode: composeNode2, composeEmptyNode: composeE
         if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
           onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
       }
-      const valueNode = value ? composeNode2(ctx, value, valueProps, onError) : composeEmptyNode2(ctx, offset, sep6, null, valueProps, onError);
+      const valueNode = value ? composeNode2(ctx, value, valueProps, onError) : composeEmptyNode2(ctx, offset, sep7, null, valueProps, onError);
       if (ctx.schema.compat)
         flowIndentCheck(bm.indent, value, onError);
       offset = valueNode.range[2];
@@ -5604,7 +5604,7 @@ function resolveEnd(end, offset, reqSpace, onError) {
   let comment = "";
   if (end) {
     let hasSpace = false;
-    let sep6 = "";
+    let sep7 = "";
     for (const token of end) {
       const { source, type } = token;
       switch (type) {
@@ -5618,13 +5618,13 @@ function resolveEnd(end, offset, reqSpace, onError) {
           if (!comment)
             comment = cb;
           else
-            comment += sep6 + cb;
-          sep6 = "";
+            comment += sep7 + cb;
+          sep7 = "";
           break;
         }
         case "newline":
           if (comment)
-            sep6 += source;
+            sep7 += source;
           hasSpace = true;
           break;
         default:
@@ -5653,18 +5653,18 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
   let offset = fc.offset + fc.start.source.length;
   for (let i = 0; i < fc.items.length; ++i) {
     const collItem = fc.items[i];
-    const { start, key: key2, sep: sep6, value } = collItem;
+    const { start, key: key2, sep: sep7, value } = collItem;
     const props = resolveProps(start, {
       flow: fcName,
       indicator: "explicit-key-ind",
-      next: key2 ?? sep6?.[0],
+      next: key2 ?? sep7?.[0],
       offset,
       onError,
       parentIndent: fc.indent,
       startOnNewline: false
     });
     if (!props.found) {
-      if (!props.anchor && !props.tag && !sep6 && !value) {
+      if (!props.anchor && !props.tag && !sep7 && !value) {
         if (i === 0 && props.comma)
           onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
         else if (i < fc.items.length - 1)
@@ -5718,8 +5718,8 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
         }
       }
     }
-    if (!isMap2 && !sep6 && !props.found) {
-      const valueNode = value ? composeNode2(ctx, value, props, onError) : composeEmptyNode2(ctx, props.end, sep6, null, props, onError);
+    if (!isMap2 && !sep7 && !props.found) {
+      const valueNode = value ? composeNode2(ctx, value, props, onError) : composeEmptyNode2(ctx, props.end, sep7, null, props, onError);
       coll.items.push(valueNode);
       offset = valueNode.range[2];
       if (isBlock(value))
@@ -5731,7 +5731,7 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
       if (isBlock(key2))
         onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
       ctx.atKey = false;
-      const valueProps = resolveProps(sep6 ?? [], {
+      const valueProps = resolveProps(sep7 ?? [], {
         flow: fcName,
         indicator: "map-value-ind",
         next: value,
@@ -5742,8 +5742,8 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
       });
       if (valueProps.found) {
         if (!isMap2 && !props.found && ctx.options.strict) {
-          if (sep6)
-            for (const st of sep6) {
+          if (sep7)
+            for (const st of sep7) {
               if (st === valueProps.found)
                 break;
               if (st.type === "newline") {
@@ -5760,7 +5760,7 @@ function resolveFlowCollection({ composeNode: composeNode2, composeEmptyNode: co
         else
           onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
       }
-      const valueNode = value ? composeNode2(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode2(ctx, valueProps.end, sep6, null, valueProps, onError) : null;
+      const valueNode = value ? composeNode2(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode2(ctx, valueProps.end, sep7, null, valueProps, onError) : null;
       if (valueNode) {
         if (isBlock(value))
           onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -5920,7 +5920,7 @@ function resolveBlockScalar(ctx, scalar2, onError) {
       chompStart = i + 1;
   }
   let value = "";
-  let sep6 = "";
+  let sep7 = "";
   let prevMoreIndented = false;
   for (let i = 0; i < contentStart; ++i)
     value += lines2[i][0].slice(trimIndent) + "\n";
@@ -5937,24 +5937,24 @@ function resolveBlockScalar(ctx, scalar2, onError) {
       indent = "";
     }
     if (type === Scalar.BLOCK_LITERAL) {
-      value += sep6 + indent.slice(trimIndent) + content;
-      sep6 = "\n";
+      value += sep7 + indent.slice(trimIndent) + content;
+      sep7 = "\n";
     } else if (indent.length > trimIndent || content[0] === "	") {
-      if (sep6 === " ")
-        sep6 = "\n";
-      else if (!prevMoreIndented && sep6 === "\n")
-        sep6 = "\n\n";
-      value += sep6 + indent.slice(trimIndent) + content;
-      sep6 = "\n";
+      if (sep7 === " ")
+        sep7 = "\n";
+      else if (!prevMoreIndented && sep7 === "\n")
+        sep7 = "\n\n";
+      value += sep7 + indent.slice(trimIndent) + content;
+      sep7 = "\n";
       prevMoreIndented = true;
     } else if (content === "") {
-      if (sep6 === "\n")
+      if (sep7 === "\n")
         value += "\n";
       else
-        sep6 = "\n";
+        sep7 = "\n";
     } else {
-      value += sep6 + content;
-      sep6 = " ";
+      value += sep7 + content;
+      sep7 = " ";
       prevMoreIndented = false;
     }
   }
@@ -6129,25 +6129,25 @@ function unfoldLines(source) {
     trimBoth = /^[ \t]+|[ \t]+$/g;
   }
   let res = match[1].replace(trimEnd, "");
-  let sep6 = " ";
+  let sep7 = " ";
   let pos = line3.lastIndex;
   while (match = line3.exec(source)) {
     const lm = match[1].replace(trimBoth, "");
     if (lm === "") {
-      if (sep6 === "\n")
-        res += sep6;
+      if (sep7 === "\n")
+        res += sep7;
       else
-        sep6 = "\n";
+        sep7 = "\n";
     } else {
-      res += sep6 + lm;
-      sep6 = " ";
+      res += sep7 + lm;
+      sep7 = " ";
     }
     pos = line3.lastIndex;
   }
   const last = /[ \t]*(.*)/sy;
   last.lastIndex = pos;
   match = last.exec(source);
-  return res + sep6 + (match?.[1] ?? "");
+  return res + sep7 + (match?.[1] ?? "");
 }
 function doubleQuotedValue(source, onError) {
   let res = "";
@@ -7764,18 +7764,18 @@ var Parser = class {
     if (this.type === "map-value-ind") {
       const prev = getPrevProps(this.peek(2));
       const start = getFirstKeyStartProps(prev);
-      let sep6;
+      let sep7;
       if (scalar2.end) {
-        sep6 = scalar2.end;
-        sep6.push(this.sourceToken);
+        sep7 = scalar2.end;
+        sep7.push(this.sourceToken);
         delete scalar2.end;
       } else
-        sep6 = [this.sourceToken];
+        sep7 = [this.sourceToken];
       const map2 = {
         type: "block-map",
         offset: scalar2.offset,
         indent: scalar2.indent,
-        items: [{ start, key: scalar2, sep: sep6 }]
+        items: [{ start, key: scalar2, sep: sep7 }]
       };
       this.onKeyLine = true;
       this.stack[this.stack.length - 1] = map2;
@@ -7928,15 +7928,15 @@ var Parser = class {
             } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
               const start2 = getFirstKeyStartProps(it.start);
               const key2 = it.key;
-              const sep6 = it.sep;
-              sep6.push(this.sourceToken);
+              const sep7 = it.sep;
+              sep7.push(this.sourceToken);
               delete it.key;
               delete it.sep;
               this.stack.push({
                 type: "block-map",
                 offset: this.offset,
                 indent: this.indent,
-                items: [{ start: start2, key: key2, sep: sep6 }]
+                items: [{ start: start2, key: key2, sep: sep7 }]
               });
             } else if (start.length > 0) {
               it.sep = it.sep.concat(start, this.sourceToken);
@@ -8130,13 +8130,13 @@ var Parser = class {
         const prev = getPrevProps(parent);
         const start = getFirstKeyStartProps(prev);
         fixFlowSeqItems(fc);
-        const sep6 = fc.end.splice(1, fc.end.length);
-        sep6.push(this.sourceToken);
+        const sep7 = fc.end.splice(1, fc.end.length);
+        sep7.push(this.sourceToken);
         const map2 = {
           type: "block-map",
           offset: fc.offset,
           indent: fc.indent,
-          items: [{ start, key: fc, sep: sep6 }]
+          items: [{ start, key: fc, sep: sep7 }]
         };
         this.onKeyLine = true;
         this.stack[this.stack.length - 1] = map2;
@@ -18895,10 +18895,10 @@ async function raisedByOthers(options, run, findings) {
   const { comments } = await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client });
   const mine = new Set(comments.filter((c) => c.author.toLowerCase() === me && c.id !== void 0).map((c) => c.id));
   const started = Date.parse(run.createdAt);
-  const squash = (text5) => text5.toLowerCase().replace(/\s+/g, " ").trim();
-  const ownTexts = comments.filter((c) => c.author.toLowerCase() === me).map((c) => squash(c.body));
+  const squash2 = (text5) => text5.toLowerCase().replace(/\s+/g, " ").trim();
+  const ownTexts = comments.filter((c) => c.author.toLowerCase() === me).map((c) => squash2(c.body));
   const thread = comments.filter((comment) => comment.author.toLowerCase() !== me).map((comment) => ({ ...comment, body: comment.body.split("\n").filter((line3) => !/^\s*>/.test(line3)).join("\n") })).filter((comment) => {
-    const text5 = squash(comment.body);
+    const text5 = squash2(comment.body);
     return text5 !== "" && !(text5.length >= PASTED_TEXT_MIN && ownTexts.some((own) => own.includes(text5)));
   }).filter((comment) => comment.createdAt === void 0 || !(Date.parse(comment.createdAt) <= started)).filter((comment) => comment.inReplyTo === void 0 || !mine.has(comment.inReplyTo)).flatMap((comment) => citedLocations([comment]).map((located) => ({ comment: located, url: comment.url ?? null })));
   if (thread.length === 0) return [];
@@ -21014,7 +21014,7 @@ var COMMAND_HELP = {
     summary: "Build challenger prompts, or apply challenger verdicts to scores",
     body: lines(
       "review-voice challenge --scores <path> --candidates <path> [--intent <path>] [--reproductions <path>] [--cwd <dir>] [--head <sha>] --emit-prompts",
-      "review-voice challenge --scores <path> --candidates <path> --diff-file <path> [--reproductions <path>] [--out <path>] < verdicts.json",
+      "review-voice challenge --scores <path> --candidates <path> --diff-file <path> [--reproductions <path>] [--cwd <dir>] [--out <path>] < verdicts.json",
       "  The independent challenge (adr/0024). With --emit-prompts, print one challenger prompt per",
       "  eligible finding: its claim, failure mode, category, location, where the code at the head",
       "  can be read and the intent it cites, never",
@@ -21036,11 +21036,17 @@ var COMMAND_HELP = {
       "  --diff-file <path>     The reviewed diff; a corrected line must be changed in it (required",
       "                         to apply; with --emit-prompts, named in each prompt)",
       "  --cwd <dir>            With --emit-prompts, the checkout of the head each prompt names as",
-      "                         where to read the code (default: the root of the current repository)",
+      "                         where to read the code (default: the root of the current repository).",
+      "                         Applying, the checkout a confirmed verdict's decisive_evidence is read",
+      "                         in: a reference to a file that is not there, to a line past its end, or",
+      "                         to a range that does not hold the line quoted in decisive_quotes holds",
+      "                         the finding as challenge-partly; a quote found on one other line of the",
+      "                         file moves the reference there. Without it the references are not read",
       "  --head <sha>           With --emit-prompts, the head commit each prompt names",
       "  --out <path>           Write the challenged scores here instead of stdout",
       'Reads: with --emit-prompts nothing on stdin; otherwise {"verdicts": [{"candidate_id",',
-      '  "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "reason"}]} on stdin.',
+      '  "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "decisive_quotes"?, "reason"}]}',
+      "  on stdin.",
       'Writes: with --emit-prompts {"prompts": [{"candidate_id", "prompt"}]} on stdout. Otherwise the',
       "  scores with held findings moved from eligible[] to challengeHeld[] (record --held entries),",
       "  moved anchors updated, and challenge: {confirmed, held, moved}; to --out (a summary on",
@@ -22311,7 +22317,7 @@ function parseIntent(value, description, issues = []) {
 }
 
 // plugins/review-voice/src/verify/challenge.ts
-import { posix as posix5 } from "node:path";
+import { isAbsolute as isAbsolute4, posix as posix5 } from "node:path";
 var CHALLENGE_VERDICTS = ["confirmed", "partly", "refuted"];
 var isRecord4 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var idOf2 = (entry) => {
@@ -22372,7 +22378,7 @@ function challengePrompt(finding, candidate, statements, diffFile, reproduction,
   rows.push(
     "",
     "You are not given the verifier's reasoning, confidence or evidence. Read the code at the head yourself.",
-    `Return {"verdicts": [{"candidate_id": "${id}", "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "reason"}]}.`
+    `Return {"verdicts": [{"candidate_id": "${id}", "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "decisive_quotes", "reason"}]}.`
   );
   return rows.join("\n");
 }
@@ -22438,6 +22444,10 @@ function parseChallengeVerdicts(raw) {
       problems.push(`${name}: decisive_evidence must be a list of "path:line" references`);
     }
     if (typeof entry["reason"] !== "string") problems.push(`${name}: reason must be a string`);
+    const quotes = entry["decisive_quotes"];
+    if (quotes !== void 0 && (!Array.isArray(quotes) || quotes.some((q) => typeof q !== "string") || Array.isArray(decisive) && quotes.length !== decisive.length)) {
+      problems.push(`${name}: decisive_quotes must be a list of strings, one per decisive_evidence entry`);
+    }
     if (problems.length > before) return;
     const lineOk = entry["line_ok"];
     const reason2 = entry["reason"].trim();
@@ -22456,6 +22466,7 @@ function parseChallengeVerdicts(raw) {
       line_ok: lineOk,
       ...corrected === void 0 ? {} : { corrected_line: corrected },
       decisive_evidence: evidence,
+      ...quotes === void 0 ? {} : { decisive_quotes: quotes },
       reason: reason2
     });
   });
@@ -22470,7 +22481,40 @@ function withoutReproductionFiles(evidence, reproductions) {
     return !local.has(path) && !local.has(posix5.basename(path));
   });
 }
-function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = /* @__PURE__ */ new Map()) {
+var squash = (value) => value.replace(/\s+/g, " ").trim();
+var MIN_QUOTE = 6;
+function checkDecisive(verdict2, read, hunks) {
+  const evidence = [];
+  for (const [index, entry] of verdict2.decisive_evidence.entries()) {
+    const parts = /^(.*):(\d+)(?:-(\d+))?$/.exec(entry.replace(/[\p{Cf}`]/gu, "").trim());
+    const path = parts === null ? "" : posix5.normalize(parts[1].trim());
+    if (parts === null || isAbsolute4(path)) {
+      evidence.push(entry);
+      continue;
+    }
+    const lines2 = read(path);
+    if (lines2 === null) {
+      if (!hunks.has(path)) return { problem: `${entry} names a file that is not at the head` };
+      evidence.push(entry);
+      continue;
+    }
+    const start = Number(parts[2]);
+    const end = Math.max(start, Number(parts[3] ?? parts[2]));
+    if (end > lines2.length) return { problem: `${entry} is past the end of the file at the head (${lines2.length} lines)` };
+    const quote3 = squash(verdict2.decisive_quotes?.[index] ?? "");
+    const holds = (line3) => squash(lines2[line3 - 1] ?? "").includes(quote3);
+    if (quote3.length < MIN_QUOTE || lines2.slice(start - 1, end).some((_, offset) => holds(start + offset))) {
+      evidence.push(entry);
+      continue;
+    }
+    const elsewhere = lines2.flatMap((_, at2) => holds(at2 + 1) ? [at2 + 1] : []);
+    if (elsewhere.length !== 1) return { problem: `${entry} does not hold the line the challenger quoted` };
+    const moved = elsewhere[0];
+    evidence.push(`${path}:${moved}${end > start ? `-${Math.min(lines2.length, moved + end - start)}` : ""}`);
+  }
+  return { evidence };
+}
+function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = /* @__PURE__ */ new Map(), readHead3 = null) {
   if (!isRecord4(scores) || !Array.isArray(scores["scores"]) || !Array.isArray(scores["eligible"])) {
     return { ok: false, problems: ["expected the JSON `RV score` printed, with `scores` and `eligible` lists"] };
   }
@@ -22513,7 +22557,7 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
     const id = idOf2(entry);
     const verdict2 = id === null ? void 0 : byId.get(id);
     if (verdict2 === void 0) return entry;
-    const { candidate_id: _id, ...cited } = verdict2;
+    const { candidate_id: _id, decisive_quotes: _quotes, ...cited } = verdict2;
     const rest = { ...cited, decisive_evidence: withoutReproductionFiles(cited.decisive_evidence, reproductions) };
     const heldAs = holdReasons.get(id);
     return heldAs === void 0 ? { ...entry, challenge: rest } : { ...entry, challenge: rest, eligible: false, rejectedBecause: `${heldAs.verdict}: ${heldAs.reason}` };
@@ -22523,6 +22567,11 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
     const verdict2 = byId.get(id);
     if (verdict2.verdict === "partly") hold(finding, id, "challenge-partly", verdict2.reason);
     else if (verdict2.verdict === "refuted") hold(finding, id, "challenge-refuted", verdict2.reason);
+    else if (readHead3 !== null) {
+      const checked = checkDecisive(verdict2, readHead3, hunks);
+      if ("problem" in checked) hold(finding, id, "challenge-partly", `decisive evidence refused: ${checked.problem}`);
+      else verdict2.decisive_evidence = checked.evidence;
+    }
   }
   let document = {
     ...scores,
@@ -22532,7 +22581,7 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
   for (const finding of eligible) {
     const id = idOf2(finding);
     const verdict2 = byId.get(id);
-    if (verdict2.verdict !== "confirmed") continue;
+    if (verdict2.verdict !== "confirmed" || holdReasons.has(id)) continue;
     if (verdict2.corrected_line === void 0) {
       summary2.confirmed.push(id);
       continue;
@@ -23088,7 +23137,7 @@ var STAGES = [
 // plugins/review-voice/src/review/config.ts
 import { execFileSync as execFileSync11 } from "node:child_process";
 import { existsSync as existsSync10, rmSync as rmSync6, writeFileSync as writeFileSync6 } from "node:fs";
-import { isAbsolute as isAbsolute4, join as join17, resolve as resolve4 } from "node:path";
+import { isAbsolute as isAbsolute5, join as join17, resolve as resolve4 } from "node:path";
 
 // plugins/review-voice/src/diff/pull-request.ts
 import { execFileSync as execFileSync10 } from "node:child_process";
@@ -23435,7 +23484,7 @@ function resolveTrustedConfig(pull, notes) {
   }
   const environment = process.env["REVIEW_VOICE_CONFIG"];
   if (environment !== void 0 && environment !== "") {
-    if (isAbsolute4(environment)) return { source: { kind: "env", path: environment }, stated: environmentSource() };
+    if (isAbsolute5(environment)) return { source: { kind: "env", path: environment }, stated: environmentSource() };
     notes.push("REVIEW_VOICE_CONFIG must be an absolute path, so it was ignored and the base commit supplied the configuration.");
   }
   const { sha, ref } = pull.base;
@@ -24221,7 +24270,8 @@ async function challenge(run) {
     (result, index) => result.ok ? list2(result.output["verdicts"])[0] : { candidate_id: idOf3(challenged[index]), verdict: "partly", line_ok: true, decisive_evidence: [], reason: why(result.error) }
   );
   writeJson(at(run, "challenge-verdicts.json"), { verdicts });
-  await must(run, ["challenge", ...base, "--out", out], JSON.stringify({ verdicts }), 1);
+  const inHead = run.headDir === null ? [] : ["--cwd", run.headDir];
+  await must(run, ["challenge", ...base, ...inHead, "--out", out], JSON.stringify({ verdicts }), 1);
   const document = parsed(readFileSync13(out, "utf8"));
   if (challenged.length < eligible.length) {
     const after = new Map(list2(document["eligible"]).map((entry) => [idOf3(entry), entry]));
@@ -27200,7 +27250,7 @@ function checkIntentCommand(argv) {
 
 // plugins/review-voice/src/cli/recall.ts
 import { writeFileSync as writeFileSync11, mkdirSync as mkdirSync10, statSync as statSync8, lstatSync as lstatSync5, renameSync as renameSync3, rmSync as rmSync10, existsSync as existsSync18 } from "node:fs";
-import { dirname as dirname16, isAbsolute as isAbsolute5, relative as relative4, resolve as resolve10, sep as sep5 } from "node:path";
+import { dirname as dirname16, isAbsolute as isAbsolute6, relative as relative4, resolve as resolve10, sep as sep5 } from "node:path";
 
 // plugins/review-voice/src/evaluate/recall.ts
 import { execFileSync as execFileSync16 } from "node:child_process";
@@ -27959,7 +28009,7 @@ async function recallCommand(argv, runInProcess2) {
     return 2;
   }
   const inside2 = relative4(realExistingPath(resolve10(fixtures)), realExistingPath(out));
-  const outside = inside2 === ".." || inside2.startsWith(`..${sep5}`) || isAbsolute5(inside2);
+  const outside = inside2 === ".." || inside2.startsWith(`..${sep5}`) || isAbsolute6(inside2);
   if (!outside) {
     console.error(`--out ${out} is inside the fixtures; recall never writes there.`);
     return 2;
@@ -28503,7 +28553,7 @@ function worktreeCommand(argv) {
 // plugins/review-voice/src/cli/config.ts
 import { createHash as createHash8 } from "node:crypto";
 import { existsSync as existsSync20, lstatSync as lstatSync9, mkdirSync as mkdirSync13, readFileSync as readFileSync26, realpathSync as realpathSync4, rmSync as rmSync14, statSync as statSync11, writeFileSync as writeFileSync13 } from "node:fs";
-import { dirname as dirname18, isAbsolute as isAbsolute6, join as join29, resolve as resolve13 } from "node:path";
+import { dirname as dirname18, isAbsolute as isAbsolute7, join as join29, resolve as resolve13 } from "node:path";
 async function configCommand(argv) {
   const dir = flag(argv, "--dir");
   if (argv[0] !== "resolve" || dir === null) {
@@ -28583,7 +28633,7 @@ function withTrustedConfig(argv) {
   }
   const known = CONFIG_SOURCES.find((kind) => kind === source);
   if (known === void 0) return `--trusted-config: ${file2} names the source ${source}, which is not one of ${CONFIG_SOURCES.join(", ")}.`;
-  if (!isAbsolute6(path)) return `--trusted-config: ${file2} names the path ${path}, which is not absolute.`;
+  if (!isAbsolute7(path)) return `--trusted-config: ${file2} names the path ${path}, which is not absolute.`;
   const entry = lstatSync9(path, { throwIfNoEntry: false });
   if (entry?.isSymbolicLink() === true || realDirectory(dirname18(path)) !== dirname18(path)) {
     return `--trusted-config: ${file2} names the path ${path}, which is a symbolic link, runs through one, or lies in no directory.`;
@@ -31371,7 +31421,7 @@ function reconcileCommand(argv) {
 
 // plugins/review-voice/src/cli/challenge.ts
 import { readFileSync as readFileSync33, writeFileSync as writeFileSync17 } from "node:fs";
-import { resolve as resolve15 } from "node:path";
+import { resolve as resolve15, sep as sep6 } from "node:path";
 function challengeCommand(argv) {
   const scoresFile = flag(argv, "--scores");
   const candidatesFile = flag(argv, "--candidates");
@@ -31382,7 +31432,7 @@ function challengeCommand(argv) {
   const outFile = flag(argv, "--out");
   if (scoresFile === null || candidatesFile === null || !emit && diffFile === null) {
     console.error(
-      "Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--reproductions <file>] [--diff-file <patch>] [--cwd <dir>] [--head <sha>] --emit-prompts\n       challenge --scores <file> --candidates <file> --diff-file <patch> [--reproductions <file>] [--out <file>] < verdicts.json"
+      "Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--reproductions <file>] [--diff-file <patch>] [--cwd <dir>] [--head <sha>] --emit-prompts\n       challenge --scores <file> --candidates <file> --diff-file <patch> [--reproductions <file>] [--cwd <dir>] [--out <file>] < verdicts.json"
     );
     return 2;
   }
@@ -31445,7 +31495,18 @@ function challengeCommand(argv) {
     console.error("Cannot parse the challenger verdicts on stdin as JSON.");
     return 2;
   }
-  const result = applyChallenge(scores, candidates, verdicts, hunks, reproductions);
+  const headDir = flag(argv, "--cwd");
+  const root = headDir === null ? null : resolve15(headDir);
+  const readHead3 = root === null ? null : (path) => {
+    const file2 = resolve15(root, path);
+    if (!file2.startsWith(root + sep6)) return null;
+    try {
+      return readFileSync33(file2, "utf8").split("\n");
+    } catch {
+      return null;
+    }
+  };
+  const result = applyChallenge(scores, candidates, verdicts, hunks, reproductions, readHead3);
   if (!result.ok) {
     console.error("Challenge refused:");
     for (const problem of result.problems) console.error(`  ${problem}`);
@@ -32469,7 +32530,7 @@ import { join as join32, posix as posix7 } from "node:path";
 
 // plugins/review-voice/src/cli/check-candidates.ts
 import { readFileSync as readFileSync38 } from "node:fs";
-import { isAbsolute as isAbsolute7, posix as posix6, relative as relative5 } from "node:path";
+import { isAbsolute as isAbsolute8, posix as posix6, relative as relative5 } from "node:path";
 
 // plugins/review-voice/src/cli/score.ts
 import { readFileSync as readFileSync37 } from "node:fs";
@@ -33236,8 +33297,8 @@ function readSignals(file2, root) {
     const s = entry;
     if (typeof s !== "object" || s === null || typeof s.path !== "string" || typeof s.line !== "number" || typeof s.claim !== "string") return [];
     const spelled = s.path.split("\\").join("/");
-    const path = isAbsolute7(spelled) ? relative5(realExistingPath(signalRoot), realExistingPath(spelled)) : posix6.normalize(spelled).replace(/^\.\//, "");
-    if (path === "" || path === "." || path.startsWith("..") || isAbsolute7(path)) return [];
+    const path = isAbsolute8(spelled) ? relative5(realExistingPath(signalRoot), realExistingPath(spelled)) : posix6.normalize(spelled).replace(/^\.\//, "");
+    if (path === "" || path === "." || path.startsWith("..") || isAbsolute8(path)) return [];
     return [
       {
         kind: typeof s.kind === "string" ? s.kind : "",

@@ -1128,7 +1128,9 @@ async function challenge(run: Run): Promise<void> {
       : { candidate_id: idOf(challenged[index]!), verdict: 'partly', line_ok: true, decisive_evidence: [], reason: why(result.error) },
   );
   writeJson(at(run, 'challenge-verdicts.json'), { verdicts });
-  await must(run, ['challenge', ...base, '--out', out], JSON.stringify({ verdicts }), 1);
+  // The decisive references are checked in the head worktree, where the challenger read them.
+  const inHead = run.headDir === null ? [] : ['--cwd', run.headDir];
+  await must(run, ['challenge', ...base, ...inHead, '--out', out], JSON.stringify({ verdicts }), 1);
   const document = parsed(readFileSync(out, 'utf8'));
   if (challenged.length < eligible.length) {
     // Put the unchallenged nits back in render order.

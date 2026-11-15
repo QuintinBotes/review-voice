@@ -1,4 +1,4 @@
-import { posix } from 'node:path';
+import { isAbsolute, posix } from 'node:path';
 import type { FileHunks } from '../diff/hunks.ts';
 import { reanchorScores } from '../diff/reanchor.ts';
 import type { HeldFinding } from '../store/runs.ts';
@@ -20,8 +20,13 @@ export interface ChallengeVerdict {
   line_ok: boolean;
   corrected_line?: number;
   decisive_evidence: string[];
+  /** The first cited line of each decisive entry as written, in the same order. */
+  decisive_quotes?: string[];
   reason: string;
 }
+
+/** The lines of a repository-relative file at the head, or null when it is not there. */
+export type HeadReader = (path: string) => string[] | null;
 
 /** One statement of `intent.json`, as `check-intent` wrote it. */
 export interface IntentStatement {
@@ -136,7 +141,7 @@ export function challengePrompt(
   rows.push(
     '',
     "You are not given the verifier's reasoning, confidence or evidence. Read the code at the head yourself.",
-    `Return {"verdicts": [{"candidate_id": "${id}", "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "reason"}]}.`,
+    `Return {"verdicts": [{"candidate_id": "${id}", "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "decisive_quotes", "reason"}]}.`,
   );
   return rows.join('\n');
 }
@@ -230,6 +235,13 @@ export function parseChallengeVerdicts(raw: unknown): { ok: true; verdicts: Chal
       problems.push(`${name}: decisive_evidence must be a list of "path:line" references`);
     }
     if (typeof entry['reason'] !== 'string') problems.push(`${name}: reason must be a string`);
+    const quotes = entry['decisive_quotes'];
+    if (
+      quotes !== undefined &&
+      (!Array.isArray(quotes) || quotes.some((q) => typeof q !== 'string') || (Array.isArray(decisive) && quotes.length !== decisive.length))
+    ) {
+      problems.push(`${name}: decisive_quotes must be a list of strings, one per decisive_evidence entry`);
+    }
     if (problems.length > before) return;
 
     const lineOk = entry['line_ok'] as boolean;
@@ -249,6 +261,7 @@ export function parseChallengeVerdicts(raw: unknown): { ok: true; verdicts: Chal
       line_ok: lineOk,
       ...(corrected === undefined ? {} : { corrected_line: corrected as number }),
       decisive_evidence: evidence,
+      ...(quotes === undefined ? {} : { decisive_quotes: quotes as string[] }),
       reason,
     });
   });
@@ -275,6 +288,55 @@ function withoutReproductionFiles(evidence: readonly string[], reproductions: Re
   });
 }
 
+const squash = (value: string): string => value.replace(/\s+/g, ' ').trim();
+// A shorter quote, a closing brace say, matches too many lines to place anything.
+const MIN_QUOTE = 6;
+
+/**
+ * Checks the decisive references of a confirmed verdict against the code at
+ * the head (#393): a challenger reading the wrong tree cited lines 101-102 for
+ * a sentence at 330-331, and the reference was accepted and would have been
+ * posted. Each cited file must be at the head and hold the cited lines. When
+ * the verdict quotes the line, the cited range must hold it; a quote found on
+ * exactly one other line of the file moves the reference there. An absolute
+ * path (a reproduction's copy) and a file the diff deletes are not read.
+ */
+function checkDecisive(
+  verdict: ChallengeVerdict,
+  read: HeadReader,
+  hunks: Map<string, FileHunks>,
+): { evidence: string[] } | { problem: string } {
+  const evidence: string[] = [];
+  for (const [index, entry] of verdict.decisive_evidence.entries()) {
+    const parts = /^(.*):(\d+)(?:-(\d+))?$/.exec(entry.replace(/[\p{Cf}`]/gu, '').trim());
+    const path = parts === null ? '' : posix.normalize(parts[1]!.trim());
+    if (parts === null || isAbsolute(path)) {
+      evidence.push(entry);
+      continue;
+    }
+    const lines = read(path);
+    if (lines === null) {
+      if (!hunks.has(path)) return { problem: `${entry} names a file that is not at the head` };
+      evidence.push(entry);
+      continue;
+    }
+    const start = Number(parts[2]);
+    const end = Math.max(start, Number(parts[3] ?? parts[2]));
+    if (end > lines.length) return { problem: `${entry} is past the end of the file at the head (${lines.length} lines)` };
+    const quote = squash(verdict.decisive_quotes?.[index] ?? '');
+    const holds = (line: number): boolean => squash(lines[line - 1] ?? '').includes(quote);
+    if (quote.length < MIN_QUOTE || lines.slice(start - 1, end).some((_, offset) => holds(start + offset))) {
+      evidence.push(entry);
+      continue;
+    }
+    const elsewhere = lines.flatMap((_, at) => (holds(at + 1) ? [at + 1] : []));
+    if (elsewhere.length !== 1) return { problem: `${entry} does not hold the line the challenger quoted` };
+    const moved = elsewhere[0]!;
+    evidence.push(`${path}:${moved}${end > start ? `-${Math.min(lines.length, moved + end - start)}` : ''}`);
+  }
+  return { evidence };
+}
+
 export interface ChallengeSummary {
   confirmed: string[];
   held: { candidate_id: string; verdict: 'challenge-partly' | 'challenge-refuted'; reason: string }[];
@@ -299,6 +361,7 @@ export function applyChallenge(
   rawVerdicts: unknown,
   hunks: Map<string, FileHunks>,
   reproductions: ReadonlyMap<string, ReproductionRecord> = new Map(),
+  readHead: HeadReader | null = null,
 ): ChallengeResult {
   if (!isRecord(scores) || !Array.isArray(scores['scores']) || !Array.isArray(scores['eligible'])) {
     return { ok: false, problems: ['expected the JSON `RV score` printed, with `scores` and `eligible` lists'] };
@@ -347,7 +410,7 @@ export function applyChallenge(
     const id = idOf(entry);
     const verdict = id === null ? undefined : byId.get(id);
     if (verdict === undefined) return entry;
-    const { candidate_id: _id, ...cited } = verdict;
+    const { candidate_id: _id, decisive_quotes: _quotes, ...cited } = verdict;
     const rest = { ...cited, decisive_evidence: withoutReproductionFiles(cited.decisive_evidence, reproductions) };
     const heldAs = holdReasons.get(id as string);
     return heldAs === undefined
@@ -360,6 +423,12 @@ export function applyChallenge(
     const verdict = byId.get(id) as ChallengeVerdict;
     if (verdict.verdict === 'partly') hold(finding, id, 'challenge-partly', verdict.reason);
     else if (verdict.verdict === 'refuted') hold(finding, id, 'challenge-refuted', verdict.reason);
+    else if (readHead !== null) {
+      // A confirmation that rests on lines the head does not hold confirms nothing.
+      const checked = checkDecisive(verdict, readHead, hunks);
+      if ('problem' in checked) hold(finding, id, 'challenge-partly', `decisive evidence refused: ${checked.problem}`);
+      else verdict.decisive_evidence = checked.evidence;
+    }
   }
 
   let document: Json = {
@@ -371,7 +440,7 @@ export function applyChallenge(
   for (const finding of eligible) {
     const id = idOf(finding) as string;
     const verdict = byId.get(id) as ChallengeVerdict;
-    if (verdict.verdict !== 'confirmed') continue;
+    if (verdict.verdict !== 'confirmed' || holdReasons.has(id)) continue;
     if (verdict.corrected_line === undefined) {
       summary.confirmed.push(id);
       continue;

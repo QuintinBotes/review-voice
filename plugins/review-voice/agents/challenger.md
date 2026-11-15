@@ -94,6 +94,13 @@ Name the lines your verdict turns on in `decisive_evidence`, as `path:line`.
 These are the lines that settle it either way: the guard that refutes it, or
 the unguarded path that confirms it. A verdict without them cannot be checked.
 
+Give `decisive_quotes` too: for each `decisive_evidence` entry, in the same
+order, the first cited line copied as it is written in the file. The CLI reads
+each reference at the head. A reference to a file that is not there, to a line
+past its end, or to lines that do not hold your quote holds the finding, so
+read the line number from the file at the head, never from the patch or from
+memory, and never give an approximate one.
+
 ## Verdicts
 
 - `confirmed`: you tried and could not refute it. The defect is real as
@@ -125,7 +132,7 @@ JSON only, one object, one verdict per finding you were given:
 
 ```json
 {"verdicts": [
-  {"candidate_id": "cand_001", "verdict": "confirmed", "line_ok": true, "decisive_evidence": ["src/cache.ts:42", "src/cache.ts:18"], "reason": "src/cache.ts:42 builds the key from the path alone and src/cache.ts:18 shares one map across requests."},
+  {"candidate_id": "cand_001", "verdict": "confirmed", "line_ok": true, "decisive_evidence": ["src/cache.ts:42", "src/cache.ts:18"], "decisive_quotes": ["const key = cacheKey(request.path);", "const entries = new Map<string, Entry>();"], "reason": "src/cache.ts:42 builds the key from the path alone and src/cache.ts:18 shares one map across requests."},
   {"candidate_id": "cand_002", "verdict": "confirmed", "line_ok": false, "corrected_line": 57, "decisive_evidence": ["src/retry.ts:57"], "reason": "The unbounded loop condition is on line 57, not the log call on 55."},
   {"candidate_id": "cand_003", "verdict": "refuted", "line_ok": true, "decisive_evidence": ["src/limits.ts:12"], "reason": "src/limits.ts:12 rejects a negative limit before the value reaches the changed line."}
 ]}
@@ -133,5 +140,6 @@ JSON only, one object, one verdict per finding you were given:
 
 `line_ok` is a JSON boolean, `corrected_line` a positive integer present only
 when `line_ok` is false, `decisive_evidence` a list of `path:line` strings
-(`path:start-end` for a range), and `reason` one or two sentences. The schema is
+(`path:start-end` for a range), `decisive_quotes` a list of strings of the
+same length, and `reason` one or two sentences. The schema is
 `schemas/challenge.schema.json`.

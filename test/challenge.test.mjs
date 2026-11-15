@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -450,3 +450,67 @@ for (const verdict of ['challenge-refuted', 'challenge-partly']) {
     }
   });
 }
+
+// #393: a challenger reading the wrong tree cited lines that held something
+// else, and the reference was accepted as confirming the finding.
+
+/** A head checkout whose src/a.ts has the quoted sentence on line 9. */
+function withHead(fn) {
+  return withFiles((ctx) => {
+    const head = join(ctx.dir, 'head');
+    mkdirSync(join(head, 'src'), { recursive: true });
+    const lines = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`);
+    lines[8] = '  const key = cacheKey(request.path);';
+    writeFileSync(join(head, 'src/a.ts'), lines.join('\n'));
+    const applyAt = (first) => {
+      const r = ctx.apply([first, confirmed('cand_002'), confirmed('cand_003')], ['--cwd', head]);
+      assert.equal(r.code, 0, r.stderr);
+      return JSON.parse(r.stdout);
+    };
+    return fn({ ...ctx, applyAt });
+  });
+}
+
+test('#393: a decisive reference past the end of the file, or to a file that is not there, holds the finding', () => {
+  withHead(({ applyAt }) => {
+    for (const [ref, why] of [
+      ['src/a.ts:101-102', 'past the end of the file at the head'],
+      ['src/missing.ts:3', 'names a file that is not at the head'],
+      ['../outside.ts:1', 'names a file that is not at the head'],
+    ]) {
+      const out = applyAt(confirmed('cand_001', { decisive_evidence: [ref] }));
+      assert.deepEqual(out.eligible.map((e) => e.candidate_id), ['cand_002', 'cand_003'], ref);
+      assert.equal(out.challengeHeld[0].verdict, 'challenge-partly');
+      assert.ok(out.challengeHeld[0].reason.includes(why), out.challengeHeld[0].reason);
+    }
+  });
+});
+
+test('#393: a quoted line is looked for at the reference, and moves it when it is on one other line', () => {
+  withHead(({ applyAt }) => {
+    const quoted = (ref, quote) => confirmed('cand_001', { decisive_evidence: [ref], decisive_quotes: [quote] });
+    const stored = (out) => out.scores.find((s) => s.candidate_id === 'cand_001').challenge;
+
+    const right = applyAt(quoted('src/a.ts:9', 'const key = cacheKey(request.path);'));
+    assert.deepEqual(stored(right).decisive_evidence, ['src/a.ts:9']);
+    assert.equal(stored(right).decisive_quotes, undefined, 'the quote is checked, not stored');
+
+    const moved = applyAt(quoted('src/a.ts:3-4', 'const key =   cacheKey(request.path);'));
+    assert.deepEqual(stored(moved).decisive_evidence, ['src/a.ts:9-10']);
+    assert.equal(moved.eligible.length, 3);
+
+    const nowhere = applyAt(quoted('src/a.ts:3', 'const key = tenantKey(request);'));
+    assert.ok(nowhere.challengeHeld[0].reason.includes('does not hold the line the challenger quoted'));
+  });
+});
+
+test('#393: without --cwd, and for a reference with no quote, nothing more is asked', () => {
+  withHead(({ apply, applyAt }) => {
+    assert.equal(applyAt(confirmed('cand_001')).eligible.length, 3);
+    const r = apply([confirmed('cand_001', { decisive_evidence: ['src/a.ts:101'] }), confirmed('cand_002'), confirmed('cand_003')]);
+    assert.equal(JSON.parse(r.stdout).eligible.length, 3);
+    const bad = apply([confirmed('cand_001', { decisive_quotes: [] }), confirmed('cand_002'), confirmed('cand_003')]);
+    assert.equal(bad.code, 2);
+    assert.match(bad.stderr, /decisive_quotes must be a list of strings, one per decisive_evidence entry/);
+  });
+});
