@@ -252,9 +252,11 @@ repository commands accepts that code.
 
 **A second route, and an honest limit.** The adapter gate covers the path this
 plugin drives. It does not cover an agent with a shell. Every agent declares
-the narrowest grant it can work with - the two that read code hold
-`Bash(git:*)`, and the editor holds none - and `test/seams.test.mjs` pins those
-declarations so a widening is a visible diff rather than a quiet edit.
+the narrowest grant it can work with - the agents that read code hold
+`Bash(git:*)`, and the editor holds `Read` alone, because the host reads an
+empty `tools:` list as every tool and cannot start an agent with none (#415) -
+and `test/seams.test.mjs` pins those declarations so a widening is a visible
+diff rather than a quiet edit.
 
 What this repository cannot establish on its own is whether the host enforces
 that declaration. The grant is stated in agent frontmatter and honoured by the
@@ -286,8 +288,13 @@ One thing the attempt did establish. Granting a shell makes the harness require
 OS-level confinement and refuse to start without it - "the run was refused
 rather than run unconfined". So the operator-level grant is enforced by the
 platform rather than merely advisory. Whether an agent's own `Bash(git:*)`
-narrows things further, inside a shell that has already been granted, is the
-part still unmeasured.
+narrows things further was answered by five slash-command reviews (#391): it
+does not. A subagent's `tools:` line takes tool names, so the declaration
+granted plain Bash, and one challenger ran the script under review. The plugin
+now ships a PreToolUse hook (`hooks/agent-bash-guard.mjs`) that denies any Bash
+call from one of its own agents unless it is a read-only git command, which
+the host does honour inside subagents. The headless runner still grants no
+shell at all (docs/adr/0021).
 
 #### A reproduction runner
 

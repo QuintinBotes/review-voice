@@ -323,7 +323,8 @@ test('every agent declares the narrowest tool grant it can do its job with', () 
   const expected = {
     'diff-analyst': 'Read, Grep, Glob, Bash(git:*)',
     'evidence-verifier': 'Read, Grep, Glob, Bash(git:*)',
-    'concise-editor': '[]',
+    // #415: an empty list gives a host agent every tool, and none at all cannot start one.
+    'concise-editor': 'Read',
   };
 
   for (const [name, grant] of Object.entries(expected)) {
