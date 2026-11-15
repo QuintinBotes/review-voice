@@ -44,7 +44,14 @@ export type RunCommand = (argv: string[], stdin?: string) => Promise<CommandResu
 
 export interface ReviewOptions {
   repository: string;
-  pullNumber: number;
+  /** Null with `base`: a local branch is reviewed, and there is no pull request (#410). */
+  pullNumber: number | null;
+  /**
+   * `--base <ref>`: review HEAD of this checkout against the merge base with
+   * `<ref>`. Nothing is read from GitHub: no thread, follow-ups, carry, verdict
+   * or post, and the configuration is read at the merge base.
+   */
+  base?: string | null | undefined;
   mode?: RequestedMode | undefined;
   post: boolean;
   out: string | null;
@@ -243,7 +250,33 @@ async function must(run: Run, argv: string[], stdin?: string, code = 2): Promise
   return result;
 }
 
+/** Git in the caller's checkout, with SAFE_GIT so its configuration runs nothing. */
+function localGit(args: string[]): string {
+  return execFileSync('git', [...SAFE_GIT, ...args], { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+/** A branch review's head and base, from the checkout alone (#410). */
+function localHead(ref: string): { sha: string; base: { sha: string | null; ref: string | null }; author: Run['pullAuthor'] } {
+  let sha: string;
+  let baseSha: string;
+  try {
+    sha = localGit(['rev-parse', '--verify', 'HEAD^{commit}']);
+    baseSha = localGit(['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]);
+  } catch {
+    throw new Stop(2, `--base ${ref} does not resolve to a commit in this checkout, or HEAD does not.`);
+  }
+  let mergeBase: string | null = null;
+  try {
+    mergeBase = localGit(['merge-base', baseSha, sha]) || null;
+  } catch {
+    // Unrelated histories: the base itself is the trusted side.
+  }
+  // The configuration and conventions are read where the branch left the base.
+  return { sha, base: { sha: mergeBase ?? baseSha, ref }, author: null };
+}
+
 async function headOf(run: Run): Promise<{ sha: string; base: { sha: string | null; ref: string | null }; author: Run['pullAuthor'] }> {
+  if (run.options.base != null) return localHead(run.options.base);
   const { repository, pullNumber } = run.options;
   const { data } = await run.deps.client.get<{ head?: { sha?: unknown }; base?: { sha?: unknown; ref?: unknown }; user?: { login?: unknown; type?: unknown } }>(
     `/repos/${repository}/pulls/${pullNumber}`,
@@ -387,7 +420,8 @@ const withoutCounts = (output: unknown): Json => {
 
 /** The default run directory, new for every run. */
 function runDirectory(options: ReviewOptions, head: string): string {
-  const name = `${options.repository.replace('/', '-')}-${options.pullNumber}-${head.slice(0, 8)}`;
+  const target = options.pullNumber === null ? `base-${(options.base ?? '').replace(/[^\w.-]+/g, '_')}` : String(options.pullNumber);
+  const name = `${options.repository.replace('/', '-')}-${target}-${head.slice(0, 8)}`;
   const base = join(dataDirectory(), 'runs', name);
   let dir = base;
   for (let n = 2; existsSync(dir); n += 1) dir = `${base}-${n}`;
@@ -399,14 +433,20 @@ function runDirectory(options: ReviewOptions, head: string): string {
 async function prep(run: Run): Promise<void> {
   const { repository, pullNumber } = run.options;
   const pr = ['--pr', String(pullNumber), '--repository', repository];
-  const diff = await must(run, [
-    'diff',
-    ...pr,
-    '--out',
-    run.dir,
-    ...(run.options.since === null ? [] : ['--since', run.options.since]),
-    ...(run.options.full ? ['--full'] : []),
-  ]);
+  const branch = run.options.base != null;
+  const diff = await must(
+    run,
+    branch
+      ? ['diff', '--base', run.options.base!, '--out', run.dir]
+      : [
+          'diff',
+          ...pr,
+          '--out',
+          run.dir,
+          ...(run.options.since === null ? [] : ['--since', run.options.since]),
+          ...(run.options.full ? ['--full'] : []),
+        ],
+  );
   run.summary = parsed(diff.stdout)['summary'] as Json;
   if (!isRecord(run.summary)) throw new Stop(2, 'diff printed no summary.');
   if (run.summary['head'] !== run.head) throw new Stop(3, `The head moved to ${String(run.summary['head'])} while the diff was read.`);
@@ -422,7 +462,9 @@ async function prep(run: Run): Promise<void> {
     if (typeof note === 'string') run.notes.push(note);
   }
 
-  await must(run, ['thread', ...pr, '--out', at(run, 'thread.json')]);
+  // A branch has no thread: an empty one keeps every later stage's input the same.
+  if (branch) writeJson(at(run, 'thread.json'), { repository, pullNumber: null, comments: [], reviews: [] });
+  else await must(run, ['thread', ...pr, '--out', at(run, 'thread.json')]);
   writeFileSync(at(run, 'context.json'), (await must(run, ['context'])).stdout);
   if (noCommands(run)) {
     run.notes.push('REVIEW_VOICE_NO_COMMANDS=1, so the static evidence commands were not run.');
@@ -478,7 +520,7 @@ async function prep(run: Run): Promise<void> {
     '--out',
     at(run, 'symbols.json'),
   ]);
-  const followUps = (await must(run, ['follow-ups', ...pr])).stdout;
+  const followUps = branch ? JSON.stringify({ followUps: [] }) : (await must(run, ['follow-ups', ...pr])).stdout;
   writeFileSync(at(run, 'follow-ups.json'), followUps);
   run.followUps = list(parsed(followUps)['followUps']).length > 0;
   writeJson(at(run, 'authorship.json'), authorshipOf(run));
@@ -977,8 +1019,7 @@ async function score(run: Run): Promise<void> {
     run.head,
     '--thread',
     at(run, 'thread.json'),
-    '--exclude-pull',
-    String(run.options.pullNumber),
+    ...(run.options.pullNumber === null ? [] : ['--exclude-pull', String(run.options.pullNumber)]),
   ];
   const input = JSON.stringify({ candidates });
   // Written before the call, so even a failed score can be run again by hand.
@@ -1226,8 +1267,8 @@ async function record(run: Run, extra: string[]): Promise<void> {
       at(run, 'diff.patch'),
       '--files',
       at(run, 'files.json'),
-      '--thread',
-      at(run, 'thread.json'),
+      // A branch review's thread is empty and names no pull request.
+      ...(run.options.pullNumber === null ? [] : ['--thread', at(run, 'thread.json')]),
       '--held',
       at(run, 'held.json'),
       '--stages',
@@ -1264,6 +1305,11 @@ async function record(run: Run, extra: string[]): Promise<void> {
     run.heldQueue = heldQueue(run.held, actions ? null : run.promoteCall);
   }
 
+  // A branch review has no pull request to judge or post to.
+  if (run.options.pullNumber === null) {
+    skip(run, 'verdict', 'no pull request');
+    return skip(run, 'post', 'no pull request');
+  }
   const target = ['--repository', run.options.repository, '--pr', String(run.options.pullNumber), '--head', run.head, '--run', run.runId ?? ''];
   const verdict = await cli(run, ['verdict', ...target], run.text ?? '');
   writeFileSync(at(run, 'verdict.json'), verdict.stdout);
@@ -1440,10 +1486,15 @@ function auditFailure(run: Run, failure: ReviewFailure): void {
   try {
     const db = openDatabase();
     try {
-      const { repository, pullNumber } = run.options;
-      recordAudit(db, 'review_failed', { type: 'pull_request', id: `${repository.toLowerCase()}#${pullNumber}` }, {
+      const { repository, pullNumber, base } = run.options;
+      const subject =
+        pullNumber === null
+          ? { type: 'branch', id: `${repository.toLowerCase()}@${base ?? ''}` }
+          : { type: 'pull_request', id: `${repository.toLowerCase()}#${pullNumber}` };
+      recordAudit(db, 'review_failed', subject, {
         repository,
         pull: pullNumber,
+        ...(pullNumber === null ? { base } : {}),
         head: run.head === '' ? null : run.head,
         code: failure.code,
         stage: failure.stage,

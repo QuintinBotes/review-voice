@@ -172,6 +172,36 @@ red on a re-check, 6 CI needs a rerun
 Full detail in [PRIVACY.md](PRIVACY.md) and
 [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
 
+### What reaches the network
+
+Every outbound call, by command, for a host that has to list what leaves the
+machine. GitHub means `https://api.github.com`, the only API host: the client
+refuses to send its token anywhere else, and GitHub Enterprise is not
+supported. The token is `GITHUB_TOKEN`, else `GH_TOKEN`, else `gh auth token`.
+`origin` is the clone's own remote, fetched with your git credentials, and only
+when it is `github.com/<the repository under review>`.
+
+| Command | Reaches | What leaves the machine |
+|---|---|---|
+| `review --pr` | GitHub, `origin`, the model, configured commands | Everything `diff --pr`, `thread`, `config resolve` and `verdict` send. The diff, pull request description, thread, candidates and the files the agents read, to the model through `claude -p` (or a `runners:` CLI the operator configured). Static-evidence and second-pass commands run unless `REVIEW_VOICE_NO_COMMANDS=1`. With `--post`, one review write. |
+| `review --base` | the model, configured commands | No GitHub call and no fetch. The diff and the files the agents read, to the model, as above. |
+| `diff --pr` | GitHub, `origin` | Reads of the pull request, its files, the repository, a compare, your login and your own reviews. Fetches `pull/<n>/head`, the base, and the previous head. Without `--pr`, nothing. |
+| `thread` | GitHub | Reads the description, inline comments, reviews, events, conversation and review threads (GraphQL); with `review.linked_issues`, up to five linked issues. |
+| `config resolve` | GitHub | One read of the pull request, for its base commit. The configuration's bytes come from `git show <base>:.review-voice/config.yaml` in your clone (else `origin/<base branch>` when origin is the repository, else the defaults); the head's copy is never read. `--config` or an absolute `REVIEW_VOICE_CONFIG` takes its place. |
+| `verdict` | GitHub | Reads the head, CI check runs and statuses and the thread; with `review.suggestions`, file contents at the head. |
+| `post` | GitHub | The `verdict` reads, then with `--confirm` and posting enabled, one `POST /pulls/<n>/reviews` with the body, event, commit and inline comments. |
+| `reply` | GitHub | The `outcomes` reads, then with `--confirm` and posting enabled, one reply under one of its own comments. |
+| `outcomes` | GitHub | Reads pull requests, comments, threads, reviews, commits and, for a suggestion, the file at the head; with `--approvals`, a `reverts:` search. |
+| `sync`, `discover`, `queue` | GitHub | Reads within the allowlist: history for `sync`, your repository list for `discover`, a pull request search for `queue` (`--settled` is local). |
+| `watch` | GitHub, github.com, the model | What `queue` and `review` send, plus a clone and `pull/<n>/head` fetches. Configured commands are off unless `watch.run_repository_commands` is true. |
+| `agent`, `recall` | the model | The prompt and the files the agent reads; `recall --runner fake` sends nothing. |
+| `verify`, `evidence` | only through the commands you configure | Review Voice sends nothing itself; the configured command receives the candidates or runs in the checkout. |
+| every other command | nothing | The local store, local git and files only. `reproduce` runs its command with no network, and `doctor` only runs `--version` on the tools it checks. |
+
+The agents' process gets no `GITHUB_TOKEN`, `GH_TOKEN` or `REVIEW_VOICE_*`
+variable. The only GitHub writes are `post` (including `review --post` and
+`watch --post`) and `reply`, both behind `writes.github_posting_enabled`.
+
 ## Contributing
 
 Bug reports, false-positive reports and prompt-injection test cases are all

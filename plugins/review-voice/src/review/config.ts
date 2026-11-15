@@ -29,7 +29,8 @@ export interface TrustedConfig {
 
 export interface PullRequestConfig {
   repository: string;
-  pullNumber: number;
+  /** Null for a local branch review (`review --base`). */
+  pullNumber: number | null;
   /** The pull request's base commit and branch, as GitHub gave them. */
   base: { sha: string | null; ref: string | null };
   /** Absolute. A copy of the base commit's file is written here as config.yaml. */
@@ -73,7 +74,11 @@ export function resolveTrustedConfig(pull: PullRequestConfig, notes: string[]): 
   }
 
   const { sha, ref } = pull.base;
-  if (sha === null) return `GitHub returned no base commit for ${pull.repository}#${pull.pullNumber}, so there is no trusted configuration to read.`;
+  if (sha === null) {
+    return pull.pullNumber === null
+      ? `No base commit is known for ${pull.repository}, so there is no trusted configuration to read.`
+      : `GitHub returned no base commit for ${pull.repository}#${pull.pullNumber}, so there is no trusted configuration to read.`;
+  }
   const path = join(pull.dir, 'config.yaml');
   // A re-run into the same directory must not read a copy taken from another base.
   rmSync(path, { force: true });

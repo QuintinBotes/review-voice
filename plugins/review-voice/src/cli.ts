@@ -447,9 +447,24 @@ export async function runInProcess(
 
 /** Runs the whole review of one pull request (docs/adr/0022). */
 async function reviewCommand(argv: string[]): Promise<number> {
-  const pullNumber = Number(flag(argv, '--pr'));
-  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
-    console.error('--pr needs a pull request number.');
+  // `--base <ref>` reviews a local branch with no pull request (#410).
+  const base = flag(argv, '--base');
+  if (argv.includes('--base') && (base === null || base.startsWith('-'))) {
+    console.error('--base needs a git ref, for example: --base origin/main');
+    return 2;
+  }
+  if (base !== null && argv.includes('--pr')) {
+    console.error('Pass --pr <n> or --base <ref>, not both.');
+    return 2;
+  }
+  const pullOnly = ['--post', '--since', '--full', '--no-recheck-thread'].find((name) => argv.includes(name));
+  if (base !== null && pullOnly !== undefined) {
+    console.error(`${pullOnly} applies to a pull request review; --base reviews a local branch.`);
+    return 2;
+  }
+  const pullNumber = base === null ? Number(flag(argv, '--pr')) : null;
+  if (pullNumber !== null && (!Number.isInteger(pullNumber) || pullNumber < 1)) {
+    console.error('--pr needs a pull request number, or --base <ref> to review a local branch.');
     return 2;
   }
   const modeFlag = flag(argv, '--mode');
@@ -481,6 +496,7 @@ async function reviewCommand(argv: string[]): Promise<number> {
     {
       repository,
       pullNumber,
+      base,
       mode,
       post: argv.includes('--post'),
       out: flag(argv, '--out'),

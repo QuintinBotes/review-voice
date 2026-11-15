@@ -2399,3 +2399,37 @@ test('issue 357: config resolve chooses the same file and source as the driver, 
     assert.deepEqual(printed.notes, report.notes.filter((note) => note.startsWith('No .review-voice/config.yaml')), kind);
   }
 });
+
+// #410: review a local branch against a base, with no pull request and no GitHub call.
+
+test('#410: review --base reviews the checkout against the merge base without reading GitHub', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  execFileSync('git', ['checkout', '-q', 'feature'], { cwd: repo.dir });
+  const fakeDir = fakes(t, {
+    'diff-analyst': [{ candidates: [CANDIDATE] }],
+    'evidence-verifier': [{ verifications: [VERIFIED] }],
+    challenger: [{ verdicts: [confirmed] }],
+    'concise-editor': [{ text: '[minor] `src/app.ts:3` - The total multiplies by qty, which is undefined for items created before qty existed.' }],
+  });
+  const github = fakeGitHub(repo);
+  const { report, data } = await review(t, repo, fakeDir, github, { pullNumber: null, base: 'main' });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.deepEqual(github.calls, [], 'no GitHub call');
+  assert.equal(report.head, repo.head);
+  assert.deepEqual(report.findings.map((finding) => [finding.path, finding.line]), [['src/app.ts', 3]]);
+  assert.equal(report.verdict, null);
+  assert.equal(report.posted, false);
+  assert.ok(report.stages.some((stage) => stage.name === 'verdict' && stage.skipped === 'no pull request'));
+  assert.equal(runCount(data), 1);
+  assert.match(report.runDir, /-base-main-/);
+  assert.deepEqual(JSON.parse(readFileSync(join(report.runDir, 'thread.json'), 'utf8')).comments, []);
+});
+
+test('#410: a --base that does not resolve stops with exit 2 before anything runs', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const github = fakeGitHub(repo);
+  const { report } = await review(t, repo, fakes(t, {}), github, { pullNumber: null, base: 'no-such-branch' });
+  assert.equal(report.exitCode, 2);
+  assert.match(report.error, /--base no-such-branch does not resolve/);
+  assert.deepEqual(github.calls, []);
+});
