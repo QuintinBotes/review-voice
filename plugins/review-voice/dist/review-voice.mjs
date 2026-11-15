@@ -20299,7 +20299,12 @@ var COMMAND_HELP = {
       "  base-like file.",
       "",
       "Flags:",
-      "  --pr <n>               the pull request number (required)",
+      "  --pr <n>               the pull request number (this or --base is required)",
+      "  --base <ref>           review HEAD of this checkout against its merge base with <ref>, with no",
+      "                         pull request: nothing is read from GitHub, there is no thread, carry,",
+      "                         verdict or post, the configuration and conventions come from the merge",
+      "                         base, and the run is recorded with no pull number. The agents still call",
+      "                         the model. --post, --since, --full and --no-recheck-thread are refused",
       "  --dir <dir>            the review's directory, where the base commit's copy is written; created if missing (required)",
       "  --repository <o/r>     default: the origin remote",
       "  --config <path>        read this file; beats REVIEW_VOICE_CONFIG and the base commit",
@@ -21240,6 +21245,7 @@ var COMMAND_HELP = {
     summary: "Review one pull request end to end, agents included",
     body: lines(
       "review-voice review --pr <n> [--repository owner/repo] [--mode fast|standard|thorough|auto]",
+      "review-voice review --base <ref> [--repository owner/repo] [--mode ...] [--out <dir>] [--config <path>] [--json]",
       "                    [--post] [--no-recheck-thread] [--expect-head <sha>] [--out <dir>]",
       "                    [--since <sha>] [--full] [--config <path>] [--origin watch|action] [--json]",
       "  Run every review stage in a clone of the repository (docs/adr/0022): diff, thread,",
@@ -23609,7 +23615,9 @@ function resolveTrustedConfig(pull, notes) {
     notes.push("REVIEW_VOICE_CONFIG must be an absolute path, so it was ignored and the base commit supplied the configuration.");
   }
   const { sha, ref } = pull.base;
-  if (sha === null) return `GitHub returned no base commit for ${pull.repository}#${pull.pullNumber}, so there is no trusted configuration to read.`;
+  if (sha === null) {
+    return pull.pullNumber === null ? `No base commit is known for ${pull.repository}, so there is no trusted configuration to read.` : `GitHub returned no base commit for ${pull.repository}#${pull.pullNumber}, so there is no trusted configuration to read.`;
+  }
   const path = join17(pull.dir, "config.yaml");
   rmSync6(path, { force: true });
   let from = sha;
@@ -23675,7 +23683,27 @@ async function must(run, argv, stdin, code3 = 2) {
   if (result.code !== 0) throw new Stop(code3, `${argv[0]} exited ${result.code}: ${firstLines(result.stderr)}`);
   return result;
 }
+function localGit(args) {
+  return execFileSync12("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+function localHead(ref) {
+  let sha;
+  let baseSha;
+  try {
+    sha = localGit(["rev-parse", "--verify", "HEAD^{commit}"]);
+    baseSha = localGit(["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]);
+  } catch {
+    throw new Stop(2, `--base ${ref} does not resolve to a commit in this checkout, or HEAD does not.`);
+  }
+  let mergeBase = null;
+  try {
+    mergeBase = localGit(["merge-base", baseSha, sha]) || null;
+  } catch {
+  }
+  return { sha, base: { sha: mergeBase ?? baseSha, ref }, author: null };
+}
 async function headOf(run) {
+  if (run.options.base != null) return localHead(run.options.base);
   const { repository, pullNumber } = run.options;
   const { data } = await run.deps.client.get(
     `/repos/${repository}/pulls/${pullNumber}`
@@ -23777,7 +23805,8 @@ var withoutCounts = (output) => {
   return rest;
 };
 function runDirectory(options, head) {
-  const name = `${options.repository.replace("/", "-")}-${options.pullNumber}-${head.slice(0, 8)}`;
+  const target = options.pullNumber === null ? `base-${(options.base ?? "").replace(/[^\w.-]+/g, "_")}` : String(options.pullNumber);
+  const name = `${options.repository.replace("/", "-")}-${target}-${head.slice(0, 8)}`;
   const base = join18(dataDirectory(), "runs", name);
   let dir = base;
   for (let n = 2; existsSync11(dir); n += 1) dir = `${base}-${n}`;
@@ -23786,14 +23815,18 @@ function runDirectory(options, head) {
 async function prep(run) {
   const { repository, pullNumber } = run.options;
   const pr = ["--pr", String(pullNumber), "--repository", repository];
-  const diff = await must(run, [
-    "diff",
-    ...pr,
-    "--out",
-    run.dir,
-    ...run.options.since === null ? [] : ["--since", run.options.since],
-    ...run.options.full ? ["--full"] : []
-  ]);
+  const branch = run.options.base != null;
+  const diff = await must(
+    run,
+    branch ? ["diff", "--base", run.options.base, "--out", run.dir] : [
+      "diff",
+      ...pr,
+      "--out",
+      run.dir,
+      ...run.options.since === null ? [] : ["--since", run.options.since],
+      ...run.options.full ? ["--full"] : []
+    ]
+  );
   run.summary = parsed(diff.stdout)["summary"];
   if (!isRecord5(run.summary)) throw new Stop(2, "diff printed no summary.");
   if (run.summary["head"] !== run.head) throw new Stop(3, `The head moved to ${String(run.summary["head"])} while the diff was read.`);
@@ -23808,7 +23841,8 @@ async function prep(run) {
     const note = isRecord5(run.summary[key2]) ? run.summary[key2]["note"] : null;
     if (typeof note === "string") run.notes.push(note);
   }
-  await must(run, ["thread", ...pr, "--out", at(run, "thread.json")]);
+  if (branch) writeJson(at(run, "thread.json"), { repository, pullNumber: null, comments: [], reviews: [] });
+  else await must(run, ["thread", ...pr, "--out", at(run, "thread.json")]);
   writeFileSync7(at(run, "context.json"), (await must(run, ["context"])).stdout);
   if (noCommands(run)) {
     run.notes.push("REVIEW_VOICE_NO_COMMANDS=1, so the static evidence commands were not run.");
@@ -23845,7 +23879,7 @@ async function prep(run) {
     "--out",
     at(run, "symbols.json")
   ]);
-  const followUps = (await must(run, ["follow-ups", ...pr])).stdout;
+  const followUps = branch ? JSON.stringify({ followUps: [] }) : (await must(run, ["follow-ups", ...pr])).stdout;
   writeFileSync7(at(run, "follow-ups.json"), followUps);
   run.followUps = list2(parsed(followUps)["followUps"]).length > 0;
   writeJson(at(run, "authorship.json"), authorshipOf(run));
@@ -24271,8 +24305,7 @@ async function score(run) {
     run.head,
     "--thread",
     at(run, "thread.json"),
-    "--exclude-pull",
-    String(run.options.pullNumber)
+    ...run.options.pullNumber === null ? [] : ["--exclude-pull", String(run.options.pullNumber)]
   ];
   const input = JSON.stringify({ candidates });
   writeFileSync7(at(run, "score-input.json"), input);
@@ -24483,8 +24516,8 @@ async function record2(run, extra) {
       at(run, "diff.patch"),
       "--files",
       at(run, "files.json"),
-      "--thread",
-      at(run, "thread.json"),
+      // A branch review's thread is empty and names no pull request.
+      ...run.options.pullNumber === null ? [] : ["--thread", at(run, "thread.json")],
       "--held",
       at(run, "held.json"),
       "--stages",
@@ -24514,6 +24547,10 @@ async function record2(run, extra) {
   if (isRecord5(context2) && context2["heldQueue"] === true && !run.carried) {
     const actions = (run.deps.env ?? process.env)["GITHUB_ACTIONS"] === "true";
     run.heldQueue = heldQueue(run.held, actions ? null : run.promoteCall);
+  }
+  if (run.options.pullNumber === null) {
+    skip(run, "verdict", "no pull request");
+    return skip(run, "post", "no pull request");
   }
   const target = ["--repository", run.options.repository, "--pr", String(run.options.pullNumber), "--head", run.head, "--run", run.runId ?? ""];
   const verdict2 = await cli(run, ["verdict", ...target], run.text ?? "");
@@ -24647,10 +24684,12 @@ function auditFailure(run, failure) {
   try {
     const db = openDatabase();
     try {
-      const { repository, pullNumber } = run.options;
-      recordAudit(db, "review_failed", { type: "pull_request", id: `${repository.toLowerCase()}#${pullNumber}` }, {
+      const { repository, pullNumber, base } = run.options;
+      const subject = pullNumber === null ? { type: "branch", id: `${repository.toLowerCase()}@${base ?? ""}` } : { type: "pull_request", id: `${repository.toLowerCase()}#${pullNumber}` };
+      recordAudit(db, "review_failed", subject, {
         repository,
         pull: pullNumber,
+        ...pullNumber === null ? { base } : {},
         head: run.head === "" ? null : run.head,
         code: failure.code,
         stage: failure.stage,
@@ -34622,9 +34661,23 @@ async function runInProcess(argv, options = {}) {
   return { code: code3, stdout: out.join(""), stderr: err.join("") };
 }
 async function reviewCommand(argv) {
-  const pullNumber = Number(flag(argv, "--pr"));
-  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
-    console.error("--pr needs a pull request number.");
+  const base = flag(argv, "--base");
+  if (argv.includes("--base") && (base === null || base.startsWith("-"))) {
+    console.error("--base needs a git ref, for example: --base origin/main");
+    return 2;
+  }
+  if (base !== null && argv.includes("--pr")) {
+    console.error("Pass --pr <n> or --base <ref>, not both.");
+    return 2;
+  }
+  const pullOnly = ["--post", "--since", "--full", "--no-recheck-thread"].find((name) => argv.includes(name));
+  if (base !== null && pullOnly !== void 0) {
+    console.error(`${pullOnly} applies to a pull request review; --base reviews a local branch.`);
+    return 2;
+  }
+  const pullNumber = base === null ? Number(flag(argv, "--pr")) : null;
+  if (pullNumber !== null && (!Number.isInteger(pullNumber) || pullNumber < 1)) {
+    console.error("--pr needs a pull request number, or --base <ref> to review a local branch.");
     return 2;
   }
   const modeFlag = flag(argv, "--mode");
@@ -34654,6 +34707,7 @@ async function reviewCommand(argv) {
     {
       repository,
       pullNumber,
+      base,
       mode,
       post: argv.includes("--post"),
       out: flag(argv, "--out"),

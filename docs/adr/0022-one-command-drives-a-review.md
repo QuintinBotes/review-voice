@@ -73,3 +73,15 @@ earlier runs cannot be read, since its risk is then unknown. The driver also app
 `review_failed` audit event with ids and codes only, never diff content. A
 moved head (exit 3) is not a failure and carries none. The failure text goes to
 stdout and the JSON report, never to GitHub.
+
+## Amendment - 2026-11-15 (#410)
+
+`review --base <ref>` drives the same stages over a local branch, for a host
+that runs coding agents in worktrees and wants a review before any pull
+request exists. The head is `HEAD` of the checkout and the base is its merge
+base with `<ref>`, both read from git. The configuration and the conventions
+are read at that merge base, the trusted side, as for a pull request. There is
+no pull request, so nothing is read from GitHub: the thread is empty, follow-ups
+and carry do not run, and there is no verdict or post. The run is recorded with
+no pull number and the same output as a `--pr` review. The agents still call
+the model, through the runner as before.

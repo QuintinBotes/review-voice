@@ -97,3 +97,17 @@ test('#408: a required_context_missing entry in the wrong shape is named, with t
     const ok = run(dir, ['check-verification'], JSON.stringify([{ ...ENTRY, required_context_missing: ['a', { context: 'b', kind: 'cosmetic' }, { context: 'c' }] }]));
     assert.equal(ok.status, 0, ok.stderr);
   }));
+
+test('#410: review --base refuses the flags that only mean something for a pull request', () =>
+  withDir((dir) => {
+    for (const [args, why] of [
+      [['review', '--base', 'main', '--post'], /--post applies to a pull request review/],
+      [['review', '--base', 'main', '--pr', '3'], /Pass --pr <n> or --base <ref>, not both/],
+      [['review', '--base'], /--base needs a git ref/],
+      [['review'], /--pr needs a pull request number, or --base <ref>/],
+    ]) {
+      const result = run(dir, args);
+      assert.equal(result.status, 2, args.join(' '));
+      assert.match(result.stderr, why);
+    }
+  }));
