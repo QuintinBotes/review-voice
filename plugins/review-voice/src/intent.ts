@@ -65,6 +65,9 @@ const COMMENT_CLOSE = /^(?:(?!--!?>).)*--!?>\s*$/u;
 // A line that is only a bold label (`**Database changes**`), not a sentence, list item or quote.
 const BOLD_LABEL = /^\*\*([^*]*[^*\s.!?])\*\*$/u;
 
+// A thematic break: three or more `-`, `*` or `_`, alone on a line.
+const THEMATIC_BREAK = /^ {0,3}([-*_])(?: *\1){2,} *$/u;
+
 const collapse = (text: string): string => text.replace(/\s+/gu, ' ').trim();
 const isBoldLabel = (line: string): boolean => !LIST_OR_HEADING.test(line) && BOLD_LABEL.test(collapse(line));
 
@@ -142,7 +145,10 @@ function sentencesOf(description: string): Sentences {
   for (const [index, line] of lines.entries()) {
     const marked = LIST_OR_HEADING.test(line);
     const content = collapse(line.replace(LIST_OR_HEADING, ''));
-    if (content === '') {
+    // After a blank line `---` is a thematic break, not text of the section
+    // above it, and not a setext underline: it read as the section's last
+    // words, so a one-word answer stopped being the section's whole body (#406).
+    if (content === '' || (THEMATIC_BREAK.test(line) && (blank || text === '') && !fenced.has(index))) {
       blank = true;
       continue;
     }
@@ -250,19 +256,22 @@ function widenToSentence(quote: string, sentences: Sentences): string | null {
 }
 
 /**
- * The heading a short quote answers, or null. Under four words a quote rarely
- * carries its own subject ("None."), so it is kept only when it is the whole
- * body of a section and the heading supplies the question it answers (#164).
+ * The headings a short quote answers, in document order, or none. Under four
+ * words a quote rarely carries its own subject ("None."), so it is kept only
+ * when it is the whole body of a section and the heading supplies the
+ * question it answers (#164). The same answer can sit under several headings
+ * (#406), so every one is returned and the statement chooses.
  */
-function answeredHeading(quote: string, sentences: Sentences): string | null {
+function answeredHeadings(quote: string, sentences: Sentences): string[] {
   const wanted = collapse(quote.replace(LIST_OR_HEADING, ''));
-  if (wanted === '' || wanted.split(' ').length >= MIN_QUOTE_WORDS) return null;
+  if (wanted === '' || wanted.split(' ').length >= MIN_QUOTE_WORDS) return [];
   const matches = ({ from, to }: { from: number; to: number }): boolean => {
     const body = sentences.text.slice(from, to);
     return body === wanted || body === `${wanted}.`;
   };
   // A body read as before keeps its heading; one a comment or bold label hid is matched only after it (#319).
-  return (sentences.sections.find(matches) ?? sentences.answers.find(matches))?.heading ?? null;
+  const found = sentences.sections.filter(matches);
+  return [...new Set((found.length > 0 ? found : sentences.answers.filter(matches)).map(({ heading }) => heading))];
 }
 
 /** How a note names a source. */
@@ -295,13 +304,13 @@ function quoteFrom(
   name: string,
   id: string,
   notes: string[],
-): { value: string; source: Source; answered: string | null; problem: null } | { value: null; problem: string } {
+): { value: string; source: Source; answered: string[]; problem: null } | { value: null; problem: string } {
   let problem: string | null = null;
   const notFound = `${name} does not occur in the pull request description`;
   for (const source of sources) {
     // A supplied heading is recomputed, so re-checking this command's output passes and a made-up one never does.
-    const answered = answeredHeading(value, source.sentences);
-    const quote: Parsed<string> = answered === null ? excerptOf(value, source.sentences, name, id, notes, whereOf(source)) : { value, problem: null };
+    const answered = answeredHeadings(value, source.sentences);
+    const quote: Parsed<string> = answered.length === 0 ? excerptOf(value, source.sentences, name, id, notes, whereOf(source)) : { value, problem: null };
     if (quote.problem === null) return { value: quote.value, source, answered, problem: null };
     if (problem === null && quote.problem !== notFound) problem = quote.problem;
   }
@@ -365,13 +374,22 @@ function statementOf(rawEntry: unknown, at: string, sources: Source[], removed: 
   // A supplied issue is recomputed like the heading: the source the quote came from decides it.
   const quote = quoteFrom(rawQuote.value, sources, `${at}.quote`, id, removed);
   if (quote.problem !== null) return { value: null, problem: quote.problem };
-  const { source, answered } = quote;
+  const { source } = quote;
+  // Of several headings the same answer sits under, the one the extractor
+  // named, else the one sharing the most words with the statement, the first
+  // on a tie (#406).
+  const statementWords = significantWords(statement.value);
+  const shared = (heading: string): number => [...significantWords(heading)].filter((word) => statementWords.has(word)).length;
+  const supplied = entry['heading'];
+  const answered =
+    quote.answered.find((heading) => heading === supplied) ??
+    quote.answered.reduce<string | null>((best, heading) => (best === null || shared(heading) > shared(best) ? heading : best), null);
   // A short quote keeps the heading it sits under as context (#222).
   const heading = answered ?? (isShort(quote.value) ? sectionHeading(quote.value, source.sentences) : null);
   if (kind !== 'non-goal') {
     // Only a quote that is a section's whole body answers its heading; elsewhere the heading is context, not support.
     const quoted = significantWords(answered === null ? quote.value : `${answered} ${quote.value}`);
-    if (![...significantWords(statement.value)].some((word) => quoted.has(word))) {
+    if (![...statementWords].some((word) => quoted.has(word))) {
       return { value: null, problem: `${at}.quote shares no significant word with its statement` };
     }
   }
