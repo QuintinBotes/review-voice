@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listFromReplies } from '../plugins/review-voice/src/agents/reply-json.ts';
+import { gatherReplies } from '../plugins/review-voice/src/agents/reply-json.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const bundle = join(root, 'plugins/review-voice/dist/review-voice.mjs');
@@ -84,9 +84,10 @@ test('#417: several challenger or tie-breaker replies in one file are gathered',
     'Checked src/a.ts.\n{"verdicts": [{"candidate_id": "cand_001", "verdict": "confirmed"}]}',
     '```json\n{"verdicts": [{"candidate_id": "cand_002", "verdict": "refuted"}]}\n```',
   ].join('\n\n');
-  assert.deepEqual(listFromReplies(replies, 'verdicts').value.map((v) => v.candidate_id), ['cand_001', 'cand_002']);
+  assert.deepEqual(gatherReplies(replies, 'verdicts').value.verdicts.map((v) => v.candidate_id), ['cand_001', 'cand_002']);
   const rulings = '{"candidate_id": "cand_001", "upheld": true, "reason": "a"}\n{"candidate_id": "cand_002", "upheld": false, "reason": "b"}';
-  assert.deepEqual(listFromReplies(rulings, 'tieBreaks').value.map((r) => r.upheld), [true, false]);
-  assert.deepEqual(listFromReplies('[{"candidate_id": "x"}]', 'tieBreaks').value, [{ candidate_id: 'x' }]);
-  assert.equal(listFromReplies('no json here', 'verdicts'), undefined);
+  assert.deepEqual(gatherReplies(rulings, 'tie_breaks').value.tie_breaks.map((r) => r.upheld), [true, false]);
+  // One JSON document is passed on as it is, so the command's own shapes and refusals still apply.
+  assert.deepEqual(gatherReplies('{"rulings": []}', 'tie_breaks'), { value: { rulings: [] }, wrapped: false });
+  assert.equal(gatherReplies('no json here', 'verdicts'), undefined);
 });

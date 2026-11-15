@@ -30,17 +30,17 @@ export function jsonInReply(text: string): { value: unknown; wrapped: boolean } 
 }
 
 /**
- * One list gathered from several replies saved one after another in a file:
- * every top-level object's `key` array, or each object itself when it has no
- * such key (a tie-break ruling is a bare object). A file that is one JSON
- * document is read as it is. Undefined when no object is found.
+ * The document a command reads, from a file that may hold several replies
+ * saved one after another (one challenger or tie-breaker per finding). A text
+ * that is one JSON document is returned as it is, so every shape the command
+ * already accepts, and every refusal it already gives, stays the same.
+ * Otherwise every top-level object is read, and the `key` arrays they carry
+ * (or the objects themselves, for a ruling that is a bare object) are gathered
+ * into `{[key]: [...]}`. Undefined when the text holds no JSON object.
  */
-export function listFromReplies(text: string, key: string): { value: unknown[]; wrapped: boolean } | undefined {
+export function gatherReplies(text: string, key: string): { value: unknown; wrapped: boolean } | undefined {
   try {
-    const whole = JSON.parse(text) as unknown;
-    if (Array.isArray(whole)) return { value: whole, wrapped: false };
-    const list = (whole as Record<string, unknown> | null)?.[key];
-    if (Array.isArray(list)) return { value: list, wrapped: false };
+    return { value: JSON.parse(text) as unknown, wrapped: false };
   } catch {
     // Not one document: read each reply's objects below.
   }
@@ -52,9 +52,9 @@ export function listFromReplies(text: string, key: string): { value: unknown[]; 
     }
   });
   if (objects.length === 0) return undefined;
-  const value = objects.flatMap((object) => {
-    const list = (object as Record<string, unknown> | null)?.[key];
-    return Array.isArray(list) ? list : [object];
+  const list = objects.flatMap((object) => {
+    const inner = (object as Record<string, unknown> | null)?.[key];
+    return Array.isArray(inner) ? inner : [object];
   });
-  return { value, wrapped: true };
+  return { value: { [key]: list }, wrapped: true };
 }

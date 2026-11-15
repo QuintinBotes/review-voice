@@ -27465,12 +27465,9 @@ function jsonInReply(text5) {
   }
   return void 0;
 }
-function listFromReplies(text5, key2) {
+function gatherReplies(text5, key2) {
   try {
-    const whole = JSON.parse(text5);
-    if (Array.isArray(whole)) return { value: whole, wrapped: false };
-    const list3 = whole?.[key2];
-    if (Array.isArray(list3)) return { value: list3, wrapped: false };
+    return { value: JSON.parse(text5), wrapped: false };
   } catch {
   }
   const objects = jsonCandidates(text5).flatMap((candidate) => {
@@ -27481,11 +27478,11 @@ function listFromReplies(text5, key2) {
     }
   });
   if (objects.length === 0) return void 0;
-  const value = objects.flatMap((object) => {
-    const list3 = object?.[key2];
-    return Array.isArray(list3) ? list3 : [object];
+  const list3 = objects.flatMap((object) => {
+    const inner = object?.[key2];
+    return Array.isArray(inner) ? inner : [object];
   });
-  return { value, wrapped: true };
+  return { value: { [key2]: list3 }, wrapped: true };
 }
 
 // plugins/review-voice/src/cli/check-intent.ts
@@ -31701,7 +31698,7 @@ function reconcileCommand(argv) {
   const tieBreaksFile = flag(argv, "--tie-breaks");
   if (tieBreaksFile !== null) {
     try {
-      const replies = listFromReplies(readFileSync32(tieBreaksFile, "utf8"), "tieBreaks");
+      const replies = gatherReplies(readFileSync32(tieBreaksFile, "utf8"), "tie_breaks");
       if (replies === void 0) throw new Error("no tie-break JSON in it");
       tieBreaks = parseTieBreaks(replies.value);
     } catch (error) {
@@ -31799,12 +31796,12 @@ function challengeCommand(argv) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
-  const replies = listFromReplies(readStdin(), "verdicts");
+  const replies = gatherReplies(readStdin(), "verdicts");
   if (replies === void 0) {
     console.error(`No challenger verdict JSON found on stdin. Pipe {"verdicts": [...]}, or the challengers' replies one after another.`);
     return 2;
   }
-  verdicts = { verdicts: replies.value };
+  verdicts = replies.value;
   const headDir = flag(argv, "--cwd");
   const root = headDir === null ? null : resolve15(headDir);
   const readHead3 = root === null ? null : (path) => {

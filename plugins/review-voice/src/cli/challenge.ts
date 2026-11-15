@@ -4,7 +4,7 @@ import { repositoryRoot } from '../diff/acquire.ts';
 import { parseHunks, type FileHunks } from '../diff/hunks.ts';
 import { applyChallenge, candidatesById, challengePrompts, intentStatements, reproductionsById, type HeadReader } from '../verify/challenge.ts';
 import { readStdin, flag } from './shared.ts';
-import { listFromReplies } from '../agents/reply-json.ts';
+import { gatherReplies } from '../agents/reply-json.ts';
 import { terminalInert } from '../terminal.ts';
 
 /**
@@ -89,12 +89,12 @@ export function challengeCommand(argv: string[]): number {
   }
   // One challenger reply per finding, saved one after another as they came:
   // every verdict in them is gathered (#417).
-  const replies = listFromReplies(readStdin(), 'verdicts');
+  const replies = gatherReplies(readStdin(), 'verdicts');
   if (replies === undefined) {
     console.error('No challenger verdict JSON found on stdin. Pipe {"verdicts": [...]}, or the challengers\' replies one after another.');
     return 2;
   }
-  verdicts = { verdicts: replies.value };
+  verdicts = replies.value;
 
   // With --cwd, the decisive references are read in that checkout of the head.
   // Without it nothing says which tree holds the head, so they are not read.
