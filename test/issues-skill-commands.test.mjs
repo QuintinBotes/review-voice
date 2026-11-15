@@ -80,3 +80,20 @@ test('#390: an empty conventions result says where it looked', () =>
     assert.match(result.stderr, /No convention documents found\. Looked for: CLAUDE\.md, .*AGENTS\.md, .*\.claude\/skills\//);
     assert.ok(JSON.parse(result.stdout).searched.includes('CLAUDE.md'));
   }));
+
+test('#408: a required_context_missing entry in the wrong shape is named, with the reason and an example', () =>
+  withDir((dir) => {
+    for (const [entry, why] of [
+      [{ context: 'the deployed schema', reason: 'no access' }, 'entry 0 has the key "reason"'],
+      [{ context: 'the deployed schema', kind: 'required' }, 'entry 0 has kind "required"'],
+      [{ kind: 'blocking' }, 'entry 0 has no non-empty "context" string'],
+      [42, 'entry 0 is 42, neither a string nor an object'],
+    ]) {
+      const result = run(dir, ['check-verification'], JSON.stringify([{ ...ENTRY, required_context_missing: [entry] }]));
+      assert.equal(result.status, 2);
+      assert.ok(result.stderr.includes(why), result.stderr);
+      assert.match(result.stderr, /Example: \[/);
+    }
+    const ok = run(dir, ['check-verification'], JSON.stringify([{ ...ENTRY, required_context_missing: ['a', { context: 'b', kind: 'cosmetic' }, { context: 'c' }] }]));
+    assert.equal(ok.status, 0, ok.stderr);
+  }));

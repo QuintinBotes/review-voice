@@ -115,7 +115,7 @@ test('check-verification refuses a context entry with an unknown kind or no cont
     for (const entry of [{ context: KEY_TEXT, kind: 'minor' }, { kind: 'cosmetic' }, { context: '' }, { context: KEY_TEXT, why: 'x' }]) {
       const r = cli(['check-verification'], JSON.stringify([{ candidate_id: 'cand_001', required_context_missing: [entry] }]), dir);
       assert.equal(r.code, 2, JSON.stringify(entry));
-      assert.match(r.stderr, /required_context_missing must be an array of strings, or of \{"context": string, "kind": "blocking" \| "cosmetic"\}/);
+      assert.match(r.stderr, /required_context_missing must be an array of strings, or of \{"context": string, "kind"\?: "blocking" \| "cosmetic"\} objects/);
     }
     const ok = cli(['check-verification'], JSON.stringify([{ candidate_id: 'cand_001', required_context_missing: ['x', { context: KEY_TEXT, kind: 'cosmetic' }] }]), dir);
     assert.equal(ok.code, 0, ok.stderr);

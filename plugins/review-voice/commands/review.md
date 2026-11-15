@@ -597,7 +597,10 @@ decides:
   verdict at all, is discarded;
 - a candidate it rejected because of context it could not obtain, with at
   least one blocking entry in `required_context_missing` (a string, or an
-  object not marked `cosmetic`). **Set it aside**: it skips steps 3b and 3c and
+  object not marked `cosmetic`). Each entry is a string or
+  `{"context": "<what was missing>", "kind": "blocking" | "cosmetic"}` with
+  `kind` optional and no other key; `check-verification` names an entry in any
+  other shape. **Set it aside**: it skips steps 3b and 3c and
   is added to the candidates piped into step 4, where the cap rejects it and
   lists it under `unverified` for the owner. It is never eligible and never
   posted.
@@ -823,9 +826,14 @@ no `technical_confidence`. File type and category play no part.
 
 **A `question` is eligible when its premises are verified, even if its answer
 is not.** It is the one kind of candidate that can reach the editor without a
-verified answer: `score` does not gate it on confidence, and `verified: false`
-for an answer the verifier could not reach does not stop it when
-`premises_verified: true`. It fails closed otherwise: `verified: false` without
+verified answer: `score` does not hold it to the confidence floor of a
+stated finding, and `verified: false` for an answer the verifier could not
+reach does not stop it when `premises_verified: true`. One gate does apply. On
+a question, the verifier's `technical_confidence` is its confidence that the
+gap is real and material, so a question it marked `verified: false` at a
+confidence under 0.5 is more likely moot than not: it is listed in `belowGate`
+with `gate: confidence`, not asked, and the owner can still post it with
+`--promote` or `--as-question`. It fails closed otherwise: `verified: false` without
 `premises_verified: true`, `premises_verified: false`, or no verifier verdict
 at all rejects it, as does owner precedent against asking it, and at most two
 questions are asked per review. So pass a question to step 4 only when the

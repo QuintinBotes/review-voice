@@ -25047,7 +25047,10 @@ function verificationProblem(list3) {
     }
     const missing = entry["required_context_missing"] ?? entry["requiredContextMissing"];
     if (missing !== void 0 && !(Array.isArray(missing) && missing.every(isMissingContext))) {
-      return `${who}: required_context_missing must be an array of strings, or of {"context": string, "kind": ${CONTEXT_KINDS.map((kind) => `"${kind}"`).join(" | ")}}.`;
+      const index2 = Array.isArray(missing) ? missing.findIndex((item2) => !isMissingContext(item2)) : -1;
+      const item = index2 === -1 ? void 0 : missing[index2];
+      const why = index2 === -1 ? "it is not an array" : typeof item !== "object" || item === null || Array.isArray(item) ? `entry ${index2} is ${JSON.stringify(item)}, neither a string nor an object` : Object.keys(item).find((key2) => key2 !== "context" && key2 !== "kind") !== void 0 ? `entry ${index2} has the key ${JSON.stringify(Object.keys(item).find((key2) => key2 !== "context" && key2 !== "kind"))}` : typeof item["context"] !== "string" || item["context"] === "" ? `entry ${index2} has no non-empty "context" string` : `entry ${index2} has kind ${JSON.stringify(item["kind"])}`;
+      return `${who}: required_context_missing must be an array of strings, or of {"context": string, "kind"?: ${CONTEXT_KINDS.map((kind) => `"${kind}"`).join(" | ")}} objects with no other key; ${why}. Example: ["the deployed orders schema", {"context": "the display text of checkout.title", "kind": "cosmetic"}].`;
     }
     const partly = entry["partly_addressed"] ?? entry["partlyAddressed"];
     const partlyProblem = partly === void 0 ? null : partlyAddressedProblem(partly);
