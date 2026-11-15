@@ -60,7 +60,7 @@ const CODE_RULES: Rule<RiskMarkerKind>[] = [
   {
     kind: 'unsafe',
     in: 'code',
-    pattern: /\bunsafe\b|\beval\s*\(|\bexec\s*\(|\bdangerouslySetInnerHTML\b|\bMarshal\.|\bpickle\.loads\b/g,
+    pattern: /\bunsafe\b|\beval\s*\(|\bdangerouslySetInnerHTML\b|\bMarshal\.|\bpickle\.loads\b/g,
   },
   {
     // A loader that names SafeLoader on the same line is the safe form.
@@ -70,6 +70,17 @@ const CODE_RULES: Rule<RiskMarkerKind>[] = [
     accept: (_match, line) => !/SafeLoader/.test(line.code),
   },
 ];
+
+// A call that runs a command. In a script language `.exec(` on anything but a
+// child-process module is `RegExp.prototype.exec`, which every parser written
+// in one calls, so only a bare `exec(` or one on such a module is a marker
+// there (#375).
+const EXEC_RULE: Rule<RiskMarkerKind> = { kind: 'unsafe', in: 'code', pattern: /\bexec\s*\(/g };
+const SCRIPT_EXEC_RULE: Rule<RiskMarkerKind> = {
+  kind: 'unsafe',
+  in: 'code',
+  pattern: /(?<![\w$.])exec\s*\(|\b(?:child_process|childProcess|cp)\.exec\s*\(/g,
+};
 
 // `path(` routes a URL in a Django `urls` file, and means nothing elsewhere.
 const URL_RULE: Rule<RiskMarkerKind> = { kind: 'new-route', in: 'code', pattern: /(?<![\w.])path\s*\(/g };
@@ -120,7 +131,8 @@ function queryRule(quotes: string, triple: boolean): Rule<RiskMarkerKind> {
 
 function language(quotes: string, lineComment: string, blockComments: boolean, regexLiterals = false, tripleQuotes = false): Language<RiskMarkerKind> {
   return {
-    rules: [...CODE_RULES, queryRule(quotes, tripleQuotes)],
+    // Only the script languages have regex literals, so the flag names them.
+    rules: [...CODE_RULES, regexLiterals ? SCRIPT_EXEC_RULE : EXEC_RULE, queryRule(quotes, tripleQuotes)],
     quotes,
     lineComment,
     blockComments,
@@ -164,16 +176,40 @@ function kindsIn(text: string, lang: Language<RiskMarkerKind>, urls: boolean): R
   return [...kinds];
 }
 
+// The interpreter a shebang names, for a script with no extension.
+const INTERPRETERS: [RegExp, string][] = [
+  [/\b(?:node|bun|deno)\b/, '.js'],
+  [/\bpython[\d.]*\b/, '.py'],
+  [/\bruby\b/, '.rb'],
+  [/\bphp\b/, '.php'],
+];
+
+/**
+ * The language of a file: by extension, or for a file with none by the shebang
+ * on its first line. The diff shows that line only when the hunk starts at
+ * line 1, as it does for a new script; any other extensionless file has none.
+ */
+function languageOf(path: string, firstLine: { line: number; text: string } | undefined): Language<RiskMarkerKind> | undefined {
+  const extension = extname(path).toLowerCase();
+  if (extension !== '') return LANGUAGES[extension];
+  if (firstLine === undefined || firstLine.line !== 1 || !firstLine.text.startsWith('#!')) return undefined;
+  const interpreter = INTERPRETERS.find(([pattern]) => pattern.test(firstLine.text));
+  return interpreter === undefined ? undefined : LANGUAGES[interpreter[1]];
+}
+
 /**
  * Risk markers on the lines the diff adds to the given files, per language by
- * extension; any other extension gets none. A pattern that sits in a string or
+ * extension, or by shebang for a new script without one; any other file gets none. A pattern that sits in a string or
  * a comment is not one, and neither is a SQL keyword in a string that nothing
  * is joined to. At most 20 per file, earliest first, sorted by path then line.
  */
 export function findRiskMarkers(diff: string, paths: readonly string[]): RiskMarker[] {
   const found: RiskMarker[] = [];
+  // A file's language, settled by its first hunk and kept for the rest.
+  const languages = new Map<string, Language<RiskMarkerKind> | undefined>();
   for (const hunk of countHunks(diff, new Set(paths))) {
-    const lang = LANGUAGES[extname(hunk.path).toLowerCase()];
+    if (!languages.has(hunk.path)) languages.set(hunk.path, languageOf(hunk.path, hunk.added[0]));
+    const lang = languages.get(hunk.path);
     if (lang === undefined) continue;
     const urls = /^urls?$/i.test(basename(hunk.path, extname(hunk.path)));
     for (const { line, text } of hunk.added) {

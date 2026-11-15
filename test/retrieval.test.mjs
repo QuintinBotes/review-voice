@@ -194,3 +194,32 @@ test('recent evidence outranks older evidence of the same kind', () => {
     },
   );
 });
+
+// #376: the store is one per machine, so a review of a personal repository
+// was scored against history another configuration synced for another
+// organisation.
+
+test('#376: with an allowlist, precedents come only from the reviewed repository and the allowlisted ones', () => {
+  const body = 'The response is returned before the transaction commits, so a retry mints two tokens.';
+  withCorpus(
+    [
+      event('k1', body, { repository: 'me/tool' }),
+      event('k2', body, { repository: 'me/other' }),
+      event('k3', body, { repository: 'Work-Org/api' }),
+      event('k4', body, { repository: 'work_org/web' }),
+      event('k5', body, { repository: 'workXorg/web' }),
+    ],
+    (db) => {
+      const from = (extra) =>
+        retrievePrecedents(db, { text: 'response before transaction commit duplicate tokens', maxPositive: 9, maxNegative: 2, now: NOW, ...extra })
+          .map((p) => p.repository)
+          .sort();
+      assert.equal(from({}).length, 5, 'no configuration read, nothing filtered');
+      assert.deepEqual(from({ repository: 'me/tool', allowlist: [] }), ['me/tool']);
+      assert.deepEqual(from({ allowlist: [] }), []);
+      assert.deepEqual(from({ repository: 'me/tool', allowlist: ['me/other'] }), ['me/other', 'me/tool']);
+      assert.deepEqual(from({ allowlist: ['work-org/*'] }), ['Work-Org/api'], 'an owner entry, whatever its case');
+      assert.deepEqual(from({ allowlist: ['work_org/*'] }), ['work_org/web'], 'an underscore is not a wildcard');
+    },
+  );
+});
