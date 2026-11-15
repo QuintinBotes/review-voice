@@ -46,6 +46,12 @@ export interface DiffResult {
   exclusions: ExclusionSummary | null;
   /** Unified diff restricted to reviewable files. Empty when nothing qualifies. */
   diff: string;
+  /**
+   * On `--base`: the commits the diff was taken between. The patch is
+   * `base...HEAD`, which starts at the merge base, so that is the ref every
+   * later step reads the starting tree at (#386). Absent in the other modes.
+   */
+  refs?: { base: { sha: string; available: boolean }; head: { sha: string; available: boolean }; mergeBase: string | null };
 }
 
 export class GitError extends Error {}
@@ -317,11 +323,26 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
     if (path !== undefined && path !== '/dev/null') hunkPaths.add(path);
   }
 
+  const head = git(['rev-parse', 'HEAD'], root).trim();
+  let refs: DiffResult['refs'];
+  if (options.base !== null) {
+    // The diff above already read both commits, so they are here.
+    const baseSha = git(['rev-parse', `${options.base}^{commit}`], root).trim();
+    let mergeBase: string | null = null;
+    try {
+      mergeBase = git(['merge-base', baseSha, head], root).trim() || null;
+    } catch {
+      // Unrelated histories have none.
+    }
+    refs = { base: { sha: baseSha, available: true }, head: { sha: head, available: true }, mergeBase };
+  }
+
   return {
     repositoryRoot: root,
     mode,
     base: options.base,
-    head: git(['rev-parse', 'HEAD'], root).trim(),
+    ...(refs === undefined ? {} : { refs }),
+    head,
     files,
     reviewedFileCount: reviewable.length,
     // Counted from the diff itself, not from the file list: a file can be

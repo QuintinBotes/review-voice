@@ -572,6 +572,7 @@ export function scoreCommand(argv: string[]): number {
       const precedents = retrievePrecedents(db, {
         text: `${candidate.claim} ${candidate.failureMode}`,
         repository: flag(argv, '--repository') ?? undefined,
+        allowlist: loadedConfig?.allowlist,
         filePath: candidate.path,
         // A comment on the pull request under review is the conversation, not
         // precedent, and it is the route by which a posted review comes back

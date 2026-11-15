@@ -24,6 +24,8 @@ export interface RetrieveQuery {
   /** The candidate's claim and failure mode, used as the search text. */
   text: string;
   repository?: string | undefined;
+  /** `repositories.include` of the configuration in effect; see `scopeClause`. */
+  allowlist?: readonly string[] | undefined;
   filePath?: string | undefined;
   language?: string | undefined;
   /**
@@ -81,9 +83,31 @@ interface Row {
 
 const EXCERPT_CHARS = 220;
 
+/**
+ * The repositories a query may take precedents from: its own, and the ones the
+ * configuration in effect allowlists (`owner/name`, or `owner/*`). The store
+ * is one per machine, so without this a review scored against whatever
+ * history any other configuration had synced, another organisation's
+ * included (#376). No allowlist given means no configuration was read, and
+ * nothing is filtered.
+ */
+function scopeClause(query: RetrieveQuery): { sql: string; params: string[] } {
+  if (query.allowlist === undefined) return { sql: '', params: [] };
+  const exact = query.allowlist.filter((entry) => !entry.endsWith('/*'));
+  if (query.repository !== undefined) exact.push(query.repository);
+  // An underscore is a LIKE wildcard and is legal in a GitHub owner name.
+  const owners = query.allowlist.filter((entry) => entry.endsWith('/*')).map((entry) => `${entry.slice(0, -1).replace(/[\\%_]/g, '\\$&')}%`);
+  const clauses = [
+    ...(exact.length === 0 ? [] : [`e.repository COLLATE NOCASE IN (${exact.map(() => '?').join(', ')})`]),
+    ...owners.map(() => "e.repository LIKE ? ESCAPE '\\'"),
+  ];
+  return { sql: `AND (${clauses.length === 0 ? '0' : clauses.join(' OR ')})`, params: [...exact, ...owners] };
+}
+
 export function retrievePrecedents(db: Database, query: RetrieveQuery): Precedent[] {
   const match = toMatchQuery(query.text);
   if (match.length === 0) return [];
+  const scope = scopeClause(query);
 
   let rows: Row[];
   try {
@@ -100,6 +124,7 @@ export function retrievePrecedents(db: Database, query: RetrieveQuery): Preceden
          WHERE review_events_fts MATCH ?
            AND (? IS NULL OR e.pull_number IS NULL OR e.pull_number != ?
                 OR (? IS NOT NULL AND e.repository != ?))
+           ${scope.sql}
          ORDER BY rank
          LIMIT 200`,
       )
@@ -109,6 +134,7 @@ export function retrievePrecedents(db: Database, query: RetrieveQuery): Preceden
         query.excludePullNumber ?? null,
         query.repository ?? null,
         query.repository ?? null,
+        ...scope.params,
       ) as unknown as Row[];
   } catch {
     // An unparseable query is an empty result, not a failed review.

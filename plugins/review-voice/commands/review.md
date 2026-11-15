@@ -84,6 +84,9 @@ request's commits are not in the clone unless they were fetched. `refs.base`
 and `refs.head` each say whether that commit is actually readable, established
 by asking git rather than by assuming a fetch worked.
 
+A `--base` run fills `refs` and `mergeBase` too: both commits are local, and
+`mergeBase` is where the branch left `<ref>`, which is where its patch starts.
+
 `refs.mergeBase` (also `mergeBase` in the summary) is the commit the pull
 request branched from. `base` stays the base branch's tip, which is not an
 ancestor of the head once that branch has moved on, so `git diff base head`
@@ -313,7 +316,13 @@ This repository ships .review-voice/policy.yaml, which is not active. Run /revie
 That line is the single permitted exception to findings-only output, and only
 when a proposal is actually pending.
 
-Report anything in `warnings` the same way.
+Report anything in `warnings` the same way, and `notSetUp` when it is not
+null. It says the repository is not set up (no owner reviewer and an empty
+allowlist): the review still runs, scored without review history from any
+other repository, since `score` and `retrieve` read precedents only from the
+repository under review and the ones `repositories.include` lists.
+
+Keep `claudeCodeVersion` for step 6.
 
 ## Step 1c - Collect static evidence
 
@@ -1066,7 +1075,13 @@ stray directory and another project's notes took the reviewed count from 11 to
   --evidence <tmpdir>/evidence.json --symbols <tmpdir>/symbols.json --conventions <tmpdir>/conventions.json --origin interactive` with the validated output on
   stdin. `--origin interactive` is the default and is spelled out so the record says what it means:
   this review ran inside your own Claude Code session, which may be the session that wrote the
-  change, so it is stored as not independent. `explain` and `status` show it. Only when step 3d produced a non-empty `bodyFindings` array, add
+  change, so it is stored as not independent. `explain` and `status` show it.
+  When `claudeCodeVersion` from step 1b is not null, add
+  `--claude-version "<claudeCodeVersion> (Claude Code)"`, so the record says
+  which Claude Code ran the agents. Do not pass `--mode`: it is the cost mode
+  of `RV review` (fast, standard or thorough), which this command does not
+  run in, so the record's `mode` is null on purpose and is not the diff's
+  `mode`. Only when step 3d produced a non-empty `bodyFindings` array, add
   `--body-findings <tmpdir>/simplification-body.json`. Never pass that flag
   for an off, null, or rejected simplification pass.
 

@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { GitError, repositoryRoot } from '../diff/acquire.ts';
 import { openDatabase } from '../store/db.ts';
 import { loadConfig } from '../policy/load.ts';
@@ -19,12 +19,27 @@ export function contextCommand(): number {
     }
     const configPath = join(root, '.review-voice', 'config.yaml');
     const policy = resolvePolicy(config.layers);
+    // A review of a repository nobody set up used to proceed without a word,
+    // scored against whatever history the machine's store held (#376).
+    // Its own field: `warnings` are the configuration's load warnings, which `diff` prints too.
+    const notSetUp =
+      config.ownerReviewer === null && config.allowlist.length === 0
+        ? 'Review Voice is not set up for this repository: its configuration names no identity.owner_reviewer ' +
+          'and no repositories.include. Run /review-voice:init. Until then the review is scored without ' +
+          'review history from any other repository.'
+        : null;
     console.log(
       JSON.stringify(
         {
           repositoryRoot: root,
+          // The Claude Code version of the session running this review, for
+          // `record --claude-version`, which has no other way to learn it
+          // (#386). Claude Code names its versioned binary in this variable;
+          // null when it is unset or is not a version.
+          claudeCodeVersion: /^\d+\.\d+\.\d+[\w.-]*$/.exec(basename(process.env['CLAUDE_CODE_EXECPATH'] ?? ''))?.[0] ?? null,
           ownerReviewer: config.ownerReviewer,
           allowlist: config.allowlist,
+          notSetUp,
           staticEvidence: config.staticEvidence,
           // The driver reads the runners from context.json, as it reads the configured check names.
           reproduction: { enabled: config.reproduction.enabled, runners: config.reproduction.runners },

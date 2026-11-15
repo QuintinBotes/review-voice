@@ -805,11 +805,23 @@ function acquireDiff(options) {
     const path = match[1];
     if (path !== void 0 && path !== "/dev/null") hunkPaths.add(path);
   }
+  const head = git(["rev-parse", "HEAD"], root).trim();
+  let refs;
+  if (options.base !== null) {
+    const baseSha = git(["rev-parse", `${options.base}^{commit}`], root).trim();
+    let mergeBase = null;
+    try {
+      mergeBase = git(["merge-base", baseSha, head], root).trim() || null;
+    } catch {
+    }
+    refs = { base: { sha: baseSha, available: true }, head: { sha: head, available: true }, mergeBase };
+  }
   return {
     repositoryRoot: root,
     mode,
     base: options.base,
-    head: git(["rev-parse", "HEAD"], root).trim(),
+    ...refs === void 0 ? {} : { refs },
+    head,
     files: files2,
     reviewedFileCount: reviewable.length,
     // Counted from the diff itself, not from the file list: a file can be
@@ -22540,18 +22552,19 @@ function withoutReproductionFiles(evidence, reproductions) {
 }
 var squash = (value) => value.replace(/\s+/g, " ").trim();
 var MIN_QUOTE = 6;
-function checkDecisive(verdict2, read, changed) {
+function checkDecisive(verdict2, read, touched, skip2) {
   const evidence = [];
   for (const [index, entry] of verdict2.decisive_evidence.entries()) {
     const parts = /^(.*):(\d+)(?:-(\d+))?$/.exec(entry.replace(/[\p{Cf}`]/gu, "").trim());
     const path = parts === null ? "" : posix5.normalize(parts[1].trim());
-    if (parts === null || isAbsolute4(path)) {
+    if (parts === null || isAbsolute4(path) || skip2(entry)) {
       evidence.push(entry);
       continue;
     }
-    const lines2 = read(path);
+    const file2 = path.includes("/") ? path : touched.find((known) => posix5.basename(known) === path) ?? path;
+    const lines2 = read(file2);
     if (lines2 === null) {
-      if (!changed(path)) return { problem: `${entry} names a file that is not at the head` };
+      if (!touched.includes(file2)) return { problem: `${entry} names a file that is not at the head` };
       evidence.push(entry);
       continue;
     }
@@ -22646,8 +22659,9 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
     else if (verdict2.verdict === "refuted") hold(finding, id, "challenge-refuted", verdict2.reason);
     else if (readHead3 !== null) {
       const causedBy = isRecord4(finding["causedBy"]) ? finding["causedBy"]["path"] : void 0;
-      const changed = (path) => hunks.has(path) || path === finding["path"] || path === causedBy;
-      const checked = checkDecisive(verdict2, readHead3, changed);
+      const touched = [String(finding["path"]), ...typeof causedBy === "string" ? [causedBy] : [], ...hunks.keys()];
+      const citable = new Set(withoutReproductionFiles(verdict2.decisive_evidence, reproductions));
+      const checked = checkDecisive(verdict2, readHead3, touched, (entry) => !citable.has(entry));
       if ("problem" in checked) hold(finding, id, "challenge-partly", `decisive evidence refused: ${checked.problem}`);
       else verdict2.decisive_evidence = checked.evidence;
     }
@@ -25432,9 +25446,21 @@ var STOPWORDS = /* @__PURE__ */ new Set([
   "used"
 ]);
 var EXCERPT_CHARS = 220;
+function scopeClause(query) {
+  if (query.allowlist === void 0) return { sql: "", params: [] };
+  const exact = query.allowlist.filter((entry) => !entry.endsWith("/*"));
+  if (query.repository !== void 0) exact.push(query.repository);
+  const owners = query.allowlist.filter((entry) => entry.endsWith("/*")).map((entry) => `${entry.slice(0, -1).replace(/[\\%_]/g, "\\$&")}%`);
+  const clauses = [
+    ...exact.length === 0 ? [] : [`e.repository COLLATE NOCASE IN (${exact.map(() => "?").join(", ")})`],
+    ...owners.map(() => "e.repository LIKE ? ESCAPE '\\'")
+  ];
+  return { sql: `AND (${clauses.length === 0 ? "0" : clauses.join(" OR ")})`, params: [...exact, ...owners] };
+}
 function retrievePrecedents(db, query) {
   const match = toMatchQuery(query.text);
   if (match.length === 0) return [];
+  const scope = scopeClause(query);
   let rows;
   try {
     rows = db.prepare(
@@ -25449,6 +25475,7 @@ function retrievePrecedents(db, query) {
          WHERE review_events_fts MATCH ?
            AND (? IS NULL OR e.pull_number IS NULL OR e.pull_number != ?
                 OR (? IS NOT NULL AND e.repository != ?))
+           ${scope.sql}
          ORDER BY rank
          LIMIT 200`
     ).all(
@@ -25456,7 +25483,8 @@ function retrievePrecedents(db, query) {
       query.excludePullNumber ?? null,
       query.excludePullNumber ?? null,
       query.repository ?? null,
-      query.repository ?? null
+      query.repository ?? null,
+      ...scope.params
     );
   } catch {
     return [];
@@ -25543,6 +25571,7 @@ function retrieveCommand(argv) {
     const precedents = retrievePrecedents(db, {
       text: text5,
       repository: flag(argv, "--repository") ?? void 0,
+      allowlist: repositoryConfig()?.allowlist,
       filePath: flag(argv, "--path") ?? void 0,
       language: flag(argv, "--language") ?? void 0,
       maxPositive: numericFlag(argv, "--max-positive", 3) ?? 3,
@@ -25683,7 +25712,7 @@ function anchorsCommand(argv) {
 
 // plugins/review-voice/src/cli/context.ts
 import { existsSync as existsSync14 } from "node:fs";
-import { join as join21 } from "node:path";
+import { basename as basename6, join as join21 } from "node:path";
 
 // plugins/review-voice/src/policy/schema.ts
 function resolvePolicy(layers) {
@@ -25742,12 +25771,19 @@ function contextCommand() {
     }
     const configPath = join21(root, ".review-voice", "config.yaml");
     const policy = resolvePolicy(config2.layers);
+    const notSetUp = config2.ownerReviewer === null && config2.allowlist.length === 0 ? "Review Voice is not set up for this repository: its configuration names no identity.owner_reviewer and no repositories.include. Run /review-voice:init. Until then the review is scored without review history from any other repository." : null;
     console.log(
       JSON.stringify(
         {
           repositoryRoot: root,
+          // The Claude Code version of the session running this review, for
+          // `record --claude-version`, which has no other way to learn it
+          // (#386). Claude Code names its versioned binary in this variable;
+          // null when it is unset or is not a version.
+          claudeCodeVersion: /^\d+\.\d+\.\d+[\w.-]*$/.exec(basename6(process.env["CLAUDE_CODE_EXECPATH"] ?? ""))?.[0] ?? null,
           ownerReviewer: config2.ownerReviewer,
           allowlist: config2.allowlist,
+          notSetUp,
           staticEvidence: config2.staticEvidence,
           // The driver reads the runners from context.json, as it reads the configured check names.
           reproduction: { enabled: config2.reproduction.enabled, runners: config2.reproduction.runners },
@@ -26119,14 +26155,14 @@ function followUpsCommand(argv) {
 }
 
 // plugins/review-voice/src/consent/purge.ts
-function scopeClause(scope) {
+function scopeClause2(scope) {
   if (scope.all === true) return { where: "1=1", params: [] };
   if (scope.repository !== void 0) return { where: "repository = ?", params: [scope.repository] };
   if (scope.before !== void 0) return { where: "created_at < ?", params: [scope.before] };
   return { where: "1=0", params: [] };
 }
 function previewPurge(db, scope) {
-  const { where, params } = scopeClause(scope);
+  const { where, params } = scopeClause2(scope);
   const events = db.prepare(`SELECT COUNT(*) AS n FROM review_events WHERE ${where}`).get(...params).n;
   const byRepository = Object.fromEntries(
     db.prepare(`SELECT repository, COUNT(*) AS n FROM review_events WHERE ${where} GROUP BY repository`).all(...params).map((row) => [row.repository, row.n])
@@ -26140,7 +26176,7 @@ function previewPurge(db, scope) {
 }
 function executePurge(db, scope, runDirectories) {
   const preview = previewPurge(db, scope);
-  const { where, params } = scopeClause(scope);
+  const { where, params } = scopeClause2(scope);
   db.exec("BEGIN");
   try {
     db.prepare(`DELETE FROM review_events WHERE ${where}`).run(...params);
@@ -27361,7 +27397,7 @@ import {
   writeFileSync as writeFileSync10
 } from "node:fs";
 import { tmpdir as tmpdir3 } from "node:os";
-import { basename as basename6, dirname as dirname15, join as join24, relative as relative3, resolve as resolve8, sep as sep4 } from "node:path";
+import { basename as basename7, dirname as dirname15, join as join24, relative as relative3, resolve as resolve8, sep as sep4 } from "node:path";
 var AUTHOR_NAME = "review-voice-fixtures";
 var AUTHOR_EMAIL = "fixtures@example.com";
 var COMMIT_DATE = "2026-01-01T00:00:00Z";
@@ -27509,7 +27545,7 @@ function patchMoves(normalised2) {
   return moves;
 }
 function fillerFor(path) {
-  const extension = basename6(path).includes(".") ? basename6(path).split(".").pop().toLowerCase() : "";
+  const extension = basename7(path).includes(".") ? basename7(path).split(".").pop().toLowerCase() : "";
   const hash2 = ["yml", "yaml", "tf", "py", "rb", "sh", "toml", "ini", "cfg", "conf", "md", "txt"];
   return hash2.includes(extension) ? "# filler" : "// filler";
 }
@@ -27612,7 +27648,7 @@ function git3(cwd, label2, args) {
   }
 }
 function materializeFixture(fixtureDir, targetDir, options = {}) {
-  const label2 = options.name ?? `${basename6(dirname15(resolve8(fixtureDir)))}/${basename6(resolve8(fixtureDir))}`;
+  const label2 = options.name ?? `${basename7(dirname15(resolve8(fixtureDir)))}/${basename7(resolve8(fixtureDir))}`;
   const patchPath2 = join24(fixtureDir, "diff.patch");
   if (!existsSync16(patchPath2)) throw new Error(`${label2}: fixture has no diff.patch`);
   if (existsSync16(targetDir) && readdirSync5(targetDir).length > 0) {
@@ -33034,6 +33070,7 @@ function scoreCommand(argv) {
       const precedents = retrievePrecedents(db, {
         text: `${candidate.claim} ${candidate.failureMode}`,
         repository: flag(argv, "--repository") ?? void 0,
+        allowlist: loadedConfig?.allowlist,
         filePath: candidate.path,
         // A comment on the pull request under review is the conversation, not
         // precedent, and it is the route by which a posted review comes back
