@@ -21097,7 +21097,9 @@ var COMMAND_HELP = {
       "  anchor by the reanchor rules (a refused move holds it as challenge-partly); partly holds it",
       "  as challenge-partly and refuted as challenge-refuted. A question confirmed with answered:",
       "  true is stated at minor, with the challenger's reason as challengeAnswer; nothing raises it",
-      "  further, and a question posted with score --as-question stays one.",
+      "  further, and a question posted with score --as-question stays one. A partly verdict may",
+      "  carry narrowed_claim and narrowed_failure_mode; --post-narrowed <id> (repeatable) posts that",
+      "  finding with the narrowed text instead of holding it, at its tier.",
       "",
       "Flags:",
       "  --scores <path>        The JSON `score` printed (required)",
@@ -22550,6 +22552,14 @@ function parseChallengeVerdicts(raw) {
     if (lineOk && corrected !== void 0) problems.push(`${name}: line_ok true contradicts corrected_line`);
     if (label2 !== "confirmed" && reason2.length === 0) problems.push(`${name}: ${String(label2)} gives no reason`);
     const answered = label2 === "confirmed" && entry["answered"] === true;
+    const narrowedClaim = entry["narrowed_claim"];
+    const narrowedFailure = entry["narrowed_failure_mode"];
+    const narrowing = narrowedClaim !== void 0 || narrowedFailure !== void 0;
+    const fit = (value) => typeof value === "string" && value.trim() !== "" && value.length <= 600;
+    if (narrowing && (label2 !== "partly" || !fit(narrowedClaim) || !fit(narrowedFailure))) {
+      problems.push(`${name}: narrowed_claim and narrowed_failure_mode go together, on partly only, each 1 to 600 characters`);
+    }
+    if (narrowing && label2 === "partly" && evidence.length === 0) problems.push(`${name}: a narrowed claim names no decisive_evidence`);
     if (answered && reason2.length === 0) problems.push(`${name}: answered gives no reason, which is the answer`);
     verdicts.push({
       candidate_id: id,
@@ -22559,6 +22569,7 @@ function parseChallengeVerdicts(raw) {
       decisive_evidence: evidence,
       ...quotes === void 0 ? {} : { decisive_quotes: quotes },
       ...answered ? { answered } : {},
+      ...label2 === "partly" && fit(narrowedClaim) && fit(narrowedFailure) ? { narrowed_claim: narrowedClaim.trim(), narrowed_failure_mode: narrowedFailure.trim() } : {},
       reason: reason2
     });
   });
@@ -22627,7 +22638,7 @@ function stateAnswered(document, answers) {
   eligible.sort((a, b) => rank2(a) - rank2(b) || (finalScore.get(idOf2(b)) ?? 0) - (finalScore.get(idOf2(a)) ?? 0));
   return { ...document, scores, eligible };
 }
-function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = /* @__PURE__ */ new Map(), readHead3 = null) {
+function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = /* @__PURE__ */ new Map(), readHead3 = null, postNarrowed = /* @__PURE__ */ new Set()) {
   if (!isRecord4(scores) || !Array.isArray(scores["scores"]) || !Array.isArray(scores["eligible"])) {
     return { ok: false, problems: ["expected the JSON `RV score` printed, with `scores` and `eligible` lists"] };
   }
@@ -22645,8 +22656,12 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
   if (missing.length > 0) problems.push(`no verdict for eligible ${missing.join(", ")}`);
   const unknown = [...byId.keys()].filter((id) => !eligibleIds.includes(id));
   if (unknown.length > 0) problems.push(`verdict for ${unknown.join(", ")}, which is not eligible`);
+  for (const id of postNarrowed) {
+    if (byId.get(id)?.narrowed_claim === void 0) problems.push(`--post-narrowed ${id}: its challenger gave no narrowed claim on a partly verdict`);
+  }
   if (problems.length > 0) return { ok: false, problems };
-  const summary2 = { confirmed: [], held: [], moved: [], answered: [] };
+  const summary2 = { confirmed: [], held: [], moved: [], answered: [], narrowed: [] };
+  const posting = (verdict2) => verdict2.verdict === "confirmed" || verdict2.verdict === "partly" && postNarrowed.has(verdict2.candidate_id);
   const held = [];
   const holdReasons = /* @__PURE__ */ new Map();
   const hold = (finding, id, verdict2, reason2) => {
@@ -22678,8 +22693,10 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
   for (const finding of eligible) {
     const id = idOf2(finding);
     const verdict2 = byId.get(id);
-    if (verdict2.verdict === "partly") hold(finding, id, "challenge-partly", verdict2.reason);
-    else if (verdict2.verdict === "refuted") hold(finding, id, "challenge-refuted", verdict2.reason);
+    if (verdict2.verdict === "partly" && !posting(verdict2)) {
+      const narrowed = verdict2.narrowed_claim === void 0 ? "" : ` Narrowed claim: "${verdict2.narrowed_claim}" (post it with challenge --post-narrowed ${id}).`;
+      hold(finding, id, "challenge-partly", `${verdict2.reason}${narrowed}`);
+    } else if (verdict2.verdict === "refuted") hold(finding, id, "challenge-refuted", verdict2.reason);
     else if (readHead3 !== null) {
       const causedBy = isRecord4(finding["causedBy"]) ? finding["causedBy"]["path"] : void 0;
       const touched = [String(finding["path"]), ...typeof causedBy === "string" ? [causedBy] : [], ...hunks.keys()];
@@ -22697,7 +22714,7 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
   for (const finding of eligible) {
     const id = idOf2(finding);
     const verdict2 = byId.get(id);
-    if (verdict2.verdict !== "confirmed" || holdReasons.has(id)) continue;
+    if (!posting(verdict2) || holdReasons.has(id)) continue;
     if (verdict2.corrected_line === void 0) {
       summary2.confirmed.push(id);
       continue;
@@ -22717,6 +22734,17 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
       scores: document["scores"].map((e) => isRecord4(e) && idOf2(e) === id ? { ...e, ...heldAs } : e),
       eligible: document["eligible"].filter((e) => !(isRecord4(e) && idOf2(e) === id))
     };
+  }
+  const narrowedIds = eligible.map((finding) => idOf2(finding)).filter((id) => byId.get(id)?.verdict === "partly" && postNarrowed.has(id) && !holdReasons.has(id));
+  if (narrowedIds.length > 0) {
+    const restate = (entry) => {
+      if (!isRecord4(entry)) return entry;
+      const verdict2 = byId.get(idOf2(entry) ?? "");
+      if (verdict2 === void 0 || !narrowedIds.includes(verdict2.candidate_id)) return entry;
+      return { ...entry, claim: verdict2.narrowed_claim, failureMode: verdict2.narrowed_failure_mode, narrowedByChallenge: { claim: entry["claim"] ?? null } };
+    };
+    document = { ...document, eligible: document["eligible"].map(restate) };
+    summary2.narrowed.push(...narrowedIds);
   }
   const ownerAsked = new Set(scores["scores"].filter((e) => isRecord4(e) && e["ownerQuestion"] === true).map((e) => idOf2(e)));
   const answers = /* @__PURE__ */ new Map();
@@ -25084,6 +25112,14 @@ function verificationProblem(list3) {
     if (alsoAt !== void 0 && !(Array.isArray(alsoAt) && alsoAt.length <= 10 && alsoAt.every((ref) => typeof ref === "string" && /^\S(?:.*\S)?:\d+(?:-\d+)?$/.test(ref)))) {
       return `${who}: also_at must be a list of at most 10 "path:line" references.`;
     }
+    const corrections = entry["corrections"];
+    const correction = (item) => {
+      const fix = item;
+      return typeof fix === "object" && fix !== null && !Array.isArray(fix) && Object.keys(fix).every((key2) => key2 === "wrong" || key2 === "right") && typeof fix["wrong"] === "string" && fix["wrong"].trim() !== "" && fix["wrong"].length <= 300 && typeof fix["right"] === "string" && fix["right"].length <= 300;
+    };
+    if (corrections !== void 0 && !(Array.isArray(corrections) && corrections.length <= 10 && corrections.every(correction))) {
+      return `${who}: corrections must be a list of at most 10 {"wrong": "<text in the candidate>", "right": "<what it should say>"} objects, each string at most 300 characters.`;
+    }
     const missing = entry["required_context_missing"] ?? entry["requiredContextMissing"];
     if (missing !== void 0 && !(Array.isArray(missing) && missing.every(isMissingContext))) {
       const index2 = Array.isArray(missing) ? missing.findIndex((item2) => !isMissingContext(item2)) : -1;
@@ -27412,6 +27448,47 @@ function conventionsCommand(argv) {
 
 // plugins/review-voice/src/cli/check-intent.ts
 import { readFileSync as readFileSync21 } from "node:fs";
+
+// plugins/review-voice/src/agents/reply-json.ts
+function jsonInReply(text5) {
+  const fences = [...text5.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)].map((match) => match[1]);
+  const spans = [
+    ["[", "]"],
+    ["{", "}"]
+  ].map(([open, close]) => [text5.indexOf(open), text5.lastIndexOf(close)]).filter(([from, to]) => from !== -1 && to > from).sort((a, b) => a[0] - b[0]).map(([from, to]) => text5.slice(from, to + 1));
+  for (const [index, candidate] of [text5, ...fences, ...spans].entries()) {
+    try {
+      return { value: JSON.parse(candidate), wrapped: index > 0 };
+    } catch {
+      continue;
+    }
+  }
+  return void 0;
+}
+function listFromReplies(text5, key2) {
+  try {
+    const whole = JSON.parse(text5);
+    if (Array.isArray(whole)) return { value: whole, wrapped: false };
+    const list3 = whole?.[key2];
+    if (Array.isArray(list3)) return { value: list3, wrapped: false };
+  } catch {
+  }
+  const objects = jsonCandidates(text5).flatMap((candidate) => {
+    try {
+      return [JSON.parse(candidate)];
+    } catch {
+      return [];
+    }
+  });
+  if (objects.length === 0) return void 0;
+  const value = objects.flatMap((object) => {
+    const list3 = object?.[key2];
+    return Array.isArray(list3) ? list3 : [object];
+  });
+  return { value, wrapped: true };
+}
+
+// plugins/review-voice/src/cli/check-intent.ts
 function checkIntentCommand(argv) {
   const threadFile = flag(argv, "--thread");
   if (threadFile === null) {
@@ -27434,7 +27511,9 @@ function checkIntentCommand(argv) {
   }
   let document;
   try {
-    document = JSON.parse(readStdin());
+    const reply = jsonInReply(readStdin());
+    if (reply === void 0) throw new Error("no JSON");
+    document = reply.value;
   } catch {
     console.error('Expected {"statements": [...]} on stdin.');
     return 2;
@@ -31345,21 +31424,6 @@ function keptCandidateIds(value) {
   const list3 = Array.isArray(value) ? value : Array.isArray(record3?.kept) ? record3.kept : Array.isArray(record3?.candidates) ? record3.candidates : [];
   return list3.map((entry) => entry?.candidate_id).filter((id) => typeof id === "string");
 }
-function jsonInReply(text5) {
-  const fences = [...text5.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)].map((match) => match[1]);
-  const spans = [
-    ["[", "]"],
-    ["{", "}"]
-  ].map(([open, close]) => [text5.indexOf(open), text5.lastIndexOf(close)]).filter(([from, to]) => from !== -1 && to > from).sort((a, b) => a[0] - b[0]).map(([from, to]) => text5.slice(from, to + 1));
-  for (const [index, candidate] of [text5, ...fences, ...spans].entries()) {
-    try {
-      return { value: JSON.parse(candidate), wrapped: index > 0 };
-    } catch {
-      continue;
-    }
-  }
-  return void 0;
-}
 function checkVerificationCommand(argv) {
   const candidatesFile = flag(argv, "--candidates");
   let keptIds = null;
@@ -31442,7 +31506,9 @@ function checkSimplificationCommand(argv) {
   }
   let document;
   try {
-    document = JSON.parse(readStdin());
+    const reply = jsonInReply(readStdin());
+    if (reply === void 0) throw new Error("no JSON");
+    document = reply.value;
   } catch {
     console.error("Expected simplification JSON on stdin.");
     return 2;
@@ -31635,7 +31701,9 @@ function reconcileCommand(argv) {
   const tieBreaksFile = flag(argv, "--tie-breaks");
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync32(tieBreaksFile, "utf8")));
+      const replies = listFromReplies(readFileSync32(tieBreaksFile, "utf8"), "tieBreaks");
+      if (replies === void 0) throw new Error("no tie-break JSON in it");
+      tieBreaks = parseTieBreaks(replies.value);
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
       return 2;
@@ -31674,7 +31742,7 @@ function challengeCommand(argv) {
   const outFile = flag(argv, "--out");
   if (scoresFile === null || candidatesFile === null || !emit && diffFile === null) {
     console.error(
-      "Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--reproductions <file>] [--diff-file <patch>] [--cwd <dir>] [--head <sha>] --emit-prompts\n       challenge --scores <file> --candidates <file> --diff-file <patch> [--reproductions <file>] [--cwd <dir>] [--out <file>] < verdicts.json"
+      "Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--reproductions <file>] [--diff-file <patch>] [--cwd <dir>] [--head <sha>] --emit-prompts\n       challenge --scores <file> --candidates <file> --diff-file <patch> [--reproductions <file>] [--cwd <dir>] [--post-narrowed <id>]... [--out <file>] < verdicts.json"
     );
     return 2;
   }
@@ -31731,12 +31799,12 @@ function challengeCommand(argv) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
-  try {
-    verdicts = JSON.parse(readStdin());
-  } catch {
-    console.error("Cannot parse the challenger verdicts on stdin as JSON.");
+  const replies = listFromReplies(readStdin(), "verdicts");
+  if (replies === void 0) {
+    console.error(`No challenger verdict JSON found on stdin. Pipe {"verdicts": [...]}, or the challengers' replies one after another.`);
     return 2;
   }
+  verdicts = { verdicts: replies.value };
   const headDir = flag(argv, "--cwd");
   const root = headDir === null ? null : resolve15(headDir);
   const readHead3 = root === null ? null : (path) => {
@@ -31748,7 +31816,8 @@ function challengeCommand(argv) {
       return null;
     }
   };
-  const result = applyChallenge(scores, candidates, verdicts, hunks, reproductions, readHead3);
+  const postNarrowed = new Set(argv.flatMap((arg, index) => arg === "--post-narrowed" && argv[index + 1] !== void 0 ? [argv[index + 1]] : []));
+  const result = applyChallenge(scores, candidates, verdicts, hunks, reproductions, readHead3, postNarrowed);
   if (!result.ok) {
     console.error("Challenge refused:");
     for (const problem of result.problems) console.error(`  ${problem}`);
@@ -33069,6 +33138,8 @@ function scoreCommand(argv) {
           reason: typeof reason2 === "string" ? reason2 : void 0,
           // Already checked by `verificationProblem`.
           alsoAt: raw["also_at"] ?? raw["alsoAt"],
+          // Already checked by `verificationProblem`.
+          corrections: raw["corrections"],
           requiredContextMissing: raw["required_context_missing"] ?? raw["requiredContextMissing"],
           // Already checked by `verificationProblem`.
           partlyAddressed: raw["partly_addressed"] ?? raw["partlyAddressed"]
@@ -33096,6 +33167,22 @@ function scoreCommand(argv) {
       );
     }
   }
+  const uncorrectable = /* @__PURE__ */ new Map();
+  candidates = candidates.map((candidate) => {
+    const fixes = verifications.get(candidate.candidateId)?.corrections ?? [];
+    if (fixes.length === 0) return candidate;
+    let { claim, failureMode, evidence } = candidate;
+    for (const { wrong, right } of fixes) {
+      if (![claim, failureMode, ...evidence].some((text5) => text5.includes(wrong))) {
+        uncorrectable.set(candidate.candidateId, wrong);
+        continue;
+      }
+      claim = claim.replaceAll(wrong, right);
+      failureMode = failureMode.replaceAll(wrong, right);
+      evidence = evidence.map((item) => item.replaceAll(wrong, right));
+    }
+    return { ...candidate, claim, failureMode, evidence };
+  });
   let searchRoot = null;
   try {
     searchRoot = repositoryRoot(process.cwd());
@@ -33208,6 +33295,10 @@ function scoreCommand(argv) {
           breakdown.rejectedBecause = `${POLICY_SUPPRESSED_PREFIX}${suppression.ruleId}`;
           suppressionByCandidate.set(candidate.candidateId, suppression);
         }
+      }
+      if (breakdown.eligible && uncorrectable.has(candidate.candidateId)) {
+        breakdown.eligible = false;
+        breakdown.rejectedBecause = `the verifier corrected ${JSON.stringify(uncorrectable.get(candidate.candidateId))}, which is not in the candidate's claim, failure mode or evidence, so the finding would state what the verifier found wrong`;
       }
       let absence = null;
       if (searchRoot !== null) {
@@ -33613,7 +33704,9 @@ function markSiblings(kept) {
 function checkCandidatesCommand(argv) {
   let raw;
   try {
-    const parsed2 = JSON.parse(readStdin());
+    const reply = jsonInReply(readStdin());
+    if (reply === void 0) throw new Error("no JSON");
+    const parsed2 = reply.value;
     raw = Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? [];
   } catch {
     console.error('Expected {"candidates": [...]} on stdin.');

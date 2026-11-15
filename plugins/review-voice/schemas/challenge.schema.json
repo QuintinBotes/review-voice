@@ -39,6 +39,18 @@
             "type": "boolean",
             "description": "True only on a confirmed finding that was raised as a question, when the decisive evidence settles its answer as a defect. `challenge` then states it at minor, with reason as the answer."
           },
+          "narrowed_claim": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600,
+            "description": "On partly only, with narrowed_failure_mode: the claim restated for the scope you confirmed. The finding is still held; the owner may post this narrowed claim with challenge --post-narrowed."
+          },
+          "narrowed_failure_mode": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600,
+            "description": "On partly only, with narrowed_claim: the failure mode for the narrowed scope."
+          },
           "reason": {
             "type": "string",
             "description": "Required non-empty on partly and refuted, and when answered is true. A worse impact than the claim states is noted here; it never raises the tier."

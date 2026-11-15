@@ -41,6 +41,11 @@ the finding through.**
   `thorough`. In `fast`, it still runs for any finding above a nit.
 - **No raising.** A challenger cannot raise a tier. A worse impact it traces is
   recorded as a note, and the existing 0019 path is how a tier rises.
+- **A narrowed finding may be posted by the owner** (amended, #418). A
+  `partly` verdict may restate the defect for the scope the challenger
+  confirmed. The finding is still held; the owner can post the narrowed claim
+  with `challenge --post-narrowed`, as `score --promote` posts a held finding.
+  It keeps its tier and passes every check a confirmation does.
 - **An answered question is stated** (amended, #392). A `question` is a kind
   of finding and not a tier. When the challenger confirms one with
   `answered: true`, its decisive evidence has settled what the analyst could

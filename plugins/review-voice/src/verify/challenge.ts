@@ -24,6 +24,9 @@ export interface ChallengeVerdict {
   decisive_quotes?: string[];
   /** Set on a finding raised as a question whose answer the decisive evidence settles. */
   answered?: boolean;
+  /** On `partly`: the claim restated for the scope the challenger confirmed (#418). */
+  narrowed_claim?: string;
+  narrowed_failure_mode?: string;
   reason: string;
 }
 
@@ -262,6 +265,14 @@ export function parseChallengeVerdicts(raw: unknown): { ok: true; verdicts: Chal
     if (lineOk && corrected !== undefined) problems.push(`${name}: line_ok true contradicts corrected_line`);
     if (label !== 'confirmed' && reason.length === 0) problems.push(`${name}: ${String(label)} gives no reason`);
     const answered = label === 'confirmed' && entry['answered'] === true;
+    const narrowedClaim = entry['narrowed_claim'];
+    const narrowedFailure = entry['narrowed_failure_mode'];
+    const narrowing = narrowedClaim !== undefined || narrowedFailure !== undefined;
+    const fit = (value: unknown): value is string => typeof value === 'string' && value.trim() !== '' && value.length <= 600;
+    if (narrowing && (label !== 'partly' || !fit(narrowedClaim) || !fit(narrowedFailure))) {
+      problems.push(`${name}: narrowed_claim and narrowed_failure_mode go together, on partly only, each 1 to 600 characters`);
+    }
+    if (narrowing && label === 'partly' && evidence.length === 0) problems.push(`${name}: a narrowed claim names no decisive_evidence`);
     if (answered && reason.length === 0) problems.push(`${name}: answered gives no reason, which is the answer`);
     verdicts.push({
       candidate_id: id as string,
@@ -271,6 +282,7 @@ export function parseChallengeVerdicts(raw: unknown): { ok: true; verdicts: Chal
       decisive_evidence: evidence,
       ...(quotes === undefined ? {} : { decisive_quotes: quotes as string[] }),
       ...(answered ? { answered } : {}),
+      ...(label === 'partly' && fit(narrowedClaim) && fit(narrowedFailure) ? { narrowed_claim: narrowedClaim.trim(), narrowed_failure_mode: narrowedFailure.trim() } : {}),
       reason,
     });
   });
@@ -359,6 +371,8 @@ export interface ChallengeSummary {
   moved: { candidate_id: string; from: { path: string; line: number }; to: { path: string; line: number } }[];
   /** Questions the challenger answered, now stated at minor. */
   answered: string[];
+  /** Partly verdicts the owner chose to post as the challenger narrowed them (#418). */
+  narrowed: string[];
 }
 
 const TIER_ORDER = ['blocking', 'important', 'minor', 'nit', 'question'];
@@ -414,6 +428,8 @@ export function applyChallenge(
   hunks: Map<string, FileHunks>,
   reproductions: ReadonlyMap<string, ReproductionRecord> = new Map(),
   readHead: HeadReader | null = null,
+  /** `--post-narrowed`: the owner posts these partly findings as the challenger narrowed them (#418). */
+  postNarrowed: ReadonlySet<string> = new Set(),
 ): ChallengeResult {
   if (!isRecord(scores) || !Array.isArray(scores['scores']) || !Array.isArray(scores['eligible'])) {
     return { ok: false, problems: ['expected the JSON `RV score` printed, with `scores` and `eligible` lists'] };
@@ -433,9 +449,14 @@ export function applyChallenge(
   if (missing.length > 0) problems.push(`no verdict for eligible ${missing.join(', ')}`);
   const unknown = [...byId.keys()].filter((id) => !eligibleIds.includes(id));
   if (unknown.length > 0) problems.push(`verdict for ${unknown.join(', ')}, which is not eligible`);
+  for (const id of postNarrowed) {
+    if (byId.get(id)?.narrowed_claim === undefined) problems.push(`--post-narrowed ${id}: its challenger gave no narrowed claim on a partly verdict`);
+  }
   if (problems.length > 0) return { ok: false, problems };
 
-  const summary: ChallengeSummary = { confirmed: [], held: [], moved: [], answered: [] };
+  const summary: ChallengeSummary = { confirmed: [], held: [], moved: [], answered: [], narrowed: [] };
+  // Posted on the owner's word, so they go through every check a confirmation does.
+  const posting = (verdict: ChallengeVerdict): boolean => verdict.verdict === 'confirmed' || (verdict.verdict === 'partly' && postNarrowed.has(verdict.candidate_id));
   const held: HeldFinding[] = [];
   const holdReasons = new Map<string, { verdict: 'challenge-partly' | 'challenge-refuted'; reason: string }>();
   const hold = (finding: Json, id: string, verdict: 'challenge-partly' | 'challenge-refuted', reason: string): void => {
@@ -473,8 +494,11 @@ export function applyChallenge(
   for (const finding of eligible) {
     const id = idOf(finding) as string;
     const verdict = byId.get(id) as ChallengeVerdict;
-    if (verdict.verdict === 'partly') hold(finding, id, 'challenge-partly', verdict.reason);
-    else if (verdict.verdict === 'refuted') hold(finding, id, 'challenge-refuted', verdict.reason);
+    if (verdict.verdict === 'partly' && !posting(verdict)) {
+      // The narrowed claim travels with the hold, so the owner can choose to post it.
+      const narrowed = verdict.narrowed_claim === undefined ? '' : ` Narrowed claim: "${verdict.narrowed_claim}" (post it with challenge --post-narrowed ${id}).`;
+      hold(finding, id, 'challenge-partly', `${verdict.reason}${narrowed}`);
+    } else if (verdict.verdict === 'refuted') hold(finding, id, 'challenge-refuted', verdict.reason);
     else if (readHead !== null) {
       // A confirmation that rests on lines the head does not hold confirms nothing.
       // A finding on a deleted file, or caused by one, cites lines only the base has.
@@ -496,7 +520,7 @@ export function applyChallenge(
   for (const finding of eligible) {
     const id = idOf(finding) as string;
     const verdict = byId.get(id) as ChallengeVerdict;
-    if (verdict.verdict !== 'confirmed' || holdReasons.has(id)) continue;
+    if (!posting(verdict) || holdReasons.has(id)) continue;
     if (verdict.corrected_line === undefined) {
       summary.confirmed.push(id);
       continue;
@@ -522,6 +546,21 @@ export function applyChallenge(
       scores: (document['scores'] as unknown[]).map((e) => (isRecord(e) && idOf(e) === id ? { ...e, ...heldAs } : e)),
       eligible: (document['eligible'] as unknown[]).filter((e) => !(isRecord(e) && idOf(e) === id)),
     };
+  }
+
+  // A narrowed finding the owner posts states the narrowed claim, never the
+  // wider one the challenger could not confirm. It keeps its tier: narrowing
+  // never raises one.
+  const narrowedIds = eligible.map((finding) => idOf(finding) as string).filter((id) => byId.get(id)?.verdict === 'partly' && postNarrowed.has(id) && !holdReasons.has(id));
+  if (narrowedIds.length > 0) {
+    const restate = (entry: unknown): unknown => {
+      if (!isRecord(entry)) return entry;
+      const verdict = byId.get(idOf(entry) ?? '');
+      if (verdict === undefined || !narrowedIds.includes(verdict.candidate_id)) return entry;
+      return { ...entry, claim: verdict.narrowed_claim, failureMode: verdict.narrowed_failure_mode, narrowedByChallenge: { claim: entry['claim'] ?? null } };
+    };
+    document = { ...document, eligible: (document['eligible'] as unknown[]).map(restate) };
+    summary.narrowed.push(...narrowedIds);
   }
 
   // A question that was answered and is still eligible is stated.

@@ -434,7 +434,8 @@ test('readAgentTools parses every agent file', () => {
     for (const tool of tools) assert.match(tool, /^[A-Za-z]+(\(git:\*\))?$/, `${name}: ${tool}`);
   }
   assert.deepEqual(readAgentTools('diff-analyst'), ['Read', 'Grep', 'Glob', 'Bash(git:*)']);
-  assert.deepEqual(readAgentTools('concise-editor'), []);
+  // #415: an empty list gives a host agent every tool, and none at all cannot start one.
+  assert.deepEqual(readAgentTools('concise-editor'), ['Read']);
   assert.deepEqual(readAgentTools('intent-extractor'), ['Read']);
   assert.equal(agentsDir(), pluginAgents);
 });

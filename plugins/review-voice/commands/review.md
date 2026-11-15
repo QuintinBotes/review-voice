@@ -32,6 +32,27 @@ Bash. The plugin's hook denies any other command, so do not ask an agent to
 run one, and do not work around a denial yourself on its behalf: what the agent
 could not check belongs in its `required_context_missing`.
 
+## Passing an agent's reply to a command
+
+Every agent answers with JSON in its reply, and the next command reads it from a
+file or stdin. Save the reply exactly as it came, with a quoted heredoc so
+nothing in it is expanded:
+
+```
+cat > <tmpdir>/analyst.reply <<'REPLY'
+<the agent's reply, pasted whole>
+REPLY
+```
+
+then pipe or pass that file where the step says. `check-candidates`,
+`check-intent`, `check-verification`, `check-simplification`, `challenge` and
+`reconcile --tie-breaks` read the JSON out of a reply with prose or a code
+fence around it, so never retype, reformat, trim or fix the JSON yourself: a
+reply that does not hold the shape is the command's to refuse and the agent's
+to answer again. For the challengers and tie-breakers, which answer one finding
+or dispute each, append every reply to one file (`>>`); the command gathers
+every verdict or ruling in it.
+
 ## Step 0 - Resolve the configuration
 
 On a `--pr` run, pick the temporary directory path, which `config resolve` creates, and run
@@ -640,7 +661,11 @@ attempt is also malformed, say so and stop. The evidence verifier writes
 `verified` and `technical_confidence`; `verdict` and `confidence` belong to the
 second pass and are refused here.
 
-A verified entry may carry `also_at`, further places where the verifier
+A verified entry may carry `corrections`, details the candidate stated wrongly
+with what they should say; `score` replaces them in the claim, failure mode and
+evidence before the editor sees them, so never correct the text yourself. A
+correction whose wrong text is not in the candidate holds the finding, listed
+under `rejected`. A verified entry may also carry `also_at`, further places where the verifier
 confirmed the same defect. Keep it: `score` passes it to the editor on the
 eligible entry as `alsoAt`.
 
@@ -704,10 +729,10 @@ kept it and proposed a stronger tier (`secondPass.proposedSeverity`). If
 
 Otherwise launch the `tie-breaker` agent **once per dispute**, with that
 dispute entry as it is, its `secondPass.decisiveEvidence` included, and the
-same diff. Do not add your own view of who is right. Write the results, one
-`{candidate_id, upheld, reason}` each, plus `impact_traced` and `confidence` on
-an upgrade, as an array to `<tmpdir>/tie-breaks.json`, then run the same
-command again with `--tie-breaks <tmpdir>/tie-breaks.json`. Its `candidates`
+same diff. Do not add your own view of who is right. Each answers one
+`{candidate_id, upheld, reason}`, plus `impact_traced` and `confidence` on an
+upgrade; append each reply, as it came, to `<tmpdir>/tie-breaks.json`, then
+run the same command again with `--tie-breaks <tmpdir>/tie-breaks.json`. Its `candidates`
 are the input to step 4: an upheld downgrade dispute keeps the
 evidence-verifier's finding, a dropped one included, and one not upheld keeps
 the second pass's outcome; an upgrade raises the tier only when upheld with
@@ -983,8 +1008,8 @@ Launch the `challenger` agent **once per prompt**, with that prompt as it is.
 **Do not add the verifier's reasoning, confidence or evidence, the analyst's
 evidence, the score, or your own view of the finding.** That framing is what
 the challenger exists to break, and a challenger shown it agrees with it. Each
-returns `{"verdicts": [...]}` with one verdict; gather every verdict into one
-`{"verdicts": [...]}` and pipe it into
+returns `{"verdicts": [...]}` with one verdict; append each reply, as it
+came, to `<tmpdir>/challenge.replies` and pipe that file into
 `RV challenge --scores <tmpdir>/scores.json --candidates <tmpdir>/checked.json --diff-file <tmpdir>/diff.patch --out <tmpdir>/scores.challenged.json`,
 adding `--cwd <tmpdir>/head` when step 1c added the head worktree, or
 `--cwd <repository root>` when the review is of the current checkout (a
@@ -999,7 +1024,13 @@ verdict's `decisive_evidence` in that checkout.
   verdict whose `decisive_evidence` names a file that is not at the head, a
   line past its end, or lines that do not hold the quoted line is held as
   `challenge-partly` too; a quoted line found on exactly one other line of the
-  file moves the reference there instead. Held findings leave
+  file moves the reference there instead. A `partly` verdict may carry
+  `narrowed_claim` and `narrowed_failure_mode`, the defect restated for the
+  scope the challenger confirmed; its held reason quotes the narrowed claim.
+  When the owner wants it posted as narrowed, run the same command again with
+  `--post-narrowed <candidate_id>` (repeatable): the finding passes the checks
+  a confirmation does, keeps its tier, and the editor states the narrowed
+  claim and failure mode, never the original. Held findings leave
   `eligible[]` for `challengeHeld[]`, and `challenge.moved` lists each move.
 - Exit 2: it names every verdict it refused: an eligible finding with no
   verdict, a verdict for one that is not eligible, or a verdict whose label
@@ -1055,10 +1086,11 @@ its `voice` to the editor along with `baseline: true`, and say in the review
 summary that the baseline voice was used. Otherwise pass neither.
 
 **Inline the candidate JSON for each eligible entry. Do not pass a file path.**
-The editor declares no tools at all, deliberately: its own authority limit - that
-it cannot add a technical claim - rests on having no way to verify one. Handed
-a path it can only reply that it cannot open files, which on a live run cost a
-manual paste of eight findings.
+The editor declares `Read` alone, only because Claude Code cannot start an
+agent with no tools (an empty `tools:` list grants every tool), and it is told
+not to use it: it states what the entries carry and verifies nothing. Handed a
+path it stops and says so, which on a live run cost a manual paste of eight
+findings.
 
 **When a cross-check finds an eligible finding anchored on the wrong line**,
 correct that one candidate rather than re-running the analyst:

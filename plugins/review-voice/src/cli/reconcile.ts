@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { parseSecondPass, parseTieBreaks, reconcile, ReconcileInputError, type TieBreak } from '../verify/reconcile.ts';
 import { readStdin, flag, verificationProblem, verdictList } from './shared.ts';
+import { listFromReplies } from '../agents/reply-json.ts';
 
 /**
  * Applies the second pass to the candidates, settling disputes by tie-break.
@@ -59,7 +60,10 @@ export function reconcileCommand(argv: string[]): number {
   const tieBreaksFile = flag(argv, '--tie-breaks');
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync(tieBreaksFile, 'utf8')) as unknown);
+      // One tie-breaker reply per dispute, saved one after another as they came (#417).
+      const replies = listFromReplies(readFileSync(tieBreaksFile, 'utf8'), 'tieBreaks');
+      if (replies === undefined) throw new Error('no tie-break JSON in it');
+      tieBreaks = parseTieBreaks(replies.value);
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${(error as Error).message}`);
       return 2;

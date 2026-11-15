@@ -415,6 +415,8 @@ export function scoreCommand(argv: string[]): number {
           reason: typeof reason === 'string' ? reason : undefined,
           // Already checked by `verificationProblem`.
           alsoAt: (raw['also_at'] ?? raw['alsoAt']) as string[] | undefined,
+          // Already checked by `verificationProblem`.
+          corrections: raw['corrections'] as { wrong: string; right: string }[] | undefined,
           requiredContextMissing: (raw['required_context_missing'] ??
             raw['requiredContextMissing']) as MissingContext[] | undefined,
           // Already checked by `verificationProblem`.
@@ -459,6 +461,27 @@ export function scoreCommand(argv: string[]): number {
       );
     }
   }
+
+  // A detail the verifier found wrong (a count, a name, a line) is replaced in
+  // the claim, failure mode and evidence before anything downstream reads
+  // them, so the editor never restates it (#416). A correction whose wrong text
+  // is not in the candidate cannot be applied, and holds the finding.
+  const uncorrectable = new Map<string, string>();
+  candidates = candidates.map((candidate) => {
+    const fixes = verifications.get(candidate.candidateId)?.corrections ?? [];
+    if (fixes.length === 0) return candidate;
+    let { claim, failureMode, evidence } = candidate;
+    for (const { wrong, right } of fixes) {
+      if (![claim, failureMode, ...evidence].some((text) => text.includes(wrong))) {
+        uncorrectable.set(candidate.candidateId, wrong);
+        continue;
+      }
+      claim = claim.replaceAll(wrong, right);
+      failureMode = failureMode.replaceAll(wrong, right);
+      evidence = evidence.map((item) => item.replaceAll(wrong, right));
+    }
+    return { ...candidate, claim, failureMode, evidence };
+  });
 
   // Absence claims are checked against the tree under review, which is not the
   // working tree when reviewing a pull request. A checkout behind the base
@@ -609,6 +632,13 @@ export function scoreCommand(argv: string[]): number {
           breakdown.rejectedBecause = `${POLICY_SUPPRESSED_PREFIX}${suppression.ruleId}`;
           suppressionByCandidate.set(candidate.candidateId, suppression);
         }
+      }
+
+      if (breakdown.eligible && uncorrectable.has(candidate.candidateId)) {
+        breakdown.eligible = false;
+        breakdown.rejectedBecause =
+          `the verifier corrected ${JSON.stringify(uncorrectable.get(candidate.candidateId))}, which is not in the ` +
+          "candidate's claim, failure mode or evidence, so the finding would state what the verifier found wrong";
       }
 
       // A claim that something is absent is checked against the repository

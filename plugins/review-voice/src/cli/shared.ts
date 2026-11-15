@@ -314,6 +314,19 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     if (alsoAt !== undefined && !(Array.isArray(alsoAt) && alsoAt.length <= 10 && alsoAt.every((ref) => typeof ref === 'string' && /^\S(?:.*\S)?:\d+(?:-\d+)?$/.test(ref)))) {
       return `${who}: also_at must be a list of at most 10 "path:line" references.`;
     }
+    const corrections = entry['corrections'];
+    const correction = (item: unknown): boolean => {
+      const fix = item as Record<string, unknown> | null;
+      return (
+        typeof fix === 'object' && fix !== null && !Array.isArray(fix) &&
+        Object.keys(fix).every((key) => key === 'wrong' || key === 'right') &&
+        typeof fix['wrong'] === 'string' && fix['wrong'].trim() !== '' && fix['wrong'].length <= 300 &&
+        typeof fix['right'] === 'string' && fix['right'].length <= 300
+      );
+    };
+    if (corrections !== undefined && !(Array.isArray(corrections) && corrections.length <= 10 && corrections.every(correction))) {
+      return `${who}: corrections must be a list of at most 10 {"wrong": "<text in the candidate>", "right": "<what it should say>"} objects, each string at most 300 characters.`;
+    }
     const missing = entry['required_context_missing'] ?? entry['requiredContextMissing'];
     if (missing !== undefined && !(Array.isArray(missing) && missing.every(isMissingContext))) {
       // Name the entry and what is wrong with it, so one relaunch can fix it (#408).

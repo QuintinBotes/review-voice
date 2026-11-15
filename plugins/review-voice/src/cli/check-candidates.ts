@@ -26,6 +26,7 @@ import {
   isSuppressionExempt,
 } from '../scoring/score.ts';
 import { readStdin, flag, repositoryConfig, realExistingPath } from './shared.ts';
+import { jsonInReply } from '../agents/reply-json.ts';
 import { anchorFor, deletedFileCheck, configuredOwner } from './score.ts';
 
 /** A held finding of an earlier run, at its line in the head now being reviewed. */
@@ -269,7 +270,10 @@ function markSiblings(kept: Record<string, unknown>[]): void {
 export function checkCandidatesCommand(argv: string[]): number {
   let raw: unknown[];
   try {
-    const parsed = JSON.parse(readStdin()) as { candidates?: unknown[] } | unknown[];
+    // The analyst's reply as it came: prose or a fence around the JSON is left out (#417).
+    const reply = jsonInReply(readStdin());
+    if (reply === undefined) throw new Error('no JSON');
+    const parsed = reply.value as { candidates?: unknown[] } | unknown[];
     raw = Array.isArray(parsed) ? parsed : (parsed.candidates ?? []);
   } catch {
     console.error('Expected {"candidates": [...]} on stdin.');

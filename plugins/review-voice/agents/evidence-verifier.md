@@ -376,6 +376,16 @@ that context in `required_context_missing` even when you reject: a candidate
 rejected only for blocking context is shown to the owner as unverified, never
 posted, so they can supply it and run the review again.
 
+**A detail the candidate gets wrong.** When the defect is real but the
+candidate states a detail wrongly - eleven call sites where there are nine, the
+wrong function name, a line that moved - verify it and add
+`"corrections": [{"wrong": "eleven call sites", "right": "nine call sites"}]`.
+`wrong` is the exact text as the candidate's claim, failure mode or evidence
+writes it; `score` replaces it before the finding is rendered, so a correction
+left only in your `reason` is posted wrong. A `wrong` that is not in the
+candidate's text holds the finding. Reject the candidate instead when the
+wrong detail is what the claim rests on.
+
 **State you cannot read from the repository.** You read files and run
 read-only `git`; nothing else runs, so pull request and issue fields, labels,
 checks and other GitHub state are out of reach. When a claim turns on such
@@ -548,7 +558,8 @@ JSON only: `candidate_id`, `verified`, `evidence_quality`,
 `technical_confidence`, `contradictions`, `required_context_missing`, `reason`,
 `fix_verdict`, `fix_confidence`, `fix_reason`, `fix_direction`,
 `impact_traced`, `impact_class` for a boundary finding when it applies,
-`also_at` for further confirmed instances of the same defect,
+`also_at` for further confirmed instances of the same defect, `corrections`
+for a detail the candidate states wrongly,
 `premises_verified` for a question, `blocker_confirmed` for a candidate with
 a `blocker_class`, `reproduction` only when your prompt lists runners, and `partly_addressed` only when it applies. When you were given `followUps`, return an object
 `{"verifications": [<the entries>], "follow_ups": [<one ruling each>]}`

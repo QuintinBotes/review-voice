@@ -40,8 +40,10 @@ request, and accepts only schema-valid output. Agents get no shell and no git.**
 - **Tools come from the agent file, narrowed.** The runner reads the `tools:`
   frontmatter and keeps only Read, Grep and Glob. A declared `Bash(git:*)` is
   dropped, because the same files serve the interactive host. Any other tool is
-  refused before the process starts. An agent that declares no tools gets none,
-  and the editor's input is passed in the prompt.
+  refused before the process starts. The editor's input is passed in the
+  prompt. (Amended 2026-11-15, #415: it declares `Read` alone, because the
+  interactive host reads an empty `tools:` list as every tool and cannot start
+  an agent with none.)
 - **What git used to provide is on disk.** The driver checks out the head (its
   own workspace clone, or a worktree in the run directory when it runs in the
   user's clone) and writes the base version of every changed file, and recent
