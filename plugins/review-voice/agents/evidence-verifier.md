@@ -557,9 +557,21 @@ instead of a bare array.
 `evidence_quality` is exactly one of `high`, `medium` or `low`. No other word
 is accepted: `strong`, `weak`, `moderate` and the like are refused, and the
 whole file with them. `technical_confidence` and `fix_confidence` are JSON
-numbers from 0 to 1, not strings. `required_context_missing` is an array of
-strings or `{"context", "kind"}` objects, empty when nothing was missing. `check-verification` checks this shape straight
-after you return, and names the entry and field it refuses.
+numbers from 0 to 1, not strings. `required_context_missing` is an array,
+empty when nothing was missing, whose entries are each either a string or an
+object with exactly the keys `context` (a non-empty string) and, optionally,
+`kind` (`"blocking"` or `"cosmetic"`):
+
+```json
+"required_context_missing": [
+  "the deployed schema of the orders table",
+  {"context": "the display text of the key checkout.title", "kind": "cosmetic"}
+]
+```
+
+No other key is accepted (`reason`, `detail`, `type` and the like are
+refused). `check-verification` checks this shape straight after you return,
+and names the entry and field it refuses.
 
 Use `verified` and `technical_confidence`, not `verdict` and `confidence`.
 Those are the second-pass verifier's fields; `check-verification` refuses them
