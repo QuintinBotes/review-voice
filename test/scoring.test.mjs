@@ -99,6 +99,17 @@ test('a duplicate of a kept finding scores zero novelty', () => {
   assert.equal(result.novelty, 0);
 });
 
+test('#420: a different defect on the same line keeps its novelty', () => {
+  const first = candidate();
+  const other = candidate({
+    candidateId: 'cand_002',
+    claim: 'The audit row is written with the caller id instead of the account id.',
+    failureMode: 'Billing attributes the charge to the wrong account.',
+  });
+  const result = scoreCandidate(other, [], [first]);
+  assert.ok(result.novelty > 0.8, `novelty ${result.novelty}`);
+});
+
 test('evidence quality rewards specificity rather than volume', () => {
   const specific = scoreCandidate(candidate(), [], []).evidenceQuality;
   const vague = scoreCandidate(candidate({ evidence: ['bad', 'wrong', 'no'] }), [], []).evidenceQuality;

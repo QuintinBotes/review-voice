@@ -56,5 +56,16 @@ export function gatherReplies(text: string, key: string): { value: unknown; wrap
     const inner = (object as Record<string, unknown> | null)?.[key];
     return Array.isArray(inner) ? inner : [object];
   });
-  return { value: { [key]: list }, wrapped: true };
+  // A reply's other top-level keys stay beside the list, so a command can name
+  // a field that was put outside the entry it belongs in (#421).
+  const beside = Object.assign(
+    {},
+    ...objects.map((object) => {
+      const record = (typeof object === 'object' && object !== null && !Array.isArray(object) ? object : {}) as Record<string, unknown>;
+      if (!Array.isArray(record[key])) return {};
+      const { [key]: _list, ...rest } = record;
+      return rest;
+    }),
+  ) as Record<string, unknown>;
+  return { value: { ...beside, [key]: list }, wrapped: true };
 }

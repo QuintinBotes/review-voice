@@ -1462,7 +1462,11 @@ function novelty(candidate: Candidate, kept: Candidate[], precedents: Precedent[
   let worst = 1;
 
   for (const other of kept) {
-    if (other.path === candidate.path && other.line === candidate.line) return 0;
+    // One anchor can carry two different defects (#420): a second candidate on
+    // the same path:line is compared by what it says, as one in the same file
+    // is. A restatement there still scores near zero; check-candidates marks
+    // it, the verifier rejects a duplicate, and the editor merges two findings
+    // that survive at one location.
     const theirs = significantWords(`${other.claim} ${other.failureMode}`);
     const shared = overlap(mine, theirs);
 

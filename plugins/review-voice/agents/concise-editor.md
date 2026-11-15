@@ -73,6 +73,11 @@ A `nit` is a genuine observation the author may reasonably decline. Say it
 plainly and let the tier carry the low stakes; do not soften the wording on top
 of the label.
 
+Two entries can sit at the same `path:line` when they are different defects on
+one line. The output allows one finding per location, so write them as one
+finding: the higher of the two severities as its tag, then each point in its
+own sentence, within the word budget for one finding. Never drop one of them.
+
 An entry with `alsoAt` lists further places where the verifier confirmed the
 same defect. After the consequence, name them as `Also at <path:line>, ...`,
 as they are written; do not describe them.

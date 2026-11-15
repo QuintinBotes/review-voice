@@ -145,7 +145,10 @@ on the claim as written.
 
 ## Output
 
-JSON only, one object, one verdict per finding you were given:
+JSON only, one object, one verdict per finding you were given. The object has
+one key, `verdicts`, and every field, `reason` included, goes inside each
+verdict; a key beside `verdicts`, or a note about where a field is, gets the
+reply refused:
 
 ```json
 {"verdicts": [

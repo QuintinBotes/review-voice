@@ -91,3 +91,10 @@ test('#417: several challenger or tie-breaker replies in one file are gathered',
   assert.deepEqual(gatherReplies('{"rulings": []}', 'tie_breaks'), { value: { rulings: [] }, wrapped: false });
   assert.equal(gatherReplies('no json here', 'verdicts'), undefined);
 });
+
+test('#421: gathered replies keep the keys beside their list', () => {
+  const text = 'Reply one.\n{"verdicts": [{"candidate_id": "a"}], "reason": "late"}\nReply two.\n{"verdicts": [{"candidate_id": "b"}]}';
+  const gathered = gatherReplies(text, 'verdicts').value;
+  assert.deepEqual(gathered.verdicts.map((v) => v.candidate_id), ['a', 'b']);
+  assert.equal(gathered.reason, 'late');
+});
