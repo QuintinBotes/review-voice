@@ -315,20 +315,24 @@ const MIN_QUOTE = 6;
 function checkDecisive(
   verdict: ChallengeVerdict,
   read: HeadReader,
-  /** Whether a file that is not at the head is one the change is known to touch, so it may be gone. */
-  changed: (path: string) => boolean,
+  /** Files the change touches, the finding's own first: one of them may be gone at the head, and a bare file name means one of them. */
+  touched: readonly string[],
+  /** Entries left alone: a reproduction file is dropped later, not read here. */
+  skip: (entry: string) => boolean,
 ): { evidence: string[] } | { problem: string } {
   const evidence: string[] = [];
   for (const [index, entry] of verdict.decisive_evidence.entries()) {
     const parts = /^(.*):(\d+)(?:-(\d+))?$/.exec(entry.replace(/[\p{Cf}`]/gu, '').trim());
     const path = parts === null ? '' : posix.normalize(parts[1]!.trim());
-    if (parts === null || isAbsolute(path)) {
+    if (parts === null || isAbsolute(path) || skip(entry)) {
       evidence.push(entry);
       continue;
     }
-    const lines = read(path);
+    // A model often cites a changed file by its name alone.
+    const file = path.includes('/') ? path : (touched.find((known) => posix.basename(known) === path) ?? path);
+    const lines = read(file);
     if (lines === null) {
-      if (!changed(path)) return { problem: `${entry} names a file that is not at the head` };
+      if (!touched.includes(file)) return { problem: `${entry} names a file that is not at the head` };
       evidence.push(entry);
       continue;
     }
@@ -475,8 +479,9 @@ export function applyChallenge(
       // A confirmation that rests on lines the head does not hold confirms nothing.
       // A finding on a deleted file, or caused by one, cites lines only the base has.
       const causedBy = isRecord(finding['causedBy']) ? finding['causedBy']['path'] : undefined;
-      const changed = (path: string): boolean => hunks.has(path) || path === finding['path'] || path === causedBy;
-      const checked = checkDecisive(verdict, readHead, changed);
+      const touched = [String(finding['path']), ...(typeof causedBy === 'string' ? [causedBy] : []), ...hunks.keys()];
+      const citable = new Set(withoutReproductionFiles(verdict.decisive_evidence, reproductions));
+      const checked = checkDecisive(verdict, readHead, touched, (entry) => !citable.has(entry));
       if ('problem' in checked) hold(finding, id, 'challenge-partly', `decisive evidence refused: ${checked.problem}`);
       else verdict.decisive_evidence = checked.evidence;
     }
