@@ -8757,10 +8757,11 @@ function boundSeverityByEvidence(derived, candidate, verification2) {
       `the verifier traced impact beyond the changed code (impact_traced: true) at confidence ${confidence.toFixed(2)}, at least ${ESCALATION_CONFIDENCE}`
     );
   }
+  const tracedBelowBar = verification2?.impactTraced === true;
   return {
     ...result,
     severity: TIER_ORDER[asked],
-    reason: `${result.reason}, held at ${candidate.severity} because escalation needs the verifier to trace impact beyond the changed code`
+    reason: tracedBelowBar ? `${result.reason}, held at ${candidate.severity} because the verifier traced the impact at confidence ${confidence === null ? "unknown" : confidence.toFixed(2)}, and escalation needs at least ${ESCALATION_CONFIDENCE}` : `${result.reason}, held at ${candidate.severity} because escalation needs the verifier to trace impact beyond the changed code`
   };
 }
 function raisedBecause(result, requested, why) {
@@ -29603,6 +29604,13 @@ function symbolsFromHunks(diff, changedPath) {
   }
   return [...found2];
 }
+function diffTouches(diff, path) {
+  const wanted = normalisePath3(path);
+  for (const match of diff.matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)) {
+    if (normalisePath3(match[1]) === wanted || normalisePath3(match[2]) === wanted) return true;
+  }
+  return false;
+}
 var REPOSITORY_WIDE_TOOLCHAIN_PATHS = [
   /(?:^|\/)(?:eslint\.config\.[^/]+|\.eslintrc(?:\.[^/]+)?|biome\.json|\.stylelintrc(?:\.[^/]+)?|\.prettierrc(?:\.[^/]+)?)$/i,
   /(?:^|\/)tsconfig(?:\.[^/]+)?\.json$/i,
@@ -29670,8 +29678,9 @@ function computeReach(text5, changedPath, cwd, ref = null, search = gitGrepPaths
   const isCodePath = (path) => isCode(path, firstParty);
   const searchedRef = ref ?? "working tree";
   const ownHunks = diff === null ? [] : symbolsFromHunks(diff, changedPath);
-  const anyHunks = diff === null || ownHunks.length > 0 ? [] : symbolsFromHunks(diff, null);
-  const source = ownHunks.length > 0 ? "hunks" : anyHunks.length > 0 ? "diff" : "claim";
+  const inDiff = diff !== null && diffTouches(diff, changedPath);
+  const anyHunks = diff === null || inDiff ? [] : symbolsFromHunks(diff, null);
+  const source = inDiff || ownHunks.length > 0 ? "hunks" : anyHunks.length > 0 ? "diff" : "claim";
   const symbols = (source === "hunks" ? ownHunks : source === "diff" ? anyHunks : namedSymbols(text5)).slice(0, 12);
   const searched = [];
   const ignored = [];

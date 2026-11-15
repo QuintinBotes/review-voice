@@ -798,7 +798,8 @@ only in case.
 
 **`--diff-file` is the diff from step 1.** Reach, which decides how far a defect
 carries and so which tier it is reported at, is measured from the symbols the
-hunks touch. Without the flag it falls back to the symbols the claim names,
+hunks of the finding's own file touch, and from the rest of the diff only when
+the diff does not touch that file. Without the flag it falls back to the symbols the claim names,
 which measures the words a finding used rather than the code it is about - a
 finding whose point is that some symbol is the wrong referent names that
 symbol, and its spread then sets the tier.

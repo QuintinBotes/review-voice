@@ -436,12 +436,17 @@ export function boundSeverityByEvidence(
         `${confidence.toFixed(2)}, at least ${ESCALATION_CONFIDENCE}`,
     );
   }
+  // The reason names the condition that held the tier: a trace under the bar
+  // is not a missing trace, and saying so sent the owner looking for one (#384).
+  const tracedBelowBar = verification?.impactTraced === true;
   return {
     ...result,
     severity: TIER_ORDER[asked] as DerivedSeverity['severity'],
-    reason:
-      `${result.reason}, held at ${candidate.severity} because escalation needs the verifier ` +
-      'to trace impact beyond the changed code',
+    reason: tracedBelowBar
+      ? `${result.reason}, held at ${candidate.severity} because the verifier traced the impact at confidence ` +
+        `${confidence === null ? 'unknown' : confidence.toFixed(2)}, and escalation needs at least ${ESCALATION_CONFIDENCE}`
+      : `${result.reason}, held at ${candidate.severity} because escalation needs the verifier ` +
+        'to trace impact beyond the changed code',
   };
 }
 
