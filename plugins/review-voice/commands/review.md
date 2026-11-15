@@ -1073,6 +1073,12 @@ leaves that wider impact out. The editor does not decide or invent a
 correction, and a withheld repair never reaches it. The full fix decision stays
 in `scores` for `/review-voice:explain`.
 
+Two eligible entries can share a `path:line` when they are different defects
+on one line (`sharesAnchorWith` marks them). `validate-output` allows one
+finding per location, so the editor writes them as one finding at the higher
+severity, each point in its own sentence; if it does not, the
+`duplicate_location` violation names them on the retry.
+
 An entry with `possibleRepeatOf` of `status: partly-addressed` is rendered as
 an ordinary finding at its own line stating only what remains of the owner's
 earlier comment. **It is never a reply on that comment's thread**, and nothing

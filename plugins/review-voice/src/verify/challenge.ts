@@ -220,6 +220,11 @@ export function parseChallengeVerdicts(raw: unknown): { ok: true; verdicts: Chal
   if (list === null) return { ok: false, problems: ['expected {"verdicts": [...]}'] };
   const problems: string[] = [];
   const verdicts: ChallengeVerdict[] = [];
+  // Keys beside "verdicts" that belong inside each verdict: a challenger wrote
+  // `"_note": "reason follows", "reason": "..."` after the list (#421).
+  const VERDICT_FIELDS = ['candidate_id', 'verdict', 'line_ok', 'corrected_line', 'decisive_evidence', 'decisive_quotes', 'answered', 'narrowed_claim', 'narrowed_failure_mode', 'reason'];
+  const stray = isRecord(raw) ? Object.keys(raw).filter((key) => key !== 'verdicts') : [];
+  const misplaced = stray.filter((key) => VERDICT_FIELDS.includes(key));
   list.forEach((entry, index) => {
     if (!isRecord(entry)) {
       problems.push(`verdict ${index} is not an object`);
@@ -286,6 +291,13 @@ export function parseChallengeVerdicts(raw: unknown): { ok: true; verdicts: Chal
       reason,
     });
   });
+  if (problems.length > 0 && stray.length > 0) {
+    problems.push(
+      (misplaced.length > 0 ? `${misplaced.join(', ')} ${misplaced.length === 1 ? 'is' : 'are'} outside the verdict object, beside "verdicts"; ` : '') +
+        `the reply has ${stray.map((key) => JSON.stringify(key)).join(', ')} at the top level, where only "verdicts" belongs. ` +
+        'Every field goes inside each verdict: {"verdicts": [{"candidate_id", "verdict", "line_ok", "decisive_evidence", "decisive_quotes", "reason"}]}',
+    );
+  }
   return problems.length > 0 ? { ok: false, problems } : { ok: true, verdicts };
 }
 

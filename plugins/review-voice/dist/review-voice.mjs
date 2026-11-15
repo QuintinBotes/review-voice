@@ -9183,7 +9183,6 @@ function novelty(candidate, kept, precedents) {
   const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
   let worst = 1;
   for (const other of kept) {
-    if (other.path === candidate.path && other.line === candidate.line) return 0;
     const theirs = significantWords(`${other.claim} ${other.failureMode}`);
     const shared = overlap(mine, theirs);
     if (other.path === candidate.path) {
@@ -22511,6 +22510,9 @@ function parseChallengeVerdicts(raw) {
   if (list3 === null) return { ok: false, problems: ['expected {"verdicts": [...]}'] };
   const problems = [];
   const verdicts = [];
+  const VERDICT_FIELDS = ["candidate_id", "verdict", "line_ok", "corrected_line", "decisive_evidence", "decisive_quotes", "answered", "narrowed_claim", "narrowed_failure_mode", "reason"];
+  const stray = isRecord4(raw) ? Object.keys(raw).filter((key2) => key2 !== "verdicts") : [];
+  const misplaced = stray.filter((key2) => VERDICT_FIELDS.includes(key2));
   list3.forEach((entry, index) => {
     if (!isRecord4(entry)) {
       problems.push(`verdict ${index} is not an object`);
@@ -22573,6 +22575,11 @@ function parseChallengeVerdicts(raw) {
       reason: reason2
     });
   });
+  if (problems.length > 0 && stray.length > 0) {
+    problems.push(
+      (misplaced.length > 0 ? `${misplaced.join(", ")} ${misplaced.length === 1 ? "is" : "are"} outside the verdict object, beside "verdicts"; ` : "") + `the reply has ${stray.map((key2) => JSON.stringify(key2)).join(", ")} at the top level, where only "verdicts" belongs. Every field goes inside each verdict: {"verdicts": [{"candidate_id", "verdict", "line_ok", "decisive_evidence", "decisive_quotes", "reason"}]}`
+    );
+  }
   return problems.length > 0 ? { ok: false, problems } : { ok: true, verdicts };
 }
 function withoutReproductionFiles(evidence, reproductions) {
@@ -27482,7 +27489,16 @@ function gatherReplies(text5, key2) {
     const inner = object?.[key2];
     return Array.isArray(inner) ? inner : [object];
   });
-  return { value: { [key2]: list3 }, wrapped: true };
+  const beside = Object.assign(
+    {},
+    ...objects.map((object) => {
+      const record3 = typeof object === "object" && object !== null && !Array.isArray(object) ? object : {};
+      if (!Array.isArray(record3[key2])) return {};
+      const { [key2]: _list, ...rest } = record3;
+      return rest;
+    })
+  );
+  return { value: { ...beside, [key2]: list3 }, wrapped: true };
 }
 
 // plugins/review-voice/src/cli/check-intent.ts

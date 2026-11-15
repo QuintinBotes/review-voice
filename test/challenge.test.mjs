@@ -607,3 +607,28 @@ test('#418: --post-narrowed needs a narrowed partly verdict, and a narrowing is 
     assert.match(lopsided.stderr, /narrowed_claim and narrowed_failure_mode go together, on partly only/);
   });
 });
+
+// #421: a challenger put reason beside "verdicts", and the refusal did not say where it was.
+
+test('#421: a field outside the verdict object is named, with the shape wanted', () => {
+  withFiles(({ run, files }) => {
+    const reply = {
+      verdicts: [
+        { candidate_id: 'cand_001', verdict: 'partly', line_ok: true, decisive_evidence: ['src/a.ts:3'] },
+        confirmed('cand_002'),
+        confirmed('cand_003'),
+      ],
+      _note: 'reason follows',
+      reason: 'Only the read path omits the tenant.',
+    };
+    const r = run(['challenge', '--scores', files.scores, '--candidates', files.candidates, '--diff-file', files.patch], JSON.stringify(reply));
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /cand_001: reason must be a string/);
+    assert.match(r.stderr, /reason is outside the verdict object, beside "verdicts"; the reply has "_note", "reason" at the top level/);
+    assert.match(r.stderr, /Every field goes inside each verdict/);
+    // Saved as one of several replies, the stray keys are still named.
+    const several = `${JSON.stringify(reply)}\n\nAnd that is all.`;
+    const r2 = run(['challenge', '--scores', files.scores, '--candidates', files.candidates, '--diff-file', files.patch], several);
+    assert.match(r2.stderr, /reason is outside the verdict object/);
+  });
+});
