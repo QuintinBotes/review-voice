@@ -66,6 +66,20 @@
     "impact_traced": {
       "type": "boolean"
     },
+    "corrections": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "required": ["wrong", "right"],
+        "additionalProperties": false,
+        "properties": {
+          "wrong": { "type": "string", "minLength": 1, "maxLength": 300 },
+          "right": { "type": "string", "maxLength": 300 }
+        }
+      },
+      "description": "On a verified candidate: a factual detail its claim, failure mode or evidence gets wrong (a count, a name, a line), as the exact text it uses and what it should say. score replaces it before the finding is rendered; a wrong text that is not in the candidate holds the finding."
+    },
     "also_at": {
       "type": "array",
       "items": { "type": "string", "pattern": "^\\S(.*\\S)?:[0-9]+(-[0-9]+)?$" },

@@ -1,5 +1,8 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { readStdin, flag, VERDICT_KEYS, verificationProblem, verdictList } from './shared.ts';
+import { jsonInReply } from '../agents/reply-json.ts';
+
+export { jsonInReply };
 
 /**
  * Checks evidence-verifier output against the verification schema, straight
@@ -17,35 +20,6 @@ function keptCandidateIds(value: unknown): string[] {
   return list
     .map((entry) => (entry as { candidate_id?: unknown } | null)?.candidate_id)
     .filter((id): id is string => typeof id === 'string');
-}
-
-/**
- * The JSON in a reply, read alone when the reply wraps it: a verifier
- * answered with a prose preamble and a fenced array, and the prose was
- * stripped by hand, which is a step nothing recorded (#385). Tried in order:
- * the whole text, each code fence, then the span from the first bracket to
- * the last. Undefined when none of them parses.
- */
-export function jsonInReply(text: string): { value: unknown; wrapped: boolean } | undefined {
-  const fences = [...text.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)].map((match) => match[1]!);
-  const spans = (
-    [
-      ['[', ']'],
-      ['{', '}'],
-    ] as const
-  )
-    .map(([open, close]) => [text.indexOf(open), text.lastIndexOf(close)] as const)
-    .filter(([from, to]) => from !== -1 && to > from)
-    .sort((a, b) => a[0] - b[0])
-    .map(([from, to]) => text.slice(from, to + 1));
-  for (const [index, candidate] of [text, ...fences, ...spans].entries()) {
-    try {
-      return { value: JSON.parse(candidate) as unknown, wrapped: index > 0 };
-    } catch {
-      continue;
-    }
-  }
-  return undefined;
 }
 
 export function checkVerificationCommand(argv: string[]): number {

@@ -4,6 +4,7 @@ import { repositoryRoot } from '../diff/acquire.ts';
 import { parseHunks, type FileHunks } from '../diff/hunks.ts';
 import { applyChallenge, candidatesById, challengePrompts, intentStatements, reproductionsById, type HeadReader } from '../verify/challenge.ts';
 import { readStdin, flag } from './shared.ts';
+import { gatherReplies } from '../agents/reply-json.ts';
 import { terminalInert } from '../terminal.ts';
 
 /**
@@ -22,7 +23,7 @@ export function challengeCommand(argv: string[]): number {
   if (scoresFile === null || candidatesFile === null || (!emit && diffFile === null)) {
     console.error(
       'Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--reproductions <file>] [--diff-file <patch>] [--cwd <dir>] [--head <sha>] --emit-prompts\n' +
-        '       challenge --scores <file> --candidates <file> --diff-file <patch> [--reproductions <file>] [--cwd <dir>] [--out <file>] < verdicts.json',
+        '       challenge --scores <file> --candidates <file> --diff-file <patch> [--reproductions <file>] [--cwd <dir>] [--post-narrowed <id>]... [--out <file>] < verdicts.json',
     );
     return 2;
   }
@@ -86,12 +87,14 @@ export function challengeCommand(argv: string[]): number {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
-  try {
-    verdicts = JSON.parse(readStdin());
-  } catch {
-    console.error('Cannot parse the challenger verdicts on stdin as JSON.');
+  // One challenger reply per finding, saved one after another as they came:
+  // every verdict in them is gathered (#417).
+  const replies = gatherReplies(readStdin(), 'verdicts');
+  if (replies === undefined) {
+    console.error('No challenger verdict JSON found on stdin. Pipe {"verdicts": [...]}, or the challengers\' replies one after another.');
     return 2;
   }
+  verdicts = replies.value;
 
   // With --cwd, the decisive references are read in that checkout of the head.
   // Without it nothing says which tree holds the head, so they are not read.
@@ -110,7 +113,9 @@ export function challengeCommand(argv: string[]): number {
           }
         };
 
-  const result = applyChallenge(scores, candidates, verdicts, hunks, reproductions, readHead);
+  // Repeatable: every id after a --post-narrowed.
+  const postNarrowed = new Set(argv.flatMap((arg, index) => (arg === '--post-narrowed' && argv[index + 1] !== undefined ? [argv[index + 1]!] : [])));
+  const result = applyChallenge(scores, candidates, verdicts, hunks, reproductions, readHead, postNarrowed);
   if (!result.ok) {
     console.error('Challenge refused:');
     for (const problem of result.problems) console.error(`  ${problem}`);

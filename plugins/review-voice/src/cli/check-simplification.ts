@@ -6,6 +6,7 @@ import {
 } from '../simplification.ts';
 import { parseHunks, type FileHunks } from '../diff/hunks.ts';
 import { readStdin, flag } from './shared.ts';
+import { jsonInReply } from '../agents/reply-json.ts';
 
 /**
  * Validates the two short-lived documents of the opt-in simplification pass.
@@ -38,7 +39,9 @@ export function checkSimplificationCommand(argv: string[]): number {
 
   let document: unknown;
   try {
-    document = JSON.parse(readStdin()) as unknown;
+    const reply = jsonInReply(readStdin());
+    if (reply === undefined) throw new Error('no JSON');
+    document = reply.value;
   } catch {
     console.error('Expected simplification JSON on stdin.');
     return 2;

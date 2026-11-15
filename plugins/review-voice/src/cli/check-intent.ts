@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { descriptionOf, linkedIssuesOf, parseIntent } from '../intent.ts';
 import { readStdin, flag } from './shared.ts';
+import { jsonInReply } from '../agents/reply-json.ts';
 
 /**
  * Validates the intent-extractor output against the description it read. A
@@ -31,7 +32,10 @@ export function checkIntentCommand(argv: string[]): number {
 
   let document: unknown;
   try {
-    document = JSON.parse(readStdin()) as unknown;
+    // The extractor's reply as it came: prose or a fence around the JSON is left out (#417).
+    const reply = jsonInReply(readStdin());
+    if (reply === undefined) throw new Error('no JSON');
+    document = reply.value;
   } catch {
     console.error('Expected {"statements": [...]} on stdin.');
     return 2;

@@ -232,6 +232,8 @@ export interface Verification {
   blockerConfirmed?: boolean | undefined;
   /** Further places, as `path:line`, where the verifier confirmed the same defect (#388). */
   alsoAt?: string[] | undefined;
+  /** Factual details the verifier found wrong in the candidate's text, each with the right one (#416). */
+  corrections?: { wrong: string; right: string }[] | undefined;
 }
 
 /** Longest verifier reason quoted in a rejection. */
