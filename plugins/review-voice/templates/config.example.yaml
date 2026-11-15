@@ -105,7 +105,7 @@ review:
   # Defaults are shown; a limit must be a whole number above zero.
   human_review:
     max_decision_points: 40         # branches added across the whole change
-    max_hunk_decision_points: 15    # branches added in the densest hunk
+    max_hunk_decision_points: 15    # branches added in the densest hunk, or in the densest declaration of a new file
     # false lets a clean high-complexity change approve; the local note and
     # flag stay, and nothing about it is posted (docs/adr/0028).
     cap_approval: true
@@ -141,6 +141,7 @@ review:
       - "**/fixtures/**"
       - "**/__fixtures__/**"
       - "**/testdata/**"
+      - "**/evals/**/*.md"
       - "**/*.test.*"
       - "**/*.spec.*"
       - "**/*_test.go"

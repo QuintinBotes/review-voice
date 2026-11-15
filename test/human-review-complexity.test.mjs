@@ -590,3 +590,35 @@ test('a run with no assessment is not capped, and says so in reasons', async () 
     assert.equal(output.payload.body, 'No problems found.');
   });
 });
+
+// #387: a new file is one hunk, so any new script of ordinary size tripped the
+// per-hunk limit and every review that added one was raised for a human.
+
+test('#387: a new file is measured by its densest declaration, not as one hunk', () => {
+  const fn = (name, branches) => [`function ${name}() {`, ...Array.from({ length: branches }, () => '  if (a) {}'), '}'];
+  const limits = { ...NONE, maxDecisionPoints: 99, maxHunkDecisionPoints: 5 };
+  const script = [...fn('first', 4), ...fn('second', 4), ...fn('third', 4)];
+
+  const added = assessComplexity(patch('bin/tool.ts', script), [file('bin/tool.ts', { status: 'added' })], limits);
+  assert.equal(added.level, 'normal', added.reasons.join('; '));
+  assert.equal(added.decisionPoints, 12, 'every line still counts toward the total');
+  assert.deepEqual(added.densestHunk, { path: 'bin/tool.ts', line: 1, decisionPoints: 4 });
+
+  // The same lines added to an existing file are one hunk, as before.
+  const modified = assessComplexity(patch('bin/tool.ts', script), [file('bin/tool.ts')], limits);
+  assert.match(modified.reasons[0], /12 decision points in one hunk at bin\/tool\.ts:1 \(limit 5\)/);
+
+  // One dense declaration in a new file is still raised, and named as one.
+  const dense = assessComplexity(patch('bin/tool.ts', [...fn('first', 2), ...fn('second', 6)]), [file('bin/tool.ts', { status: 'added' })], limits);
+  assert.equal(dense.level, 'high');
+  assert.match(dense.reasons[0], /6 decision points in one declaration of the new file bin\/tool\.ts:5 \(limit 5\)/);
+});
+
+// #389: eval prompts and graders were counted as documentation.
+
+test('#389: the Markdown of an eval suite is a test file, not documentation', () => {
+  const files = [file('evals/restraint/prompt.md'), file('evals/restraint/graders/exact.md'), file('docs/guide.md'), file('src/evals/runner.ts')];
+  const result = assessComplexity('', files);
+  assert.equal(result.excluded.testFiles, 2);
+  assert.equal(result.excluded.documentationFiles, 1);
+});

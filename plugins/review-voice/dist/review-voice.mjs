@@ -1480,6 +1480,8 @@ var DEFAULT_TEST_PATHS = [
   "**/fixtures/**",
   "**/__fixtures__/**",
   "**/testdata/**",
+  // The prompts and graders of an eval suite are test input, not documentation (#389).
+  "**/evals/**/*.md",
   "**/*.test.*",
   "**/*.spec.*",
   "**/*_test.go",
@@ -1511,7 +1513,11 @@ var TERNARY = / \? /g;
 var COMMENT_START = /^(?:\/\/|#|\*|\/\*|--)/;
 var HUNK_HEADER = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/;
 var DECLARATION = /^[A-Za-z_$]/;
-var STATEMENT = /^(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|when)\b/;
+var STATEMENT = /^(?:(?:if|else|elif|for|foreach|while|do|switch|case|default|try|catch|except|finally|return|break|continue|throw|when)\b|[A-Za-z_$][\w$]*=)/;
+var SHELL_DECLARATION = /^(?:function\s+[\w:.-]+|[\w:.-]+\s*\(\s*\))/;
+var SHELL_PATH = /\.(?:sh|bash|zsh|ksh)$/i;
+var SHELL_SHEBANG = /^#!.*\b(?:ba|z|k|da)?sh\b/;
+var CLOSES_DECLARATION = /^(?:\}|end\b)/;
 var MAX_SCOPE_LENGTH = 80;
 function count(text5, pattern) {
   return text5.match(pattern)?.length ?? 0;
@@ -1521,8 +1527,9 @@ function decisionPointsIn(text5) {
   if (trimmed.length === 0 || COMMENT_START.test(trimmed)) return 0;
   return count(trimmed, KEYWORDS) + count(trimmed, /&&/g) + count(trimmed, /\|\|/g) + count(trimmed, TERNARY);
 }
-function declarationIn(text5) {
-  return DECLARATION.test(text5) && !STATEMENT.test(text5) ? text5.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
+function declarationIn(text5, shell = false) {
+  const declares = shell ? SHELL_DECLARATION.test(text5) : DECLARATION.test(text5) && !STATEMENT.test(text5);
+  return declares ? text5.trimEnd().slice(0, MAX_SCOPE_LENGTH) : null;
 }
 function headerPath2(raw) {
   const text5 = raw.replace(/\t.*$/, "");
@@ -1539,6 +1546,7 @@ function countHunks(diff, wanted) {
   let remainingOld = 0;
   let remainingNew = 0;
   let newLine = 0;
+  let shell = false;
   const record3 = (hunk, text5, removed) => {
     const decisionPoints = decisionPointsIn(text5);
     if (decisionPoints === 0) return;
@@ -1555,8 +1563,10 @@ function countHunks(diff, wanted) {
     const line3 = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     if (current !== null && (remainingOld > 0 || remainingNew > 0)) {
       const text5 = line3.slice(1);
+      if (newLine === 1 && !line3.startsWith("-") && text5.startsWith("#!")) shell = SHELL_SHEBANG.test(text5);
+      if (!line3.startsWith("-") && CLOSES_DECLARATION.test(text5)) scope = null;
       if (line3.startsWith("+")) {
-        if (declarationIn(text5) !== null) {
+        if (declarationIn(text5, shell) !== null) {
           if (!replacing) scope = null;
           replacing = false;
         }
@@ -1567,7 +1577,7 @@ function countHunks(diff, wanted) {
         continue;
       }
       if (line3.startsWith("-")) {
-        const declaration = declarationIn(text5);
+        const declaration = declarationIn(text5, shell);
         if (declaration !== null) {
           scope = declaration;
           replacing = true;
@@ -1578,7 +1588,7 @@ function countHunks(diff, wanted) {
         continue;
       }
       if (line3.startsWith(" ") || line3 === "") {
-        scope = declarationIn(text5) ?? scope;
+        scope = declarationIn(text5, shell) ?? scope;
         replacing = false;
         remainingOld -= 1;
         remainingNew -= 1;
@@ -1597,6 +1607,7 @@ function countHunks(diff, wanted) {
     }
     if (line3.startsWith("+++ ")) {
       path = headerPath2(line3.slice(4));
+      shell = path !== null && SHELL_PATH.test(path);
       continue;
     }
     const header = HUNK_HEADER.exec(line3);
@@ -1606,13 +1617,21 @@ function countHunks(diff, wanted) {
       remainingNew = header[3] === void 0 ? 1 : Number(header[3]);
       current = { path, line: Number(header[2]), decisionPoints: 0, branches: [], added: [], removed: [] };
       newLine = Number(header[2]);
-      scope = declarationIn((header[4] ?? "").trim());
+      scope = declarationIn((header[4] ?? "").trim(), shell);
       replacing = false;
       if (wanted.has(path)) hunks.push(current);
     }
   }
   finish();
   return hunks;
+}
+function declarationsOf(hunk) {
+  const units = [];
+  for (const { line: line3, text: text5 } of hunk.added) {
+    if (units.length === 0 || declarationIn(text5) !== null) units.push({ path: hunk.path, line: line3, decisionPoints: 0, declaration: true });
+    units[units.length - 1].decisionPoints += decisionPointsIn(text5);
+  }
+  return units;
 }
 function config(partial) {
   return {
@@ -1695,8 +1714,10 @@ function assessComplexity(diff, files2, partial, markedGenerated2 = /* @__PURE__
   const ofKind = (kind) => [...kinds.values()].filter((value) => value === kind).length;
   const pointsOf = (kind) => allHunks.filter((hunk) => kinds.get(hunk.path) === kind).reduce((sum, hunk) => sum + hunk.decisionPoints, 0);
   const decisionPoints = hunks.reduce((sum, hunk) => sum + hunk.decisionPoints, 0);
-  const densest = hunks.reduce(
-    (best, hunk) => hunk.decisionPoints > 0 && (best === null || hunk.decisionPoints > best.decisionPoints) ? hunk : best,
+  const added = new Set(files2.filter((file2) => file2.status === "added").map((file2) => file2.path));
+  const units = hunks.flatMap((hunk) => added.has(hunk.path) ? declarationsOf(hunk) : [hunk]);
+  const densest = units.reduce(
+    (best, unit) => unit.decisionPoints > 0 && (best === null || unit.decisionPoints > best.decisionPoints) ? unit : best,
     null
   );
   const sensitiveGlobs = [.../* @__PURE__ */ new Set([...limits.sensitivePaths, ...SENSITIVE_NEVER_EXEMPT])];
@@ -1723,7 +1744,7 @@ function assessComplexity(diff, files2, partial, markedGenerated2 = /* @__PURE__
   }
   if (densest !== null && densest.decisionPoints > limits.maxHunkDecisionPoints) {
     reasons.push(
-      `${densest.decisionPoints} decision points in one hunk at ${densest.path}:${densest.line} (limit ${limits.maxHunkDecisionPoints})`
+      `${densest.decisionPoints} decision points in one ${densest.declaration === true ? "declaration of the new file" : "hunk at"} ${densest.path}:${densest.line} (limit ${limits.maxHunkDecisionPoints})`
     );
   }
   if (sensitive.length > 0) {
@@ -22519,7 +22540,7 @@ function withoutReproductionFiles(evidence, reproductions) {
 }
 var squash = (value) => value.replace(/\s+/g, " ").trim();
 var MIN_QUOTE = 6;
-function checkDecisive(verdict2, read, hunks) {
+function checkDecisive(verdict2, read, changed) {
   const evidence = [];
   for (const [index, entry] of verdict2.decisive_evidence.entries()) {
     const parts = /^(.*):(\d+)(?:-(\d+))?$/.exec(entry.replace(/[\p{Cf}`]/gu, "").trim());
@@ -22530,7 +22551,7 @@ function checkDecisive(verdict2, read, hunks) {
     }
     const lines2 = read(path);
     if (lines2 === null) {
-      if (!hunks.has(path)) return { problem: `${entry} names a file that is not at the head` };
+      if (!changed(path)) return { problem: `${entry} names a file that is not at the head` };
       evidence.push(entry);
       continue;
     }
@@ -22624,7 +22645,9 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
     if (verdict2.verdict === "partly") hold(finding, id, "challenge-partly", verdict2.reason);
     else if (verdict2.verdict === "refuted") hold(finding, id, "challenge-refuted", verdict2.reason);
     else if (readHead3 !== null) {
-      const checked = checkDecisive(verdict2, readHead3, hunks);
+      const causedBy = isRecord4(finding["causedBy"]) ? finding["causedBy"]["path"] : void 0;
+      const changed = (path) => hunks.has(path) || path === finding["path"] || path === causedBy;
+      const checked = checkDecisive(verdict2, readHead3, changed);
       if ("problem" in checked) hold(finding, id, "challenge-partly", `decisive evidence refused: ${checked.problem}`);
       else verdict2.decisive_evidence = checked.evidence;
     }
