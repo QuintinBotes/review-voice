@@ -9176,7 +9176,7 @@ function isBareDirection(direction) {
 function editorFix(fix) {
   if (fix.render === "fix") return { render: "fix", text: fix.suggested };
   if (fix.render === "direction") return { render: "direction", text: fix.direction };
-  return { render: "none", text: null };
+  return { render: "none", text: null, ...fix.withheld === void 0 ? {} : { withheld: fix.withheld } };
 }
 function assertUniqueCandidateIds(candidates) {
   const seen = /* @__PURE__ */ new Set();
@@ -9244,7 +9244,9 @@ function renderFix(candidate, verification2, thresholds) {
     confidence,
     direction,
     render: "none",
-    reason: verifierReason ?? reason2
+    reason: verifierReason ?? reason2,
+    // Only a repair that was proposed can be withheld.
+    ...hasSuggested ? { withheld: reason2 } : {}
   };
 }
 function ownerRaiseCeiling(severity, candidate, verification2, lane) {

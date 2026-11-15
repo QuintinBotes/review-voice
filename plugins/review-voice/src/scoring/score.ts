@@ -541,6 +541,12 @@ export interface FixRendering {
   direction: string | null;
   render: 'fix' | 'direction' | 'none';
   reason: string;
+  /**
+   * Why a proposed repair is not stated, in the CLI's own words. `reason`
+   * prefers the verifier's sentence about the fix, which does not say that the
+   * threshold is what held it (#379). Absent when the fix is rendered.
+   */
+  withheld?: string;
 }
 
 export interface ScoreBreakdown {
@@ -1504,12 +1510,14 @@ function isBareDirection(direction: string | null): boolean {
 export interface EditorFix {
   render: FixRendering['render'];
   text: string | null;
+  /** Why no repair is stated. It names a rule, never the repair, so nothing withheld travels with it. */
+  withheld?: string;
 }
 
 export function editorFix(fix: FixRendering): EditorFix {
   if (fix.render === 'fix') return { render: 'fix', text: fix.suggested };
   if (fix.render === 'direction') return { render: 'direction', text: fix.direction };
-  return { render: 'none', text: null };
+  return { render: 'none', text: null, ...(fix.withheld === undefined ? {} : { withheld: fix.withheld }) };
 }
 
 /**
@@ -1611,6 +1619,8 @@ function renderFix(
     direction,
     render: 'none',
     reason: verifierReason ?? reason,
+    // Only a repair that was proposed can be withheld.
+    ...(hasSuggested ? { withheld: reason } : {}),
   };
 }
 

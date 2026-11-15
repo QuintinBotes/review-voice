@@ -964,7 +964,10 @@ never writes code, and the CLI renders the suggestion block itself at post
 time.
 
 `fix` holds only what may be stated: `render` is `fix` or `direction` with the
-text to state, or `none` with no text. An entry marked `impactDisputed` had its
+text to state, or `none` with no text. When a repair was proposed and is not
+stated, `withheld` gives the reason: the verifier refuted it, did not verify
+it, or verified it below the confidence threshold, which the reason names.
+That is for you and the person; the editor never states it. An entry marked `impactDisputed` had its
 wider impact disputed in step 3c with no tie-break upholding it; the editor
 leaves that wider impact out. The editor does not decide or invent a
 correction, and a withheld repair never reaches it. The full fix decision stays

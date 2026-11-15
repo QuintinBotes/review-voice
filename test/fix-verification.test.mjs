@@ -334,7 +334,7 @@ test('eligible entries carry what the editor writes from, and no withheld repair
     assert.equal(entry.claim, RAW.claim);
     assert.equal(entry.failureMode, RAW.failure_mode);
     assert.deepEqual(entry.evidence, RAW.evidence);
-    assert.deepEqual(entry.fix, { render: 'none', text: null });
+    assert.deepEqual(entry.fix, { render: 'none', text: null, withheld: 'the verifier refuted the suggested fix' });
     assert.doesNotMatch(JSON.stringify(entry), /Move the write after validation/);
     // The audit record still has the whole decision.
     assert.equal(parsed.scores[0].fix.suggested, RAW.suggested_fix);
@@ -438,4 +438,27 @@ test('the review command hands the editor each fix inline', () => {
   assert.match(step, /`render` is `fix` or `direction`/);
   assert.match(step, /`claim`, `failureMode`, `evidence`/);
   assert.match(step, /a withheld repair never reaches it/);
+});
+
+test('#379: a fix the verifier verified below the threshold says so on the eligible entry', () => {
+  withDir('rv-fix-withheld-', (dir) => {
+    const file = join(dir, 'verification.json');
+    writeFileSync(
+      file,
+      JSON.stringify({
+        results: [{ candidate_id: 'cand_004', technical_confidence: 0.9, fix_verdict: 'verified', fix_confidence: 0.75, fix_reason: 'The repair holds on the traced input.' }],
+      }),
+    );
+    const { code, stdout, stderr } = runWithInput(['score', '--verification', file], CANDIDATE_WITH_FIX, dir);
+    assert.equal(code, 0, stderr);
+    const parsed = JSON.parse(stdout);
+    // The verifier's sentence does not say the threshold held the fix; `withheld` does.
+    assert.deepEqual(parsed.eligible[0].fix, {
+      render: 'none',
+      text: null,
+      withheld: 'verified fix confidence 0.75 is below the 0.8 threshold',
+    });
+    assert.equal(parsed.scores[0].fix.reason, 'The repair holds on the traced input.');
+    assert.equal(parsed.scores[0].fix.withheld, 'verified fix confidence 0.75 is below the 0.8 threshold');
+  });
 });
