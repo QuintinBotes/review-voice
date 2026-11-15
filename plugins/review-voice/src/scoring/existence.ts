@@ -441,25 +441,39 @@ const LOOSE_ABSENCE = [
   /\b(?:does|do|did)\s*(?:not|n't)\s+exist|\bmissing\b|\babsent\b|\b(?:deleted|removed)\b|\bnot\s+(?:found|present)\b/i,
 ];
 
-/** Where a clause starts: sentence punctuation, or a relative or contrasting word. */
-const CLAUSE_BREAK = /[.;!?](?=\s|$)|\b(?:which|that|who|but|whereas|while)\b/gi;
+/** Where a clause starts: sentence punctuation, or a relative, contrasting or conditional word. */
+const CLAUSE_WORDS = 'which|that|who|but|whereas|while|when|whenever|if|unless|because';
+const CLAUSE_BREAK = new RegExp(`[.;!?](?=\\s|$)|\\b(?:${CLAUSE_WORDS})\\b`, 'gi');
+const CLAUSE_OPENER = new RegExp(`^\\s*(?:${CLAUSE_WORDS})\\b`, 'i');
+
+/** A subject that stands for names given earlier, so the grammar settles nothing. */
+const PRONOUN_SUBJECT = /\b(?:both|they|them|it|neither|none|these|those|all|each|either)\b/i;
+
+/** At most one word between a name and the relative word after it: "`useThing` hook, which". */
+const ADJACENT = /^\W*(?:\w+\W*)?$/;
 
 /**
- * The paths a claim says are absent, as opposed to paths it merely mentions.
+ * The names a claim says are absent, as opposed to names it merely mentions.
  *
  * "`docs/guide.md` cites `ci/README.md`, which does not exist" names two files
  * and says one is missing; reading both as claimed-absent let the tracked
- * citing file refute a true finding. A name is tied when it shares a clause
- * with an absence phrase, or is the antecedent of a relative clause carrying
- * one: the gate's own phrases first, then looser wording. An empty set means
- * the grammar settled nothing, and the caller checks every name as before.
+ * citing file refute a true finding. A name is tied when it is the subject of
+ * an absence phrase: it comes before the phrase in the same clause (after it
+ * for "no such file `x.ts`"), or is the antecedent of a relative clause
+ * carrying one. The gate's own phrases first, then looser wording.
+ *
+ * An empty set means the grammar settled nothing, and the caller checks every
+ * name as before. `null` means it settled that no name is the subject: in
+ * "a task_id that does not exist raises IntegrityError" the absent thing is a
+ * run-time value, and a search for the names the sentence goes on to mention
+ * held a verified finding back (#381).
  */
-function tiedToAbsence(text: string, symbols: readonly string[]): Set<string> {
+function tiedToAbsence(text: string, symbols: readonly string[]): Set<string> | null {
   const strict = tiedBy(ASSERTS_ABSENCE, text, symbols);
-  return strict.size > 0 ? strict : tiedBy(LOOSE_ABSENCE, text, symbols);
+  return strict === null || strict.size > 0 ? strict : tiedBy(LOOSE_ABSENCE, text, symbols);
 }
 
-function tiedBy(phrases: readonly RegExp[], text: string, symbols: readonly string[]): Set<string> {
+function tiedBy(phrases: readonly RegExp[], text: string, symbols: readonly string[]): Set<string> | null {
   // Clause words inside backticks are part of a name, not grammar.
   const masked = text.replace(/`[^`]*`/g, (span) => `\`${'x'.repeat(span.length - 2)}\``);
   const starts = [0];
@@ -477,26 +491,42 @@ function tiedBy(phrases: readonly RegExp[], text: string, symbols: readonly stri
   });
 
   const tied = new Set<string>();
+  let unnamed = false;
+  let unsettled = false;
   for (let i = 0; i + 1 < starts.length; i += 1) {
     const start = starts[i] ?? 0;
     const end = starts[i + 1] ?? text.length;
     const clause = masked.slice(start, end);
-    if (!phrases.some((phrase) => phrase.test(clause))) continue;
+    const phrase = phrases.map((pattern) => pattern.exec(clause)).find((match) => match !== null);
+    if (phrase === undefined || phrase === null) continue;
 
-    const inClause = occurrences.filter(({ index }) => index >= start && index < end);
-    if (inClause.length > 0) {
-      for (const { symbol } of inClause) tied.add(symbol);
-    } else if (/^\s*(?:which|that|who)\b/i.test(clause)) {
-      let antecedent: { symbol: string; index: number } | undefined;
-      for (const occurrence of occurrences) {
-        if (occurrence.index < start && (antecedent === undefined || occurrence.index > antecedent.index)) {
-          antecedent = occurrence;
-        }
-      }
+    // "No such file `x.ts`" names the absent thing after the phrase; every
+    // other phrase follows its subject.
+    const at = start + phrase.index;
+    const follows = /^no\s+such/i.test(phrase[0]);
+    const subjects = occurrences.filter(
+      ({ index }) => index >= start && index < end && (follows ? index > at : index < at),
+    );
+    // What stands before the phrase, without the word that opened the clause.
+    const lead = clause.slice(0, phrase.index).replace(CLAUSE_OPENER, '');
+    if (subjects.length > 0) {
+      for (const { symbol } of subjects) tied.add(symbol);
+    } else if (!follows && /^\s*(?:which|that|who)\b/i.test(clause)) {
+      // The antecedent is what the relative word follows. A name further back
+      // belongs to another part of the sentence.
+      const antecedent = occurrences.find(
+        ({ symbol, index }) => index < start && ADJACENT.test(masked.slice(index + symbol.length, start)),
+      );
       if (antecedent !== undefined) tied.add(antecedent.symbol);
+      else unnamed = true;
+    } else if (follows || !/\w/.test(lead) || PRONOUN_SUBJECT.test(lead)) {
+      unsettled = true;
+    } else {
+      // An ordinary noun: "when the task does not exist".
+      unnamed = true;
     }
   }
-  return tied;
+  return tied.size === 0 && unnamed && !unsettled ? null : tied;
 }
 
 function generatedAccessor(symbol: string): boolean {
@@ -560,7 +590,11 @@ export function checkAbsenceClaim(
     text.split(symbol).slice(0, -1).some((before) => !before.endsWith('/')),
   );
   const tied = tiedToAbsence(text, stated);
-  const symbols = stated.filter((symbol) => !isPath(symbol) || tied.size === 0 || tied.has(symbol));
+  // What the claim says is absent has no name to search for.
+  if (tied === null) return null;
+  // A name the claim only mentions is one it says is present, so finding it
+  // contradicts nothing.
+  const symbols = stated.filter((symbol) => tied.size === 0 || tied.has(symbol));
   if (symbols.length === 0) return null;
 
   const searchedRef = ref ?? 'working tree';
