@@ -27,7 +27,9 @@ test('the analyst and verifier check and consolidate factual claims at the final
   assert.match(verifier, /Compare base and head/);
   assert.match(verifier, /flag-gated behaviour is conditional/);
   assert.match(verifier, /verify every listed\s+mismatch and that the final head has not corrected it/);
-  assert.match(verifier, /one consolidated\s+candidate only when its evidence gives every remaining mismatch as `path:line`/);
+  // #388: a true claim with more instances than listed is verified, with the rest in also_at.
+  assert.match(verifier, /verify it and list each further instance you confirmed in `also_at`/);
+  assert.match(verifier, /Never reject a true claim because its evidence is incomplete/);
 });
 
 test('the review flow gives the verifier the description it must check', () => {

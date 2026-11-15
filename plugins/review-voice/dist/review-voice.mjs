@@ -12206,7 +12206,11 @@ function familiesOf(verdicts, stages, scores) {
   const list3 = Array.isArray(verdicts) ? verdicts : [];
   const first = list3.length === 0 ? void 0 : asRecord(list3[0])?.["family"];
   const challenge2 = stages.find((stage) => stage.name === "challenge");
-  const challenged = Array.isArray(scores) && scores.some((score2) => asRecord(score2)?.["challenge"] !== void 0);
+  const ran = (score2) => {
+    const challenge3 = asRecord(asRecord(score2)?.["challenge"]);
+    return challenge3 !== null && !/^challenger (?:not run|failed)\b/.test(String(challenge3["reason"] ?? ""));
+  };
+  const challenged = Array.isArray(scores) && scores.some(ran);
   return {
     secondPass: list3.length === 0 ? null : isFamily(first) ? first : "unknown",
     challenge: challenge2 === void 0 ? challenged ? "claude" : null : isFamily(challenge2.family) ? challenge2.family : "claude"

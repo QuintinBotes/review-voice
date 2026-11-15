@@ -364,8 +364,13 @@ function familiesOf(verdicts: unknown, stages: readonly StageTiming[], scores: u
   const first = list.length === 0 ? undefined : (asRecord(list[0])?.['family'] as unknown);
   const challenge = stages.find((stage) => stage.name === 'challenge');
   // A score that carries a challenger's verdict is a challenge that ran,
-  // whatever the stage list calls it or leaves out (#380).
-  const challenged = Array.isArray(scores) && scores.some((score) => asRecord(score)?.['challenge'] !== undefined);
+  // whatever the stage list calls it or leaves out (#380). The verdict the
+  // driver writes for a challenger that did not run or failed is not one.
+  const ran = (score: unknown): boolean => {
+    const challenge = asRecord(asRecord(score)?.['challenge']);
+    return challenge !== null && !/^challenger (?:not run|failed)\b/.test(String(challenge['reason'] ?? ''));
+  };
+  const challenged = Array.isArray(scores) && scores.some(ran);
   return {
     secondPass: list.length === 0 ? null : isFamily(first) ? first : 'unknown',
     challenge: challenge === undefined ? (challenged ? 'claude' : null) : isFamily(challenge.family) ? challenge.family : 'claude',
