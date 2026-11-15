@@ -308,12 +308,15 @@ const MIN_QUOTE = 6;
  * posted. Each cited file must be at the head and hold the cited lines. When
  * the verdict quotes the line, the cited range must hold it; a quote found on
  * exactly one other line of the file moves the reference there. An absolute
- * path (a reproduction's copy) and a file the diff deletes are not read.
+ * path (a reproduction's copy) is not read, and neither is a file missing at
+ * the head that the diff touches or the finding is anchored on or caused by:
+ * a deleted file has lines only at the base.
  */
 function checkDecisive(
   verdict: ChallengeVerdict,
   read: HeadReader,
-  hunks: Map<string, FileHunks>,
+  /** Whether a file that is not at the head is one the change is known to touch, so it may be gone. */
+  changed: (path: string) => boolean,
 ): { evidence: string[] } | { problem: string } {
   const evidence: string[] = [];
   for (const [index, entry] of verdict.decisive_evidence.entries()) {
@@ -325,7 +328,7 @@ function checkDecisive(
     }
     const lines = read(path);
     if (lines === null) {
-      if (!hunks.has(path)) return { problem: `${entry} names a file that is not at the head` };
+      if (!changed(path)) return { problem: `${entry} names a file that is not at the head` };
       evidence.push(entry);
       continue;
     }
@@ -470,7 +473,10 @@ export function applyChallenge(
     else if (verdict.verdict === 'refuted') hold(finding, id, 'challenge-refuted', verdict.reason);
     else if (readHead !== null) {
       // A confirmation that rests on lines the head does not hold confirms nothing.
-      const checked = checkDecisive(verdict, readHead, hunks);
+      // A finding on a deleted file, or caused by one, cites lines only the base has.
+      const causedBy = isRecord(finding['causedBy']) ? finding['causedBy']['path'] : undefined;
+      const changed = (path: string): boolean => hunks.has(path) || path === finding['path'] || path === causedBy;
+      const checked = checkDecisive(verdict, readHead, changed);
       if ('problem' in checked) hold(finding, id, 'challenge-partly', `decisive evidence refused: ${checked.problem}`);
       else verdict.decisive_evidence = checked.evidence;
     }
