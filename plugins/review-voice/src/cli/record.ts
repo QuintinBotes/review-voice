@@ -293,6 +293,19 @@ export function recordCommand(argv: string[]): number {
     try {
       const parsed = JSON.parse(readFileSync(verdictsFile, 'utf8')) as { verdicts?: unknown };
       verdicts = Array.isArray(parsed) ? parsed : (parsed.verdicts ?? []);
+      // The evidence-verifier's verification.json was accepted here and stored
+      // as second-pass verdicts it is not (#431). Its entries carry `verified`
+      // and no `verdict`; its object form keeps them under `verifications`.
+      const list = Array.isArray(verdicts) ? (verdicts as unknown[]) : [];
+      const isVerification = (entry: unknown): boolean =>
+        typeof entry === 'object' && entry !== null && 'verified' in entry && !('verdict' in entry);
+      if ((!Array.isArray(parsed) && parsed.verdicts === undefined && 'verifications' in parsed) || list.some(isVerification)) {
+        console.error(
+          `${verdictsFile} is the evidence-verifier's output, not a second-pass report. --verdicts takes the report ` +
+            '`RV verify` wrote (second-pass.json); leave it out when no second pass ran.',
+        );
+        return 2;
+      }
     } catch {
       console.error(`Cannot read verdicts from ${verdictsFile}.`);
       return 2;
@@ -714,6 +727,8 @@ export function recordCommand(argv: string[]): number {
           // So the review driver can print the lines without a second command.
           provenance,
           families,
+          // So a caller can confirm what --held and --stages stored (#429).
+          stored: { held: held.length, stages: stages.length },
           ...(followUps.length === 0 ? {} : { followUps }),
           ...(warning === null ? {} : { warnings: [warning] }),
         },

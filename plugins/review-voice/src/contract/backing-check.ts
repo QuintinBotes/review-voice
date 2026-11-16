@@ -11,6 +11,13 @@ import type { Violation } from './validate.ts';
  */
 const ABSOLUTES = ['every', 'everyone', 'everything', 'everywhere', 'always', 'never', 'all'];
 
+/**
+ * Connectives that turn a requirement into an alternative. "Require X and
+ * throw" was posted as "require X or throw", which reverses it (#434). A
+ * finding compressed from text with no "or" has no grounds for one.
+ */
+const CONNECTIVES = ['or', 'nor'];
+
 const WORD = /[a-z]+/g;
 
 /** The words of a text, lower case, with code spans and blocks left out. */
@@ -54,6 +61,16 @@ export function checkUnbackedAbsolutes(output: string, scores: readonly unknown[
     if (here.length === 0) continue;
     const backed = wordsOf(here.map((entry) => backingText(entry as Record<string, unknown>)).join(' '));
     const said = wordsOf(finding.prose);
+    const disjoined = CONNECTIVES.filter((word) => said.has(word) && !backed.has(word));
+    if (disjoined.length > 0) {
+      violations.push({
+        code: 'unbacked_connective',
+        line: finding.startLine,
+        message:
+          `${finding.path}:${finding.line} says ${disjoined.map((word) => `"${word}"`).join(', ')}, which its scored claim, ` +
+          'failure mode, evidence and fix do not. Keep the scored connectives: "and" made "or" reverses a requirement.',
+      });
+    }
     const unbacked = ABSOLUTES.filter((word) => said.has(word) && !backed.has(word));
     if (unbacked.length === 0) continue;
     violations.push({

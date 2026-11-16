@@ -394,6 +394,18 @@ export function boundSeverityByEvidence(
       reason: `${derived.reason}, held at ${candidate.severity} because the verifier found no exposure`,
     };
   }
+  // A breach is blocking by itself only once it is established: a claim the
+  // verifier rejected stays at the tier the analyst asked for (#432).
+  if (FIXED_BOUNDARY_CATEGORIES.has(candidate.category) && verification?.verified === false) {
+    const asked = TIER_ORDER.indexOf(candidate.severity as (typeof TIER_ORDER)[number]);
+    const got = TIER_ORDER.indexOf(derived.severity as (typeof TIER_ORDER)[number]);
+    if (asked === -1 || got === -1 || asked >= got) return derived;
+    return {
+      ...derived,
+      severity: TIER_ORDER[asked] as DerivedSeverity['severity'],
+      reason: `${derived.reason}, held at ${candidate.severity} because the verifier did not verify the claim`,
+    };
+  }
   if (FIXED_BOUNDARY_CATEGORIES.has(candidate.category)) {
     return raisedBecause(
       derived,
@@ -1757,9 +1769,19 @@ export function scoreCandidate(
   const derivedSeverity = deriveSeverity(candidate.category, candidate.severity, verification?.reach);
   const isQuestion = derivedSeverity.severity === 'question';
 
+  // The tier the finding is reported at, once evidence and the lane have
+  // bounded it. The floor is read from this, not from the derivation before
+  // the bound: a finding held at minor was refused at the important floor (#435).
+  const severity = withLegacyTierHint(
+    applyLaneSeverity(boundSeverityByEvidence(derivedSeverity, candidate, verification), candidate, lane, verification),
+    candidate,
+    verification,
+    lane,
+  );
+
   // Which floor applies depends on who established the number. The verifier
   // checked the claim; the analyst did not.
-  const verified = verifiedFloor(candidate.category, ownerTier ?? derivedSeverity.severity, thresholds);
+  const verified = verifiedFloor(candidate.category, ownerTier ?? severity.severity, thresholds);
   const confidenceFloor = confidenceSource === 'verifier' ? verified.floor : thresholds.analystOnlyConfidence;
 
   const alreadySaid = duplicatePrecedent(candidate, precedents);
@@ -1877,13 +1899,6 @@ export function scoreCandidate(
     // finalScore of 0.7788996174443317. True, and unreadable.
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
-
-  const severity = withLegacyTierHint(
-    applyLaneSeverity(boundSeverityByEvidence(derivedSeverity, candidate, verification), candidate, lane, verification),
-    candidate,
-    verification,
-    lane,
-  );
 
   // A stale consumer sits on code the diff did not touch, so nothing in the
   // diff shows it breaking. Only the verifier following it back to its cause
