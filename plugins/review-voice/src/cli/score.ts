@@ -989,7 +989,9 @@ export function scoreCommand(argv: string[]): number {
               // The path it was checked on travels inside the patch, which nothing
               // that moves a finding (reanchor, the challenge) rewrites, so a move
               // shows at post time as a patch written for another place.
-              ...(c.suggestedPatch === undefined ? {} : { suggested_patch: { ...c.suggestedPatch, path: c.path } }),
+              // Only behind a fix score renders: a withheld repair must not be
+              // stored with the finding, where it reads as accepted (#433).
+              ...(c.suggestedPatch === undefined || scored?.fix.render !== 'fix' ? {} : { suggested_patch: { ...c.suggestedPatch, path: c.path } }),
               // The editor names the cause in the prose, since the consumer's
               // line is what the finding's location shows.
               ...(c.anchor === 'stale-consumer' ? { anchor: c.anchor, causedBy: c.causedBy ?? null } : {}),

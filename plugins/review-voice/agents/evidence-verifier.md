@@ -514,6 +514,12 @@ For every candidate, return these fields in addition to the defect fields:
 | `fix_reason` | string | One sentence naming the input traced and what it showed |
 | `fix_direction` | string, optional | One imperative clause with no specifics or hedging, only for `partial` |
 
+A direction is posted without the suggested fix it came from, so it must stand
+on its own: name what it acts on in the finding's terms. "Update every reader
+of the old path" refers to a move the reader never sees; "Update every reader
+of `config/old.yaml` when it moves" does not. Leave the field out when it
+cannot be said without the suggestion (#430).
+
 ## A reproduction, when asked for one
 
 Only when your prompt lists reproduction runners. For each candidate you

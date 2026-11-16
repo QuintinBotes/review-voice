@@ -1122,7 +1122,9 @@ Pipe the editor's output through
 score at that `path:line` is otherwise held silently at post time, when the
 editor can no longer retry. The same file lets it reject an absolute word -
 every, always, never, all - that the scored finding does not use
-(`unbacked_absolute`); on a retry, tell the editor to keep the scored wording. Add
+(`unbacked_absolute`), and an "or" or "nor" it does not use
+(`unbacked_connective`), which can reverse a requirement; on a retry, tell the
+editor to keep the scored wording. Add
 the limits step 1b resolved: `--max-words-per-finding <policy.maxWordsPerFinding>`
 and `--max-total-words <policy.maxTotalWords>`, and `--max-findings <n>` only
 when `policy.maxFindings` is a number.
