@@ -671,6 +671,15 @@ export function scoreCommand(argv: string[]): number {
             baseRef,
             undefined,
             flag(argv, '--repository'),
+            undefined,
+            undefined,
+            // Only a line the change added: there the absent name is the
+            // defect itself, a typo or a call to what does not exist (#447). A
+            // finding anchored on a line that was already there, such as the
+            // declaration, is still contradicted by it.
+            anchorHunks !== null && anchorFor(anchorHunks, candidate).kind === 'added'
+              ? { path: candidate.path, line: candidate.line }
+              : undefined,
           );
         } catch {
           absence = null;

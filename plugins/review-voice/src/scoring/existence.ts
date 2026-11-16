@@ -180,7 +180,13 @@ export interface ExistenceCheck {
   reason?: string | undefined;
 }
 
-export type Searcher = (symbol: string, cwd: string, ref: string | null) => boolean;
+/** A code line, by repository path and 1-based line, that a search must not count. */
+export interface SearchExclusion {
+  path: string;
+  line: number;
+}
+
+export type Searcher = (symbol: string, cwd: string, ref: string | null, exclude?: SearchExclusion) => boolean;
 
 /** A repository search that reports every path containing the literal token. */
 /**
@@ -211,7 +217,7 @@ export type LineSearcher = (
  * `git grep` rather than a filesystem walk: it respects the repository's own
  * idea of what is tracked, and it is fast enough to run per symbol.
  */
-export const gitGrep: Searcher = (symbol, cwd, ref) => {
+export const gitGrep: Searcher = (symbol, cwd, ref, exclude) => {
   // `-e` marks the next argument as the pattern.
   //
   // Without it a symbol beginning with a dash is parsed as an option, and the
@@ -221,15 +227,36 @@ export const gitGrep: Searcher = (symbol, cwd, ref) => {
   // token as well; either alone would do, and this is the one that has to
   // hold if the extractor ever changes.
   //
+  // The name must stand whole: `__future` inside `__future__`, or
+  // `useBulkDelete` inside `useBulkDeleteProducts`, is not the thing the claim
+  // says is absent (#447).
+  //
   // The ref goes after the pattern. Everything after `--` is a pathspec, so it
   // cannot be used to separate them.
-  const args =
-    ref === null
-      ? ['grep', '--fixed-strings', '--quiet', '-e', symbol]
-      : ['grep', '--fixed-strings', '--quiet', '-e', symbol, ref];
+  const pattern = `(^|${NOT_IDENTIFIER})${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(${NOT_IDENTIFIER}|$)`;
+  const base = ['grep', '--extended-regexp', '-I', '--full-name'];
+  const at = ref === null ? [] : [ref];
   try {
-    execFileSync('git', args, { cwd, stdio: 'ignore', timeout: 10_000 });
-    return true;
+    if (exclude === undefined) {
+      execFileSync('git', [...base, '--quiet', '-e', pattern, ...at], { cwd, stdio: 'ignore', timeout: 10_000 });
+      return true;
+    }
+    // The finding's own line holds the name it says is missing: a typo is
+    // the defect, so that hit says nothing about whether the thing exists.
+    const output = execFileSync('git', [...base, '-n', '-z', '-e', pattern, ...at], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 10_000,
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    const prefix = ref === null ? '' : `${ref}:`;
+    return output.split('\n').some((record) => {
+      const [rawPath = '', number = ''] = record.split('\0');
+      if (number === '') return false;
+      const path = prefix !== '' && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath;
+      return !(path === exclude.path && Number(number) === exclude.line);
+    });
   } catch (error) {
     // Exit 1 is "no match", which is the answer. Anything else is a failure to
     // ask the question, and must not be read as an answer.
@@ -557,6 +584,8 @@ export function checkAbsenceClaim(
   repository: string | null = null,
   resources: ResourceLister = gitResourceSources,
   trackedPaths: TrackedPathLister = gitTrackedPaths,
+  /** The finding's own path and line; its hit is not counted when the working tree is searched (#447). */
+  anchor?: SearchExclusion,
 ): ExistenceCheck | null {
   const searchedRefLabel = ref ?? 'working tree';
 
@@ -615,7 +644,7 @@ export function checkAbsenceClaim(
           ? paths.some((tracked) => tracked === path || tracked.startsWith(`${path}/`))
           : paths.some((tracked) => tracked === path || tracked.endsWith(`/${path}`));
         if (exists) found.push(symbol);
-      } else if (search(symbol, cwd, ref)) {
+      } else if (search(symbol, cwd, ref, ref === null ? anchor : undefined)) {
         found.push(symbol);
       }
     } catch {
