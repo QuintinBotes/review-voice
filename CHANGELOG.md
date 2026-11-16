@@ -5,6 +5,89 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.26.0] - 2026-11-16
+
+### Added
+
+- `review --base <ref>` reviews `HEAD` of the checkout against its merge base
+  with `<ref>`, with the same stages and output as a `--pr` review. Both
+  commits are read from git, and the configuration and conventions come from
+  the merge base, as for a pull request. Nothing is read from GitHub: the
+  thread is empty, follow-ups and carry do not run, and there is no verdict or
+  post. The run is recorded with no pull number. `--post`, `--since`, `--full`
+  and `--no-recheck-thread` are refused with `--base`, as is `--base` with
+  `--pr`; `queue` gets no `--base`. The README also lists every command, the
+  hosts it reaches and what it sends. (#414, closes #410, #411)
+
+### Fixed
+
+- `config resolve` creates a missing `--dir` (mode 0700), so a slash command
+  pull request review needs no `mkdir`. A `--dir` that exists and is not a
+  directory is still refused. (#370, closes #369)
+
+- The absence check looks up only a name the claim says is absent. A name is
+  tied to an absence phrase as its subject, so a symbol the claim says is
+  present no longer contradicts the one it says is absent, and a claim whose
+  absence phrases have no named subject looks nothing up. (#401, closes #381)
+
+- The challenge stage names the directory and head commit to read the code in
+  (`challenge --emit-prompts --cwd --head`), checks every `decisive_evidence`
+  reference against the head and holds the finding as `challenge-partly` when
+  a file or line is missing or a quote is not there, and states a question
+  confirmed with `answered: true` at `minor`. (#402, closes #373, #393, #392)
+
+- `score` lists every rejection in the new `rejected[]` list, with missing
+  context listed under `unverified`, says why a proposed fix is withheld
+  (`withheld`), and measures the reach of a touched file from its own hunks
+  only. A verification entry with `verified: false` no longer warns that it
+  was not piped in. (#403, closes #383, #379, #382, #384)
+
+- Diff signals read a script without an extension by its shebang, `.exec(` in
+  JavaScript and TypeScript is `unsafe` only bare or on a child-process
+  module, a new file is measured by its densest declaration, and `**/evals/**/*.md`
+  is a default test path. `diff --base` fills `refs` and `mergeBase`,
+  `context` prints `claudeCodeVersion`, and `score` and `retrieve` take
+  precedents only from the reviewed repository and `repositories.include`.
+  (#404, closes #375, #387, #389, #386, #376)
+
+- The plugin's agents are held to read-only git: a PreToolUse hook denies any
+  Bash call from one of them that is not a read-only git subcommand without
+  shell syntax. The review skill and commands agree with each other and with
+  what the commands do (`checked.json`, the lanes, `also_at`, the stage
+  names, and the GitHub state the verifier cannot read). (#405, closes #391,
+  #374, #377, #378, #380, #385, #388, #390, #371, #372)
+
+- `check-intent` keeps a section answer followed by a thematic break, and
+  matches the same short answer under several headings to the heading the
+  extractor named, else the one sharing the most words with the statement.
+  (#407, closes #406)
+
+- The evidence-verifier is told the `required_context_missing` entry shape,
+  and `check-verification` names an offending entry with an example. The
+  review skill describes the question gate as `score` applies it, with its
+  confidence floor of 0.5. (#413, closes #408, #409)
+
+- `concise-editor` declares `Read` alone, as a subagent cannot be started with
+  no tools. The evidence-verifier may return `corrections` that `score`
+  applies before the editor sees the finding. Every command that reads agent
+  output reads the JSON out of a reply with prose or a code fence around it,
+  and `challenge --post-narrowed <id>` posts a `partly` verdict's narrowed
+  claim. (#419, closes #415, #416, #417, #418)
+
+- A different defect on the same line keeps its novelty, so it is no longer
+  held by the score gate, and `challenge` names a verdict field placed outside
+  `verdicts` and gives the shape it wants. (#422, closes #420, #421)
+
+- After `score --severity <id>=<tier>`, `severityReason` drops the hint that
+  the requested tier was not applied. `/review-voice:draft-review` always
+  posts with `--recheck-thread`, so a finding someone else raised while the
+  review ran is refused instead of posted again. (#425, closes #423, #424)
+
+- The review skill always passes the head checkout to
+  `challenge --emit-prompts`, so a `--base`, staged or working-tree review
+  run from another directory names the right place to read the code.
+  (#428, closes #427)
+
 ## [1.25.0] - 2026-11-13
 
 ### Added
