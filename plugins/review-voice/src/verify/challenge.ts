@@ -150,6 +150,8 @@ export function challengePrompt(
     '',
     "You are not given the verifier's reasoning, confidence or evidence. Read the code at the head yourself.",
     `Return {"verdicts": [{"candidate_id": "${id}", "verdict", "line_ok", "corrected_line"?, "decisive_evidence", "decisive_quotes", "reason"}]}.`,
+    // A challenger put `reason` beside "verdicts"; the shape is restated where it answers (#421, #427).
+    'Every field, reason included, goes inside the verdict object; the reply has no key but "verdicts".',
   );
   return rows.join('\n');
 }
