@@ -116,6 +116,10 @@ comment in the review, never as a reply.
   the query is still loading", say that, not "every time". `validate-output`
   rejects an absolute word the scored finding does not use
   (`unbacked_absolute`).
+- Keep the finding's logic exactly: its "and", "or", "not", "unless" and
+  "only" stay as the finding states them. "Require X and throw" compressed to
+  "require X or throw" says the opposite. `validate-output` rejects an "or" or
+  "nor" the scored finding does not use (`unbacked_connective`).
 - Never invent or revise a correction. Render only what `fix.render` permits.
 - Never write code. A `suggested_patch` that reaches you anyway is not yours to
   render: the CLI adds the suggestion block itself.

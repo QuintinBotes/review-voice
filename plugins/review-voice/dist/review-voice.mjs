@@ -8756,6 +8756,16 @@ function boundSeverityByEvidence(derived, candidate, verification2) {
       reason: `${derived.reason}, held at ${candidate.severity} because the verifier found no exposure`
     };
   }
+  if (FIXED_BOUNDARY_CATEGORIES.has(candidate.category) && verification2?.verified === false) {
+    const asked2 = TIER_ORDER.indexOf(candidate.severity);
+    const got2 = TIER_ORDER.indexOf(derived.severity);
+    if (asked2 === -1 || got2 === -1 || asked2 >= got2) return derived;
+    return {
+      ...derived,
+      severity: TIER_ORDER[asked2],
+      reason: `${derived.reason}, held at ${candidate.severity} because the verifier did not verify the claim`
+    };
+  }
   if (FIXED_BOUNDARY_CATEGORIES.has(candidate.category)) {
     return raisedBecause(
       derived,
@@ -9325,7 +9335,13 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const unverifiableBecause = confidenceSource !== "unverifiable-cap" ? null : missingContext ? `the verifier listed required_context_missing the claim depends on: ${missing.join("; ")}` : "the analyst's evidence says the claim could not be checked, and the verifier gave no technical_confidence of its own";
   const derivedSeverity = deriveSeverity(candidate.category, candidate.severity, verification2?.reach);
   const isQuestion = derivedSeverity.severity === "question";
-  const verified = verifiedFloor(candidate.category, ownerTier ?? derivedSeverity.severity, thresholds);
+  const severity = withLegacyTierHint(
+    applyLaneSeverity(boundSeverityByEvidence(derivedSeverity, candidate, verification2), candidate, lane, verification2),
+    candidate,
+    verification2,
+    lane
+  );
+  const verified = verifiedFloor(candidate.category, ownerTier ?? severity.severity, thresholds);
   const confidenceFloor = confidenceSource === "verifier" ? verified.floor : thresholds.analystOnlyConfidence;
   const alreadySaid = duplicatePrecedent(candidate, precedents);
   const forAlignment = alreadySaid === null ? precedents : precedents.filter((p2) => !sameLocation(candidate, p2));
@@ -9370,12 +9386,6 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   }
-  const severity = withLegacyTierHint(
-    applyLaneSeverity(boundSeverityByEvidence(derivedSeverity, candidate, verification2), candidate, lane, verification2),
-    candidate,
-    verification2,
-    lane
-  );
   const staleConsumer = candidate.anchor === STALE_CONSUMER;
   const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === "nit" && confidenceSource === "verifier";
   if (staleConsumer && verification2?.impactTraced !== true && !untracedDocumentNit) {
@@ -21235,8 +21245,8 @@ var COMMAND_HELP = {
       `  --max-words-per-finding <n>  Default ${DEFAULT_LIMITS.maxWordsPerFinding}`,
       `  --max-total-words <n>      Default ${DEFAULT_LIMITS.maxTotalWords}`,
       "  --scores <path>            The JSON `score` printed; a severity tag that disagrees with its score,",
-      "                             or an absolute word (every, always, never, all) the scored finding",
-      "                             does not use, is a violation",
+      '                             or an absolute word (every, always, never, all) or an "or"/"nor" the',
+      "                             scored finding does not use, is a violation",
       "Reads: the review text on stdin.",
       "Writes: the result on stdout.",
       "Exit codes: 0 compliant, 1 violations found, 2 bad invocation."
@@ -25996,6 +26006,7 @@ function checkSeverityAgainstScores(output, scores) {
 
 // plugins/review-voice/src/contract/backing-check.ts
 var ABSOLUTES = ["every", "everyone", "everything", "everywhere", "always", "never", "all"];
+var CONNECTIVES = ["or", "nor"];
 var WORD = /[a-z]+/g;
 function wordsOf(text5) {
   const prose = text5.replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ");
@@ -26023,6 +26034,14 @@ function checkUnbackedAbsolutes(output, scores) {
     if (here.length === 0) continue;
     const backed = wordsOf(here.map((entry) => backingText(entry)).join(" "));
     const said = wordsOf(finding.prose);
+    const disjoined = CONNECTIVES.filter((word) => said.has(word) && !backed.has(word));
+    if (disjoined.length > 0) {
+      violations.push({
+        code: "unbacked_connective",
+        line: finding.startLine,
+        message: `${finding.path}:${finding.line} says ${disjoined.map((word) => `"${word}"`).join(", ")}, which its scored claim, failure mode, evidence and fix do not. Keep the scored connectives: "and" made "or" reverses a requirement.`
+      });
+    }
     const unbacked = ABSOLUTES.filter((word) => said.has(word) && !backed.has(word));
     if (unbacked.length === 0) continue;
     violations.push({
@@ -33550,7 +33569,9 @@ function scoreCommand(argv) {
               // The path it was checked on travels inside the patch, which nothing
               // that moves a finding (reanchor, the challenge) rewrites, so a move
               // shows at post time as a patch written for another place.
-              ...c.suggestedPatch === void 0 ? {} : { suggested_patch: { ...c.suggestedPatch, path: c.path } },
+              // Only behind a fix score renders: a withheld repair must not be
+              // stored with the finding, where it reads as accepted (#433).
+              ...c.suggestedPatch === void 0 || scored?.fix.render !== "fix" ? {} : { suggested_patch: { ...c.suggestedPatch, path: c.path } },
               // The editor names the cause in the prose, since the consumer's
               // line is what the finding's location shows.
               ...c.anchor === "stale-consumer" ? { anchor: c.anchor, causedBy: c.causedBy ?? null } : {},
@@ -34175,6 +34196,14 @@ function recordCommand(argv) {
     try {
       const parsed2 = JSON.parse(readFileSync39(verdictsFile, "utf8"));
       verdicts = Array.isArray(parsed2) ? parsed2 : parsed2.verdicts ?? [];
+      const list3 = Array.isArray(verdicts) ? verdicts : [];
+      const isVerification = (entry) => typeof entry === "object" && entry !== null && "verified" in entry && !("verdict" in entry);
+      if (!Array.isArray(parsed2) && parsed2.verdicts === void 0 && "verifications" in parsed2 || list3.some(isVerification)) {
+        console.error(
+          `${verdictsFile} is the evidence-verifier's output, not a second-pass report. --verdicts takes the report \`RV verify\` wrote (second-pass.json); leave it out when no second pass ran.`
+        );
+        return 2;
+      }
     } catch {
       console.error(`Cannot read verdicts from ${verdictsFile}.`);
       return 2;
@@ -34491,6 +34520,8 @@ function recordCommand(argv) {
           // So the review driver can print the lines without a second command.
           provenance,
           families,
+          // So a caller can confirm what --held and --stages stored (#429).
+          stored: { held: held.length, stages: stages.length },
           ...followUps.length === 0 ? {} : { followUps },
           ...warning === null ? {} : { warnings: [warning] }
         },

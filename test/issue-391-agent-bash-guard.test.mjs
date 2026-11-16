@@ -18,7 +18,8 @@ test('read-only git runs; anything else an agent asks for is denied', () => {
   for (const ok of ['git show abc123:src/a.ts', 'git -C /tmp/rv/head log -5 --oneline -- src/a.ts', 'git --no-pager diff a...b', 'git grep -n "foo bar" HEAD -- "src/x y.ts"', 'git log --format=%H -- --output']) {
     assert.equal(refusal(ok), null, ok);
   }
-  for (const bad of ['node scripts/check.mjs', 'git show HEAD; node x.mjs', 'git log $(whoami)', 'git checkout main', 'git -c core.pager=sh show', 'git grep -Ovim foo', 'git log --output=/tmp/x', 'git diff --ext-diff', 'strings /usr/bin/node > /tmp/s', 'git', 'cat a | git hash-object --stdin']) {
+  // #436: the evidence-verifier ran this and waited 45 minutes on a permission prompt; it is now denied at once.
+  for (const bad of ['set -e; rm -rf /tmp/rv-probe; git init /tmp/rv-probe', 'node scripts/check.mjs', 'git show HEAD; node x.mjs', 'git log $(whoami)', 'git checkout main', 'git -c core.pager=sh show', 'git grep -Ovim foo', 'git log --output=/tmp/x', 'git diff --ext-diff', 'strings /usr/bin/node > /tmp/s', 'git', 'cat a | git hash-object --stdin']) {
     assert.notEqual(refusal(bad), null, bad);
   }
 });
