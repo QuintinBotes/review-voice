@@ -88,6 +88,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run from another directory names the right place to read the code.
   (#428, closes #427)
 
+- `score` gates a finding at the floor of the tier it is reported at, keeps
+  an unverified security, authorization or authentication claim at the
+  requested tier, and attaches a `suggested_patch` only behind a rendered fix.
+  `validate-output` refuses an "or" or "nor" the scored finding does not use
+  (`unbacked_connective`). `record` prints what it stored and refuses the
+  evidence-verifier's output passed as `--verdicts`. A fix direction must name
+  what it acts on. (#437, closes #429, #430, #431, #432, #433, #434, #435,
+  #436)
+
 ## [1.25.0] - 2026-11-13
 
 ### Added
