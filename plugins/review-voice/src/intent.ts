@@ -105,6 +105,25 @@ function lineKinds(lines: string[]): { fenced: Set<number>; comments: Set<number
   return { fenced, comments };
 }
 
+const TABLE_ROW = /^\s*\|.*\|\s*$/u;
+const TABLE_RULE = /^\s*\|(?:\s*:?-{3,}:?\s*\|)+\s*$/u;
+
+/**
+ * A Markdown table row read as its cells, each on its own between blank lines,
+ * so a cell is a whole unit as a list item is. A quote taken from one cell was
+ * dropped as part of a longer line (#441). The rule row under a header says
+ * nothing and goes. Rows inside a fence are code, and stay as they are.
+ */
+function tableCells(lines: string[]): string[] {
+  const { fenced } = lineKinds(lines);
+  return lines.flatMap((line, index) => {
+    if (fenced.has(index) || !TABLE_ROW.test(line)) return [line];
+    if (TABLE_RULE.test(line)) return [''];
+    const cells = line.trim().slice(1, -1).split(/(?<!\\)\|/u).map((cell) => cell.trim());
+    return cells.flatMap((cell) => ['', cell]).concat('');
+  });
+}
+
 interface Sentences {
   text: string;
   starts: Set<number>;
@@ -140,7 +159,7 @@ function sentencesOf(description: string): Sentences {
   const answers: Sentences['answers'] = [];
   let answer: Sentences['answers'][number] | null = null;
   let answerEnd = 0;
-  const lines = description.split(/\r?\n/u);
+  const lines = tableCells(description.split(/\r?\n/u));
   const { fenced, comments } = lineKinds(lines);
   for (const [index, line] of lines.entries()) {
     const marked = LIST_OR_HEADING.test(line);
