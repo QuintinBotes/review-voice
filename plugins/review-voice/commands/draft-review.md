@@ -211,7 +211,7 @@ approval, and nothing in any configuration implies one. If they decline, stop.
 ## 3 - Post
 
 ```
-RV post --repository <owner/repo> --pr <number> --head <sha> --confirm --event <EVENT> [--run <id>] < <validated-output>
+RV post --repository <owner/repo> --pr <number> --head <sha> --confirm --event <EVENT> --recheck-thread [--run <id>] < <validated-output>
 ```
 
 `--event` is the event the user confirmed in step 2, exactly as the preview
@@ -226,11 +226,13 @@ refuses without sending when:
   a rerun (exit 6, for every event);
 - the same review of the same head was already sent, or an earlier attempt got
   no definite answer from GitHub and may have posted;
-- with `--recheck-thread` (or `verdict.recheck_thread_before_post: true`), a
-  finding in the payload was raised on the thread by someone else after the
+- a finding in the payload was raised on the thread by someone else after the
   run was recorded (exit 8, `refused: "thread-changed"`, with each finding's
-  `path`, `line`, `raisedBy` and `commentUrl`). Do not post. Tell the user who
-  raised what, and run the review again without those findings.
+  `path`, `line`, `raisedBy` and `commentUrl`). `--recheck-thread` re-reads the
+  thread just before sending, as `RV review --post` does by default; always
+  pass it, because a review can take long enough for another reviewer, often
+  a bot, to make the same point in the meantime (#424). Do not post. Tell the
+  user who raised what, and run the review again without those findings.
 
 For an APPROVE, head and CI are re-read immediately before the request; a
 change between the two refuses the post.

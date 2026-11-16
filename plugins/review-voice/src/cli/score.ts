@@ -290,10 +290,13 @@ function applyOwnerSeverityOverride(breakdown: ScoreBreakdown, override: OwnerOv
       (ceiling === null ? ' (it names none).' : ` (${ceiling}).`)
     );
   }
+  // The legacy-tier hint says the requested tier was not applied and names this
+  // very override; once applied, it would contradict the tier (#423).
+  const derived = breakdown.severity.reason.replace(/; reach is unknown, so the requested \S+ was not applied\. If it breaks.*$/s, '');
   breakdown.severity = {
     ...breakdown.severity,
     severity: override,
-    reason: `${breakdown.severity.reason}, ${raises ? 'raised' : 'held'} at ${override} by an explicit owner override`,
+    reason: `${derived}, ${raises ? 'raised' : 'held'} at ${override} by an explicit owner override`,
   };
   // At nit the documentation exception applies, so the rejection that pointed
   // the owner here lifts, but only when it was the sole reason (#166).
