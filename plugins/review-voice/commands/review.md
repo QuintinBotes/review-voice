@@ -1328,9 +1328,19 @@ change first:
    changed is dropped and named. It writes `candidates.json`,
    `verification.json`, `held.json` and `carry.json`, and records the carry in
    the audit log.
-4. Exit 0: continue from step 4 with those files, the new `diff.patch` and
-   `--head <new sha>`, and record with the new `files.json`, `held.json` and
-   `--carry <newtmpdir>/carry.json`.
+4. Exit 0: the run is `<newtmpdir>`, and its diff is the full one from point
+   1, never the interdiff (#444). Continue from step 4 there: pipe
+   `<newtmpdir>/candidates.json` into `score` with `--verification
+   <newtmpdir>/verification.json`, `--diff-file <newtmpdir>/diff.patch` and
+   `--head <new sha>`; pass the same `diff.patch`, and `<newtmpdir>/candidates.json`
+   as `--candidates`, to `challenge`; and record with the new `files.json`,
+   `held.json`, `--diff-file <newtmpdir>/diff.patch` and
+   `--carry <newtmpdir>/carry.json`. Do not run `check-candidates` on the
+   merged set. The carried candidates were checked against the full diff by
+   `carry-candidates`, and the interdiff's were checked in point 2 against the
+   interdiff, whose changed lines are changed lines of the full diff too; the
+   interdiff's `diff.patch` would refuse every carried candidate as
+   `file-not-in-diff`.
 5. Exit 1 names each refused candidate: code its verification read changed,
    so it is not posted from this carry. Review the new head from step 2
    instead of scoring only what carried; a refused finding may have been
