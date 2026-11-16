@@ -116,6 +116,12 @@ comment in the review, never as a reply.
   the query is still loading", say that, not "every time". `validate-output`
   rejects an absolute word the scored finding does not use
   (`unbacked_absolute`).
+- Keep the finding's modality and scope (#445). "Would", "could", "if" and
+  "when" stay conditional: a change that "would restart a poller keyed on it",
+  where no consumer exists yet, is not a change that "restarts tile pollers".
+  An example stays an example: a failure mode that says "an inactive service
+  is counted on one page but not the other" is rendered as that case or as
+  the general mismatch, never as a fixed number such as "one fewer".
 - Keep the finding's logic exactly: its "and", "or", "not", "unless" and
   "only" stay as the finding states them. "Require X and throw" compressed to
   "require X or throw" says the opposite. `validate-output` rejects an "or" or
