@@ -60,6 +60,8 @@ test('#216: the command the legacy-tier hint prints raises the tier to the reque
     const [breakdown] = JSON.parse(raised.stdout).scores;
     assert.equal(breakdown.severity.severity, 'important');
     assert.match(breakdown.severity.reason, /raised at important by an explicit owner override/);
+    // #423: the hint that said important was not applied is gone once it is.
+    assert.doesNotMatch(breakdown.severity.reason, /was not applied|raise it with/);
   }));
 
 test('#216: a raise past the requested tier, or on an unverified finding, is refused', () =>
