@@ -29454,11 +29454,29 @@ function namedSymbols(text5) {
   }
   return [...found2];
 }
-var gitGrep = (symbol, cwd, ref) => {
-  const args = ref === null ? ["grep", "--fixed-strings", "--quiet", "-e", symbol] : ["grep", "--fixed-strings", "--quiet", "-e", symbol, ref];
+var gitGrep = (symbol, cwd, ref, exclude) => {
+  const pattern = `(^|${NOT_IDENTIFIER})${symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(${NOT_IDENTIFIER}|$)`;
+  const base = ["grep", "--extended-regexp", "-I", "--full-name"];
+  const at2 = ref === null ? [] : [ref];
   try {
-    execFileSync21("git", args, { cwd, stdio: "ignore", timeout: 1e4 });
-    return true;
+    if (exclude === void 0) {
+      execFileSync21("git", [...base, "--quiet", "-e", pattern, ...at2], { cwd, stdio: "ignore", timeout: 1e4 });
+      return true;
+    }
+    const output = execFileSync21("git", [...base, "-n", "-z", "-e", pattern, ...at2], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1e4,
+      maxBuffer: 32 * 1024 * 1024
+    });
+    const prefix = ref === null ? "" : `${ref}:`;
+    return output.split("\n").some((record3) => {
+      const [rawPath = "", number = ""] = record3.split("\0");
+      if (number === "") return false;
+      const path = prefix !== "" && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath;
+      return !(path === exclude.path && Number(number) === exclude.line);
+    });
   } catch (error) {
     if (error.status === 1) return false;
     throw error;
@@ -29623,7 +29641,7 @@ function tiedBy(phrases, text5, symbols) {
 function generatedAccessor(symbol) {
   return !FILE_NAME.test(symbol) && GENERATED_ACCESSOR.some((shape) => shape.test(symbol));
 }
-function checkAbsenceClaim(text5, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources, trackedPaths = gitTrackedPaths) {
+function checkAbsenceClaim(text5, cwd, ref = null, search = gitGrep, repository = null, resources = gitResourceSources, trackedPaths = gitTrackedPaths, anchor) {
   const searchedRefLabel = ref ?? "working tree";
   if (!ASSERTS_ABSENCE.some((pattern) => pattern.test(text5))) return null;
   const scope = absenceScope(text5, repository);
@@ -29658,7 +29676,7 @@ function checkAbsenceClaim(text5, cwd, ref = null, search = gitGrep, repository 
         const path = symbol.replace(/^\.?\//, "").replace(/\/$/, "");
         const exists = path.includes("/") ? paths.some((tracked) => tracked === path || tracked.startsWith(`${path}/`)) : paths.some((tracked) => tracked === path || tracked.endsWith(`/${path}`));
         if (exists) found2.push(symbol);
-      } else if (search(symbol, cwd, ref)) {
+      } else if (search(symbol, cwd, ref, ref === null ? anchor : void 0)) {
         found2.push(symbol);
       }
     } catch {
@@ -33357,7 +33375,14 @@ function scoreCommand(argv) {
             searchRoot,
             baseRef,
             void 0,
-            flag(argv, "--repository")
+            flag(argv, "--repository"),
+            void 0,
+            void 0,
+            // Only a line the change added: there the absent name is the
+            // defect itself, a typo or a call to what does not exist (#447). A
+            // finding anchored on a line that was already there, such as the
+            // declaration, is still contradicted by it.
+            anchorHunks !== null && anchorFor(anchorHunks, candidate).kind === "added" ? { path: candidate.path, line: candidate.line } : void 0
           );
         } catch {
           absence = null;
