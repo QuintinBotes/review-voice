@@ -393,3 +393,21 @@ test('explain shows the owner question on the finding it backs when another cand
     assert.equal(explained.status, 0, explained.stderr);
     assert.match(explained.stdout, /\[question\] ci\/paths\.ts:2\n(?:.*\n)*? {2}owner {13}posted this as a question\n/);
   }));
+
+// #439: --severity <id>=question was refused without naming the route that exists.
+test('#439: --severity <id>=question points to --as-question', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-439-'));
+  try {
+    const result = spawnSync(process.execPath, [bundle, 'score', '--severity', 'cand_001=question'], {
+      cwd: dir,
+      encoding: 'utf8',
+      input: JSON.stringify({ candidates: [{ candidate_id: 'cand_001', path: 'src/a.ts', line: 3, category: 'correctness', severity: 'nit', claim: 'The retry gives up silently.', failure_mode: 'A failed sync is never reported.', evidence: ['src/a.ts:3'], technical_confidence: 0.85 }] }),
+      env: { ...process.env, REVIEW_VOICE_DATA_DIR: join(dir, 'data') },
+    });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /a question is not a tier\. Post it as one with --as-question cand_001/);
+    assert.match(result.stderr, /--allow-unverifiable --owner-note/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

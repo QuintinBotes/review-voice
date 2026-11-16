@@ -1158,7 +1158,9 @@ stray directory and another project's notes took the reviewed count from 11 to
   entry names a command that settles it, such as a `gh` call for pull request
   state, say that the person can run it, and that a finding it confirms is
   posted with `score --promote <candidate_id> --allow-unverifiable
-  --owner-note "<what the command showed>"`. When
+  --owner-note "<what the command showed>"`, or as a question, when it turns
+  on intent nobody could check, with `--as-question <candidate_id>` in place of
+  `--promote`. When
   `absenceContradicted` from step 4 is not empty, print after that a line
   `Absence contradicted (not posted)` and then one line per entry:
   `[severity] path:line - claim (found: <found>)`. The verifier confirmed them

@@ -178,6 +178,14 @@ function ownerSeverityOverrides(argv: string[], candidates: readonly Candidate[]
     const candidateId = value.slice(0, separator);
     const severity = value.slice(separator + 1);
     if (!known.has(candidateId)) return `--severity names unknown candidate ${JSON.stringify(candidateId)}.`;
+    if (severity === 'question') {
+      // A question is a kind of finding, not a tier; its route already exists (#439).
+      return (
+        `--severity ${JSON.stringify(value)}: a question is not a tier. Post it as one with --as-question ${candidateId}, ` +
+        `which also lifts a held finding past its gate as --promote would; add --allow-unverifiable --owner-note "<why>" ` +
+        'for one held as unverified.'
+      );
+    }
     if (!(OWNER_OVERRIDE_SEVERITIES as readonly string[]).includes(severity)) {
       return `--severity ${JSON.stringify(value)} must use one of ${OWNER_OVERRIDE_SEVERITIES.join(', ')}.`;
     }
