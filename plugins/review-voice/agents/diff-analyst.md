@@ -359,6 +359,12 @@ The confusable ones, settled:
 - A missing privilege check is `authorization`. A privilege check that exists
   and is wired to the wrong privilege is also `authorization`, not
   `correctness`.
+- A sandbox, confinement or isolation boundary that weakens is `security`,
+  even when the change was made for robustness or portability: one process,
+  worker, tenant or check can now read, write or signal what it was denied
+  before (another process's temp directory, another tenant's rows, a path the
+  sandbox profile excluded). It is not `reliability`, which is about the code
+  failing to do its own job (#442).
 - A `trust_boundary` can be a non-security control boundary, such as a path
   gate. Pick its requested tier from the concrete consequence; `score` raises
   it above that tier only when the verifier traced impact beyond the changed

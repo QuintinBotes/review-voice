@@ -22163,6 +22163,17 @@ function lineKinds(lines2) {
   }
   return { fenced, comments };
 }
+var TABLE_ROW = /^\s*\|.*\|\s*$/u;
+var TABLE_RULE = /^\s*\|(?:\s*:?-{3,}:?\s*\|)+\s*$/u;
+function tableCells(lines2) {
+  const { fenced } = lineKinds(lines2);
+  return lines2.flatMap((line3, index) => {
+    if (fenced.has(index) || !TABLE_ROW.test(line3)) return [line3];
+    if (TABLE_RULE.test(line3)) return [""];
+    const cells = line3.trim().slice(1, -1).split(/(?<!\\)\|/u).map((cell) => cell.trim());
+    return cells.flatMap((cell) => ["", cell]).concat("");
+  });
+}
 function sentencesOf(description) {
   let text5 = "";
   const starts = /* @__PURE__ */ new Set([0]);
@@ -22176,7 +22187,7 @@ function sentencesOf(description) {
   const answers = [];
   let answer2 = null;
   let answerEnd = 0;
-  const lines2 = description.split(/\r?\n/u);
+  const lines2 = tableCells(description.split(/\r?\n/u));
   const { fenced, comments } = lineKinds(lines2);
   for (const [index, line3] of lines2.entries()) {
     const marked = LIST_OR_HEADING.test(line3);
