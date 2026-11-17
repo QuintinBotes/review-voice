@@ -110,6 +110,11 @@ export function challengePrompt(
 ): string {
   const pick = (snake: string, camel: string): string | null =>
     text(candidate?.[snake]) ?? text(candidate?.[camel]) ?? text(finding[snake]) ?? text(finding[camel]);
+  // Where the verifier restated the claim (#416, #451), the finding carries the
+  // text that will be posted, and that is what the challenger must try to refute.
+  const restated = isRecord(finding['restatedByVerifier']);
+  const posted = (snake: string, camel: string): string | null =>
+    restated ? (text(finding[camel]) ?? text(finding[snake]) ?? pick(snake, camel)) : pick(snake, camel);
   const id = idOf(finding) ?? (candidate === undefined ? null : idOf(candidate)) ?? 'unknown';
   const path = text(finding['path']) ?? text(candidate?.['path']) ?? 'unknown';
   const line = Number.isInteger(finding['line']) ? (finding['line'] as number) : (candidate?.['line'] as number | undefined);
@@ -120,8 +125,8 @@ export function challengePrompt(
   const rows = [
     `Challenge finding ${id}.`,
     '',
-    `Claim: ${pick('claim', 'claim') ?? ''}`,
-    `Failure mode: ${pick('failure_mode', 'failureMode') ?? ''}`,
+    `Claim: ${posted('claim', 'claim') ?? ''}`,
+    `Failure mode: ${posted('failure_mode', 'failureMode') ?? ''}`,
     `Category: ${pick('category', 'category') ?? ''}`,
     `Anchored at: ${path}:${line ?? 'unknown'}`,
   ];

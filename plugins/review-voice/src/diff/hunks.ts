@@ -58,6 +58,12 @@ export interface AnchorCheck {
   consumerKind?: AnchorKind;
   /** Of `nearest`, the lines where the change removed code: each is a valid anchor (#449). */
   nearestDeletionSites?: number[];
+  /**
+   * When `line` is a diff.patch line holding an unchanged line of this file:
+   * that file line. Named in the reason only; never used to move a candidate,
+   * as a context line is not an anchor (#453).
+   */
+  patchContext?: { path: string; line: number };
 }
 
 interface ActiveHunk {
@@ -342,6 +348,11 @@ export function classifyAnchor(hunks: Map<string, FileHunks>, path: string, line
   const normalised = hunks.has(literal) ? literal : normalisePath(path);
   const file = hunks.get(normalised);
   const patchLine = patchLineFor(hunks, line);
+  const patchContextLine = patchLine === null ? file === undefined ? undefined : file.patchLines.get(line) : undefined;
+  const patchContext =
+    patchContextLine !== undefined && file !== undefined && file.context.has(patchContextLine) && patchContextLine !== line
+      ? { path: normalised, line: patchContextLine }
+      : undefined;
 
   if (file === undefined) {
     return { path: normalised, line, kind: 'file-not-in-diff', ok: false, nearest: [], patchLine, beyondHunks: false };
@@ -364,6 +375,7 @@ export function classifyAnchor(hunks: Map<string, FileHunks>, path: string, line
     ok: kind === 'added' || kind === 'deletion-site',
     nearest,
     ...(nearestDeletionSites.length > 0 ? { nearestDeletionSites } : {}),
+    ...(patchContext === undefined ? {} : { patchContext }),
     patchLine,
     beyondHunks: file.ranges.length > 0 && file.ranges.every((range) => line > range.end),
   };
@@ -475,6 +487,14 @@ export function reason(anchor: AnchorCheck): string {
     rendered += anchor.nearest.length === 1
       ? `; the nearest changed line is ${anchor.nearest[0]}`
       : `; the nearest changed lines are ${anchor.nearest.join(', ')}`;
+  }
+  // The analyst counted lines of diff.patch, and the one it meant is unchanged
+  // there: name the file line, so the reason says what went wrong (#453).
+  if (!anchor.ok && anchor.kind === 'outside-hunk' && anchor.patchLine === null && anchor.patchContext !== undefined) {
+    return (
+      `${rendered}; line ${line} of diff.patch is the unchanged line ${anchor.patchContext.line} of ${path}. ` +
+      '`line` is a line of the file at the head, never of diff.patch: anchor on the changed line the finding is about.'
+    );
   }
   // A line left stale by a pure deletion has no added line to move to, and
   // read as a dead end; the deletion site is the anchor it needs (#449).

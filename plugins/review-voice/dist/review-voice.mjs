@@ -1018,6 +1018,8 @@ function classifyAnchor(hunks, path, line3) {
   const normalised2 = hunks.has(literal) ? literal : normalisePath(path);
   const file2 = hunks.get(normalised2);
   const patchLine = patchLineFor(hunks, line3);
+  const patchContextLine = patchLine === null ? file2 === void 0 ? void 0 : file2.patchLines.get(line3) : void 0;
+  const patchContext = patchContextLine !== void 0 && file2 !== void 0 && file2.context.has(patchContextLine) && patchContextLine !== line3 ? { path: normalised2, line: patchContextLine } : void 0;
   if (file2 === void 0) {
     return { path: normalised2, line: line3, kind: "file-not-in-diff", ok: false, nearest: [], patchLine, beyondHunks: false };
   }
@@ -1031,6 +1033,7 @@ function classifyAnchor(hunks, path, line3) {
     ok: kind === "added" || kind === "deletion-site",
     nearest,
     ...nearestDeletionSites.length > 0 ? { nearestDeletionSites } : {},
+    ...patchContext === void 0 ? {} : { patchContext },
     patchLine,
     beyondHunks: file2.ranges.length > 0 && file2.ranges.every((range) => line3 > range.end)
   };
@@ -1105,6 +1108,9 @@ function reason(anchor) {
   let rendered = `anchors on ${path}:${line3}, ${detail}`;
   if (!anchor.ok && anchor.nearest.length > 0) {
     rendered += anchor.nearest.length === 1 ? `; the nearest changed line is ${anchor.nearest[0]}` : `; the nearest changed lines are ${anchor.nearest.join(", ")}`;
+  }
+  if (!anchor.ok && anchor.kind === "outside-hunk" && anchor.patchLine === null && anchor.patchContext !== void 0) {
+    return `${rendered}; line ${line3} of diff.patch is the unchanged line ${anchor.patchContext.line} of ${path}. \`line\` is a line of the file at the head, never of diff.patch: anchor on the changed line the finding is about.`;
   }
   const sites = anchor.nearestDeletionSites ?? [];
   if (!anchor.ok && anchor.kind === "context" && sites.length > 0 && anchor.patchLine === null) {
@@ -9026,61 +9032,67 @@ function normaliseCandidate(raw, index) {
   const confidence = raw.technical_confidence ?? raw.technicalConfidence;
   const suggestedFix = raw.suggested_fix !== void 0 ? raw.suggested_fix : raw.suggestedFix;
   const fixConfidence = raw.fix_confidence !== void 0 ? raw.fix_confidence : raw.fixConfidence;
+  const problems = [];
   if (typeof raw.path !== "string" || raw.path.length === 0) {
     const foreign = FOREIGN_KEYS.filter((key2) => key2 in raw);
-    throw new MalformedCandidate(
+    problems.push(
       foreign.length > 0 ? `${candidateId}: has ${foreign.join(", ")} but no path. This is not the candidate schema. Expected candidate_id, path, line, category, severity, claim, failure_mode, evidence, technical_confidence, per schemas/candidate.schema.json.` : `${candidateId}: missing path`
     );
   }
   if (!Number.isFinite(raw.line)) {
-    throw new MalformedCandidate(`${candidateId}: missing or non-numeric line`);
+    problems.push(`${candidateId}: missing or non-numeric line`);
   }
   if (!Number.isFinite(confidence)) {
-    throw new MalformedCandidate(
+    problems.push(
       `${candidateId}: missing or non-numeric technical_confidence - a score cannot be computed, and a candidate that cannot be scored must not be treated as eligible`
     );
   }
   if (suggestedFix !== void 0 && typeof suggestedFix !== "string") {
-    throw new MalformedCandidate(`${candidateId}: suggested_fix must be a string when supplied`);
+    problems.push(`${candidateId}: suggested_fix must be a string when supplied`);
   }
   const rawPatch = raw.suggested_patch !== void 0 ? raw.suggested_patch : raw.suggestedPatch;
   if (rawPatch !== void 0) {
     const problem = suggestedPatchProblem(rawPatch);
-    if (problem !== null) throw new MalformedCandidate(`${candidateId}: suggested_patch ${problem}`);
-    if (rawPatch.end_line !== raw.line) {
-      throw new MalformedCandidate(`${candidateId}: suggested_patch end_line must be the candidate's line, ${raw.line}`);
+    if (problem !== null) problems.push(`${candidateId}: suggested_patch ${problem}`);
+    else if (rawPatch.end_line !== raw.line) {
+      problems.push(`${candidateId}: suggested_patch end_line must be the candidate's line, ${raw.line}`);
     }
   }
   if (fixConfidence !== void 0 && (!Number.isFinite(fixConfidence) || fixConfidence < 0 || fixConfidence > 1)) {
-    throw new MalformedCandidate(`${candidateId}: fix_confidence must be a finite number from 0 to 1 when supplied`);
+    problems.push(`${candidateId}: fix_confidence must be a finite number from 0 to 1 when supplied`);
   }
   if (raw.anchor !== void 0 && raw.anchor !== STALE_CONSUMER) {
-    throw new MalformedCandidate(`${candidateId}: anchor must be "${STALE_CONSUMER}" when supplied`);
+    problems.push(`${candidateId}: anchor must be "${STALE_CONSUMER}" when supplied`);
   }
   const rawCause = raw.caused_by !== void 0 ? raw.caused_by : raw.causedBy;
   let causedBy = null;
   if (raw.anchor === STALE_CONSUMER && rawCause !== void 0 && rawCause !== null) {
     if (typeof rawCause !== "object" || typeof rawCause.path !== "string" || rawCause.path.length === 0 || !Number.isInteger(rawCause.line) || rawCause.line < 1) {
-      throw new MalformedCandidate(`${candidateId}: caused_by must be {"path": string, "line": positive integer}`);
+      problems.push(`${candidateId}: caused_by must be {"path": string, "line": positive integer}`);
+    } else {
+      causedBy = { path: rawCause.path, line: rawCause.line };
     }
-    causedBy = { path: rawCause.path, line: rawCause.line };
   }
   const ownComment = ownCommentOf(raw.possibleRepeatOf);
   const impactDisputed = raw.impact_disputed !== void 0 ? raw.impact_disputed : raw.impactDisputed;
   if (impactDisputed !== void 0 && typeof impactDisputed !== "boolean") {
-    throw new MalformedCandidate(`${candidateId}: impact_disputed must be true or false when supplied`);
+    problems.push(`${candidateId}: impact_disputed must be true or false when supplied`);
   }
   const intentRef = raw.intent_ref !== void 0 ? raw.intent_ref : raw.intentRef;
   if (intentRef !== void 0 && (typeof intentRef !== "string" || !/^int_[0-9]{3,}$/.test(intentRef))) {
-    throw new MalformedCandidate(`${candidateId}: intent_ref must match int_NNN when supplied`);
+    problems.push(`${candidateId}: intent_ref must match int_NNN when supplied`);
   }
   if (raw.lane !== void 0 && (typeof raw.lane !== "string" || raw.lane.length === 0)) {
-    throw new MalformedCandidate(`${candidateId}: lane must be a lane name when supplied`);
+    problems.push(`${candidateId}: lane must be a lane name when supplied`);
   }
   const blockerClass = raw.blocker_class !== void 0 ? raw.blocker_class : raw.blockerClass;
   if (blockerClass !== void 0 && blockerClass !== null && typeof blockerClass !== "string") {
-    throw new MalformedCandidate(`${candidateId}: blocker_class must be a string or null when supplied`);
+    problems.push(`${candidateId}: blocker_class must be a string or null when supplied`);
   }
+  if (raw.severity !== void 0 && !SEVERITIES.includes(raw.severity)) {
+    problems.push(`${candidateId}: severity must be one of ${SEVERITIES.join(", ")}, not ${JSON.stringify(raw.severity)}`);
+  }
+  if (problems.length > 0) throw new MalformedCandidate(problems.join("\n"));
   return {
     candidateId,
     path: raw.path,
@@ -18866,7 +18878,7 @@ async function computeVerdict(options) {
   });
   decision.reasons.push(...lookupReasons);
   if (complexity === null) decision.reasons.push("no complexity assessment was recorded for this run");
-  const staleRequestChanges = needsHuman && !(decision.event === "APPROVE" && decision.action !== "refuse") ? await staleRequest(options, planned, decision.reasons) : null;
+  const staleRequestChanges = !(decision.event === "APPROVE" && decision.action !== "refuse") && (needsHuman || (options.owner ?? "") !== "") ? await staleRequest(options, planned, decision.reasons) : null;
   let payload = null;
   let preview = null;
   let key2 = null;
@@ -20175,7 +20187,7 @@ var COMMAND_HELP = {
   "check-intent": {
     summary: "Validate the intent-extractor output against the description",
     body: lines(
-      "review-voice check-intent --thread <path>",
+      "review-voice check-intent --thread <path> [--summary <path>]",
       "  Validate the stated-intent statements extracted from the pull request",
       "  description. Every quote, and every deliberate reason, must be a whole",
       "  sentence or list item of the description in thread.json, of at least four words.",
@@ -20184,6 +20196,8 @@ var COMMAND_HELP = {
       "",
       "Flags:",
       "  --thread <path>        thread.json from `thread`, holding the description (required)",
+      "  --summary <path>       also write {valid, dropped, widened, kept, removed} as JSON, so a caller",
+      "                         can tell a dropped statement from a note without reading stderr",
       "Reads: the intent-extractor JSON on stdin.",
       "Writes: the normalised intent document on stdout.",
       "Exit codes: 0 valid (possibly with statements dropped), 2 malformed, duplicate ids, none survives, no description, or bad invocation."
@@ -22459,6 +22473,8 @@ function intentStatements(parsed2) {
 }
 function challengePrompt(finding, candidate, statements, diffFile, reproduction, head = {}) {
   const pick = (snake, camel) => text3(candidate?.[snake]) ?? text3(candidate?.[camel]) ?? text3(finding[snake]) ?? text3(finding[camel]);
+  const restated = isRecord4(finding["restatedByVerifier"]);
+  const posted = (snake, camel) => restated ? text3(finding[camel]) ?? text3(finding[snake]) ?? pick(snake, camel) : pick(snake, camel);
   const id = idOf2(finding) ?? (candidate === void 0 ? null : idOf2(candidate)) ?? "unknown";
   const path = text3(finding["path"]) ?? text3(candidate?.["path"]) ?? "unknown";
   const line3 = Number.isInteger(finding["line"]) ? finding["line"] : candidate?.["line"];
@@ -22468,8 +22484,8 @@ function challengePrompt(finding, candidate, statements, diffFile, reproduction,
   const rows = [
     `Challenge finding ${id}.`,
     "",
-    `Claim: ${pick("claim", "claim") ?? ""}`,
-    `Failure mode: ${pick("failure_mode", "failureMode") ?? ""}`,
+    `Claim: ${posted("claim", "claim") ?? ""}`,
+    `Failure mode: ${posted("failure_mode", "failureMode") ?? ""}`,
     `Category: ${pick("category", "category") ?? ""}`,
     `Anchored at: ${path}:${line3 ?? "unknown"}`
   ];
@@ -25145,6 +25161,12 @@ function verificationProblem(list3) {
     if (impactClass !== void 0 && !isImpactClass(impactClass)) {
       return `${who}: impact_class must be one of ${IMPACT_CLASSES.join(", ")}, not ${JSON.stringify(impactClass)}.`;
     }
+    for (const key2 of ["narrowed_claim", "narrowed_failure_mode"]) {
+      const value = entry[key2];
+      if (value !== void 0 && (typeof value !== "string" || value.trim() === "" || value.length > 600)) {
+        return `${who}: ${key2} must be 1 to 600 characters of text when supplied.`;
+      }
+    }
     const alsoAt = entry["also_at"] ?? entry["alsoAt"];
     if (alsoAt !== void 0 && !(Array.isArray(alsoAt) && alsoAt.length <= 10 && alsoAt.every((ref) => typeof ref === "string" && /^\S(?:.*\S)?:\d+(?:-\d+)?$/.test(ref)))) {
       return `${who}: also_at must be a list of at most 10 "path:line" references.`;
@@ -27493,7 +27515,7 @@ function conventionsCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/check-intent.ts
-import { readFileSync as readFileSync21 } from "node:fs";
+import { readFileSync as readFileSync21, writeFileSync as writeFileSync10 } from "node:fs";
 
 // plugins/review-voice/src/agents/reply-json.ts
 function jsonInReply(text5) {
@@ -27573,6 +27595,24 @@ function checkIntentCommand(argv) {
   const intent2 = parseIntent(document, description, issues);
   for (const problem of intent2.dropped) console.error(`${intent2.problem === null ? "Dropped" : "Invalid"} statement ${problem}.`);
   for (const note of intent2.removed) console.error(`${note}.`);
+  const summaryFile = flag(argv, "--summary");
+  if (summaryFile !== null) {
+    const kind = (prefix) => intent2.removed.filter((note) => note.startsWith(prefix));
+    const summary2 = {
+      valid: intent2.problem === null,
+      dropped: intent2.dropped,
+      widened: kind("Widened"),
+      kept: kind("Kept"),
+      removed: kind("Removed")
+    };
+    try {
+      writeFileSync10(summaryFile, `${JSON.stringify(summary2, null, 2)}
+`);
+    } catch (error) {
+      console.error(`Cannot write ${summaryFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
   if (intent2.problem !== null) {
     console.error(`Malformed intent - ${intent2.problem}.`);
     console.error("Re-run the intent-extractor with the schema restated. Do not hand-translate its output.");
@@ -27583,7 +27623,7 @@ function checkIntentCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/recall.ts
-import { writeFileSync as writeFileSync11, mkdirSync as mkdirSync10, statSync as statSync8, lstatSync as lstatSync5, renameSync as renameSync3, rmSync as rmSync10, existsSync as existsSync18 } from "node:fs";
+import { writeFileSync as writeFileSync12, mkdirSync as mkdirSync10, statSync as statSync8, lstatSync as lstatSync5, renameSync as renameSync3, rmSync as rmSync10, existsSync as existsSync18 } from "node:fs";
 import { dirname as dirname16, isAbsolute as isAbsolute6, relative as relative4, resolve as resolve10, sep as sep5 } from "node:path";
 
 // plugins/review-voice/src/evaluate/recall.ts
@@ -27602,7 +27642,7 @@ import {
   readdirSync as readdirSync5,
   readFileSync as readFileSync22,
   rmSync as rmSync8,
-  writeFileSync as writeFileSync10
+  writeFileSync as writeFileSync11
 } from "node:fs";
 import { tmpdir as tmpdir3 } from "node:os";
 import { basename as basename7, dirname as dirname15, join as join24, relative as relative3, resolve as resolve8, sep as sep4 } from "node:path";
@@ -27770,7 +27810,7 @@ function writeInside(root, path, content, label2) {
     throw new Error(`${label2}: ${JSON.stringify(path)} resolves outside the repository`);
   }
   mkdirSync8(dirname15(target), { recursive: true });
-  writeFileSync10(target, content);
+  writeFileSync11(target, content);
 }
 function reconstruct(files2, label2) {
   const images = /* @__PURE__ */ new Map();
@@ -27925,7 +27965,7 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
   const scratch = mkdtempSync4(join24(tmpdir3(), "rv-fixture-patch-"));
   try {
     const copy = join24(scratch, "normalised.patch");
-    writeFileSync10(copy, normalised2);
+    writeFileSync11(copy, normalised2);
     try {
       git3(targetDir, label2, ["apply", "--cached", "--whitespace=nowarn", copy]);
     } catch (error) {
@@ -28371,7 +28411,7 @@ async function recallCommand(argv, runInProcess2) {
   }
   const staging = `${out}.${process.pid}.tmp`;
   rmSync10(staging, { force: true });
-  writeFileSync11(staging, `${JSON.stringify(run.results, null, 2)}
+  writeFileSync12(staging, `${JSON.stringify(run.results, null, 2)}
 `, { flag: "wx" });
   renameSync3(staging, out);
   const { summary: summary2 } = run.results;
@@ -28393,7 +28433,7 @@ import { dirname as dirname17, join as join27, resolve as resolve11 } from "node
 
 // plugins/review-voice/src/evaluate/benchmark.ts
 import { execFileSync as execFileSync17 } from "node:child_process";
-import { lstatSync as lstatSync6, mkdirSync as mkdirSync11, mkdtempSync as mkdtempSync6, readFileSync as readFileSync24, rmSync as rmSync11, writeFileSync as writeFileSync12 } from "node:fs";
+import { lstatSync as lstatSync6, mkdirSync as mkdirSync11, mkdtempSync as mkdtempSync6, readFileSync as readFileSync24, rmSync as rmSync11, writeFileSync as writeFileSync13 } from "node:fs";
 import { tmpdir as tmpdir5 } from "node:os";
 import { join as join26 } from "node:path";
 var BENCHMARK_SET = "qodo-pr-review-bench";
@@ -28467,7 +28507,7 @@ function probeBuild(scratch, slug, diff) {
   const repo = join26(scratch, "repo");
   try {
     mkdirSync11(fixture, { recursive: true });
-    writeFileSync12(join26(fixture, "diff.patch"), diff);
+    writeFileSync13(join26(fixture, "diff.patch"), diff);
     const { base, head, files: files2 } = materializeFixture(fixture, repo, { name: slug });
     const git6 = (args) => execFileSync17("git", args, { cwd: repo, env: gitEnvironment2(), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
     const hunks = parseHunks(git6(["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", ...files2]));
@@ -28615,9 +28655,9 @@ function importBenchmark(options) {
         };
         const dir = join26(options.out, entry.fixture);
         mkdirSync11(dir, { recursive: true });
-        writeFileSync12(join26(dir, "diff.patch"), diff);
-        if (description !== null) writeFileSync12(join26(dir, "pr-body.md"), description);
-        writeFileSync12(join26(dir, "case.yaml"), caseYaml(entry, options, isIdentifier(issue.note) ? issue.note : null));
+        writeFileSync13(join26(dir, "diff.patch"), diff);
+        if (description !== null) writeFileSync13(join26(dir, "pr-body.md"), description);
+        writeFileSync13(join26(dir, "case.yaml"), caseYaml(entry, options, isIdentifier(issue.note) ? issue.note : null));
         manifest.items.push(entry);
         manifest.counts.fixtures += 1;
       }
@@ -28626,7 +28666,7 @@ function importBenchmark(options) {
     rmSync11(scratch, { recursive: true, force: true });
   }
   mkdirSync11(options.out, { recursive: true });
-  writeFileSync12(join26(options.out, "import.json"), `${JSON.stringify(manifest, null, 2)}
+  writeFileSync13(join26(options.out, "import.json"), `${JSON.stringify(manifest, null, 2)}
 `);
   return manifest;
 }
@@ -28886,7 +28926,7 @@ function worktreeCommand(argv) {
 
 // plugins/review-voice/src/cli/config.ts
 import { createHash as createHash8 } from "node:crypto";
-import { existsSync as existsSync20, lstatSync as lstatSync9, mkdirSync as mkdirSync13, readFileSync as readFileSync26, realpathSync as realpathSync4, rmSync as rmSync14, statSync as statSync11, writeFileSync as writeFileSync13 } from "node:fs";
+import { existsSync as existsSync20, lstatSync as lstatSync9, mkdirSync as mkdirSync13, readFileSync as readFileSync26, realpathSync as realpathSync4, rmSync as rmSync14, statSync as statSync11, writeFileSync as writeFileSync14 } from "node:fs";
 import { dirname as dirname18, isAbsolute as isAbsolute7, join as join29, resolve as resolve13 } from "node:path";
 async function configCommand(argv) {
   const dir = flag(argv, "--dir");
@@ -28930,7 +28970,7 @@ async function configCommand(argv) {
     return 2;
   }
   const sha256 = path === void 0 || chosen.stated === "default" ? null : sha256Of(path);
-  writeFileSync13(trusted, JSON.stringify({ path, source: chosen.stated, sha256 }), { mode: 384 });
+  writeFileSync14(trusted, JSON.stringify({ path, source: chosen.stated, sha256 }), { mode: 384 });
   console.log(JSON.stringify({ path, source: chosen.stated, ...ref === void 0 ? {} : { ref }, notes }));
   return 0;
 }
@@ -28994,7 +29034,7 @@ function withTrustedConfig(argv) {
 }
 
 // plugins/review-voice/src/cli/diff.ts
-import { readFileSync as readFileSync27, writeFileSync as writeFileSync14, mkdirSync as mkdirSync14 } from "node:fs";
+import { readFileSync as readFileSync27, writeFileSync as writeFileSync15, mkdirSync as mkdirSync14 } from "node:fs";
 import { join as join30 } from "node:path";
 
 // plugins/review-voice/src/diff/prior.ts
@@ -29285,8 +29325,8 @@ function emitDiff(acquired, outDir) {
     mkdirSync14(outDir, { recursive: true });
     const patchPath2 = join30(outDir, "diff.patch");
     const metaPath = join30(outDir, "files.json");
-    writeFileSync14(patchPath2, result.diff);
-    writeFileSync14(metaPath, JSON.stringify({ ...result, diff: void 0 }, null, 2));
+    writeFileSync15(patchPath2, result.diff);
+    writeFileSync15(metaPath, JSON.stringify({ ...result, diff: void 0 }, null, 2));
     console.log(
       JSON.stringify(
         { patch: patchPath2, files: metaPath, diffBytes: result.diff.length, summary: diffSummary(result) },
@@ -29347,7 +29387,7 @@ function readFilesAndDiff(filesPath, diffPath) {
 }
 
 // plugins/review-voice/src/cli/thread.ts
-import { writeFileSync as writeFileSync15 } from "node:fs";
+import { writeFileSync as writeFileSync16 } from "node:fs";
 async function threadCommand(argv) {
   const pullNumber = Number(flag(argv, "--pr"));
   if (!Number.isInteger(pullNumber) || pullNumber < 1) {
@@ -29369,7 +29409,7 @@ async function threadCommand(argv) {
   }
   try {
     const path = resolveOutPath(out, "thread.json");
-    writeFileSync15(path, JSON.stringify(result, null, 2), "utf8");
+    writeFileSync16(path, JSON.stringify(result, null, 2), "utf8");
     console.log(
       JSON.stringify(
         {
@@ -29393,7 +29433,7 @@ async function threadCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/symbols.ts
-import { readFileSync as readFileSync28, writeFileSync as writeFileSync16 } from "node:fs";
+import { readFileSync as readFileSync28, writeFileSync as writeFileSync17 } from "node:fs";
 
 // plugins/review-voice/src/scoring/existence.ts
 import { execFileSync as execFileSync21 } from "node:child_process";
@@ -30379,7 +30419,7 @@ function symbolsCommand(argv) {
   }
   try {
     const path = resolveOutPath(out, "symbols.json");
-    writeFileSync16(path, JSON.stringify(result, null, 2), "utf8");
+    writeFileSync17(path, JSON.stringify(result, null, 2), "utf8");
     console.log(
       JSON.stringify(
         {
@@ -31488,7 +31528,7 @@ async function replyCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/check-verification.ts
-import { readFileSync as readFileSync30, writeFileSync as writeFileSync17 } from "node:fs";
+import { readFileSync as readFileSync30, writeFileSync as writeFileSync18 } from "node:fs";
 function keptCandidateIds(value) {
   const record3 = value;
   const list3 = Array.isArray(value) ? value : Array.isArray(record3?.kept) ? record3.kept : Array.isArray(record3?.candidates) ? record3.candidates : [];
@@ -31543,7 +31583,7 @@ function checkVerificationCommand(argv) {
   }
   if (outFile !== null) {
     try {
-      writeFileSync17(outFile, `${JSON.stringify(parsed2, null, 2)}
+      writeFileSync18(outFile, `${JSON.stringify(parsed2, null, 2)}
 `);
     } catch (error) {
       console.error(`Cannot write ${outFile}: ${error instanceof Error ? error.message : String(error)}`);
@@ -31800,7 +31840,7 @@ function reconcileCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/challenge.ts
-import { readFileSync as readFileSync33, writeFileSync as writeFileSync18 } from "node:fs";
+import { readFileSync as readFileSync33, writeFileSync as writeFileSync19 } from "node:fs";
 import { resolve as resolve15, sep as sep6 } from "node:path";
 function challengeCommand(argv) {
   const scoresFile = flag(argv, "--scores");
@@ -31899,7 +31939,7 @@ function challengeCommand(argv) {
     process.stdout.write(terminalInert(body));
   } else {
     try {
-      writeFileSync18(outFile, body);
+      writeFileSync19(outFile, body);
     } catch (error) {
       console.error(`Cannot write ${outFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -31910,7 +31950,7 @@ function challengeCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/reanchor.ts
-import { readFileSync as readFileSync34, writeFileSync as writeFileSync19, renameSync as renameSync5, rmSync as rmSync15 } from "node:fs";
+import { readFileSync as readFileSync34, writeFileSync as writeFileSync20, renameSync as renameSync5, rmSync as rmSync15 } from "node:fs";
 function reanchorCommand(argv) {
   const candidateId = flag(argv, "--candidate");
   const line3 = Number(flag(argv, "--line"));
@@ -31957,11 +31997,11 @@ function reanchorCommand(argv) {
   try {
     if (candidatesFile !== null) {
       staged.push([`${candidatesFile}.reanchor-${process.pid}`, candidatesFile]);
-      writeFileSync19(staged[staged.length - 1][0], `${JSON.stringify(candidates, null, 2)}
+      writeFileSync20(staged[staged.length - 1][0], `${JSON.stringify(candidates, null, 2)}
 `);
     }
     staged.push([`${scoresFile}.reanchor-${process.pid}`, scoresFile]);
-    writeFileSync19(staged[staged.length - 1][0], `${JSON.stringify(result.updated, null, 2)}
+    writeFileSync20(staged[staged.length - 1][0], `${JSON.stringify(result.updated, null, 2)}
 `);
     for (const [temporary, target] of staged) renameSync5(temporary, target);
   } catch (error) {
@@ -32431,7 +32471,7 @@ function statusCommand() {
 }
 
 // plugins/review-voice/src/cli/carry.ts
-import { readFileSync as readFileSync36, writeFileSync as writeFileSync20, mkdirSync as mkdirSync15 } from "node:fs";
+import { readFileSync as readFileSync36, writeFileSync as writeFileSync21, mkdirSync as mkdirSync15 } from "node:fs";
 import { dirname as dirname20, join as join31 } from "node:path";
 
 // plugins/review-voice/src/diff/held.ts
@@ -32850,19 +32890,19 @@ function carryCandidatesCommand(argv) {
   };
   try {
     mkdirSync15(outDir, { recursive: true });
-    writeFileSync20(
+    writeFileSync21(
       join31(outDir, "candidates.json"),
       `${JSON.stringify(candidatesIn.rebuild([...carriedCandidates, ...interdiffCandidates]), null, 2)}
 `
     );
-    writeFileSync20(
+    writeFileSync21(
       join31(outDir, "verification.json"),
       `${JSON.stringify(verificationIn.rebuild([...carriedVerification, ...interdiffVerification]), null, 2)}
 `
     );
-    if (heldIn !== null) writeFileSync20(join31(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
+    if (heldIn !== null) writeFileSync21(join31(outDir, "held.json"), `${JSON.stringify(heldIn.rebuild(heldKept), null, 2)}
 `);
-    writeFileSync20(join31(outDir, "carry.json"), `${JSON.stringify(record3, null, 2)}
+    writeFileSync21(join31(outDir, "carry.json"), `${JSON.stringify(record3, null, 2)}
 `);
   } catch (error) {
     console.error(`Cannot write to ${outDir}: ${error instanceof Error ? error.message : String(error)}`);
@@ -33214,6 +33254,8 @@ function scoreCommand(argv) {
           alsoAt: raw["also_at"] ?? raw["alsoAt"],
           // Already checked by `verificationProblem`.
           corrections: raw["corrections"],
+          narrowedClaim: typeof raw["narrowed_claim"] === "string" ? raw["narrowed_claim"] : void 0,
+          narrowedFailureMode: typeof raw["narrowed_failure_mode"] === "string" ? raw["narrowed_failure_mode"] : void 0,
           requiredContextMissing: raw["required_context_missing"] ?? raw["requiredContextMissing"],
           // Already checked by `verificationProblem`.
           partlyAddressed: raw["partly_addressed"] ?? raw["partlyAddressed"]
@@ -33242,9 +33284,13 @@ function scoreCommand(argv) {
     }
   }
   const uncorrectable = /* @__PURE__ */ new Map();
+  const restated = /* @__PURE__ */ new Map();
   candidates = candidates.map((candidate) => {
-    const fixes = verifications.get(candidate.candidateId)?.corrections ?? [];
-    if (fixes.length === 0) return candidate;
+    const verification2 = verifications.get(candidate.candidateId);
+    const fixes = verification2?.corrections ?? [];
+    const narrowed = verification2?.verified === true && (verification2.narrowedClaim !== void 0 || verification2.narrowedFailureMode !== void 0);
+    if (fixes.length === 0 && !narrowed) return candidate;
+    restated.set(candidate.candidateId, { claim: candidate.claim, failureMode: candidate.failureMode });
     let { claim, failureMode, evidence } = candidate;
     for (const { wrong, right } of fixes) {
       if (![claim, failureMode, ...evidence].some((text5) => text5.includes(wrong))) {
@@ -33254,6 +33300,10 @@ function scoreCommand(argv) {
       claim = claim.replaceAll(wrong, right);
       failureMode = failureMode.replaceAll(wrong, right);
       evidence = evidence.map((item) => item.replaceAll(wrong, right));
+    }
+    if (narrowed) {
+      claim = verification2?.narrowedClaim ?? claim;
+      failureMode = verification2?.narrowedFailureMode ?? failureMode;
     }
     return { ...candidate, claim, failureMode, evidence };
   });
@@ -33630,7 +33680,9 @@ function scoreCommand(argv) {
               ...c.impactDisputed === true ? { impactDisputed: true } : {},
               // More instances of the same defect than the candidate listed.
               // The verifier used to reject a true finding for them (#388).
-              ...(verifications.get(c.candidateId)?.alsoAt?.length ?? 0) > 0 ? { alsoAt: verifications.get(c.candidateId).alsoAt } : {}
+              ...(verifications.get(c.candidateId)?.alsoAt?.length ?? 0) > 0 ? { alsoAt: verifications.get(c.candidateId).alsoAt } : {},
+              // The analyst's own wording, kept for explain; the claim above is the verifier's.
+              ...restated.has(c.candidateId) ? { restatedByVerifier: restated.get(c.candidateId) } : {}
             };
           }),
           belowGate: belowGate.map(withSnakeCaseId),
@@ -33796,7 +33848,17 @@ function checkCandidatesCommand(argv) {
     return 2;
   }
   try {
-    const candidates = raw.map((candidate, index) => normaliseCandidate(candidate, index));
+    const malformed = [];
+    const candidates = raw.flatMap((candidate, index) => {
+      try {
+        return [normaliseCandidate(candidate, index)];
+      } catch (error) {
+        if (!(error instanceof MalformedCandidate)) throw error;
+        malformed.push(error.message);
+        return [];
+      }
+    });
+    if (malformed.length > 0) throw new MalformedCandidate(malformed.join("\n"));
     assertUniqueCandidateIds(candidates);
     const lanes2 = repositoryConfig()?.lanes ?? [DIFF_LANE];
     const laneFailures = candidates.flatMap(({ candidateId, lane: name }) => {
@@ -34055,8 +34117,11 @@ function checkCandidatesCommand(argv) {
     return 0;
   } catch (error) {
     if (error instanceof MalformedCandidate) {
-      console.error(`Malformed candidate - ${error.message}`);
-      console.error("Re-run the analyst with the schema restated. Do not hand-translate its output.");
+      const problems = error.message.split("\n");
+      for (const problem of problems) console.error(`Malformed candidate - ${problem}`);
+      console.error(
+        `${problems.length === 1 ? "Re-run" : `${problems.length} problems; re-run`} the analyst once with the schema restated and every problem above. Do not hand-translate its output.`
+      );
       return 2;
     }
     throw error;

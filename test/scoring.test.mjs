@@ -935,7 +935,8 @@ test('a foreign shape is named as such, not reported as a missing path', () => {
 test('an ordinary missing path is still an ordinary missing path', () => {
   assert.throws(
     () => normaliseCandidate({ candidate_id: 'cand_001', line: 4 }, 0),
-    /cand_001: missing path$/,
+    // #452: every problem is listed, one per line; the path's is a plain "missing path".
+    /(?:^|: )cand_001: missing path$/m,
   );
 });
 

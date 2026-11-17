@@ -386,6 +386,16 @@ left only in your `reason` is posted wrong. A `wrong` that is not in the
 candidate's text holds the finding. Reject the candidate instead when the
 wrong detail is what the claim rests on.
 
+**Part of the claim holds.** When you verify a candidate but refute part of
+its claim or failure mode, or cannot trace part of it - one of three cases is
+excluded on purpose, a downstream consequence you did not follow, the second
+half of a race you could not trace - verify it and give `narrowed_claim` and,
+when the failure mode changes, `narrowed_failure_mode`: the claim and the
+consequence restated with only what you confirmed. `score` states these
+instead of the analyst's text, so a part left only in `reason` or
+`contradictions` is posted as if confirmed (#451). Never widen, and never
+state a different defect: reject that instead.
+
 **State you cannot read from the repository.** You read files and run
 read-only `git`; nothing else runs, so pull request and issue fields, labels,
 checks and other GitHub state are out of reach. When a claim turns on such
@@ -565,7 +575,8 @@ JSON only: `candidate_id`, `verified`, `evidence_quality`,
 `fix_verdict`, `fix_confidence`, `fix_reason`, `fix_direction`,
 `impact_traced`, `impact_class` for a boundary finding when it applies,
 `also_at` for further confirmed instances of the same defect, `corrections`
-for a detail the candidate states wrongly,
+for a detail the candidate states wrongly, `narrowed_claim` and
+`narrowed_failure_mode` when only part of it holds,
 `premises_verified` for a question, `blocker_confirmed` for a candidate with
 a `blocker_class`, `reproduction` only when your prompt lists runners, and `partly_addressed` only when it applies. When you were given `followUps`, return an object
 `{"verifications": [<the entries>], "follow_ups": [<one ruling each>]}`

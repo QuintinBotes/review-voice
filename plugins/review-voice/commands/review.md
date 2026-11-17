@@ -444,8 +444,11 @@ text, launch the `intent-extractor` agent with the pull request `title` from
 step 1 and `thread.json`. Skip this step otherwise, and on any run that is not
 a pull request; nothing later needs `intent.json`.
 
-Pipe its output into `RV check-intent --thread <tmpdir>/thread.json` and write
-what it prints to `<tmpdir>/intent.json`. It drops, with a warning, any
+Pipe its output into `RV check-intent --thread <tmpdir>/thread.json --summary <tmpdir>/intent-summary.json`
+and write what it prints to `<tmpdir>/intent.json`. The summary lists, as data,
+what was `dropped`, `widened`, `kept` under four words, and `removed`; a
+later step or a later run that asks whether the intent survived whole reads
+`dropped` there rather than the stderr prose. It drops, with a warning, any
 statement whose quote or reason is not a whole sentence or list item of the
 description, so no stage checks the change against intent the author did not
 state, or against a sentence with its negation cut off. Each drop is a
@@ -661,7 +664,11 @@ attempt is also malformed, say so and stop. The evidence verifier writes
 `verified` and `technical_confidence`; `verdict` and `confidence` belong to the
 second pass and are refused here.
 
-A verified entry may carry `corrections`, details the candidate stated wrongly
+A verified entry may carry `narrowed_claim` and `narrowed_failure_mode`, the
+claim and failure mode cut to what the verifier confirmed when part of them did
+not hold; `score` states them instead of the analyst's text, records the
+original as `restatedByVerifier`, and the challenger is asked about the
+narrowed text. Never trim a claim by hand. A verified entry may also carry `corrections`, details the candidate stated wrongly
 with what they should say; `score` replaces them in the claim, failure mode and
 evidence before the editor sees them, so never correct the text yourself. A
 correction whose wrong text is not in the candidate holds the finding, listed

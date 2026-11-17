@@ -562,9 +562,12 @@ export async function computeVerdict(
   // Only a missing assessment is worth saying: a normal one changes nothing.
   if (complexity === null) decision.reasons.push('no complexity assessment was recorded for this run');
   // An approval replaces a request for changes, so only an approval that is
-  // going ahead leaves none standing.
+  // going ahead leaves none standing. Looked for on every other verdict, not
+  // only one capped for a human: a re-review that found only a minor posts a
+  // COMMENT, which leaves the owner's earlier request blocking (#455). Without
+  // an owner it is skipped quietly, except where the cap made it expected.
   const staleRequestChanges =
-    needsHuman && !(decision.event === 'APPROVE' && decision.action !== 'refuse')
+    !(decision.event === 'APPROVE' && decision.action !== 'refuse') && (needsHuman || (options.owner ?? '') !== '')
       ? await staleRequest(options, planned, decision.reasons)
       : null;
 

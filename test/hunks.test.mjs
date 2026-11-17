@@ -227,3 +227,33 @@ test('a context line beside a pure deletion is pointed to the deletion site as a
   assert.match(reason(comment), /line 7 is where the change removed code, which is a valid anchor: re-anchor the finding there, or keep this line with anchor "stale-consumer" and caused_by config\.yaml:7\./);
   assert.equal(classifyAnchor(hunks, 'config.yaml', 7).ok, true, 'the deletion site itself passes');
 });
+
+// #453: a line counted down diff.patch that lands on an unchanged line was
+// refused with no hint, as only added lines were mapped back.
+test('an anchor that is the diff.patch line of an unchanged line names the file line', () => {
+  const patch = [
+    'diff --git a/src/b.ts b/src/b.ts',
+    '--- a/src/b.ts',
+    '+++ b/src/b.ts',
+    '@@ -126,7 +126,7 @@ export function load() {',
+    ' const b126 = 126;',
+    ' const b127 = 127;',
+    ' const b128 = 128;',
+    '-const b129 = 129;',
+    '+const b129 = unsafe();',
+    ' const b130 = 130;',
+    ' const b131 = 131;',
+    ' const b132 = 132;',
+    '',
+  ].join('\n');
+  const hunks = parseHunks(patch);
+  const atContext = classifyAnchor(hunks, 'src/b.ts', 7);
+  assert.equal(atContext.ok, false);
+  assert.equal(atContext.kind, 'outside-hunk');
+  assert.deepEqual(atContext.patchContext, { path: 'src/b.ts', line: 128 });
+  assert.match(reason(atContext), /line 7 of diff\.patch is the unchanged line 128 of src\/b\.ts\. `line` is a line of the file at the head, never of diff\.patch/);
+  // A context line inside a hunk keeps its own reason: its number is a real file line.
+  assert.doesNotMatch(reason(classifyAnchor(hunks, 'src/b.ts', 127)), /of diff\.patch/);
+  // An added line keeps the hint it had, and only that one may be applied.
+  assert.match(reason(classifyAnchor(hunks, 'src/b.ts', 9)), /line 9 of diff\.patch is line 129 of src\/b\.ts; use line 129/);
+});

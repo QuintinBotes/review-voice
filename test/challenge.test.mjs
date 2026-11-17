@@ -634,3 +634,11 @@ test('#421: a field outside the verdict object is named, with the shape wanted',
     assert.match(r2.stderr, /reason is outside the verdict object/);
   });
 });
+
+// #451: the challenger is asked about the text that will be posted.
+test('#451: a claim the verifier restated is what the challenger sees', () => {
+  const finding = { ...eligibleEntry('cand_001', 3), claim: 'Only the read path omits the tenant.', failureMode: 'A read can return another tenant entry.', restatedByVerifier: { claim: CLAIMS.cand_001, failureMode: 'x' } };
+  const prompt = challengePrompt(finding, candidate('cand_001', 3), []);
+  assert.ok(prompt.includes('Claim: Only the read path omits the tenant.'), prompt);
+  assert.ok(!prompt.includes(CLAIMS.cand_001));
+});

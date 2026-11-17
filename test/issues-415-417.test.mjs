@@ -98,3 +98,24 @@ test('#421: gathered replies keep the keys beside their list', () => {
   assert.deepEqual(gathered.verdicts.map((v) => v.candidate_id), ['a', 'b']);
   assert.equal(gathered.reason, 'late');
 });
+
+// #451: a sub-claim the verifier refuted or could not trace stayed in the
+// eligible entry and reached the editor.
+test('#451: a narrowed claim replaces the analyst text on the eligible entry, after corrections', () =>
+  withDir((dir) => {
+    const out = score(dir, {
+      ...verified,
+      corrections: [{ wrong: 'eleven call sites', right: 'nine call sites' }],
+      narrowed_failure_mode: 'Those call sites fail to build.',
+    });
+    const entry = out.eligible[0];
+    assert.equal(entry.claim, 'The rename misses nine call sites of loadUser.', 'the correction applied to the original claim');
+    assert.equal(entry.failureMode, 'Those call sites fail to build.', 'the narrowed failure mode is stated');
+    assert.equal(entry.restatedByVerifier.failureMode, 'The eleven call sites fail to build.');
+    const narrowed = score(dir, { ...verified, narrowed_claim: 'The rename misses the loadUser calls in the importer.' });
+    assert.equal(narrowed.eligible[0].claim, 'The rename misses the loadUser calls in the importer.');
+    // A narrowing on a candidate the verifier did not verify changes nothing.
+    const refused = run(dir, ['check-verification'], JSON.stringify([{ ...verified, narrowed_claim: '' }]));
+    assert.equal(refused.status, 2);
+    assert.match(refused.stderr, /narrowed_claim must be 1 to 600 characters/);
+  }));

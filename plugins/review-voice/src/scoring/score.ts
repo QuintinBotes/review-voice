@@ -234,6 +234,9 @@ export interface Verification {
   alsoAt?: string[] | undefined;
   /** Factual details the verifier found wrong in the candidate's text, each with the right one (#416). */
   corrections?: { wrong: string; right: string }[] | undefined;
+  /** The claim and failure mode cut to what the verifier confirmed, when it confirmed only part (#451). */
+  narrowedClaim?: string | undefined;
+  narrowedFailureMode?: string | undefined;
 }
 
 /** Longest verifier reason quoted in a rejection. */
@@ -1128,6 +1131,8 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
   // with every other malformed value rather than silently treating it as none.
   const suggestedFix = raw.suggested_fix !== undefined ? raw.suggested_fix : raw.suggestedFix;
   const fixConfidence = raw.fix_confidence !== undefined ? raw.fix_confidence : raw.fixConfidence;
+  // Every problem of this candidate, so one relaunch can fix them all (#452).
+  const problems: string[] = [];
 
   if (typeof raw.path !== 'string' || raw.path.length === 0) {
     // Named explicitly, because an agent that returns a different shape
@@ -1135,7 +1140,7 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     // of "this is not a candidate". One run emitted title, location and
     // suggested_direction, and the whole pull request produced nothing.
     const foreign = FOREIGN_KEYS.filter((key) => key in raw);
-    throw new MalformedCandidate(
+    problems.push(
       foreign.length > 0
         ? `${candidateId}: has ${foreign.join(', ')} but no path. This is not the candidate schema. ` +
           'Expected candidate_id, path, line, category, severity, claim, failure_mode, evidence, ' +
@@ -1144,34 +1149,34 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     );
   }
   if (!Number.isFinite(raw.line)) {
-    throw new MalformedCandidate(`${candidateId}: missing or non-numeric line`);
+    problems.push(`${candidateId}: missing or non-numeric line`);
   }
   if (!Number.isFinite(confidence)) {
-    throw new MalformedCandidate(
+    problems.push(
       `${candidateId}: missing or non-numeric technical_confidence - a score cannot be computed, ` +
         'and a candidate that cannot be scored must not be treated as eligible',
     );
   }
   if (suggestedFix !== undefined && typeof suggestedFix !== 'string') {
-    throw new MalformedCandidate(`${candidateId}: suggested_fix must be a string when supplied`);
+    problems.push(`${candidateId}: suggested_fix must be a string when supplied`);
   }
   const rawPatch = raw.suggested_patch !== undefined ? raw.suggested_patch : raw.suggestedPatch;
   if (rawPatch !== undefined) {
     const problem = suggestedPatchProblem(rawPatch);
-    if (problem !== null) throw new MalformedCandidate(`${candidateId}: suggested_patch ${problem}`);
+    if (problem !== null) problems.push(`${candidateId}: suggested_patch ${problem}`);
     // The block replaces start_line..line, so the comment stays on the anchor.
-    if ((rawPatch as SuggestedPatch).end_line !== raw.line) {
-      throw new MalformedCandidate(`${candidateId}: suggested_patch end_line must be the candidate's line, ${raw.line}`);
+    else if ((rawPatch as SuggestedPatch).end_line !== raw.line) {
+      problems.push(`${candidateId}: suggested_patch end_line must be the candidate's line, ${raw.line}`);
     }
   }
   if (
     fixConfidence !== undefined &&
     (!Number.isFinite(fixConfidence) || fixConfidence < 0 || fixConfidence > 1)
   ) {
-    throw new MalformedCandidate(`${candidateId}: fix_confidence must be a finite number from 0 to 1 when supplied`);
+    problems.push(`${candidateId}: fix_confidence must be a finite number from 0 to 1 when supplied`);
   }
   if (raw.anchor !== undefined && raw.anchor !== STALE_CONSUMER) {
-    throw new MalformedCandidate(`${candidateId}: anchor must be "${STALE_CONSUMER}" when supplied`);
+    problems.push(`${candidateId}: anchor must be "${STALE_CONSUMER}" when supplied`);
   }
   // A missing cause is not a shape error: the anchor check names it, with the
   // rest of what the analyst has to fix. A cause in the wrong shape is.
@@ -1185,30 +1190,35 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
       !Number.isInteger(rawCause.line) ||
       (rawCause.line as number) < 1
     ) {
-      throw new MalformedCandidate(`${candidateId}: caused_by must be {"path": string, "line": positive integer}`);
+      problems.push(`${candidateId}: caused_by must be {"path": string, "line": positive integer}`);
+    } else {
+      causedBy = { path: rawCause.path, line: rawCause.line as number };
     }
-    causedBy = { path: rawCause.path, line: rawCause.line as number };
   }
   const ownComment = ownCommentOf(raw.possibleRepeatOf);
   const impactDisputed = raw.impact_disputed !== undefined ? raw.impact_disputed : raw.impactDisputed;
   if (impactDisputed !== undefined && typeof impactDisputed !== 'boolean') {
-    throw new MalformedCandidate(`${candidateId}: impact_disputed must be true or false when supplied`);
+    problems.push(`${candidateId}: impact_disputed must be true or false when supplied`);
   }
   const intentRef = raw.intent_ref !== undefined ? raw.intent_ref : raw.intentRef;
   if (intentRef !== undefined && (typeof intentRef !== 'string' || !/^int_[0-9]{3,}$/.test(intentRef))) {
-    throw new MalformedCandidate(`${candidateId}: intent_ref must match int_NNN when supplied`);
+    problems.push(`${candidateId}: intent_ref must match int_NNN when supplied`);
   }
   if (raw.lane !== undefined && (typeof raw.lane !== 'string' || raw.lane.length === 0)) {
-    throw new MalformedCandidate(`${candidateId}: lane must be a lane name when supplied`);
+    problems.push(`${candidateId}: lane must be a lane name when supplied`);
   }
   const blockerClass = raw.blocker_class !== undefined ? raw.blocker_class : raw.blockerClass;
   if (blockerClass !== undefined && blockerClass !== null && typeof blockerClass !== 'string') {
-    throw new MalformedCandidate(`${candidateId}: blocker_class must be a string or null when supplied`);
+    problems.push(`${candidateId}: blocker_class must be a string or null when supplied`);
   }
+  if (raw.severity !== undefined && !(SEVERITIES as readonly string[]).includes(raw.severity as string)) {
+    problems.push(`${candidateId}: severity must be one of ${SEVERITIES.join(', ')}, not ${JSON.stringify(raw.severity)}`);
+  }
+  if (problems.length > 0) throw new MalformedCandidate(problems.join('\n'));
 
   return {
     candidateId,
-    path: raw.path,
+    path: raw.path as string,
     line: raw.line as number,
     // Deliberately not defaulted. `correctness` used to stand in for a missing
     // category, which gave an unlabelled finding a real tier and recorded
@@ -1225,7 +1235,7 @@ export function normaliseCandidate(raw: RawCandidate, index: number): Candidate 
     // Spread only when declared, so an ordinary candidate keeps its shape.
     ...(raw.anchor === STALE_CONSUMER ? { anchor: STALE_CONSUMER, causedBy } : {}),
     ...(impactDisputed === true ? { impactDisputed: true as const } : {}),
-    ...(intentRef === undefined ? {} : { intentRef }),
+    ...(intentRef === undefined ? {} : { intentRef: intentRef as string }),
     ...(ownComment === null ? {} : { ownComment }),
     ...(raw.lane === undefined ? {} : { lane: raw.lane as string }),
     ...(blockerClass === undefined ? {} : { blockerClass: blockerClass as string | null }),

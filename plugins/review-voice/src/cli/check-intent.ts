@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { descriptionOf, linkedIssuesOf, parseIntent } from '../intent.ts';
 import { readStdin, flag } from './shared.ts';
 import { jsonInReply } from '../agents/reply-json.ts';
@@ -44,6 +44,25 @@ export function checkIntentCommand(argv: string[]): number {
   const intent = parseIntent(document, description, issues);
   for (const problem of intent.dropped) console.error(`${intent.problem === null ? 'Dropped' : 'Invalid'} statement ${problem}.`);
   for (const note of intent.removed) console.error(`${note}.`);
+  // The same account as data, so a caller can tell a drop from a note without
+  // reading the prose: the review reuses intent only when nothing was dropped (#454).
+  const summaryFile = flag(argv, '--summary');
+  if (summaryFile !== null) {
+    const kind = (prefix: string): string[] => intent.removed.filter((note) => note.startsWith(prefix));
+    const summary = {
+      valid: intent.problem === null,
+      dropped: intent.dropped,
+      widened: kind('Widened'),
+      kept: kind('Kept'),
+      removed: kind('Removed'),
+    };
+    try {
+      writeFileSync(summaryFile, `${JSON.stringify(summary, null, 2)}\n`);
+    } catch (error) {
+      console.error(`Cannot write ${summaryFile}: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
   if (intent.problem !== null) {
     console.error(`Malformed intent - ${intent.problem}.`);
     console.error('Re-run the intent-extractor with the schema restated. Do not hand-translate its output.');

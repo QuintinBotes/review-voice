@@ -214,3 +214,24 @@ test('an unknown owner or an unreadable review list skips the check with a reaso
     assert.ok(output.reasons.some((reason) => /could not read the pull request's reviews/.test(reason)));
   });
 });
+
+test('#455: a re-review that found only a minor reports the owner\'s standing request for changes', async () => {
+  await withDb(async (db) => {
+    record(db, MINOR, { complexity: NORMAL, scores: [verified('src/cart.ts', 12, 'minor')] });
+    const impl = fakeGitHub(REQUESTED);
+    const { output } = await verdict(db, impl, MINOR);
+    assert.equal(output.event, 'COMMENT');
+    assert.equal(output.staleRequestChanges?.reviewId, 101);
+    assert.ok(output.reasons.some((reason) => /REQUEST_CHANGES \(review 101\).*dismiss it by hand/.test(reason)));
+    assert.ok(impl.calls.every((call) => call.method === 'GET'));
+  });
+  await withDb(async (db) => {
+    // Without an owner an ordinary review does not look, and says nothing about it.
+    record(db, MINOR, { complexity: NORMAL, scores: [verified('src/cart.ts', 12, 'minor')] });
+    const impl = fakeGitHub(REQUESTED);
+    const { output } = await verdict(db, impl, MINOR, null);
+    assert.equal(output.staleRequestChanges, null);
+    assert.ok(!output.reasons.some((reason) => /owner_reviewer is not set/.test(reason)));
+    assert.ok(!impl.calls.some((call) => call.path.endsWith('/reviews')));
+  });
+});

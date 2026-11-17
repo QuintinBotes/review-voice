@@ -310,6 +310,12 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     if (impactClass !== undefined && !isImpactClass(impactClass)) {
       return `${who}: impact_class must be one of ${IMPACT_CLASSES.join(', ')}, not ${JSON.stringify(impactClass)}.`;
     }
+    for (const key of ['narrowed_claim', 'narrowed_failure_mode']) {
+      const value = entry[key];
+      if (value !== undefined && (typeof value !== 'string' || value.trim() === '' || value.length > 600)) {
+        return `${who}: ${key} must be 1 to 600 characters of text when supplied.`;
+      }
+    }
     const alsoAt = entry['also_at'] ?? entry['alsoAt'];
     if (alsoAt !== undefined && !(Array.isArray(alsoAt) && alsoAt.length <= 10 && alsoAt.every((ref) => typeof ref === 'string' && /^\S(?:.*\S)?:\d+(?:-\d+)?$/.test(ref)))) {
       return `${who}: also_at must be a list of at most 10 "path:line" references.`;

@@ -106,3 +106,17 @@ test('#429 and #431: record says what it stored, and refuses the evidence-verifi
       assert.match(refused.stderr, /is the evidence-verifier's output, not a second-pass report/);
     }
   }));
+
+test('#452: check-candidates reports every problem of every candidate in one refusal', () =>
+  withDir((dir) => {
+    const bad = { ...raw(), fix_confidence: 'high', severity: 'loud' };
+    delete bad.technical_confidence;
+    const other = { ...raw({ candidate_id: 'c2' }), line: 'twelve' };
+    const result = run(dir, ['check-candidates'], JSON.stringify({ candidates: [bad, other] }));
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /c1: missing or non-numeric technical_confidence/);
+    assert.match(result.stderr, /c1: fix_confidence must be a finite number from 0 to 1/);
+    assert.match(result.stderr, /c1: severity must be one of blocking, important, minor, nit, question, not "loud"/);
+    assert.match(result.stderr, /c2: missing or non-numeric line/);
+    assert.match(result.stderr, /4 problems; re-run the analyst once/);
+  }));
