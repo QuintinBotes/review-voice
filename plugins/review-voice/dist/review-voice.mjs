@@ -1022,12 +1022,15 @@ function classifyAnchor(hunks, path, line3) {
     return { path: normalised2, line: line3, kind: "file-not-in-diff", ok: false, nearest: [], patchLine, beyondHunks: false };
   }
   const kind = file2.added.has(line3) ? "added" : file2.deletionSites.has(line3) ? "deletion-site" : file2.context.has(line3) ? "context" : "outside-hunk";
+  const nearest = changedLines(file2, line3);
+  const nearestDeletionSites = nearest.filter((at2) => file2.deletionSites.has(at2) && !file2.added.has(at2));
   return {
     path: normalised2,
     line: line3,
     kind,
     ok: kind === "added" || kind === "deletion-site",
-    nearest: changedLines(file2, line3),
+    nearest,
+    ...nearestDeletionSites.length > 0 ? { nearestDeletionSites } : {},
     patchLine,
     beyondHunks: file2.ranges.length > 0 && file2.ranges.every((range) => line3 > range.end)
   };
@@ -1102,6 +1105,10 @@ function reason(anchor) {
   let rendered = `anchors on ${path}:${line3}, ${detail}`;
   if (!anchor.ok && anchor.nearest.length > 0) {
     rendered += anchor.nearest.length === 1 ? `; the nearest changed line is ${anchor.nearest[0]}` : `; the nearest changed lines are ${anchor.nearest.join(", ")}`;
+  }
+  const sites = anchor.nearestDeletionSites ?? [];
+  if (!anchor.ok && anchor.kind === "context" && sites.length > 0 && anchor.patchLine === null) {
+    return `${rendered}; line ${sites[0]} is where the change removed code, which is a valid anchor: re-anchor the finding there, or keep this line with anchor "stale-consumer" and caused_by ${path}:${sites[0]}.`;
   }
   if (!anchor.ok && anchor.patchLine !== null && anchor.patchLine.path === path) {
     return `${rendered}; line ${line3} of diff.patch is line ${anchor.patchLine.line} of ${path}; use line ${anchor.patchLine.line} (or pass --apply-patch-lines).`;

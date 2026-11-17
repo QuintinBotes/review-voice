@@ -202,3 +202,28 @@ test('an anchor far from any change still names the closest changed line', () =>
   assert.deepEqual(far.nearest, [40]);
   assert.match(reason(far), /the nearest changed line is 40/);
 });
+
+// #449: a comment left stale by a pure deletion was refused with only "the
+// nearest changed line is N", which read as a line that no longer exists.
+test('a context line beside a pure deletion is pointed to the deletion site as a valid anchor', () => {
+  const patch = [
+    'diff --git a/config.yaml b/config.yaml',
+    '--- a/config.yaml',
+    '+++ b/config.yaml',
+    '@@ -4,7 +4,6 @@ key3: 3',
+    ' key4: 4',
+    ' # The retry budget for the uploader.',
+    ' # Raise it when uploads are flaky.',
+    '-retry_budget: 3',
+    ' key8: 8',
+    ' key9: 9',
+    ' key10: 10',
+    '',
+  ].join('\n');
+  const hunks = parseHunks(patch);
+  const comment = classifyAnchor(hunks, 'config.yaml', 6);
+  assert.equal(comment.kind, 'context');
+  assert.deepEqual(comment.nearestDeletionSites, [7]);
+  assert.match(reason(comment), /line 7 is where the change removed code, which is a valid anchor: re-anchor the finding there, or keep this line with anchor "stale-consumer" and caused_by config\.yaml:7\./);
+  assert.equal(classifyAnchor(hunks, 'config.yaml', 7).ok, true, 'the deletion site itself passes');
+});
