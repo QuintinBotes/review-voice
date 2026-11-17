@@ -66,6 +66,18 @@
     "impact_traced": {
       "type": "boolean"
     },
+    "narrowed_claim": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600,
+      "description": "On a verified candidate whose claim holds only in part: the claim restated with only what you confirmed. score states it instead of the analyst's claim."
+    },
+    "narrowed_failure_mode": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600,
+      "description": "With or without narrowed_claim: the failure mode restated with only the consequence you traced."
+    },
     "corrections": {
       "type": "array",
       "maxItems": 10,

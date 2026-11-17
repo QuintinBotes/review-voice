@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,4 +50,31 @@ test('a quote spanning two cells is still not a whole unit', () => {
     { id: 'int_001', kind: 'claim', statement: 'The watchdog samples memory.', quote: 'sample the memory of a check kept' },
   ]);
   assert.notEqual(result.status, 0);
+});
+
+// #454: drops and notes were told apart only by stderr prose.
+test('#454: --summary writes what was dropped, widened and kept as data', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-intent-454-'));
+  try {
+    const thread = join(dir, 'thread.json');
+    const summary = join(dir, 'summary.json');
+    writeFileSync(thread, JSON.stringify({ repository: 'example/pay', pullNumber: 1, comments: [{ path: null, line: null, author: 'a', body: TABLE, kind: 'description' }], reviews: [] }));
+    const result = spawnSync(process.execPath, [bundle, 'check-intent', '--thread', thread, '--summary', summary], {
+      encoding: 'utf8',
+      input: JSON.stringify({
+        statements: [
+          { id: 'int_001', kind: 'claim', statement: 'The check profile needs no process listing.', quote: 'The check profile does not need process listing.' },
+          { id: 'int_002', kind: 'claim', statement: 'Something the description never says.', quote: 'This sentence is not in the description at all.' },
+        ],
+      }),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const written = JSON.parse(readFileSync(summary, 'utf8'));
+    assert.equal(written.valid, true);
+    assert.equal(written.dropped.length, 1);
+    assert.match(written.dropped[0], /^int_002 /);
+    assert.deepEqual(written.widened, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -576,7 +576,10 @@ readable, make unproved semantics a question rather than inventing them.
 ## Anchors
 
 `line` is the 1-based line number in the file at the head of the diff. Put it
-on a `+` line, or on the right-side line where removed code used to be. It is
+on a `+` line, or on the right-side line where removed code used to be. Read
+it from the file at the head (or from the hunk header's `+start` count), and
+check each one against the file before you return: a number counted down
+`diff.patch` is the most common wrong anchor (#453). It is
 never a line number within `diff.patch`, and never an unchanged context line -
 the one exception is a stale consumer, below.
 

@@ -187,7 +187,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   'check-intent': {
     summary: 'Validate the intent-extractor output against the description',
     body: lines(
-      'review-voice check-intent --thread <path>',
+      'review-voice check-intent --thread <path> [--summary <path>]',
       '  Validate the stated-intent statements extracted from the pull request',
       '  description. Every quote, and every deliberate reason, must be a whole',
       '  sentence or list item of the description in thread.json, of at least four words.',
@@ -196,6 +196,8 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '',
       'Flags:',
       '  --thread <path>        thread.json from `thread`, holding the description (required)',
+      '  --summary <path>       also write {valid, dropped, widened, kept, removed} as JSON, so a caller',
+      '                         can tell a dropped statement from a note without reading stderr',
       'Reads: the intent-extractor JSON on stdin.',
       'Writes: the normalised intent document on stdout.',
       'Exit codes: 0 valid (possibly with statements dropped), 2 malformed, duplicate ids, none survives, no description, or bad invocation.',

@@ -281,7 +281,19 @@ export function checkCandidatesCommand(argv: string[]): number {
   }
 
   try {
-    const candidates = raw.map((candidate, index) => normaliseCandidate(candidate as RawCandidate, index));
+    // Every candidate is checked before refusing, so one relaunch with the
+    // whole list fixes the batch (#452).
+    const malformed: string[] = [];
+    const candidates = raw.flatMap((candidate, index) => {
+      try {
+        return [normaliseCandidate(candidate as RawCandidate, index)];
+      } catch (error) {
+        if (!(error instanceof MalformedCandidate)) throw error;
+        malformed.push(error.message);
+        return [];
+      }
+    });
+    if (malformed.length > 0) throw new MalformedCandidate(malformed.join('\n'));
     assertUniqueCandidateIds(candidates);
 
     // A lane's prefix keeps ids from two lanes apart and ties each candidate to
@@ -625,8 +637,12 @@ export function checkCandidatesCommand(argv: string[]): number {
     return 0;
   } catch (error) {
     if (error instanceof MalformedCandidate) {
-      console.error(`Malformed candidate - ${error.message}`);
-      console.error('Re-run the analyst with the schema restated. Do not hand-translate its output.');
+      const problems = error.message.split('\n');
+      for (const problem of problems) console.error(`Malformed candidate - ${problem}`);
+      console.error(
+        `${problems.length === 1 ? 'Re-run' : `${problems.length} problems; re-run`} the analyst once with the schema restated ` +
+          'and every problem above. Do not hand-translate its output.',
+      );
       return 2;
     }
     throw error;

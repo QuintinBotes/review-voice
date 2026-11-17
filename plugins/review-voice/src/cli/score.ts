@@ -428,6 +428,8 @@ export function scoreCommand(argv: string[]): number {
           alsoAt: (raw['also_at'] ?? raw['alsoAt']) as string[] | undefined,
           // Already checked by `verificationProblem`.
           corrections: raw['corrections'] as { wrong: string; right: string }[] | undefined,
+          narrowedClaim: typeof raw['narrowed_claim'] === 'string' ? raw['narrowed_claim'] : undefined,
+          narrowedFailureMode: typeof raw['narrowed_failure_mode'] === 'string' ? raw['narrowed_failure_mode'] : undefined,
           requiredContextMissing: (raw['required_context_missing'] ??
             raw['requiredContextMissing']) as MissingContext[] | undefined,
           // Already checked by `verificationProblem`.
@@ -478,10 +480,17 @@ export function scoreCommand(argv: string[]): number {
   // them, so the editor never restates it (#416). A correction whose wrong text
   // is not in the candidate cannot be applied, and holds the finding.
   const uncorrectable = new Map<string, string>();
+  // The analyst's text where the verifier restated it, for the challenger and
+  // for explain: a narrowing (#451) or a correction (#416).
+  const restated = new Map<string, { claim: string; failureMode: string }>();
   candidates = candidates.map((candidate) => {
-    const fixes = verifications.get(candidate.candidateId)?.corrections ?? [];
-    if (fixes.length === 0) return candidate;
+    const verification = verifications.get(candidate.candidateId);
+    const fixes = verification?.corrections ?? [];
+    const narrowed = verification?.verified === true && (verification.narrowedClaim !== undefined || verification.narrowedFailureMode !== undefined);
+    if (fixes.length === 0 && !narrowed) return candidate;
+    restated.set(candidate.candidateId, { claim: candidate.claim, failureMode: candidate.failureMode });
     let { claim, failureMode, evidence } = candidate;
+    // A correction names text as the analyst wrote it, so it applies first.
     for (const { wrong, right } of fixes) {
       if (![claim, failureMode, ...evidence].some((text) => text.includes(wrong))) {
         uncorrectable.set(candidate.candidateId, wrong);
@@ -490,6 +499,12 @@ export function scoreCommand(argv: string[]): number {
       claim = claim.replaceAll(wrong, right);
       failureMode = failureMode.replaceAll(wrong, right);
       evidence = evidence.map((item) => item.replaceAll(wrong, right));
+    }
+    // Only what the verifier confirmed is stated: a sub-claim it refuted or
+    // could not trace goes, so the editor never renders it (#451).
+    if (narrowed) {
+      claim = verification?.narrowedClaim ?? claim;
+      failureMode = verification?.narrowedFailureMode ?? failureMode;
     }
     return { ...candidate, claim, failureMode, evidence };
   });
@@ -1024,6 +1039,8 @@ export function scoreCommand(argv: string[]): number {
               // More instances of the same defect than the candidate listed.
               // The verifier used to reject a true finding for them (#388).
               ...((verifications.get(c.candidateId)?.alsoAt?.length ?? 0) > 0 ? { alsoAt: verifications.get(c.candidateId)!.alsoAt } : {}),
+              // The analyst's own wording, kept for explain; the claim above is the verifier's.
+              ...(restated.has(c.candidateId) ? { restatedByVerifier: restated.get(c.candidateId) } : {}),
             };
           }),
           belowGate: belowGate.map(withSnakeCaseId),
