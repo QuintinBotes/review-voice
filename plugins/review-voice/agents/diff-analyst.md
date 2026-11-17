@@ -580,6 +580,11 @@ on a `+` line, or on the right-side line where removed code used to be. It is
 never a line number within `diff.patch`, and never an unchanged context line -
 the one exception is a stale consumer, below.
 
+A comment or reference the change left stale by removing what it described -
+the comment above a deleted config entry, now sitting over the next one - is
+anchored on the deletion site, the right-side line where the removed code was,
+not on the unchanged comment line (#449).
+
 When a changed line breaks a consumer, anchor the finding on the changed line
 that breaks it whenever the point can be made there. Name the consumer and its
 path in both `claim` and `evidence`.

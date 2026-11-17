@@ -56,6 +56,8 @@ export interface AnchorCheck {
    * diff. An added line or deletion site means it was never a stale consumer.
    */
   consumerKind?: AnchorKind;
+  /** Of `nearest`, the lines where the change removed code: each is a valid anchor (#449). */
+  nearestDeletionSites?: number[];
 }
 
 interface ActiveHunk {
@@ -353,12 +355,15 @@ export function classifyAnchor(hunks: Map<string, FileHunks>, path: string, line
         ? 'context'
         : 'outside-hunk';
 
+  const nearest = changedLines(file, line);
+  const nearestDeletionSites = nearest.filter((at) => file.deletionSites.has(at) && !file.added.has(at));
   return {
     path: normalised,
     line,
     kind,
     ok: kind === 'added' || kind === 'deletion-site',
-    nearest: changedLines(file, line),
+    nearest,
+    ...(nearestDeletionSites.length > 0 ? { nearestDeletionSites } : {}),
     patchLine,
     beyondHunks: file.ranges.length > 0 && file.ranges.every((range) => line > range.end),
   };
@@ -470,6 +475,15 @@ export function reason(anchor: AnchorCheck): string {
     rendered += anchor.nearest.length === 1
       ? `; the nearest changed line is ${anchor.nearest[0]}`
       : `; the nearest changed lines are ${anchor.nearest.join(', ')}`;
+  }
+  // A line left stale by a pure deletion has no added line to move to, and
+  // read as a dead end; the deletion site is the anchor it needs (#449).
+  const sites = anchor.nearestDeletionSites ?? [];
+  if (!anchor.ok && anchor.kind === 'context' && sites.length > 0 && anchor.patchLine === null) {
+    return (
+      `${rendered}; line ${sites[0]} is where the change removed code, which is a valid anchor: re-anchor the finding ` +
+      `there, or keep this line with anchor "stale-consumer" and caused_by ${path}:${sites[0]}.`
+    );
   }
   if (!anchor.ok && anchor.patchLine !== null && anchor.patchLine.path === path) {
     return `${rendered}; line ${line} of diff.patch is line ${anchor.patchLine.line} of ${path}; use line ${anchor.patchLine.line} (or pass --apply-patch-lines).`;
