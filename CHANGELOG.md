@@ -5,6 +5,74 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.27.0] - 2026-11-18
+
+### Added
+
+- The evidence-verifier may return `narrowed_claim` and
+  `narrowed_failure_mode` when only part of a claim holds. `score` carries the
+  narrowed text into `eligible[]` (as `restatedByVerifier`, after any
+  corrections), and `challenge` shows the challenger the narrowed text, so a
+  refuted or untraced sub-claim is not posted. (#456, closes #451)
+
+- `check-intent --summary <path>` writes `{ valid, dropped, widened, kept,
+  removed }` as JSON, so a caller can tell whether intent reuse dropped
+  anything without parsing stderr. (#456, closes #454)
+
+### Fixed
+
+- `check-candidates` collects every malformed field of every candidate,
+  including an unknown `severity`, and prints them all, so one analyst re-run
+  fixes them together. (#456, closes #452)
+
+- An `outside-hunk` anchor whose number is a line of `diff.patch` that maps to
+  an unchanged file line now says so, and that `line` is a file line, not a
+  patch line. (#456, closes #453)
+
+- `post` looks up a stale request-changes review only when the verdict is not
+  an approval that will post. (#456, closes #455)
+
+- `check-verification --candidates` runs the same correction check as `score`:
+  a `wrong` that is not in the candidate's claim, failure mode or evidence
+  exits 2 with the candidate id, the correction and the nearest sentence, while
+  the verifier can still be re-asked. Both commands match ignoring case and
+  whitespace breaks; a dropped or changed word still fails. (#459, closes #457)
+
+- `contradictions` must be a list of strings. A `{wrong, right}` entry is
+  refused with a pointer to `corrections`, the schema types the field, and the
+  evidence-verifier instructions show one example of each side by side.
+  (#459, closes #458)
+
+- `check-verification` and `score` apply chained corrections the same way,
+  through one shared routine: each correction matches the text the earlier
+  ones left. (#462, closes #461)
+
+- The absence check matches the absent name as a whole identifier, so
+  `__future` is no longer found inside `__future__`. On a working-tree search,
+  a hit on the finding's own anchor does not count when the diff shows that
+  line was added. (#448, closes #447)
+
+- A context anchor whose nearest change is a pure deletion is refused with a
+  pointer to the deletion site, which is a valid anchor, or to the
+  `stale-consumer` form. (#450, closes #449)
+
+- `check-intent` reads each cell of a Markdown table row as its own unit, as
+  it reads a list item; a quote spanning two cells is still refused. The
+  analyst files a weakened sandbox, confinement or isolation boundary as
+  `security`, even when the change was made for robustness. (#443, closes
+  #441, #442)
+
+- `score --severity <id>=question` says a question is not a tier and names
+  `--as-question <id>` (plus `--allow-unverifiable --owner-note` for an
+  unverified finding). The review skill names `--as-question` beside
+  `--promote`. (#440, closes #439)
+
+- The head-moved procedure names the full `diff.patch` for `score`,
+  `challenge` and `record` on a carried run, and says not to run
+  `check-candidates` on the merged set. The concise editor keeps a finding's
+  conditional ("would", "if", "when") and keeps an example as an example.
+  (#446, closes #444, #445)
+
 ## [1.26.0] - 2026-11-16
 
 ### Added
