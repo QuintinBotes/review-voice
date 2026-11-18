@@ -270,6 +270,28 @@ export function correctionPattern(wrong: string): RegExp {
 }
 
 /**
+ * A verifier's corrections applied in order, each to the text the earlier ones
+ * left, and every `wrong` that matched nothing. score renders and holds from
+ * it and check-verification refuses from it, so the two cannot disagree on a
+ * correction that targets what an earlier one wrote (#461).
+ */
+export function applyCorrections(
+  texts: string[],
+  fixes: readonly { wrong: string; right: string }[],
+): { texts: string[]; unmatched: string[] } {
+  const unmatched: string[] = [];
+  for (const { wrong, right } of fixes) {
+    const pattern = correctionPattern(wrong);
+    if (!texts.some((text) => text.search(pattern) !== -1)) {
+      unmatched.push(wrong);
+      continue;
+    }
+    texts = texts.map((text) => text.replace(pattern, () => right));
+  }
+  return { texts, unmatched };
+}
+
+/**
  * The first thing wrong with a verifier's entries, or null when they are sound.
  *
  * Hand-written to match schemas/verification.schema.json, because the plugin

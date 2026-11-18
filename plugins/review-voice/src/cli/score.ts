@@ -46,7 +46,7 @@ import {
   boundLists,
   refExists,
   VERDICT_KEYS,
-  correctionPattern,
+  applyCorrections,
   verificationProblem,
   verdictList,
 } from './shared.ts';
@@ -492,16 +492,9 @@ export function scoreCommand(argv: string[]): number {
     restated.set(candidate.candidateId, { claim: candidate.claim, failureMode: candidate.failureMode });
     let { claim, failureMode, evidence } = candidate;
     // A correction names text as the analyst wrote it, so it applies first.
-    for (const { wrong, right } of fixes) {
-      const pattern = correctionPattern(wrong);
-      if (![claim, failureMode, ...evidence].some((text) => text.search(pattern) !== -1)) {
-        uncorrectable.set(candidate.candidateId, wrong);
-        continue;
-      }
-      claim = claim.replace(pattern, () => right);
-      failureMode = failureMode.replace(pattern, () => right);
-      evidence = evidence.map((item) => item.replace(pattern, () => right));
-    }
+    const corrected = applyCorrections([claim, failureMode, ...evidence], fixes);
+    [claim, failureMode, ...evidence] = corrected.texts as [string, string, ...string[]];
+    if (corrected.unmatched.length > 0) uncorrectable.set(candidate.candidateId, corrected.unmatched[0]!);
     // Only what the verifier confirmed is stated: a sub-claim it refuted or
     // could not trace goes, so the editor never renders it (#451).
     if (narrowed) {

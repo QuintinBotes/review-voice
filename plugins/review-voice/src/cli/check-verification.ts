@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs';
-import { readStdin, flag, VERDICT_KEYS, verificationProblem, verdictList, correctionPattern } from './shared.ts';
+import { readStdin, flag, VERDICT_KEYS, verificationProblem, verdictList, applyCorrections } from './shared.ts';
 import { jsonInReply } from '../agents/reply-json.ts';
 import { significantWords } from '../scoring/score.ts';
 
@@ -96,10 +96,9 @@ export function checkVerificationCommand(argv: string[]): number {
       const id = (entry as { candidate_id?: unknown }).candidate_id;
       const texts = typeof id === 'string' ? kept.get(id) : undefined;
       if (texts === undefined) continue;
-      for (const { wrong } of (entry['corrections'] as { wrong: string }[] | undefined) ?? []) {
-        const pattern = correctionPattern(wrong);
-        if (texts.some((text) => text.search(pattern) !== -1)) continue;
-        const near = nearestSentence(texts, wrong);
+      const corrected = applyCorrections(texts, (entry['corrections'] as { wrong: string; right: string }[] | undefined) ?? []);
+      for (const wrong of corrected.unmatched) {
+        const near = nearestSentence(corrected.texts, wrong);
         unmatched.push(
           `${String(id)}: the correction's wrong ${JSON.stringify(wrong)} is not in the candidate's claim, failure mode or evidence` +
             (near === null ? '.' : `; the nearest sentence is ${JSON.stringify(near)}.`),
