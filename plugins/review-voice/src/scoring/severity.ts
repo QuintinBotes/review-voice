@@ -198,6 +198,14 @@ export function canonicalCategory(category: string): string {
   return LEGACY_BY_CATEGORY[normalised] !== undefined ? normalised : (ALIASES[normalised] ?? normalised);
 }
 
+/** The categories the severity table maps, as finding-category.schema.json lists them. */
+export const MAPPED_CATEGORIES: readonly string[] = Object.keys(LEGACY_BY_CATEGORY);
+
+/** Whether the severity table maps this category, directly or through an alias. */
+export function isMappedCategory(category: string): boolean {
+  return LEGACY_BY_CATEGORY[canonicalCategory(category)] !== undefined;
+}
+
 /**
  * How far derivation may move a finding from what the analyst asked for.
  *
@@ -330,6 +338,16 @@ export function deriveSeverity(
 
   const legacy = LEGACY_BY_CATEGORY[resolved];
   if (legacy === undefined) {
+    // Never above the analyst's own tier: a word the table cannot read is no
+    // evidence for raising a requested nit (#464).
+    if (requested === 'nit') {
+      return {
+        severity: 'nit',
+        requested,
+        reach: reach ?? null,
+        reason: `category ${category} has no mapping, so the requested nit is kept rather than a guess`,
+      };
+    }
     return {
       severity: 'minor',
       requested,

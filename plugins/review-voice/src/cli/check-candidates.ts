@@ -8,6 +8,7 @@ import { carryFindings, CarryError } from '../diff/carry.ts';
 import { DIFF_LANE, laneNamed } from '../review/lanes.ts';
 import { repositoryRoot } from '../diff/acquire.ts';
 import type { EvidenceSignal } from '../evidence/types.ts';
+import { isMappedCategory, MAPPED_CATEGORIES } from '../scoring/severity.ts';
 import {
   alreadySaidOnThread,
   citedLocations,
@@ -286,7 +287,16 @@ export function checkCandidatesCommand(argv: string[]): number {
     const malformed: string[] = [];
     const candidates = raw.flatMap((candidate, index) => {
       try {
-        return [normaliseCandidate(candidate as RawCandidate, index)];
+        const normalised = normaliseCandidate(candidate as RawCandidate, index);
+        // score reads an unmapped category as the middle tier, a guess (#464).
+        if (!isMappedCategory(normalised.category)) {
+          malformed.push(
+            `${normalised.candidateId}: category ${JSON.stringify(normalised.category)} is not one score maps to a tier; ` +
+              `use one of ${MAPPED_CATEGORIES.join(', ')}`,
+          );
+          return [];
+        }
+        return [normalised];
       } catch (error) {
         if (!(error instanceof MalformedCandidate)) throw error;
         malformed.push(error.message);

@@ -124,6 +124,7 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
     body: lines(
       'review-voice check-candidates [flags]',
       '  Validate analyst output against the candidate schema.',
+      '  A category outside finding-category.schema.json (or an alias of one) is refused.',
       '',
       'Flags:',
       '  --diff-file <path>     Require anchors on changed lines, and a suggested_patch to replace',

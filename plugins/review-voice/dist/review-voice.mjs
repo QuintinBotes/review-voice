@@ -8465,6 +8465,10 @@ function canonicalCategory(category) {
   const normalised2 = category.trim().toLowerCase().replace(/[\s-]+/g, "_");
   return LEGACY_BY_CATEGORY[normalised2] !== void 0 ? normalised2 : ALIASES[normalised2] ?? normalised2;
 }
+var MAPPED_CATEGORIES = Object.keys(LEGACY_BY_CATEGORY);
+function isMappedCategory(category) {
+  return LEGACY_BY_CATEGORY[canonicalCategory(category)] !== void 0;
+}
 var MAX_TIER_MOVEMENT = 1;
 function boundToRequest(derived, requested, reach, reason2) {
   const asked = SEVERITIES.indexOf(requested);
@@ -8515,6 +8519,14 @@ function deriveSeverity(category, requested, reach = null) {
   const resolved = canonicalCategory(category);
   const legacy = LEGACY_BY_CATEGORY[resolved];
   if (legacy === void 0) {
+    if (requested === "nit") {
+      return {
+        severity: "nit",
+        requested,
+        reach: reach ?? null,
+        reason: `category ${category} has no mapping, so the requested nit is kept rather than a guess`
+      };
+    }
     return {
       severity: "minor",
       requested,
@@ -20124,6 +20136,7 @@ var COMMAND_HELP = {
     body: lines(
       "review-voice check-candidates [flags]",
       "  Validate analyst output against the candidate schema.",
+      "  A category outside finding-category.schema.json (or an alias of one) is refused.",
       "",
       "Flags:",
       "  --diff-file <path>     Require anchors on changed lines, and a suggested_patch to replace",
@@ -33904,7 +33917,14 @@ function checkCandidatesCommand(argv) {
     const malformed = [];
     const candidates = raw.flatMap((candidate, index) => {
       try {
-        return [normaliseCandidate(candidate, index)];
+        const normalised2 = normaliseCandidate(candidate, index);
+        if (!isMappedCategory(normalised2.category)) {
+          malformed.push(
+            `${normalised2.candidateId}: category ${JSON.stringify(normalised2.category)} is not one score maps to a tier; use one of ${MAPPED_CATEGORIES.join(", ")}`
+          );
+          return [];
+        }
+        return [normalised2];
       } catch (error) {
         if (!(error instanceof MalformedCandidate)) throw error;
         malformed.push(error.message);
