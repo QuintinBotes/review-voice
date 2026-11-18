@@ -46,6 +46,7 @@ import {
   boundLists,
   refExists,
   VERDICT_KEYS,
+  correctionPattern,
   verificationProblem,
   verdictList,
 } from './shared.ts';
@@ -492,13 +493,14 @@ export function scoreCommand(argv: string[]): number {
     let { claim, failureMode, evidence } = candidate;
     // A correction names text as the analyst wrote it, so it applies first.
     for (const { wrong, right } of fixes) {
-      if (![claim, failureMode, ...evidence].some((text) => text.includes(wrong))) {
+      const pattern = correctionPattern(wrong);
+      if (![claim, failureMode, ...evidence].some((text) => text.search(pattern) !== -1)) {
         uncorrectable.set(candidate.candidateId, wrong);
         continue;
       }
-      claim = claim.replaceAll(wrong, right);
-      failureMode = failureMode.replaceAll(wrong, right);
-      evidence = evidence.map((item) => item.replaceAll(wrong, right));
+      claim = claim.replace(pattern, () => right);
+      failureMode = failureMode.replace(pattern, () => right);
+      evidence = evidence.map((item) => item.replace(pattern, () => right));
     }
     // Only what the verifier confirmed is stated: a sub-claim it refuted or
     // could not trace goes, so the editor never renders it (#451).

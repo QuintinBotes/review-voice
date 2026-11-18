@@ -261,6 +261,15 @@ export function refExists(ref: string, cwd: string): boolean {
 export const VERDICT_KEYS = ['results', 'verifications', 'verdicts', 'candidates'] as const;
 
 /**
+ * Where a correction's `wrong` text sits in a candidate's text, ignoring case
+ * and how whitespace breaks: a capital letter or a line break is not a
+ * different quote, a changed word is (#457). Global, for replacing.
+ */
+export function correctionPattern(wrong: string): RegExp {
+  return new RegExp(wrong.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+'), 'gi');
+}
+
+/**
  * The first thing wrong with a verifier's entries, or null when they are sound.
  *
  * Hand-written to match schemas/verification.schema.json, because the plugin
@@ -332,6 +341,19 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     };
     if (corrections !== undefined && !(Array.isArray(corrections) && corrections.length <= 10 && corrections.every(correction))) {
       return `${who}: corrections must be a list of at most 10 {"wrong": "<text in the candidate>", "right": "<what it should say>"} objects, each string at most 300 characters.`;
+    }
+    // An object here is read by nothing, so a correction filed here left the
+    // refuted text in the finding (#458).
+    const contradictions = entry['contradictions'];
+    if (contradictions !== undefined && !(Array.isArray(contradictions) && contradictions.every((item) => typeof item === 'string'))) {
+      const item = Array.isArray(contradictions) ? (contradictions.find((each) => typeof each !== 'string') as unknown) : undefined;
+      const moved = typeof item === 'object' && item !== null && 'wrong' in item && 'right' in item;
+      return (
+        `${who}: contradictions must be a list of strings.` +
+        (moved
+          ? ' A {"wrong", "right"} object is a correction: put it in corrections, with wrong copied verbatim from the candidate\'s claim, failure mode or evidence.'
+          : '')
+      );
     }
     const missing = entry['required_context_missing'] ?? entry['requiredContextMissing'];
     if (missing !== undefined && !(Array.isArray(missing) && missing.every(isMissingContext))) {

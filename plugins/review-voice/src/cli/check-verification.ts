@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
-import { readStdin, flag, VERDICT_KEYS, verificationProblem, verdictList } from './shared.ts';
+import { readStdin, flag, VERDICT_KEYS, verificationProblem, verdictList, correctionPattern } from './shared.ts';
 import { jsonInReply } from '../agents/reply-json.ts';
+import { significantWords } from '../scoring/score.ts';
 
 export { jsonInReply };
 
@@ -13,21 +14,37 @@ export { jsonInReply };
  * every earlier stage already spent, and relaunching it then meant a cold
  * start. Failing here costs one re-run of one agent while its context is warm.
  */
-/** Candidate ids from check-candidates output ({kept}), {candidates}, or a bare array. */
-function keptCandidateIds(value: unknown): string[] {
+/** Each candidate's text by id, from check-candidates output ({kept}), {candidates}, or a bare array. */
+function keptCandidates(value: unknown): Map<string, string[]> {
   const record = value as { kept?: unknown; candidates?: unknown } | null;
   const list = Array.isArray(value) ? value : Array.isArray(record?.kept) ? record.kept : Array.isArray(record?.candidates) ? record.candidates : [];
-  return list
-    .map((entry) => (entry as { candidate_id?: unknown } | null)?.candidate_id)
-    .filter((id): id is string => typeof id === 'string');
+  const kept = new Map<string, string[]>();
+  for (const entry of list as Record<string, unknown>[]) {
+    const id = entry?.['candidate_id'];
+    if (typeof id !== 'string') continue;
+    const texts = [entry['claim'], entry['failure_mode'] ?? entry['failureMode'], ...(Array.isArray(entry['evidence']) ? entry['evidence'] : [])];
+    kept.set(id, texts.filter((text): text is string => typeof text === 'string'));
+  }
+  return kept;
+}
+
+/** The sentence of a candidate's text sharing the most words with a correction's `wrong`. */
+function nearestSentence(texts: string[], wrong: string): string | null {
+  const words = significantWords(wrong);
+  let best: { sentence: string; shared: number } | null = null;
+  for (const sentence of texts.flatMap((text) => text.split(/(?<=[.!?])\s+/))) {
+    const shared = [...significantWords(sentence)].filter((word) => words.has(word)).length;
+    if (shared > 0 && (best === null || shared > best.shared)) best = { sentence, shared };
+  }
+  return best?.sentence ?? null;
 }
 
 export function checkVerificationCommand(argv: string[]): number {
   const candidatesFile = flag(argv, '--candidates');
-  let keptIds: string[] | null = null;
+  let kept: Map<string, string[]> | null = null;
   if (candidatesFile !== null) {
     try {
-      keptIds = keptCandidateIds(JSON.parse(readFileSync(candidatesFile, 'utf8')) as unknown);
+      kept = keptCandidates(JSON.parse(readFileSync(candidatesFile, 'utf8')) as unknown);
     } catch (error) {
       console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -64,12 +81,36 @@ export function checkVerificationCommand(argv: string[]): number {
   }
   // A kept candidate the verifier skipped would otherwise score on the analyst's own
   // confidence and read as weighed and held (#165).
-  if (keptIds !== null) {
+  if (kept !== null) {
     const verified = new Set(list.map((entry) => (entry as { candidate_id?: unknown }).candidate_id));
-    const missing = keptIds.filter((id) => !verified.has(id));
+    const missing = [...kept.keys()].filter((id) => !verified.has(id));
     if (missing.length > 0) {
       for (const id of missing) console.error(`No verification for kept candidate ${id}.`);
       console.error('Re-run the evidence-verifier for the missing candidates.');
+      return 2;
+    }
+    // score holds a finding whose correction matches nothing; here the
+    // verifier can still be asked to quote it (#457).
+    const unmatched: string[] = [];
+    for (const entry of list) {
+      const id = (entry as { candidate_id?: unknown }).candidate_id;
+      const texts = typeof id === 'string' ? kept.get(id) : undefined;
+      if (texts === undefined) continue;
+      for (const { wrong } of (entry['corrections'] as { wrong: string }[] | undefined) ?? []) {
+        const pattern = correctionPattern(wrong);
+        if (texts.some((text) => text.search(pattern) !== -1)) continue;
+        const near = nearestSentence(texts, wrong);
+        unmatched.push(
+          `${String(id)}: the correction's wrong ${JSON.stringify(wrong)} is not in the candidate's claim, failure mode or evidence` +
+            (near === null ? '.' : `; the nearest sentence is ${JSON.stringify(near)}.`),
+        );
+      }
+    }
+    if (unmatched.length > 0) {
+      for (const line of unmatched) console.error(line);
+      console.error(
+        'score would hold these findings. Re-run the evidence-verifier with wrong copied verbatim from the candidate, not paraphrased.',
+      );
       return 2;
     }
   }
