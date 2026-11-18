@@ -78,3 +78,32 @@ test('#458: string contradictions still pass', () =>
     const result = run(dir, ['check-verification'], JSON.stringify([{ ...verified, contradictions: ['loadUser is also called from sync.ts.'] }]));
     assert.equal(result.status, 0, result.stderr);
   }));
+
+// #461: a correction may target what an earlier one wrote; both commands apply them in order.
+const chained = [
+  { wrong: 'eleven call sites', right: 'nine call sites' },
+  { wrong: 'nine call sites of loadUser', right: 'nine call sites of loadUserById' },
+];
+
+test('#461: chained corrections pass check-verification and score applies them in order', () =>
+  withDir((dir) => {
+    const checked = checkVerification(dir, { ...verified, corrections: chained });
+    assert.equal(checked.status, 0, checked.stderr);
+    const file = join(dir, 'verification.json');
+    writeFileSync(file, JSON.stringify([{ ...verified, corrections: chained }]));
+    const scored = run(dir, ['score', '--verification', file, '--min-score', '0'], JSON.stringify({ candidates: [candidate] }));
+    assert.equal(scored.status, 0, scored.stderr);
+    assert.equal(JSON.parse(scored.stdout).eligible[0].claim, 'The rename misses nine call sites of loadUserById.');
+  }));
+
+test('#461: the reverse order fails check-verification, as score would hold it', () =>
+  withDir((dir) => {
+    const reversed = [...chained].reverse();
+    const checked = checkVerification(dir, { ...verified, corrections: reversed });
+    assert.equal(checked.status, 2);
+    assert.match(checked.stderr, /cand_001: the correction's wrong "nine call sites of loadUser" is not in the candidate/);
+    const file = join(dir, 'verification.json');
+    writeFileSync(file, JSON.stringify([{ ...verified, corrections: reversed }]));
+    const scored = run(dir, ['score', '--verification', file, '--min-score', '0'], JSON.stringify({ candidates: [candidate] }));
+    assert.deepEqual(JSON.parse(scored.stdout).eligible, []);
+  }));

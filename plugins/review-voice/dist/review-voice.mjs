@@ -25134,6 +25134,18 @@ var VERDICT_KEYS = ["results", "verifications", "verdicts", "candidates"];
 function correctionPattern(wrong) {
   return new RegExp(wrong.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+"), "gi");
 }
+function applyCorrections(texts, fixes) {
+  const unmatched = [];
+  for (const { wrong, right } of fixes) {
+    const pattern = correctionPattern(wrong);
+    if (!texts.some((text5) => text5.search(pattern) !== -1)) {
+      unmatched.push(wrong);
+      continue;
+    }
+    texts = texts.map((text5) => text5.replace(pattern, () => right));
+  }
+  return { texts, unmatched };
+}
 function verificationProblem(list3) {
   for (const [index, raw] of list3.entries()) {
     const entry = typeof raw === "object" && raw !== null ? raw : {};
@@ -31612,10 +31624,9 @@ function checkVerificationCommand(argv) {
       const id = entry.candidate_id;
       const texts = typeof id === "string" ? kept.get(id) : void 0;
       if (texts === void 0) continue;
-      for (const { wrong } of entry["corrections"] ?? []) {
-        const pattern = correctionPattern(wrong);
-        if (texts.some((text5) => text5.search(pattern) !== -1)) continue;
-        const near = nearestSentence(texts, wrong);
+      const corrected = applyCorrections(texts, entry["corrections"] ?? []);
+      for (const wrong of corrected.unmatched) {
+        const near = nearestSentence(corrected.texts, wrong);
         unmatched.push(
           `${String(id)}: the correction's wrong ${JSON.stringify(wrong)} is not in the candidate's claim, failure mode or evidence` + (near === null ? "." : `; the nearest sentence is ${JSON.stringify(near)}.`)
         );
@@ -33340,16 +33351,9 @@ function scoreCommand(argv) {
     if (fixes.length === 0 && !narrowed) return candidate;
     restated.set(candidate.candidateId, { claim: candidate.claim, failureMode: candidate.failureMode });
     let { claim, failureMode, evidence } = candidate;
-    for (const { wrong, right } of fixes) {
-      const pattern = correctionPattern(wrong);
-      if (![claim, failureMode, ...evidence].some((text5) => text5.search(pattern) !== -1)) {
-        uncorrectable.set(candidate.candidateId, wrong);
-        continue;
-      }
-      claim = claim.replace(pattern, () => right);
-      failureMode = failureMode.replace(pattern, () => right);
-      evidence = evidence.map((item) => item.replace(pattern, () => right));
-    }
+    const corrected = applyCorrections([claim, failureMode, ...evidence], fixes);
+    [claim, failureMode, ...evidence] = corrected.texts;
+    if (corrected.unmatched.length > 0) uncorrectable.set(candidate.candidateId, corrected.unmatched[0]);
     if (narrowed) {
       claim = verification2?.narrowedClaim ?? claim;
       failureMode = verification2?.narrowedFailureMode ?? failureMode;
