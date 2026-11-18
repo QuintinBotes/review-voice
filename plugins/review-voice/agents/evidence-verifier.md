@@ -380,8 +380,17 @@ posted, so they can supply it and run the review again.
 candidate states a detail wrongly - eleven call sites where there are nine, the
 wrong function name, a line that moved - verify it and add
 `"corrections": [{"wrong": "eleven call sites", "right": "nine call sites"}]`.
-`wrong` is the exact text as the candidate's claim, failure mode or evidence
-writes it; `score` replaces it before the finding is rendered, so a correction
+`wrong` is copied verbatim from the candidate's claim, failure mode or
+evidence, never paraphrased: a dropped or changed word matches nothing, and
+`check-verification` refuses it. `contradictions` is a different field, a list
+of sentences, and nothing reads a correction there:
+
+```json
+"contradictions": ["loadUser is also called from src/jobs/sync.ts:12, which the rename updates."],
+"corrections": [{"wrong": "eleven call sites", "right": "nine call sites"}]
+```
+
+`score` replaces `wrong` before the finding is rendered, so a correction
 left only in your `reason` is posted wrong. A `wrong` that is not in the
 candidate's text holds the finding. Reject the candidate instead when the
 wrong detail is what the claim rests on.

@@ -20157,7 +20157,9 @@ var COMMAND_HELP = {
       '  also_at, when present, is a list of at most 10 "path:line" references.',
       "  Use verified and technical_confidence; verdict and confidence belong to the second pass.",
       "  --candidates  check-candidates output (or a candidates array); refuses output that",
-      "                skips a kept candidate, so the verifier can be re-asked for it.",
+      "                skips a kept candidate, or whose correction quotes text the candidate does",
+      "                not contain (case and line breaks aside), so the verifier can be re-asked.",
+      "  contradictions, when present, is a list of strings; a {wrong, right} belongs in corrections.",
       "  blocker_confirmed, when present, must be true or false.",
       "  reproduction, when present, is {runner, path, content, expected}, each a non-empty string",
       "  (path and expected up to 300 characters, content up to 65536) and no other field;",
@@ -25129,6 +25131,9 @@ function refExists(ref, cwd) {
   }
 }
 var VERDICT_KEYS = ["results", "verifications", "verdicts", "candidates"];
+function correctionPattern(wrong) {
+  return new RegExp(wrong.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+"), "gi");
+}
 function verificationProblem(list3) {
   for (const [index, raw] of list3.entries()) {
     const entry = typeof raw === "object" && raw !== null ? raw : {};
@@ -25178,6 +25183,12 @@ function verificationProblem(list3) {
     };
     if (corrections !== void 0 && !(Array.isArray(corrections) && corrections.length <= 10 && corrections.every(correction))) {
       return `${who}: corrections must be a list of at most 10 {"wrong": "<text in the candidate>", "right": "<what it should say>"} objects, each string at most 300 characters.`;
+    }
+    const contradictions = entry["contradictions"];
+    if (contradictions !== void 0 && !(Array.isArray(contradictions) && contradictions.every((item) => typeof item === "string"))) {
+      const item = Array.isArray(contradictions) ? contradictions.find((each) => typeof each !== "string") : void 0;
+      const moved = typeof item === "object" && item !== null && "wrong" in item && "right" in item;
+      return `${who}: contradictions must be a list of strings.` + (moved ? ` A {"wrong", "right"} object is a correction: put it in corrections, with wrong copied verbatim from the candidate's claim, failure mode or evidence.` : "");
     }
     const missing = entry["required_context_missing"] ?? entry["requiredContextMissing"];
     if (missing !== void 0 && !(Array.isArray(missing) && missing.every(isMissingContext))) {
@@ -31529,17 +31540,33 @@ async function replyCommand(argv) {
 
 // plugins/review-voice/src/cli/check-verification.ts
 import { readFileSync as readFileSync30, writeFileSync as writeFileSync18 } from "node:fs";
-function keptCandidateIds(value) {
+function keptCandidates(value) {
   const record3 = value;
   const list3 = Array.isArray(value) ? value : Array.isArray(record3?.kept) ? record3.kept : Array.isArray(record3?.candidates) ? record3.candidates : [];
-  return list3.map((entry) => entry?.candidate_id).filter((id) => typeof id === "string");
+  const kept = /* @__PURE__ */ new Map();
+  for (const entry of list3) {
+    const id = entry?.["candidate_id"];
+    if (typeof id !== "string") continue;
+    const texts = [entry["claim"], entry["failure_mode"] ?? entry["failureMode"], ...Array.isArray(entry["evidence"]) ? entry["evidence"] : []];
+    kept.set(id, texts.filter((text5) => typeof text5 === "string"));
+  }
+  return kept;
+}
+function nearestSentence(texts, wrong) {
+  const words = significantWords(wrong);
+  let best = null;
+  for (const sentence of texts.flatMap((text5) => text5.split(/(?<=[.!?])\s+/))) {
+    const shared = [...significantWords(sentence)].filter((word) => words.has(word)).length;
+    if (shared > 0 && (best === null || shared > best.shared)) best = { sentence, shared };
+  }
+  return best?.sentence ?? null;
 }
 function checkVerificationCommand(argv) {
   const candidatesFile = flag(argv, "--candidates");
-  let keptIds = null;
+  let kept = null;
   if (candidatesFile !== null) {
     try {
-      keptIds = keptCandidateIds(JSON.parse(readFileSync30(candidatesFile, "utf8")));
+      kept = keptCandidates(JSON.parse(readFileSync30(candidatesFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -31572,12 +31599,33 @@ function checkVerificationCommand(argv) {
     console.error("Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.");
     return 2;
   }
-  if (keptIds !== null) {
+  if (kept !== null) {
     const verified = new Set(list3.map((entry) => entry.candidate_id));
-    const missing = keptIds.filter((id) => !verified.has(id));
+    const missing = [...kept.keys()].filter((id) => !verified.has(id));
     if (missing.length > 0) {
       for (const id of missing) console.error(`No verification for kept candidate ${id}.`);
       console.error("Re-run the evidence-verifier for the missing candidates.");
+      return 2;
+    }
+    const unmatched = [];
+    for (const entry of list3) {
+      const id = entry.candidate_id;
+      const texts = typeof id === "string" ? kept.get(id) : void 0;
+      if (texts === void 0) continue;
+      for (const { wrong } of entry["corrections"] ?? []) {
+        const pattern = correctionPattern(wrong);
+        if (texts.some((text5) => text5.search(pattern) !== -1)) continue;
+        const near = nearestSentence(texts, wrong);
+        unmatched.push(
+          `${String(id)}: the correction's wrong ${JSON.stringify(wrong)} is not in the candidate's claim, failure mode or evidence` + (near === null ? "." : `; the nearest sentence is ${JSON.stringify(near)}.`)
+        );
+      }
+    }
+    if (unmatched.length > 0) {
+      for (const line3 of unmatched) console.error(line3);
+      console.error(
+        "score would hold these findings. Re-run the evidence-verifier with wrong copied verbatim from the candidate, not paraphrased."
+      );
       return 2;
     }
   }
@@ -33293,13 +33341,14 @@ function scoreCommand(argv) {
     restated.set(candidate.candidateId, { claim: candidate.claim, failureMode: candidate.failureMode });
     let { claim, failureMode, evidence } = candidate;
     for (const { wrong, right } of fixes) {
-      if (![claim, failureMode, ...evidence].some((text5) => text5.includes(wrong))) {
+      const pattern = correctionPattern(wrong);
+      if (![claim, failureMode, ...evidence].some((text5) => text5.search(pattern) !== -1)) {
         uncorrectable.set(candidate.candidateId, wrong);
         continue;
       }
-      claim = claim.replaceAll(wrong, right);
-      failureMode = failureMode.replaceAll(wrong, right);
-      evidence = evidence.map((item) => item.replaceAll(wrong, right));
+      claim = claim.replace(pattern, () => right);
+      failureMode = failureMode.replace(pattern, () => right);
+      evidence = evidence.map((item) => item.replace(pattern, () => right));
     }
     if (narrowed) {
       claim = verification2?.narrowedClaim ?? claim;

@@ -656,8 +656,10 @@ A reply with prose or a code fence around its JSON is read for the JSON alone
 (`{"verifications": [...]}` or a bare array of the entries), and `--out` writes
 that JSON, so never strip a reply by hand. It runs the checks
 `score` runs on the same file and names the entry and field it refuses, such as
-an `evidence_quality` outside `high`, `medium` and `low`, or a kept candidate the
-verifier returned no entry for. If it
+an `evidence_quality` outside `high`, `medium` and `low`, a kept candidate the
+verifier returned no entry for, a correction whose `wrong` the candidate does
+not contain (with the nearest sentence, to quote instead), or a `{wrong, right}`
+filed under `contradictions`. If it
 exits 2, **relaunch the verifier once with the schema restated**, while its
 context is still warm, and do not translate its output by hand. If the second
 attempt is also malformed, say so and stop. The evidence verifier writes

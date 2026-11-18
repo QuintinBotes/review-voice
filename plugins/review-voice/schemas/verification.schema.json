@@ -78,6 +78,11 @@
       "maxLength": 600,
       "description": "With or without narrowed_claim: the failure mode restated with only the consequence you traced."
     },
+    "contradictions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "What the code shows against the claim, each as a sentence. Not read by score: a detail the candidate states wrongly goes in corrections, and a part of the claim that does not hold in narrowed_claim."
+    },
     "corrections": {
       "type": "array",
       "maxItems": 10,
@@ -90,7 +95,7 @@
           "right": { "type": "string", "maxLength": 300 }
         }
       },
-      "description": "On a verified candidate: a factual detail its claim, failure mode or evidence gets wrong (a count, a name, a line), as the exact text it uses and what it should say. score replaces it before the finding is rendered; a wrong text that is not in the candidate holds the finding."
+      "description": "On a verified candidate: a factual detail its claim, failure mode or evidence gets wrong (a count, a name, a line), as the exact text it uses, copied verbatim, and what it should say. score replaces it before the finding is rendered; a wrong text that is not in the candidate holds the finding."
     },
     "also_at": {
       "type": "array",
