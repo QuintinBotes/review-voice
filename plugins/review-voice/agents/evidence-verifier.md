@@ -380,11 +380,16 @@ posted, so they can supply it and run the review again.
 candidate states a detail wrongly - eleven call sites where there are nine, the
 wrong function name, a line that moved - verify it and add
 `"corrections": [{"wrong": "eleven call sites", "right": "nine call sites"}]`.
-`wrong` is the exact text as the candidate's claim, failure mode or evidence
-writes it; `score` replaces it before the finding is rendered, so a correction
+`wrong` is copied verbatim from the candidate text, never paraphrased: the
+exact text as the candidate's claim, failure mode or evidence writes it;
+`score` replaces it before the finding is rendered, so a correction
 left only in your `reason` is posted wrong. A `wrong` that is not in the
 candidate's text holds the finding. Reject the candidate instead when the
 wrong detail is what the claim rests on.
+
+A contradiction is a plain statement of what you found instead, not a
+correction: `"contradictions": ["loadUser has nine call sites, not eleven"]`
+next to `"corrections": [{"wrong": "eleven call sites", "right": "nine call sites"}]`.
 
 **Part of the claim holds.** When you verify a candidate but refute part of
 its claim or failure mode, or cannot trace part of it - one of three cases is

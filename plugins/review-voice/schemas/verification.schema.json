@@ -92,6 +92,11 @@
       },
       "description": "On a verified candidate: a factual detail its claim, failure mode or evidence gets wrong (a count, a name, a line), as the exact text it uses and what it should say. score replaces it before the finding is rendered; a wrong text that is not in the candidate holds the finding."
     },
+    "contradictions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "What the verifier found that contradicts the candidate, each a plain statement. A {wrong, right} detail belongs in corrections, not here."
+    },
     "also_at": {
       "type": "array",
       "items": { "type": "string", "pattern": "^\\S(.*\\S)?:[0-9]+(-[0-9]+)?$" },

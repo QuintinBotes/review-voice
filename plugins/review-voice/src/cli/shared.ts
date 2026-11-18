@@ -261,6 +261,45 @@ export function refExists(ref: string, cwd: string): boolean {
 export const VERDICT_KEYS = ['results', 'verifications', 'verdicts', 'candidates'] as const;
 
 /**
+ * Whether a correction's `wrong` text appears verbatim in the candidate's
+ * claim, failure mode or one evidence entry.
+ *
+ * Shared by `score`, which holds a finding it cannot apply, and
+ * `check-verification --candidates`, which refuses it while the verifier can
+ * still be re-asked (#457). Exact matching only: a paraphrase, a dropped word
+ * or a case change does not count.
+ */
+export function wrongInCandidate(wrong: string, claim: string, failureMode: string, evidence: readonly string[]): boolean {
+  return [claim, failureMode, ...evidence].some((text) => text.includes(wrong));
+}
+
+/**
+ * Applies a verifier's corrections in order, the way `score` renders them: each
+ * one matches against the text the earlier ones left, so a second correction
+ * may target what the first wrote. Returns the corrected text and every `wrong`
+ * that matched nothing, so `score` and `check-verification` agree on which
+ * corrections apply (#457).
+ */
+export function applyCorrections(
+  text: { claim: string; failureMode: string; evidence: readonly string[] },
+  fixes: readonly { wrong: string; right: string }[],
+): { claim: string; failureMode: string; evidence: string[]; unmatched: string[] } {
+  let { claim, failureMode } = text;
+  let evidence = [...text.evidence];
+  const unmatched: string[] = [];
+  for (const { wrong, right } of fixes) {
+    if (!wrongInCandidate(wrong, claim, failureMode, evidence)) {
+      unmatched.push(wrong);
+      continue;
+    }
+    claim = claim.replaceAll(wrong, right);
+    failureMode = failureMode.replaceAll(wrong, right);
+    evidence = evidence.map((item) => item.replaceAll(wrong, right));
+  }
+  return { claim, failureMode, evidence, unmatched };
+}
+
+/**
  * The first thing wrong with a verifier's entries, or null when they are sound.
  *
  * Hand-written to match schemas/verification.schema.json, because the plugin
@@ -332,6 +371,23 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     };
     if (corrections !== undefined && !(Array.isArray(corrections) && corrections.length <= 10 && corrections.every(correction))) {
       return `${who}: corrections must be a list of at most 10 {"wrong": "<text in the candidate>", "right": "<what it should say>"} objects, each string at most 300 characters.`;
+    }
+    // A {wrong, right} object here is a correction in the wrong field; saying
+    // so costs one relaunch instead of a silently ignored fix (#458).
+    const contradictions = entry['contradictions'];
+    if (contradictions !== undefined) {
+      if (!Array.isArray(contradictions)) return `${who}: contradictions must be a list of strings.`;
+      for (const [itemIndex, item] of contradictions.entries()) {
+        if (typeof item === 'string') continue;
+        const shaped = item as Record<string, unknown> | null;
+        if (
+          typeof shaped === 'object' && shaped !== null && !Array.isArray(shaped) &&
+          Object.hasOwn(shaped, 'wrong') && Object.hasOwn(shaped, 'right')
+        ) {
+          return `${who}: contradictions entry ${itemIndex} is a {"wrong", "right"} object; it belongs in corrections, not contradictions. contradictions entries are plain strings.`;
+        }
+        return `${who}: contradictions entry ${itemIndex} must be a string, not ${JSON.stringify(item)}.`;
+      }
     }
     const missing = entry['required_context_missing'] ?? entry['requiredContextMissing'];
     if (missing !== undefined && !(Array.isArray(missing) && missing.every(isMissingContext))) {

@@ -25129,6 +25129,24 @@ function refExists(ref, cwd) {
   }
 }
 var VERDICT_KEYS = ["results", "verifications", "verdicts", "candidates"];
+function wrongInCandidate(wrong, claim, failureMode, evidence) {
+  return [claim, failureMode, ...evidence].some((text5) => text5.includes(wrong));
+}
+function applyCorrections(text5, fixes) {
+  let { claim, failureMode } = text5;
+  let evidence = [...text5.evidence];
+  const unmatched = [];
+  for (const { wrong, right } of fixes) {
+    if (!wrongInCandidate(wrong, claim, failureMode, evidence)) {
+      unmatched.push(wrong);
+      continue;
+    }
+    claim = claim.replaceAll(wrong, right);
+    failureMode = failureMode.replaceAll(wrong, right);
+    evidence = evidence.map((item) => item.replaceAll(wrong, right));
+  }
+  return { claim, failureMode, evidence, unmatched };
+}
 function verificationProblem(list3) {
   for (const [index, raw] of list3.entries()) {
     const entry = typeof raw === "object" && raw !== null ? raw : {};
@@ -25178,6 +25196,18 @@ function verificationProblem(list3) {
     };
     if (corrections !== void 0 && !(Array.isArray(corrections) && corrections.length <= 10 && corrections.every(correction))) {
       return `${who}: corrections must be a list of at most 10 {"wrong": "<text in the candidate>", "right": "<what it should say>"} objects, each string at most 300 characters.`;
+    }
+    const contradictions = entry["contradictions"];
+    if (contradictions !== void 0) {
+      if (!Array.isArray(contradictions)) return `${who}: contradictions must be a list of strings.`;
+      for (const [itemIndex, item] of contradictions.entries()) {
+        if (typeof item === "string") continue;
+        const shaped = item;
+        if (typeof shaped === "object" && shaped !== null && !Array.isArray(shaped) && Object.hasOwn(shaped, "wrong") && Object.hasOwn(shaped, "right")) {
+          return `${who}: contradictions entry ${itemIndex} is a {"wrong", "right"} object; it belongs in corrections, not contradictions. contradictions entries are plain strings.`;
+        }
+        return `${who}: contradictions entry ${itemIndex} must be a string, not ${JSON.stringify(item)}.`;
+      }
     }
     const missing = entry["required_context_missing"] ?? entry["requiredContextMissing"];
     if (missing !== void 0 && !(Array.isArray(missing) && missing.every(isMissingContext))) {
@@ -31529,17 +31559,37 @@ async function replyCommand(argv) {
 
 // plugins/review-voice/src/cli/check-verification.ts
 import { readFileSync as readFileSync30, writeFileSync as writeFileSync18 } from "node:fs";
-function keptCandidateIds(value) {
+function candidateEntries(value) {
   const record3 = value;
   const list3 = Array.isArray(value) ? value : Array.isArray(record3?.kept) ? record3.kept : Array.isArray(record3?.candidates) ? record3.candidates : [];
-  return list3.map((entry) => entry?.candidate_id).filter((id) => typeof id === "string");
+  return list3.filter((entry) => typeof entry === "object" && entry !== null);
+}
+function keptCandidateIds(value) {
+  return candidateEntries(value).map((entry) => entry["candidate_id"] ?? entry["candidateId"]).filter((id) => typeof id === "string");
+}
+function candidateTexts(value) {
+  const texts = /* @__PURE__ */ new Map();
+  for (const entry of candidateEntries(value)) {
+    const id = entry["candidate_id"] ?? entry["candidateId"];
+    if (typeof id !== "string") continue;
+    const failure = entry["failure_mode"] ?? entry["failureMode"];
+    texts.set(id, {
+      claim: typeof entry["claim"] === "string" ? entry["claim"] : "",
+      failureMode: typeof failure === "string" ? failure : "",
+      evidence: Array.isArray(entry["evidence"]) ? entry["evidence"].filter((item) => typeof item === "string") : []
+    });
+  }
+  return texts;
 }
 function checkVerificationCommand(argv) {
   const candidatesFile = flag(argv, "--candidates");
   let keptIds = null;
+  let texts = null;
   if (candidatesFile !== null) {
     try {
-      keptIds = keptCandidateIds(JSON.parse(readFileSync30(candidatesFile, "utf8")));
+      const candidates = JSON.parse(readFileSync30(candidatesFile, "utf8"));
+      keptIds = keptCandidateIds(candidates);
+      texts = candidateTexts(candidates);
     } catch (error) {
       console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -31573,11 +31623,33 @@ function checkVerificationCommand(argv) {
     return 2;
   }
   if (keptIds !== null) {
-    const verified = new Set(list3.map((entry) => entry.candidate_id));
+    const verified = new Set(list3.map((entry) => entry["candidate_id"] ?? entry["candidateId"]));
     const missing = keptIds.filter((id) => !verified.has(id));
     if (missing.length > 0) {
       for (const id of missing) console.error(`No verification for kept candidate ${id}.`);
       console.error("Re-run the evidence-verifier for the missing candidates.");
+      return 2;
+    }
+  }
+  if (texts !== null) {
+    const misses = [];
+    for (const entry of list3) {
+      const id = entry["candidate_id"] ?? entry["candidateId"];
+      if (typeof id !== "string") continue;
+      const candidate = texts.get(id);
+      if (candidate === void 0) continue;
+      const fixes = entry["corrections"];
+      if (!Array.isArray(fixes)) continue;
+      const { unmatched } = applyCorrections(candidate, fixes);
+      for (const wrong of unmatched) {
+        misses.push(
+          `${id}: correction ${JSON.stringify(wrong)} is not in the candidate's claim, failure mode or evidence; "wrong" must be copied verbatim from the candidate text.`
+        );
+      }
+    }
+    if (misses.length > 0) {
+      for (const miss of misses) console.error(miss);
+      console.error("Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.");
       return 2;
     }
   }
@@ -33291,16 +33363,11 @@ function scoreCommand(argv) {
     const narrowed = verification2?.verified === true && (verification2.narrowedClaim !== void 0 || verification2.narrowedFailureMode !== void 0);
     if (fixes.length === 0 && !narrowed) return candidate;
     restated.set(candidate.candidateId, { claim: candidate.claim, failureMode: candidate.failureMode });
-    let { claim, failureMode, evidence } = candidate;
-    for (const { wrong, right } of fixes) {
-      if (![claim, failureMode, ...evidence].some((text5) => text5.includes(wrong))) {
-        uncorrectable.set(candidate.candidateId, wrong);
-        continue;
-      }
-      claim = claim.replaceAll(wrong, right);
-      failureMode = failureMode.replaceAll(wrong, right);
-      evidence = evidence.map((item) => item.replaceAll(wrong, right));
-    }
+    const corrected = applyCorrections(candidate, fixes);
+    let { claim, failureMode } = corrected;
+    const { evidence, unmatched } = corrected;
+    const lastUnmatched = unmatched.at(-1);
+    if (lastUnmatched !== void 0) uncorrectable.set(candidate.candidateId, lastUnmatched);
     if (narrowed) {
       claim = verification2?.narrowedClaim ?? claim;
       failureMode = verification2?.narrowedFailureMode ?? failureMode;

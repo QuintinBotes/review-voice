@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs';
-import { readStdin, flag, VERDICT_KEYS, verificationProblem, verdictList } from './shared.ts';
+import { readStdin, flag, VERDICT_KEYS, verificationProblem, verdictList, applyCorrections } from './shared.ts';
 import { jsonInReply } from '../agents/reply-json.ts';
 
 export { jsonInReply };
@@ -13,21 +13,45 @@ export { jsonInReply };
  * every earlier stage already spent, and relaunching it then meant a cold
  * start. Failing here costs one re-run of one agent while its context is warm.
  */
-/** Candidate ids from check-candidates output ({kept}), {candidates}, or a bare array. */
-function keptCandidateIds(value: unknown): string[] {
+/** Candidates from check-candidates output ({kept}), {candidates}, or a bare array. */
+function candidateEntries(value: unknown): Record<string, unknown>[] {
   const record = value as { kept?: unknown; candidates?: unknown } | null;
   const list = Array.isArray(value) ? value : Array.isArray(record?.kept) ? record.kept : Array.isArray(record?.candidates) ? record.candidates : [];
-  return list
-    .map((entry) => (entry as { candidate_id?: unknown } | null)?.candidate_id)
+  return list.filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null);
+}
+
+/** Candidate ids from check-candidates output ({kept}), {candidates}, or a bare array. */
+function keptCandidateIds(value: unknown): string[] {
+  return candidateEntries(value)
+    .map((entry) => entry['candidate_id'] ?? entry['candidateId'])
     .filter((id): id is string => typeof id === 'string');
+}
+
+/** Candidate text by id, for the verbatim correction check (#457). */
+function candidateTexts(value: unknown): Map<string, { claim: string; failureMode: string; evidence: string[] }> {
+  const texts = new Map<string, { claim: string; failureMode: string; evidence: string[] }>();
+  for (const entry of candidateEntries(value)) {
+    const id = entry['candidate_id'] ?? entry['candidateId'];
+    if (typeof id !== 'string') continue;
+    const failure = entry['failure_mode'] ?? entry['failureMode'];
+    texts.set(id, {
+      claim: typeof entry['claim'] === 'string' ? entry['claim'] : '',
+      failureMode: typeof failure === 'string' ? failure : '',
+      evidence: Array.isArray(entry['evidence']) ? entry['evidence'].filter((item): item is string => typeof item === 'string') : [],
+    });
+  }
+  return texts;
 }
 
 export function checkVerificationCommand(argv: string[]): number {
   const candidatesFile = flag(argv, '--candidates');
   let keptIds: string[] | null = null;
+  let texts: Map<string, { claim: string; failureMode: string; evidence: string[] }> | null = null;
   if (candidatesFile !== null) {
     try {
-      keptIds = keptCandidateIds(JSON.parse(readFileSync(candidatesFile, 'utf8')) as unknown);
+      const candidates = JSON.parse(readFileSync(candidatesFile, 'utf8')) as unknown;
+      keptIds = keptCandidateIds(candidates);
+      texts = candidateTexts(candidates);
     } catch (error) {
       console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -65,11 +89,37 @@ export function checkVerificationCommand(argv: string[]): number {
   // A kept candidate the verifier skipped would otherwise score on the analyst's own
   // confidence and read as weighed and held (#165).
   if (keptIds !== null) {
-    const verified = new Set(list.map((entry) => (entry as { candidate_id?: unknown }).candidate_id));
+    const verified = new Set(list.map((entry) => entry['candidate_id'] ?? entry['candidateId']));
     const missing = keptIds.filter((id) => !verified.has(id));
     if (missing.length > 0) {
       for (const id of missing) console.error(`No verification for kept candidate ${id}.`);
       console.error('Re-run the evidence-verifier for the missing candidates.');
+      return 2;
+    }
+  }
+  // The same verbatim check score runs, while the verifier can still fix it:
+  // a correction that matches nothing would hold a confirmed finding (#457).
+  if (texts !== null) {
+    const misses: string[] = [];
+    for (const entry of list) {
+      const id = entry['candidate_id'] ?? entry['candidateId'];
+      if (typeof id !== 'string') continue;
+      const candidate = texts.get(id);
+      if (candidate === undefined) continue;
+      const fixes = entry['corrections'];
+      if (!Array.isArray(fixes)) continue;
+      // verificationProblem has already checked each is a {wrong, right} pair of strings.
+      const { unmatched } = applyCorrections(candidate, fixes as { wrong: string; right: string }[]);
+      for (const wrong of unmatched) {
+        misses.push(
+          `${id}: correction ${JSON.stringify(wrong)} is not in the candidate's claim, failure mode or evidence; ` +
+            '"wrong" must be copied verbatim from the candidate text.',
+        );
+      }
+    }
+    if (misses.length > 0) {
+      for (const miss of misses) console.error(miss);
+      console.error('Re-run the evidence-verifier with the schema restated. Do not hand-translate its output.');
       return 2;
     }
   }
