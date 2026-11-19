@@ -62,7 +62,14 @@ jobs:
         # harness blocks Bash outright, the confinement case cannot run the
         # thing it is testing, and a pass would mean the harness stopped it
         # rather than the agent's declared grant binding.
-        run: claude plugin eval plugins/review-voice --eval-dir evals --trust-plugin --allow-tools Bash
+        # With no key the suite is skipped with a warning, not failed: a red
+        # nightly that is only a missing credential hides a real regression.
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::warning title=Eval skipped::No ANTHROPIC_API_KEY repository secret, so the eval suite did not run."
+            exit 0
+          fi
+          claude plugin eval plugins/review-voice --eval-dir evals --trust-plugin --allow-tools Bash
 
       - name: Upload results
         if: always()
