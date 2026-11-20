@@ -5,6 +5,41 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.0] - 2026-11-20
+
+### Added
+
+- `check-intent --summary` adds `uncovered`: description paragraphs that no
+  kept statement quotes. Headings, short lines, HTML comments, fenced code and
+  tables are skipped, and each description body is split on its own. A caller
+  can reuse an earlier intent only when `dropped` and `uncovered` are both
+  empty. (closes #468)
+
+- `thread.json` carries the pull request `title`, and the intent extractor
+  reads it from there instead of needing it pasted into its prompt. Older
+  thread files without `title` still work. (closes #469)
+
+- `carry` reports `priorVerdict`, the review event this store recorded for
+  the source run's post (null when it was never posted from this machine), and
+  `changeRequestStands`: true when that event was REQUEST_CHANGES, at least one
+  important or blocking finding is carried and nothing was settled or held
+  back; false otherwise; null when `--thread` was not given. (closes #470)
+
+### Fixed
+
+- `record --held` and `carry-candidates --held` accept the raw entries that
+  `check-candidates` (`droppedAsRepeat`, including repeats of unanchored
+  comments) and `score` (`belowGate`, `rejected`) emit, mapping them to
+  repeat, below-gate and refuted held entries before validation. Entries
+  already in held shape are unchanged. (closes #467)
+
+- `check-candidates` refuses a `category` that `score` cannot map, and `score`
+  keeps a requested `nit` for an unmapped category instead of raising it to
+  the middle tier. (#465, closes #464)
+
+- The nightly Eval workflow skips with a warning when no API key is
+  configured, instead of failing every night. (#466)
+
 ## [1.27.0] - 2026-11-18
 
 ### Added
