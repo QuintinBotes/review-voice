@@ -56,3 +56,12 @@ test('a line of several emphasis spans is prose and is still listed', () => {
   const prose = '_First_ and _second_ both matter _now_';
   assert.deepEqual(uncoveredFor(`${covered}\n\n${prose}`), [prose]);
 });
+
+test('an emoji-led line before the last paragraph is prose and is still listed', () => {
+  const prose = '\u{26A0}\u{FE0F} Drops the v1 endpoint; clients must migrate before deploy.';
+  assert.deepEqual(uncoveredFor(`${prose}\n\n${covered}`), [prose]);
+});
+
+test('a footer followed only by a short line or a comment is still the footer', () => {
+  assert.deepEqual(uncoveredFor(`${covered}\n\n\u{1F916} Generated with some tool name\n\nCloses #5\n\n<!-- end -->`), []);
+});

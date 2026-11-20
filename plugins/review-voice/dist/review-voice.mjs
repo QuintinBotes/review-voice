@@ -20237,8 +20237,9 @@ var COMMAND_HELP = {
       "  --thread <path>        thread.json from `thread`, holding the description (required)",
       "  --summary <path>       also write {valid, dropped, widened, kept, removed, uncovered} as JSON, so a caller",
       "                         can tell a dropped statement from a note without reading stderr; uncovered lists",
-      "                         the description paragraphs no kept statement quotes (headings and lines under four",
-      "                         words are left out), so an old intent is reusable only when dropped and uncovered are empty",
+      "                         the description paragraphs no kept statement quotes (headings, lines under four words,",
+      '                         blockquotes, emphasis-only lines, link-only lists and a closing emoji or "Generated with"',
+      "                         footer are left out), so an old intent is reusable only when dropped and uncovered are empty",
       "Reads: the intent-extractor JSON on stdin.",
       "Writes: the normalised intent document on stdout.",
       "Exit codes: 0 valid (possibly with statements dropped), 2 malformed, duplicate ids, none survives, no description, or bad invocation."
@@ -22421,13 +22422,16 @@ function uncoveredParagraphs(descriptions, statements) {
       if (line3.trim() === "") paragraphs.push([]);
       else paragraphs[paragraphs.length - 1]?.push(skip2(line3, at2) ? "" : line3);
     });
-    return paragraphs.map((lines2) => lines2.map((line3) => line3.trim()).filter((line3) => line3.length > 0).join("\n"));
+    const text5 = paragraphs.map((lines2) => lines2.map((line3) => line3.trim()).filter((line3) => line3.length > 0).join("\n")).filter((paragraph) => {
+      const lines2 = paragraph.split("\n").filter((line3) => line3.length > 0);
+      if (lines2.length === 0 || lines2.every((line3) => HEADING.test(line3) || BOILERPLATE_LINE.test(line3))) return false;
+      const words = collapse2(lines2.map((line3) => line3.replace(LIST_OR_HEADING, "")).join(" ")).split(" ").length;
+      return words >= MIN_QUOTE_WORDS;
+    });
+    const last = text5.at(-1);
+    if (last !== void 0 && !last.includes("\n") && FOOTER_LINE.test(last)) text5.pop();
+    return text5;
   }).filter((paragraph) => {
-    const lines2 = paragraph.split("\n").filter((line3) => line3.length > 0);
-    if (lines2.length === 0 || lines2.every((line3) => HEADING.test(line3) || BOILERPLATE_LINE.test(line3))) return false;
-    if (lines2.length === 1 && FOOTER_LINE.test(lines2[0] ?? "")) return false;
-    const words = collapse2(lines2.map((line3) => line3.replace(LIST_OR_HEADING, "")).join(" ")).split(" ").length;
-    if (words < MIN_QUOTE_WORDS) return false;
     const flat = collapse2(paragraph);
     return !quotes.some((quote3) => flat.includes(quote3));
   });

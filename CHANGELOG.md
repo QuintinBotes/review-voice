@@ -22,8 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `check-intent --summary` no longer lists template boilerplate in
   `uncovered`: paragraphs made only of blockquote lines, lines that are one
-  emphasis span, or list items that are a single link, and a one-line footer
-  that starts with an emoji, a flag or "Generated with". Prose that merely
+  emphasis span, or list items that are a single link, and a closing one-line
+  footer that starts with an emoji, a flag or "Generated with". Prose that merely
   contains a link or emphasis is still listed. (closes #471)
 
 ## [1.28.0] - 2026-11-20

@@ -63,6 +63,9 @@ test('record-post makes carry report the posted verdict, once, and refuses bad i
 
     // A failing second insert leaves neither row.
     const db = new DatabaseSync(join(dataDir, 'review-voice.db'));
+    // carry matches the run's posted comments and a dismissal by this id.
+    const sent = db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' AND json_extract(metadata_json, '$.url') = ?`).all(URL);
+    assert.deepEqual(sent.map((row) => JSON.parse(row.metadata_json).reviewId), [900]);
     const count = () => db.prepare(`SELECT COUNT(*) AS n FROM audit_events WHERE json_extract(metadata_json, '$.url') = 'https://github.com/o/r/pull/5#atomic'`).get().n;
     db.exec(`CREATE TRIGGER rv_fail BEFORE INSERT ON audit_events WHEN NEW.action = 'review_post_sent' AND json_extract(NEW.metadata_json, '$.url') LIKE '%#atomic' BEGIN SELECT RAISE(ABORT, 'boom'); END`);
     const failed = rv(['record-post', '--run', run, '--event', 'COMMENT', '--url', 'https://github.com/o/r/pull/5#atomic']);
