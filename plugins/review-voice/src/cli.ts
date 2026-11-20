@@ -39,6 +39,7 @@ import {
 } from './cli/shared.ts';
 import { redactCommand } from './cli/redact.ts';
 import { draftCommand } from './cli/draft.ts';
+import { recordPostCommand } from './cli/record-post.ts';
 import { postCheckCommand } from './cli/post-check.ts';
 import { discoverCommand } from './cli/discover.ts';
 import { evidenceCommand } from './cli/evidence.ts';
@@ -233,6 +234,9 @@ async function dispatch(argv: string[]): Promise<number> {
 
     case 'post':
       return await postCommand(argv.slice(1));
+
+    case 'record-post':
+      return recordPostCommand(argv.slice(1));
 
     case 'post-check':
       return postCheckCommand();

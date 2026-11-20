@@ -20237,8 +20237,9 @@ var COMMAND_HELP = {
       "  --thread <path>        thread.json from `thread`, holding the description (required)",
       "  --summary <path>       also write {valid, dropped, widened, kept, removed, uncovered} as JSON, so a caller",
       "                         can tell a dropped statement from a note without reading stderr; uncovered lists",
-      "                         the description paragraphs no kept statement quotes (headings and lines under four",
-      "                         words are left out), so an old intent is reusable only when dropped and uncovered are empty",
+      "                         the description paragraphs no kept statement quotes (headings, lines under four words,",
+      '                         blockquotes, emphasis-only lines, link-only lists and a closing emoji or "Generated with"',
+      "                         footer are left out), so an old intent is reusable only when dropped and uncovered are empty",
       "Reads: the intent-extractor JSON on stdin.",
       "Writes: the normalised intent document on stdout.",
       "Exit codes: 0 valid (possibly with statements dropped), 2 malformed, duplicate ids, none survives, no description, or bad invocation."
@@ -20869,6 +20870,24 @@ var COMMAND_HELP = {
       "Writes: JSON on stdout. Nothing is sent to GitHub.",
       "Exit codes: 0 ok or carried, 2 refused or bad invocation, 3 the head moved, 4 CI still",
       "  running on an approval, 5 a re-check found CI red, 6 CI needs a rerun."
+    )
+  },
+  "record-post": {
+    summary: "Record a review posted outside `post`",
+    body: lines(
+      "review-voice record-post --run <run-id> --event <EVENT> --url <review url> [--review-id <id>]",
+      "  Record a review sent some other way as the rows `post --confirm` writes, so `carry` reports",
+      "  its verdict. The same run and url twice records nothing.",
+      "",
+      "Flags:",
+      "  --run <run-id>         Recorded run the review was posted for (required)",
+      "  --event <EVENT>        APPROVE, COMMENT or REQUEST_CHANGES (required)",
+      "  --url <url>            The posted review's url (required)",
+      "  --review-id <id>       GitHub's id for the review",
+      "",
+      "Reads: nothing on stdin.",
+      "Writes: JSON on stdout, {run, event, url, recorded}. Adds audit rows to the local database only.",
+      "Exit codes: 0 recorded or already recorded, 2 unknown run, unknown event or missing flag."
     )
   },
   post: {
@@ -22231,6 +22250,8 @@ function lineKinds(lines2) {
   return { fenced, comments };
 }
 var TABLE_ROW = /^\s*\|.*\|\s*$/u;
+var BOILERPLATE_LINE = /^(?:>.*|_[^_]+_|\*[^*]+\*|(?:[-*+]|\d+[.)])\s+\[[^\]]*\]\((?:[^()]|\([^()]*\))*\))$/u;
+var FOOTER_LINE = new RegExp("^(?:\\p{Extended_Pictographic}|\\p{Regional_Indicator}{2}|Generated with\\b)", "u");
 var TABLE_RULE = /^\s*\|(?:\s*:?-{3,}:?\s*\|)+\s*$/u;
 function tableCells(lines2) {
   const { fenced } = lineKinds(lines2);
@@ -22401,12 +22422,16 @@ function uncoveredParagraphs(descriptions, statements) {
       if (line3.trim() === "") paragraphs.push([]);
       else paragraphs[paragraphs.length - 1]?.push(skip2(line3, at2) ? "" : line3);
     });
-    return paragraphs.map((lines2) => lines2.map((line3) => line3.trim()).filter((line3) => line3.length > 0).join("\n"));
+    const text5 = paragraphs.map((lines2) => lines2.map((line3) => line3.trim()).filter((line3) => line3.length > 0).join("\n")).filter((paragraph) => {
+      const lines2 = paragraph.split("\n").filter((line3) => line3.length > 0);
+      if (lines2.length === 0 || lines2.every((line3) => HEADING.test(line3) || BOILERPLATE_LINE.test(line3))) return false;
+      const words = collapse2(lines2.map((line3) => line3.replace(LIST_OR_HEADING, "")).join(" ")).split(" ").length;
+      return words >= MIN_QUOTE_WORDS;
+    });
+    const last = text5.at(-1);
+    if (last !== void 0 && !last.includes("\n") && FOOTER_LINE.test(last)) text5.pop();
+    return text5;
   }).filter((paragraph) => {
-    const lines2 = paragraph.split("\n").filter((line3) => line3.length > 0);
-    if (lines2.length === 0 || lines2.every((line3) => HEADING.test(line3))) return false;
-    const words = collapse2(lines2.map((line3) => line3.replace(LIST_OR_HEADING, "")).join(" ")).split(" ").length;
-    if (words < MIN_QUOTE_WORDS) return false;
     const flat = collapse2(paragraph);
     return !quotes.some((quote3) => flat.includes(quote3));
   });
@@ -25387,6 +25412,60 @@ function draftCommand(argv) {
     console.log(draft.preview);
   }
   return 0;
+}
+
+// plugins/review-voice/src/cli/record-post.ts
+var EVENTS2 = ["APPROVE", "COMMENT", "REQUEST_CHANGES"];
+function recordPostCommand(argv) {
+  const run = flag(argv, "--run");
+  const event = flag(argv, "--event");
+  const url = flag(argv, "--url");
+  const reviewId = flag(argv, "--review-id");
+  if (run === null || url === null || url.trim() === "" || event === null || !EVENTS2.includes(event)) {
+    console.error(`record-post needs --run <id>, --url <review url> and --event ${EVENTS2.join("|")}.`);
+    return 2;
+  }
+  if (reviewId !== null && !/^[1-9]\d*$/u.test(reviewId)) {
+    console.error("record-post --review-id must be a positive integer.");
+    return 2;
+  }
+  const db = openDatabase();
+  try {
+    const detail = runDetail(db, run);
+    if (detail === null) {
+      console.error(`No recorded run ${run}.`);
+      return 2;
+    }
+    if (detail.repository === null || detail.pullNumber === null) {
+      console.error(`Run ${run} has no repository and pull request, so a posted review cannot be recorded for it.`);
+      return 2;
+    }
+    db.exec("BEGIN IMMEDIATE");
+    let known;
+    try {
+      known = db.prepare(`SELECT 1 FROM audit_events WHERE action = 'review_post_attempted' AND json_extract(metadata_json, '$.run') = ? AND json_extract(metadata_json, '$.url') = ?`).get(run, url);
+      if (known === void 0) {
+        const subject = { type: "pull_request", id: `${detail.repository.toLowerCase()}#${detail.pullNumber}` };
+        const attempt = recordAudit(db, "review_post_attempted", subject, { run, event, url, external: true });
+        recordAudit(db, "review_post_sent", subject, {
+          attempt,
+          head: detail.headRef,
+          event,
+          url,
+          external: true,
+          ...reviewId !== null ? { reviewId: Number(reviewId) } : {}
+        });
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    console.log(JSON.stringify({ run, event, url, recorded: known === void 0 }));
+    return 0;
+  } finally {
+    db.close();
+  }
 }
 
 // plugins/review-voice/src/cli/post-check.ts
@@ -34912,6 +34991,8 @@ ${topLevelHelp()}`);
       return await verdictCommand(argv.slice(1));
     case "post":
       return await postCommand(argv.slice(1));
+    case "record-post":
+      return recordPostCommand(argv.slice(1));
     case "post-check":
       return postCheckCommand();
     case "queue":

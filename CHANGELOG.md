@@ -5,6 +5,27 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.0] - 2026-11-20
+
+### Added
+
+- `record-post --run <reviewRunId> --event APPROVE|COMMENT|REQUEST_CHANGES
+  --url <review url> [--review-id <id>]` records a review that was posted
+  outside `post` (for example by an orchestrator through the GitHub API). It
+  writes the same attempted and sent audit rows `post --confirm` writes, in
+  one transaction, so `carry` reports `priorVerdict` and
+  `changeRequestStands` for it. An unknown run or event, a blank url or an
+  invalid review id exits 2; recording the same run and url again is a
+  no-op. (closes #473)
+
+### Fixed
+
+- `check-intent --summary` no longer lists template boilerplate in
+  `uncovered`: paragraphs made only of blockquote lines, lines that are one
+  emphasis span, or list items that are a single link, and a closing one-line
+  footer that starts with an emoji, a flag or "Generated with". Prose that merely
+  contains a link or emphasis is still listed. (closes #471)
+
 ## [1.28.0] - 2026-11-20
 
 ### Added

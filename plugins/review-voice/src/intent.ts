@@ -106,6 +106,10 @@ function lineKinds(lines: string[]): { fenced: Set<number>; comments: Set<number
 }
 
 const TABLE_ROW = /^\s*\|.*\|\s*$/u;
+/** Template and tooling boilerplate that no statement quotes (#471). */
+const BOILERPLATE_LINE =
+  /^(?:>.*|_[^_]+_|\*[^*]+\*|(?:[-*+]|\d+[.)])\s+\[[^\]]*\]\((?:[^()]|\([^()]*\))*\))$/u;
+const FOOTER_LINE = /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator}{2}|Generated with\b)/u;
 const TABLE_RULE = /^\s*\|(?:\s*:?-{3,}:?\s*\|)+\s*$/u;
 
 /**
@@ -381,13 +385,20 @@ export function uncoveredParagraphs(descriptions: readonly string[], statements:
         if (line.trim() === '') paragraphs.push([]);
         else paragraphs[paragraphs.length - 1]?.push(skip(line, at) ? '' : line);
       });
-      return paragraphs.map((lines) => lines.map((line) => line.trim()).filter((line) => line.length > 0).join('\n'));
+      const text = paragraphs
+        .map((lines) => lines.map((line) => line.trim()).filter((line) => line.length > 0).join('\n'))
+        .filter((paragraph) => {
+          const lines = paragraph.split('\n').filter((line) => line.length > 0);
+          if (lines.length === 0 || lines.every((line) => HEADING.test(line) || BOILERPLATE_LINE.test(line))) return false;
+          const words = collapse(lines.map((line) => line.replace(LIST_OR_HEADING, '')).join(' ')).split(' ').length;
+          return words >= MIN_QUOTE_WORDS;
+        });
+      // Only the last paragraph left can be a tool footer; an emoji-led line before it is prose.
+      const last = text.at(-1);
+      if (last !== undefined && !last.includes('\n') && FOOTER_LINE.test(last)) text.pop();
+      return text;
     })
     .filter((paragraph) => {
-      const lines = paragraph.split('\n').filter((line) => line.length > 0);
-      if (lines.length === 0 || lines.every((line) => HEADING.test(line))) return false;
-      const words = collapse(lines.map((line) => line.replace(LIST_OR_HEADING, '')).join(' ')).split(' ').length;
-      if (words < MIN_QUOTE_WORDS) return false;
       const flat = collapse(paragraph);
       return !quotes.some((quote) => flat.includes(quote));
     });
