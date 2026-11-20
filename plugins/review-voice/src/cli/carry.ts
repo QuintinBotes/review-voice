@@ -3,14 +3,15 @@ import { dirname, join } from 'node:path';
 import { parseReviewScope } from '../diff/incremental.ts';
 import { parseHunks, type FileHunks } from '../diff/hunks.ts';
 import { openDatabase } from '../store/db.ts';
-import { runDetail, heldProblem } from '../store/runs.ts';
-import { heldBackFindings, parseThreadFile, postedReviewIds } from '../diff/held.ts';
+import { runDetail, heldProblem, normaliseHeld } from '../store/runs.ts';
+import { heldBackFindings, parseThreadFile, postedEvent, postedReviewIds } from '../diff/held.ts';
 import {
   carryCandidates,
   carryFindings,
   CarryError,
   commitReadable,
   followLine,
+  SERIOUS_SEVERITIES,
   seriousNotCarried,
 } from '../diff/carry.ts';
 import { candidateAnchor } from '../diff/reanchor.ts';
@@ -127,7 +128,18 @@ export function carryCommand(argv: string[]): number {
       );
     }
     if (!argv.includes('--text')) {
-      console.log(JSON.stringify({ from, head, ...result }, null, 2));
+      // Whether the earlier change request still stands: nothing was settled or held back, and something carries.
+      const priorVerdict = postedEvent(db, from);
+      // Unknown without --thread: nothing says what the author resolved or dismissed.
+      const serious = new Set((runDetail(db, from)?.findings ?? []).filter((f) => f.severity !== undefined && SERIOUS_SEVERITIES.includes(f.severity.toLowerCase())).map((f) => f.findingId));
+      const changeRequestStands =
+        threadFile === null
+          ? null
+          : priorVerdict === 'REQUEST_CHANGES' &&
+            result.carried.some((c) => serious.has(c.findingId)) &&
+            result.settled.length === 0 &&
+            result.heldBack.length === 0;
+      console.log(JSON.stringify({ from, head, ...result, priorVerdict, changeRequestStands }, null, 2));
       return 0;
     }
     // The review text alone, so it pipes straight into `validate-output` and
@@ -351,6 +363,7 @@ export function carryCandidatesCommand(argv: string[]): number {
     if (heldFile !== null) {
       heldIn = listIn(JSON.parse(readFileSync(heldFile, 'utf8')), ['held']);
       if (heldIn === null) throw new Error(`${heldFile} is not an array or {"held": [...]}`);
+      heldIn.list = heldIn.list.map((entry) => normaliseHeld(entry) as Record<string, unknown>);
       heldIn.list.forEach((entry, index) => {
         const heldError = heldProblem(entry);
         if (heldError !== null) throw new Error(`${heldFile} entry ${index}: ${heldError}`);

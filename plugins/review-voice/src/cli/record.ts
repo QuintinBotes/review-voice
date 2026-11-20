@@ -22,6 +22,7 @@ import {
   recordRun,
   runDetail,
   heldProblem,
+  normaliseHeld,
   challengeNotRun,
   heldBelowConfidenceGate,
   type CarryMarker,
@@ -334,11 +335,12 @@ export function recordCommand(argv: string[]): number {
       const parsed: unknown = JSON.parse(readFileSync(heldFile, 'utf8'));
       const list = Array.isArray(parsed) ? parsed : (parsed as { held?: unknown } | null)?.held;
       if (!Array.isArray(list)) throw new Error('expected an array or {"held": [...]}');
-      list.forEach((entry, index) => {
+      const normalised = list.map(normaliseHeld);
+      normalised.forEach((entry, index) => {
         const problem = heldProblem(entry);
         if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
       });
-      held = list as HeldFinding[];
+      held = normalised as HeldFinding[];
       // A path no candidate or diff file carries can never match the real anchor
       // on a later --held-from run. Warn, but record it: the reason still counts.
       for (const candidate of candidates) knownPaths.add(candidate.path);

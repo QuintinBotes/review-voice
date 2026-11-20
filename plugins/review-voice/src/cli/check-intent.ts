@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs';
-import { descriptionOf, linkedIssuesOf, parseIntent } from '../intent.ts';
+import { descriptionBodies, descriptionOf, linkedIssuesOf, parseIntent, uncoveredParagraphs } from '../intent.ts';
 import { readStdin, flag } from './shared.ts';
 import { jsonInReply } from '../agents/reply-json.ts';
 
@@ -15,10 +15,12 @@ export function checkIntentCommand(argv: string[]): number {
     return 2;
   }
   let description: string | null;
+  let bodies: string[];
   let issues: ReturnType<typeof linkedIssuesOf>;
   try {
     const thread = JSON.parse(readFileSync(threadFile, 'utf8')) as unknown;
     description = descriptionOf(thread);
+    bodies = descriptionBodies(thread);
     issues = linkedIssuesOf(thread);
   } catch (error) {
     console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
@@ -55,6 +57,8 @@ export function checkIntentCommand(argv: string[]): number {
       widened: kind('Widened'),
       kept: kind('Kept'),
       removed: kind('Removed'),
+      // A caller reuses an old intent only when nothing was dropped and nothing is uncovered (#468).
+      uncovered: intent.value === null ? [] : uncoveredParagraphs(bodies, intent.value.statements),
     };
     try {
       writeFileSync(summaryFile, `${JSON.stringify(summary, null, 2)}\n`);

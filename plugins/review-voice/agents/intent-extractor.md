@@ -20,7 +20,8 @@ statement of intent; leave it out. Return only the requested schema.
 
 ## Input
 
-You are given the pull request title and `thread.json`. Read the entry of kind
+You are given `thread.json`. Read the pull request title from its top-level
+`title` (a file written before the title was kept has none) and the entry of kind
 `description` and, when the file has them, the `linkedIssues` entries. Each is
 an issue the description closes, with its `number`, `title` and `body`. The
 pull request title and an issue title are context for reading; never quote a

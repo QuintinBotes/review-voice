@@ -12199,6 +12199,29 @@ function challengeNotRun(entry) {
 function heldBelowConfidenceGate(entry) {
   return entry.verdict === "below-gate" && typeof entry.reason === "string" && entry.reason.startsWith("below the confidence gate") && (entry.severity === "blocking" || entry.severity === "important" || entry.severity === "minor");
 }
+function normaliseHeld(entry) {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return entry;
+  const e = entry;
+  if (e["verdict"] !== void 0) return entry;
+  const str2 = (v) => typeof v === "string" && v.trim().length > 0 ? v : null;
+  let mapped = null;
+  if ("commentPath" in e && (e["commentPath"] === null || typeof e["commentPath"] === "string") && typeof e["author"] === "string") {
+    mapped = { verdict: "repeat", source: "check-candidates", reason: str2(e["reason"]) };
+  } else if (typeof e["gate"] === "string") {
+    const score2 = e["finalScore"] ?? e["technicalConfidence"];
+    const label2 = e["finalScore"] !== void 0 ? "final score" : "technical confidence";
+    mapped = {
+      verdict: "below-gate",
+      source: "score",
+      reason: typeof score2 === "number" && typeof e["threshold"] === "number" ? `below the ${e["gate"]} gate: ${label2} ${score2} under ${e["threshold"]}` : `below the ${e["gate"]} gate`
+    };
+  } else if (e["rejectedBecause"] !== void 0) {
+    mapped = { verdict: "refuted", source: "score", reason: str2(e["rejectedBecause"]) };
+  }
+  if (mapped === null) return entry;
+  const { author: _a, commentPath: _cp, commentLine: _cl, reason: _r, gate: _g, finalScore: _f, technicalConfidence: _t, threshold: _th, confidenceSource: _c, verified: _v, rejectedBecause: _rb, claim, ...rest } = e;
+  return { ...rest, ...mapped, ...typeof claim === "string" && claim.length > 0 ? { text: claim } : {} };
+}
 function heldProblem(entry) {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return "not an object";
   const e = entry;
@@ -17927,6 +17950,7 @@ async function readThread(options) {
   return {
     repository: options.repository,
     pullNumber: options.pullNumber,
+    ...typeof pull.data.title === "string" ? { title: redact(pull.data.title).text } : {},
     comments,
     reviews: threadReviews,
     // Absent when the option is off, so every existing reader of a thread file sees what it saw before.
@@ -20211,8 +20235,10 @@ var COMMAND_HELP = {
       "",
       "Flags:",
       "  --thread <path>        thread.json from `thread`, holding the description (required)",
-      "  --summary <path>       also write {valid, dropped, widened, kept, removed} as JSON, so a caller",
-      "                         can tell a dropped statement from a note without reading stderr",
+      "  --summary <path>       also write {valid, dropped, widened, kept, removed, uncovered} as JSON, so a caller",
+      "                         can tell a dropped statement from a note without reading stderr; uncovered lists",
+      "                         the description paragraphs no kept statement quotes (headings and lines under four",
+      "                         words are left out), so an old intent is reusable only when dropped and uncovered are empty",
       "Reads: the intent-extractor JSON on stdin.",
       "Writes: the normalised intent document on stdout.",
       "Exit codes: 0 valid (possibly with statements dropped), 2 malformed, duplicate ids, none survives, no description, or bad invocation."
@@ -20992,6 +21018,7 @@ var COMMAND_HELP = {
       '  --held <path>          Candidates held back, as [{"path","line","verdict","source","reason"}]',
       `                         or {"held": [...]}; verdict one of ${HELD_VERDICTS.join(", ")}`,
       "                         restates-tool names the tool in source and its signal line and message in reason",
+      "                         Raw entries of check-candidates droppedAsRepeat and score belowGate or rejected are accepted too",
       "                         Warns on stderr, and still records, when a path is in neither --files nor --candidates",
       "  --body-findings <path> One verified simplification from check-simplification; requires --diff-file",
       "  --carried-from <run>   Validate findings carried by `carry` (needs --head; run in its clone)",
@@ -21054,6 +21081,10 @@ var COMMAND_HELP = {
       "Writes: JSON (or with --text, the review text without terminal control characters) on stdout;",
       "  what did not carry on stderr.",
       "  JSON adds heldBack: {findingId, path, line, severity, reason}[], not counted as serious findings",
+      "  JSON also adds priorVerdict (the event this run store recorded for the source run's post, not the pull",
+      "  request's current review state; null for a run posted from another machine or never posted) and",
+      "  changeRequestStands (null without --thread; else true only",
+      "  for REQUEST_CHANGES with a blocking or important finding carried and none settled or held back)",
       '  that did not carry; with --text each is on stderr as "Held back: ...". settled has the same',
       '  shape, for findings on files the pull request no longer changes ("Settled: ..." with --text).',
       "Exit codes: 0 ok, 1 with --text nothing carried or a serious finding did not, 2 bad invocation."
@@ -22351,10 +22382,34 @@ function text2(value, name, max = MAX_TEXT2) {
   return { value: value.trim(), problem: null };
 }
 function descriptionOf(thread) {
-  const comments = thread?.comments;
-  if (!Array.isArray(comments)) return null;
-  const bodies = comments.filter((comment) => comment?.kind === "description").map((comment) => comment.body).filter((body) => typeof body === "string");
+  const bodies = descriptionBodies(thread);
   return bodies.length === 0 ? null : bodies.join("\n");
+}
+function descriptionBodies(thread) {
+  const comments = thread?.comments;
+  if (!Array.isArray(comments)) return [];
+  return comments.filter((comment) => comment?.kind === "description").map((comment) => comment.body).filter((body) => typeof body === "string");
+}
+function uncoveredParagraphs(descriptions, statements) {
+  const quotes = statements.filter((s) => s.issue === void 0).flatMap((s) => [s.quote, s.reason]).filter((q) => typeof q === "string").map((q) => collapse2(q.replace(LIST_OR_HEADING, ""))).filter((q) => q.length > 0);
+  return descriptions.flatMap((description) => {
+    const all = description.split("\n");
+    const { fenced, comments } = lineKinds(all);
+    const skip2 = (line3, at2) => fenced.has(at2) || comments.has(at2) || TABLE_ROW.test(line3);
+    const paragraphs = [[]];
+    all.forEach((line3, at2) => {
+      if (line3.trim() === "") paragraphs.push([]);
+      else paragraphs[paragraphs.length - 1]?.push(skip2(line3, at2) ? "" : line3);
+    });
+    return paragraphs.map((lines2) => lines2.map((line3) => line3.trim()).filter((line3) => line3.length > 0).join("\n"));
+  }).filter((paragraph) => {
+    const lines2 = paragraph.split("\n").filter((line3) => line3.length > 0);
+    if (lines2.length === 0 || lines2.every((line3) => HEADING.test(line3))) return false;
+    const words = collapse2(lines2.map((line3) => line3.replace(LIST_OR_HEADING, "")).join(" ")).split(" ").length;
+    if (words < MIN_QUOTE_WORDS) return false;
+    const flat = collapse2(paragraph);
+    return !quotes.some((quote3) => flat.includes(quote3));
+  });
 }
 function linkedIssuesOf(thread) {
   const issues = thread?.linkedIssues;
@@ -27606,10 +27661,12 @@ function checkIntentCommand(argv) {
     return 2;
   }
   let description;
+  let bodies;
   let issues;
   try {
     const thread = JSON.parse(readFileSync21(threadFile, "utf8"));
     description = descriptionOf(thread);
+    bodies = descriptionBodies(thread);
     issues = linkedIssuesOf(thread);
   } catch (error) {
     console.error(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
@@ -27639,7 +27696,9 @@ function checkIntentCommand(argv) {
       dropped: intent2.dropped,
       widened: kind("Widened"),
       kept: kind("Kept"),
-      removed: kind("Removed")
+      removed: kind("Removed"),
+      // A caller reuses an old intent only when nothing was dropped and nothing is uncovered (#468).
+      uncovered: intent2.value === null ? [] : uncoveredParagraphs(bodies, intent2.value.statements)
     };
     try {
       writeFileSync10(summaryFile, `${JSON.stringify(summary2, null, 2)}
@@ -32585,6 +32644,19 @@ function postedReviewIds(db, runId) {
   }
   return reviewIds;
 }
+function postedEvent(db, runId) {
+  const attempts = new Set(
+    db.prepare(`SELECT audit_id FROM audit_events WHERE action = 'review_post_attempted' AND json_extract(metadata_json, '$.run') = ?`).all(runId).map((row) => row.audit_id)
+  );
+  if (attempts.size === 0) return null;
+  let event = null;
+  const sent = db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' ORDER BY created_at, rowid`).all();
+  for (const row of sent) {
+    const meta = JSON.parse(row.metadata_json);
+    if (typeof meta.attempt === "string" && attempts.has(meta.attempt) && typeof meta.event === "string") event = meta.event;
+  }
+  return event;
+}
 function quote2(text5) {
   const flat = text5.replace(/\s+/g, " ").trim();
   return `"${flat.length > QUOTE_LIMIT ? `${flat.slice(0, QUOTE_LIMIT)}...` : flat}"`;
@@ -32711,7 +32783,10 @@ function carryCommand(argv) {
       );
     }
     if (!argv.includes("--text")) {
-      console.log(JSON.stringify({ from, head, ...result }, null, 2));
+      const priorVerdict = postedEvent(db, from);
+      const serious2 = new Set((runDetail(db, from)?.findings ?? []).filter((f) => f.severity !== void 0 && SERIOUS_SEVERITIES.includes(f.severity.toLowerCase())).map((f) => f.findingId));
+      const changeRequestStands = threadFile === null ? null : priorVerdict === "REQUEST_CHANGES" && result.carried.some((c) => serious2.has(c.findingId)) && result.settled.length === 0 && result.heldBack.length === 0;
+      console.log(JSON.stringify({ from, head, ...result, priorVerdict, changeRequestStands }, null, 2));
       return 0;
     }
     for (const skipped of result.notCarried) {
@@ -32871,6 +32946,7 @@ function carryCandidatesCommand(argv) {
     if (heldFile !== null) {
       heldIn = listIn(JSON.parse(readFileSync36(heldFile, "utf8")), ["held"]);
       if (heldIn === null) throw new Error(`${heldFile} is not an array or {"held": [...]}`);
+      heldIn.list = heldIn.list.map((entry) => normaliseHeld(entry));
       heldIn.list.forEach((entry, index) => {
         const heldError = heldProblem(entry);
         if (heldError !== null) throw new Error(`${heldFile} entry ${index}: ${heldError}`);
@@ -34410,11 +34486,12 @@ function recordCommand(argv) {
       const parsed2 = JSON.parse(readFileSync39(heldFile, "utf8"));
       const list3 = Array.isArray(parsed2) ? parsed2 : parsed2?.held;
       if (!Array.isArray(list3)) throw new Error('expected an array or {"held": [...]}');
-      list3.forEach((entry, index) => {
+      const normalised2 = list3.map(normaliseHeld);
+      normalised2.forEach((entry, index) => {
         const problem = heldProblem(entry);
         if (problem !== null) throw new Error(`entry ${index}: ${problem}`);
       });
-      held = list3;
+      held = normalised2;
       for (const candidate of candidates) knownPaths.add(candidate.path);
       const heldHead = flag(argv, "--head");
       const atHead = manifestMode !== "worktree" && manifestMode !== "staged" && heldHead !== null;

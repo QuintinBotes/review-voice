@@ -344,13 +344,53 @@ function text(value: unknown, name: string, max = MAX_TEXT): Parsed<string> {
 
 /** The description body from a thread.json, or null when the thread carries none. */
 export function descriptionOf(thread: unknown): string | null {
+  const bodies = descriptionBodies(thread);
+  return bodies.length === 0 ? null : bodies.join('\n');
+}
+
+/** Each description body of a thread.json on its own. */
+export function descriptionBodies(thread: unknown): string[] {
   const comments = (thread as { comments?: unknown } | null)?.comments;
-  if (!Array.isArray(comments)) return null;
-  const bodies = comments
+  if (!Array.isArray(comments)) return [];
+  return comments
     .filter((comment) => (comment as { kind?: unknown })?.kind === 'description')
     .map((comment) => (comment as { body?: unknown }).body)
     .filter((body): body is string => typeof body === 'string');
-  return bodies.length === 0 ? null : bodies.join('\n');
+}
+
+/**
+ * Description paragraphs (blank-line separated) that no kept statement quotes, so a
+ * caller can tell added or rewritten text from text the intent already covers (#468).
+ * Headings and paragraphs under four words once list markers are gone are not text to cover.
+ */
+export function uncoveredParagraphs(descriptions: readonly string[], statements: readonly IntentStatement[]): string[] {
+  const quotes = statements
+    .filter((s) => s.issue === undefined)
+    .flatMap((s) => [s.quote, s.reason])
+    .filter((q): q is string => typeof q === 'string')
+    .map((q) => collapse(q.replace(LIST_OR_HEADING, '')))
+    .filter((q) => q.length > 0);
+  return descriptions
+    .flatMap((description) => {
+      // Fences and comments span lines, so classify the whole body, then split it into paragraphs.
+      const all = description.split('\n');
+      const { fenced, comments } = lineKinds(all);
+      const skip = (line: string, at: number): boolean => fenced.has(at) || comments.has(at) || TABLE_ROW.test(line);
+      const paragraphs: string[][] = [[]];
+      all.forEach((line, at) => {
+        if (line.trim() === '') paragraphs.push([]);
+        else paragraphs[paragraphs.length - 1]?.push(skip(line, at) ? '' : line);
+      });
+      return paragraphs.map((lines) => lines.map((line) => line.trim()).filter((line) => line.length > 0).join('\n'));
+    })
+    .filter((paragraph) => {
+      const lines = paragraph.split('\n').filter((line) => line.length > 0);
+      if (lines.length === 0 || lines.every((line) => HEADING.test(line))) return false;
+      const words = collapse(lines.map((line) => line.replace(LIST_OR_HEADING, '')).join(' ')).split(' ').length;
+      if (words < MIN_QUOTE_WORDS) return false;
+      const flat = collapse(paragraph);
+      return !quotes.some((quote) => flat.includes(quote));
+    });
 }
 
 /** The linked issues of a thread.json (`review.linked_issues`), or none when the key is absent. */
