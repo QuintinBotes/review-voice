@@ -220,6 +220,39 @@ export function heldBelowConfidenceGate(entry: HeldFinding): boolean {
   );
 }
 
+/**
+ * A raw entry from check-candidates `droppedAsRepeat`, score `belowGate` or score
+ * `rejected`, as a held entry (#467). Anything else, including an entry already
+ * in held shape, passes through unchanged, so `heldProblem` still refuses it.
+ */
+export function normaliseHeld(entry: unknown): unknown {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return entry;
+  const e = entry as Record<string, unknown>;
+  if (e['verdict'] !== undefined) return entry;
+  const str = (v: unknown): string | null => (typeof v === 'string' && v.trim().length > 0 ? v : null);
+  let mapped: { verdict: HeldVerdict; source: string; reason: string | null } | null = null;
+  // A repeat of a review-body or conversation comment has commentPath null (#467).
+  if ('commentPath' in e && (e['commentPath'] === null || typeof e['commentPath'] === 'string') && typeof e['author'] === 'string') {
+    mapped = { verdict: 'repeat', source: 'check-candidates', reason: str(e['reason']) };
+  } else if (typeof e['gate'] === 'string') {
+    const score = e['finalScore'] ?? e['technicalConfidence'];
+    const label = e['finalScore'] !== undefined ? 'final score' : 'technical confidence';
+    mapped = {
+      verdict: 'below-gate',
+      source: 'score',
+      reason:
+        typeof score === 'number' && typeof e['threshold'] === 'number'
+          ? `below the ${e['gate']} gate: ${label} ${score} under ${e['threshold']}`
+          : `below the ${e['gate']} gate`,
+    };
+  } else if (e['rejectedBecause'] !== undefined) {
+    mapped = { verdict: 'refuted', source: 'score', reason: str(e['rejectedBecause']) };
+  }
+  if (mapped === null) return entry;
+  const { author: _a, commentPath: _cp, commentLine: _cl, reason: _r, gate: _g, finalScore: _f, technicalConfidence: _t, threshold: _th, confidenceSource: _c, verified: _v, rejectedBecause: _rb, claim, ...rest } = e;
+  return { ...rest, ...mapped, ...(typeof claim === 'string' && claim.length > 0 ? { text: claim } : {}) };
+}
+
 /** Null when the entry is well formed, else what is wrong with it. */
 export function heldProblem(entry: unknown): string | null {
   if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return 'not an object';

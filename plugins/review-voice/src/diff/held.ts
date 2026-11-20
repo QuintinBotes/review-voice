@@ -68,6 +68,29 @@ export function postedReviewIds(db: Database, runId: string): number[] {
   return reviewIds;
 }
 
+/**
+ * The review event the run's last sent post carried (APPROVE, COMMENT or REQUEST_CHANGES), or
+ * null when it was never posted or predates the audit row (#470). Read from the audit rows
+ * `post` already writes, so no run needs migrating.
+ */
+export function postedEvent(db: Database, runId: string): string | null {
+  const attempts = new Set(
+    (
+      db
+        .prepare(`SELECT audit_id FROM audit_events WHERE action = 'review_post_attempted' AND json_extract(metadata_json, '$.run') = ?`)
+        .all(runId) as { audit_id: string }[]
+    ).map((row) => row.audit_id),
+  );
+  if (attempts.size === 0) return null;
+  let event: string | null = null;
+  const sent = db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' ORDER BY created_at, rowid`).all() as { metadata_json: string }[];
+  for (const row of sent) {
+    const meta = JSON.parse(row.metadata_json) as { attempt?: unknown; event?: unknown };
+    if (typeof meta.attempt === 'string' && attempts.has(meta.attempt) && typeof meta.event === 'string') event = meta.event;
+  }
+  return event;
+}
+
 function quote(text: string): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   return `"${flat.length > QUOTE_LIMIT ? `${flat.slice(0, QUOTE_LIMIT)}...` : flat}"`;

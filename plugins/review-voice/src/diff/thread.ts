@@ -205,6 +205,8 @@ export async function readThread(options: {
 }): Promise<{
   repository: string;
   pullNumber: number;
+  /** Redacted pull request title; absent from thread files written before it was kept. */
+  title?: string;
   comments: ThreadComment[];
   reviews: ThreadReview[];
   linkedIssues?: LinkedIssue[];
@@ -219,7 +221,7 @@ export async function readThread(options: {
   // The description counts as a comment: a deploy order, a trade-off the author
   // states or a question CI already answered is a point already made, and
   // field use showed about five candidates a day repeating one.
-  const pull = await client.get<{ body?: string | null; user?: { login?: string } }>(
+  const pull = await client.get<{ title?: string; body?: string | null; user?: { login?: string } }>(
     `/repos/${options.repository}/pulls/${options.pullNumber}`,
   );
   const description = clean(pull.data.body ?? undefined, pull.data.user?.login);
@@ -376,6 +378,7 @@ export async function readThread(options: {
   return {
     repository: options.repository,
     pullNumber: options.pullNumber,
+    ...(typeof pull.data.title === 'string' ? { title: redact(pull.data.title).text } : {}),
     comments,
     reviews: threadReviews,
     // Absent when the option is off, so every existing reader of a thread file sees what it saw before.
