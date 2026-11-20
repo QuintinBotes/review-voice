@@ -835,6 +835,24 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '  running on an approval, 5 a re-check found CI red, 6 CI needs a rerun.',
     ),
   },
+  'record-post': {
+    summary: 'Record a review posted outside `post`',
+    body: lines(
+      'review-voice record-post --run <run-id> --event <EVENT> --url <review url> [--review-id <id>]',
+      '  Record a review sent some other way as the rows `post --confirm` writes, so `carry` reports',
+      '  its verdict. The same run and url twice records nothing.',
+      '',
+      'Flags:',
+      '  --run <run-id>         Recorded run the review was posted for (required)',
+      '  --event <EVENT>        APPROVE, COMMENT or REQUEST_CHANGES (required)',
+      '  --url <url>            The posted review\'s url (required)',
+      '  --review-id <id>       GitHub\'s id for the review',
+      '',
+      'Reads: nothing on stdin.',
+      'Writes: JSON on stdout, {run, event, url, recorded}. Adds audit rows to the local database only.',
+      'Exit codes: 0 recorded or already recorded, 2 unknown run, unknown event or missing flag.',
+    ),
+  },
   post: {
     summary: 'Submit the review; needs --confirm --event <EVENT>',
     body: lines(

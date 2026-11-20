@@ -106,6 +106,10 @@ function lineKinds(lines: string[]): { fenced: Set<number>; comments: Set<number
 }
 
 const TABLE_ROW = /^\s*\|.*\|\s*$/u;
+/** Template and tooling boilerplate that no statement quotes (#471). */
+const BOILERPLATE_LINE =
+  /^(?:>.*|_[^_]+_|\*[^*]+\*|(?:[-*+]|\d+[.)])\s+\[[^\]]*\]\((?:[^()]|\([^()]*\))*\))$/u;
+const FOOTER_LINE = /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator}{2}|Generated with\b)/u;
 const TABLE_RULE = /^\s*\|(?:\s*:?-{3,}:?\s*\|)+\s*$/u;
 
 /**
@@ -385,7 +389,8 @@ export function uncoveredParagraphs(descriptions: readonly string[], statements:
     })
     .filter((paragraph) => {
       const lines = paragraph.split('\n').filter((line) => line.length > 0);
-      if (lines.length === 0 || lines.every((line) => HEADING.test(line))) return false;
+      if (lines.length === 0 || lines.every((line) => HEADING.test(line) || BOILERPLATE_LINE.test(line))) return false;
+      if (lines.length === 1 && FOOTER_LINE.test(lines[0] ?? '')) return false;
       const words = collapse(lines.map((line) => line.replace(LIST_OR_HEADING, '')).join(' ')).split(' ').length;
       if (words < MIN_QUOTE_WORDS) return false;
       const flat = collapse(paragraph);
