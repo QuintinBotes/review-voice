@@ -1282,8 +1282,10 @@ stray directory and another project's notes took the reviewed count from 11 to
   entry `text`, the candidate's claim, so the next review can match on wording. Malformed
   entries exit 2. `/review-voice:explain` lists them under "Held back".
 
-  Pass the score breakdowns with `--scores <file>` and, if verification ran,
-  the verdicts with `--verdicts <file>` and, if step 3c ran a tie-breaker,
+  Pass the score breakdowns with `--scores <file>` and, if step 3b ran a
+  second pass, its report with `--verdicts <tmpdir>/second-pass.json` (never
+  the evidence-verifier's `verification.json`, which `record` refuses) and, if
+  step 3c ran a tie-breaker,
   `--tie-breaks <tmpdir>/reconciled.json`, so `/review-voice:explain` can show
   its working later - including findings that were suppressed. Without them a finding is
   recorded with no account of why it was emitted.
