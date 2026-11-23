@@ -160,8 +160,16 @@ test("taking the base's side in a conflict reads the withdrawal since review", (
 
     const { scope, interdiffPatch } = plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
-    assert.equal(interdiffPatch, repository.git('diff', repository.reviewed, 'HEAD', '--', 'src/a.ts'));
+    // The two-head change, except the base's line taking its place is not a
+    // changed line of the pull request's own diff, so it reads as context
+    // and the hunk is recounted (#477).
+    const twoHead = repository.git('diff', repository.reviewed, 'HEAD', '--', 'src/a.ts');
+    assert.equal(
+      interdiffPatch,
+      twoHead.replace('+a 5 rewritten on main\n', ' a 5 rewritten on main\n').replace('@@ -2,7 +2,7 @@', '@@ -2,8 +2,7 @@'),
+    );
     assert.doesNotMatch(interdiffPatch, /a 300/);
     assert.match(scope.detail, /read as the two-head diff minus base changes after a conflicting replay/);
+    assert.match(scope.detail, /shown as context where the base added lines after a conflicting replay: src\/a\.ts/);
   });
 });
