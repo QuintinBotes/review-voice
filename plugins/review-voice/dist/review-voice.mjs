@@ -29267,6 +29267,10 @@ async function stabilityCommand(argv, labels, thresholds, repository, deps) {
     );
     return 2;
   }
+  if (wantedHead !== null && !/^[0-9a-f]{7,64}$/i.test(wantedHead)) {
+    console.error(`Refusing: the recorded head ${JSON.stringify(wantedHead)} is not a commit sha of at least 7 hex characters, so no checkout can be matched to it.`);
+    return 2;
+  }
   const checkedOut = (deps.headOf ?? gitHead)();
   if (wantedHead !== null && (checkedOut === null || !checkedOut.startsWith(wantedHead))) {
     console.error(

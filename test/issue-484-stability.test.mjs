@@ -290,6 +290,27 @@ test('a working directory at another head, or candidates from two heads, are ref
   });
 });
 
+test('a recorded head that is empty or too short to identify a commit is refused with no call', () => {
+  for (const head of ['', 'a']) {
+    withLabelsAndFakes((dir, _labels, fakes) => {
+      const db = openDatabase(join(dir, 'review-voice.db'));
+      let run;
+      try {
+        run = seed(db, head);
+      } finally {
+        db.close();
+      }
+      const labels = join(dir, 'short.json');
+      writeFileSync(labels, JSON.stringify([{ run, candidate_id: 'A', label: '' }]));
+      const result = cli(dir, ['evaluate', 'calibration', '--labels', labels, '--stability', '2'], fakes);
+      assert.equal(result.code, 2, JSON.stringify(head));
+      // The store keeps an empty head as none, which the one-head check refuses first.
+      assert.match(result.stderr, head === '' ? /do not share one repository and recorded head/ : /is not a commit sha of at least 7 hex characters/);
+      assert.equal(result.calls, 0);
+    });
+  }
+});
+
 test('duplicate blank rows are refused before any call, and unmatched labels are listed', () => {
   withLabelsAndFakes((dir, labels, fakes) => {
     const entries = JSON.parse(readFileSync(labels, 'utf8'));
