@@ -59,7 +59,7 @@ function showAt(ref: string, path: string): Buffer | null {
  * A refusal comes back as its message. `notes` gets what the person should be
  * told, local only.
  */
-export function resolveTrustedConfig(pull: PullRequestConfig, notes: string[]): TrustedConfig | string {
+export async function resolveTrustedConfig(pull: PullRequestConfig, notes: string[]): Promise<TrustedConfig | string> {
   const flagged = pull.flagged;
   if (flagged != null && flagged !== '') {
     const path = resolve(flagged);
@@ -87,7 +87,7 @@ export function resolveTrustedConfig(pull: PullRequestConfig, notes: string[]): 
   // A shallow clone may lack the base commit. The base branch's remote ref is
   // the next best trusted copy only when origin is the repository under review:
   // in a fork clone, origin/<ref> is the pull request author's own branch.
-  if (content === null && ref !== null && showAt(sha, '') === null && originRepository(process.cwd())?.toLowerCase() === pull.repository.toLowerCase()) {
+  if (content === null && ref !== null && showAt(sha, '') === null && (await originRepository(process.cwd()))?.toLowerCase() === pull.repository.toLowerCase()) {
     // Fully qualified: a local branch named origin/<ref> would otherwise win the lookup.
     from = `refs/remotes/origin/${ref}`;
     content = showAt(from, CONFIG_PATH);

@@ -295,7 +295,7 @@ async function headOf(run: Run): Promise<{ sha: string; base: { sha: string | nu
  * a stage, and it runs once, so `prep` calling twice does not repeat it. The
  * previous value of each variable comes back on every exit.
  */
-function resolveConfig(run: Run): void {
+async function resolveConfig(run: Run): Promise<void> {
   const previous = process.env['REVIEW_VOICE_CONFIG'];
   const previousSource = process.env['REVIEW_VOICE_CONFIG_SOURCE'];
   run.cleanup.push(() => {
@@ -306,7 +306,7 @@ function resolveConfig(run: Run): void {
   });
 
   const { repository, pullNumber, config } = run.options;
-  const chosen = resolveTrustedConfig({ repository, pullNumber, base: run.pullBase, dir: run.dir, flagged: config }, run.notes);
+  const chosen = await resolveTrustedConfig({ repository, pullNumber, base: run.pullBase, dir: run.dir, flagged: config }, run.notes);
   if (typeof chosen === 'string') throw new Stop(2, chosen);
   run.configSource = chosen.source;
   process.env['REVIEW_VOICE_CONFIG'] = chosen.source.path!;
@@ -1588,7 +1588,7 @@ export async function runReview(options: ReviewOptions, deps: ReviewDeps): Promi
     // a relative REVIEW_VOICE_CONFIG and would read the checkout, which is the head.
     run.dir = resolve(options.out === null ? runDirectory(options, run.head) : options.out);
     mkdirSync(run.dir, { recursive: true });
-    resolveConfig(run);
+    await resolveConfig(run);
     for (const stage of STAGES) {
       if (run.done) break;
       run.stage = stage.name;

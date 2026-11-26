@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join, sep } from 'node:path';
-import { GIT_READ_TIMEOUT_MS, catFileBlobTimeoutMs, gitTimeoutMs, runGitCatFileSync, runGitSync } from '../git-exec.ts';
+import { GIT_READ_TIMEOUT_MS, catFileBlobTimeoutMs, gitTimeoutMs, runGitCatFile, runGit } from '../git-exec.ts';
 
 /**
  * Everything convention discovery asks of a tree, with repository-relative
@@ -16,8 +17,8 @@ export interface TreeReader {
   size(path: string): number;
   /** The names in a directory, unsorted. Throws when there is none. */
   list(path: string): string[];
-  /** The file's bytes. Throws when there is none. */
-  read(path: string): Buffer;
+  /** The file's bytes. Rejects when there is none. Async because a git tree reads the blob from git. */
+  read(path: string): Promise<Buffer>;
 }
 
 /** The checkout as it is on disk, which is what discovery always read. */
@@ -33,7 +34,7 @@ export function filesystemReader(root: string): TreeReader {
     },
     size: (path) => statSync(join(root, path)).size,
     list: (path) => readdirSync(join(root, path)),
-    read: (path) => readFileSync(join(root, path)),
+    read: (path) => readFile(join(root, path)),
   };
 }
 
@@ -48,8 +49,8 @@ const GIT_BUFFER = 512 * 1024 * 1024;
  * the problem ADR 0031 solved for configuration. The caller checks that the ref
  * resolves.
  */
-export function gitTreeReader(root: string, ref: string): TreeReader {
-  const listing = runGitSync(root, ['ls-tree', '-r', '-l', '--full-tree', '-z', ref], {
+export async function gitTreeReader(root: string, ref: string): Promise<TreeReader> {
+  const listing = await runGit(root, ['ls-tree', '-r', '-l', '--full-tree', '-z', ref], {
     maxBuffer: GIT_BUFFER,
     timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS),
   });
@@ -98,7 +99,7 @@ export function gitTreeReader(root: string, ref: string): TreeReader {
       if (names === undefined) throw new Error(`${path} is not a directory at ${ref}.`);
       return [...names];
     },
-    read: (path) => {
+    read: async (path) => {
       const { object } = file(path);
       let blob = blobs.get(object);
       if (blob === undefined) {
@@ -106,7 +107,7 @@ export function gitTreeReader(root: string, ref: string): TreeReader {
         // clone this read can wait on a lazy fetch, and a dead fetch
         // must fail as any other unreadable blob does, never hang
         // (issue #482). stdin carries nothing, as `ignore` did.
-        blob = runGitCatFileSync(root, ['cat-file', 'blob', object], {
+        blob = await runGitCatFile(root, ['cat-file', 'blob', object], {
           maxBuffer: GIT_BUFFER,
           timeoutMs: catFileBlobTimeoutMs(),
         });

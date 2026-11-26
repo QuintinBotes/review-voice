@@ -1,10 +1,9 @@
 /**
  * Issue #487: the remaining unbounded git calls in the diff and conventions
- * path now run through `runGitSync`, bounded and group-killed like the
+ * path now run through `runGit`, bounded and group-killed like the
  * cat-file reads of #482. The fake git hangs the named subcommands holding
  * stdout open through a sleeper; every other subcommand is the real git.
- * Ctrl-C while blocked cannot be handled by a synchronous spawnSync (no JS
- * handler runs while node is blocked), which git-exec.ts documents.
+ * The runner is async since #493, so the timer ends the group while git is unreaped.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,7 +14,7 @@ import { join } from 'node:path';
 import { commitReadable } from '../plugins/review-voice/src/diff/carry.ts';
 import { linguistGeneratedPaths } from '../plugins/review-voice/src/diff/acquire.ts';
 import { gitTreeReader } from '../plugins/review-voice/src/conventions/tree.ts';
-import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGitSync } from '../plugins/review-voice/src/git-exec.ts';
+import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGit } from '../plugins/review-voice/src/git-exec.ts';
 
 // Long enough for the fake git's shell to start its sleeper on a loaded machine.
 const TIMEOUT_MS = 3000;
@@ -61,12 +60,12 @@ function fakeGit(t, hanging) {
   return { bin, pidFile };
 }
 
-function withHangingGit(fake, fn) {
+async function withHangingGit(fake, fn) {
   const saved = { path: process.env.PATH, bound: process.env.REVIEW_VOICE_GIT_TIMEOUT_MS };
   process.env.PATH = `${fake.bin}:${saved.path ?? ''}`;
   process.env.REVIEW_VOICE_GIT_TIMEOUT_MS = String(TIMEOUT_MS);
   try {
-    return fn();
+    return await fn();
   } finally {
     process.env.PATH = saved.path;
     if (saved.bound === undefined) delete process.env.REVIEW_VOICE_GIT_TIMEOUT_MS;
@@ -100,7 +99,7 @@ test('commitReadable (rev-parse) is false within the bound when git hangs, and t
   const dir = scratchRepo(t);
   const fake = fakeGit(t, ['rev-parse']);
   const started = Date.now();
-  const readable = withHangingGit(fake, () => commitReadable('HEAD', dir));
+  const readable = await withHangingGit(fake, () => commitReadable('HEAD', dir));
   assert.ok(Date.now() - started < 30000, 'returned without waiting on the sleeper');
   assert.equal(readable, false);
   await assertSleepersGone(fake.pidFile);
@@ -110,7 +109,7 @@ test('the cat-file -e check in acquisition reads as an absent commit within the 
   const dir = scratchRepo(t);
   const fake = fakeGit(t, ['cat-file']);
   const started = Date.now();
-  const paths = withHangingGit(fake, () => linguistGeneratedPaths(dir, ['a.txt'], 'HEAD'));
+  const paths = await withHangingGit(fake, () => linguistGeneratedPaths(dir, ['a.txt'], 'HEAD'));
   assert.ok(Date.now() - started < 30000);
   assert.equal(paths.size, 0);
   await assertSleepersGone(fake.pidFile);
@@ -120,7 +119,7 @@ test('check-attr takes its failure path (nothing marked generated) within the bo
   const dir = scratchRepo(t);
   const fake = fakeGit(t, ['check-attr']);
   const started = Date.now();
-  const paths = withHangingGit(fake, () => linguistGeneratedPaths(dir, ['a.txt'], 'HEAD'));
+  const paths = await withHangingGit(fake, () => linguistGeneratedPaths(dir, ['a.txt'], 'HEAD'));
   assert.ok(Date.now() - started < 30000);
   assert.equal(paths.size, 0);
   await assertSleepersGone(fake.pidFile);
@@ -130,9 +129,9 @@ test('ls-tree in the tree reader throws ETIMEDOUT within the bound', posixOnly, 
   const dir = scratchRepo(t);
   const fake = fakeGit(t, ['ls-tree']);
   const started = Date.now();
-  const error = withHangingGit(fake, () => {
+  const error = await withHangingGit(fake, async () => {
     try {
-      gitTreeReader(dir, 'HEAD');
+      await gitTreeReader(dir, 'HEAD');
     } catch (e) {
       return e;
     }
@@ -143,15 +142,15 @@ test('ls-tree in the tree reader throws ETIMEDOUT within the bound', posixOnly, 
   await assertSleepersGone(fake.pidFile);
 });
 
-test('with a real git the calls behave as before, and failures keep status and stdout', (t) => {
+test('with a real git the calls behave as before, and failures keep status and stdout', async (t) => {
   const dir = scratchRepo(t);
-  assert.equal(commitReadable('HEAD', dir), true);
-  assert.equal(commitReadable('nope', dir), false);
-  assert.equal(gitTreeReader(dir, 'HEAD').read('a.txt').toString('utf8'), 'a\n');
-  assert.equal(runGitSync(dir, ['rev-parse', '--abbrev-ref', 'HEAD'], { timeoutMs: GIT_READ_TIMEOUT_MS }).toString('utf8').trim(), 'main');
+  assert.equal(await commitReadable('HEAD', dir), true);
+  assert.equal(await commitReadable('nope', dir), false);
+  assert.equal((await (await gitTreeReader(dir, 'HEAD')).read('a.txt')).toString('utf8'), 'a\n');
+  assert.equal((await runGit(dir, ['rev-parse', '--abbrev-ref', 'HEAD'], { timeoutMs: GIT_READ_TIMEOUT_MS })).toString('utf8').trim(), 'main');
   let failure;
   try {
-    runGitSync(dir, ['merge-base', '--is-ancestor', 'HEAD', 'HEAD^'], { timeoutMs: GIT_READ_TIMEOUT_MS });
+    await runGit(dir, ['merge-base', '--is-ancestor', 'HEAD', 'HEAD^'], { timeoutMs: GIT_READ_TIMEOUT_MS });
   } catch (e) {
     failure = e;
   }

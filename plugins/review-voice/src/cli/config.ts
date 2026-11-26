@@ -47,7 +47,7 @@ export async function configCommand(argv: string[]): Promise<number> {
   const notes: string[] = [];
   // Absolute, as the driver's run directory is, because the loader ignores a relative REVIEW_VOICE_CONFIG and would read the checkout.
   // Real, because --trusted-config refuses a path through a symbolic link, and macOS keeps its temporary directories under one.
-  const chosen = resolveTrustedConfig({ repository, pullNumber, base, dir: realpathSync(dir), flagged }, notes);
+  const chosen = await resolveTrustedConfig({ repository, pullNumber, base, dir: realpathSync(dir), flagged }, notes);
   if (typeof chosen === 'string') {
     console.error(chosen);
     return 2;

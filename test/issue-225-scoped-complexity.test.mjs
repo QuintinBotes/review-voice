@@ -35,7 +35,7 @@ const INTERDIFF = [
   '',
 ].join('\n');
 
-function emit(scope, interdiffPatch) {
+async function emit(scope, interdiffPatch) {
   const dir = mkdtempSync(join(tmpdir(), 'rv-issue-225-'));
   const saved = { cwd: process.cwd(), log: console.log };
   try {
@@ -63,10 +63,10 @@ function emit(scope, interdiffPatch) {
       suspectedWrongBase: null,
       squashedParentSuspected: null,
     };
-    const scoped = applyReviewScope(full, 7, scope, dir, undefined, interdiffPatch);
+    const scoped = await applyReviewScope(full, 7, scope, dir, undefined, interdiffPatch);
     let out = '';
     console.log = (text) => void (out += text);
-    emitDiff(scoped, null);
+    await emitDiff(scoped, null);
     return JSON.parse(out);
   } finally {
     console.log = saved.log;
@@ -86,16 +86,16 @@ const interdiff = {
   hunks: 1,
 };
 
-test('an interdiff over a docs file is not flagged for an earlier commit\'s sensitive path', () => {
-  const result = emit(interdiff, INTERDIFF);
+test('an interdiff over a docs file is not flagged for an earlier commit\'s sensitive path', async () => {
+  const result = await emit(interdiff, INTERDIFF);
   assert.equal(result.scope.kind, 'interdiff');
   assert.equal(result.complexity.level, 'normal');
   assert.deepEqual(result.complexity.sensitivePaths, []);
   assert.equal(result.humanReviewNote, null);
 });
 
-test('the full scope still names the sensitive path', () => {
-  const result = emit({ kind: 'full', cause: 'no-prior-review', since: null, priorRunId: null }, null);
+test('the full scope still names the sensitive path', async () => {
+  const result = await emit({ kind: 'full', cause: 'no-prior-review', since: null, priorRunId: null }, null);
   assert.equal(result.complexity.level, 'high');
   assert.deepEqual(result.complexity.sensitivePaths, ['.github/workflows/ci.yml']);
   assert.match(result.humanReviewNote, /workflows/);

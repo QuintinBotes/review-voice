@@ -16,7 +16,7 @@ const baseText = original
   .replace('line 5\n', 'base five\n')
   .replace('line 9\n', 'base only nine\nbase only nine-b\n');
 
-function withRepository(fn) {
+async function withRepository(fn) {
   const root = mkdtempSync(join(tmpdir(), 'rv-issue-477-'));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const write = (contents) => {
@@ -55,7 +55,7 @@ function withRepository(fn) {
     // two-head diff, so the base's lines cannot be separated out of the hunk.
     write(merged.replace('line 10\n', 'author new ten\n'));
     commit('follow-up beside the base block');
-    return fn({ root, git, reviewed, base });
+    return await fn({ root, git, reviewed, base });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -96,9 +96,9 @@ function assertHunkCounts(patch) {
   finish();
 }
 
-test('lines only the base added are context, not additions, in a kept-whole hunk', () => {
-  withRepository((repository) => {
-    const { scope, interdiffPatch } = planScope({
+test('lines only the base added are context, not additions, in a kept-whole hunk', async () => {
+  await withRepository(async (repository) => {
+    const { scope, interdiffPatch } = await planScope({
       priorRun: { reviewRunId: null, headRef: repository.reviewed, createdAt: null },
       head: repository.git('rev-parse', 'HEAD').trim(),
       headAvailable: true,
@@ -129,7 +129,7 @@ test('lines only the base added are context, not additions, in a kept-whole hunk
   });
 });
 
-function withGitRepo(initial, fn) {
+async function withGitRepo(initial, fn) {
   const root = mkdtempSync(join(tmpdir(), 'rv-issue-477-'));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const write = (name, contents) => {
@@ -151,14 +151,14 @@ function withGitRepo(initial, fn) {
     git('config', 'merge.conflictStyle', 'merge');
     for (const [name, contents] of Object.entries(initial)) write(name, contents);
     commit('initial');
-    return fn({ root, git, write, commit, head: () => git('rev-parse', 'HEAD').trim() });
+    return await fn({ root, git, write, commit, head: () => git('rev-parse', 'HEAD').trim() });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-function planFor(repo, reviewed, base, names) {
-  return planScope({
+async function planFor(repo, reviewed, base, names) {
+  return await planScope({
     priorRun: { reviewRunId: null, headRef: reviewed, createdAt: null },
     head: repo.head(),
     headAvailable: true,
@@ -170,7 +170,7 @@ function planFor(repo, reviewed, base, names) {
   });
 }
 
-test('a line the reviewed head deleted and the head restores stays an addition beside base lines', () => {
+test('a line the reviewed head deleted and the head restores stays an addition beside base lines', async () => {
   const file = 'src/restored.ts';
   const reviewedContents = original.replace('line 5\n', 'author reviewed five\n').replace('line 10\n', '');
   const baseContents = original
@@ -179,7 +179,7 @@ test('a line the reviewed head deleted and the head restores stays an addition b
   const headContents = original
     .replace('line 5\n', 'author reviewed five\n')
     .replace('line 9\n', 'base only nine\nbase only nine-b\n');
-  withGitRepo({ [file]: original }, (repo) => {
+  await withGitRepo({ [file]: original }, async (repo) => {
     repo.git('checkout', '-q', '-b', 'pr');
     repo.write(file, reviewedContents);
     const reviewed = repo.commit('reviewed head deletes line 10');
@@ -191,7 +191,7 @@ test('a line the reviewed head deleted and the head restores stays an addition b
     repo.write(file, headContents);
     repo.commit('merge base and restore line 10');
 
-    const { scope, interdiffPatch } = planFor(repo, reviewed, base, [file]);
+    const { scope, interdiffPatch } = await planFor(repo, reviewed, base, [file]);
     assert.notEqual(scope.kind, 'unchanged', JSON.stringify(scope));
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     // Line 10 is not a changed line of the own diff and the base never added
@@ -204,7 +204,7 @@ test('a line the reviewed head deleted and the head restores stays an addition b
   });
 });
 
-test('the shown-as-context note does not name a file whose demoted section dropped out', () => {
+test('the shown-as-context note does not name a file whose demoted section dropped out', async () => {
   const kept = 'src/kept.ts';
   const dropped = 'src/dropped.ts';
   const keptReviewed = original
@@ -217,7 +217,7 @@ test('the shown-as-context note does not name a file whose demoted section dropp
   const droppedBase = original.replace('line 9\n', 'line 9\nbase inserted\n');
   const keptMerged = keptReviewed.replace('line 9\n', 'base only nine\nbase only nine-b\n');
   const droppedMerged = original.replace('line 9\n', 'line 9\nauthor inserted\nbase inserted\n');
-  withGitRepo({ [kept]: original, [dropped]: original }, (repo) => {
+  await withGitRepo({ [kept]: original, [dropped]: original }, async (repo) => {
     repo.git('checkout', '-q', '-b', 'pr');
     repo.write(kept, keptReviewed);
     repo.write(dropped, droppedReviewed);
@@ -234,7 +234,7 @@ test('the shown-as-context note does not name a file whose demoted section dropp
     repo.write(kept, keptMerged.replace('line 10\n', 'author new ten\n'));
     repo.commit('follow-up beside the base block');
 
-    const { scope, interdiffPatch } = planFor(repo, reviewed, base, [kept, dropped]);
+    const { scope, interdiffPatch } = await planFor(repo, reviewed, base, [kept, dropped]);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.deepEqual(scope.files, [kept]);
     assert.match(interdiffPatch, /^\+author new ten$/m);
@@ -251,12 +251,12 @@ test('the shown-as-context note does not name a file whose demoted section dropp
   });
 });
 
-test('the shown-as-context note does not name a file whose demoted hunk was dropped beside a kept author hunk', () => {
+test('the shown-as-context note does not name a file whose demoted hunk was dropped beside a kept author hunk', async () => {
   const file = 'src/mixed.ts';
   const reviewedContents = original.replace('line 9\n', 'line 9\nauthor inserted\n');
   const baseContents = original.replace('line 9\n', 'line 9\nbase inserted\n');
   const merged = original.replace('line 9\n', 'line 9\nauthor inserted\nbase inserted\n');
-  withGitRepo({ [file]: original }, (repo) => {
+  await withGitRepo({ [file]: original }, async (repo) => {
     repo.git('checkout', '-q', '-b', 'pr');
     repo.write(file, reviewedContents);
     const reviewed = repo.commit('reviewed head');
@@ -270,7 +270,7 @@ test('the shown-as-context note does not name a file whose demoted hunk was drop
     repo.write(file, merged.replace('line 30\n', 'author new thirty\n'));
     repo.commit('follow-up far from the base block');
 
-    const { scope, interdiffPatch } = planFor(repo, reviewed, base, [file]);
+    const { scope, interdiffPatch } = await planFor(repo, reviewed, base, [file]);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.match(interdiffPatch, /^\+author new thirty$/m);
     assert.doesNotMatch(interdiffPatch, /base inserted/);

@@ -78,7 +78,7 @@ function policyVersionRefs(value: unknown): PolicyVersionRef[] | null {
   return refs;
 }
 
-export function recordCommand(argv: string[]): number {
+export async function recordCommand(argv: string[]): Promise<number> {
   // An empty ref is a shell slip, not a choice: a run with no head can never be
   // compared with a later run on the same head, so it is refused, not stored (#236).
   for (const name of ['--base', '--head']) {
@@ -350,7 +350,7 @@ export function recordCommand(argv: string[]): number {
       const atHead = manifestMode !== 'worktree' && manifestMode !== 'staged' && heldHead !== null;
       // A ref starting with '-' would reach git as an option, so it is never resolved.
       const heldRevision =
-        manifestMode === 'staged' ? '' : atHead && !heldHead.startsWith('-') ? resolveCommit(heldHead, process.cwd()) : null;
+        manifestMode === 'staged' ? '' : atHead && !heldHead.startsWith('-') ? await resolveCommit(heldHead, process.cwd()) : null;
       if (knownPaths.size > 0 && held.length > 0 && atHead && heldRevision === null) {
         console.error(`--head ${heldHead} is not a commit in this clone, so held lines were not checked against the file at it.`);
       }
@@ -555,7 +555,7 @@ export function recordCommand(argv: string[]): number {
         // The same hold-back `carry --thread` made, and the same settling of
         // files the pull request no longer changes, so the text it printed is
         // the text recorded here.
-        const result = carryForRun(db, carriedFrom, head, flag(argv, '--repository'), followUpThreadFile, filesFile);
+        const result = await carryForRun(db, carriedFrom, head, flag(argv, '--repository'), followUpThreadFile, filesFile);
         // A serious finding left behind may be what stopped an approval;
         // recording the rest would let the review approve without it.
         const serious = seriousNotCarried(result.notCarried);
@@ -646,7 +646,7 @@ export function recordCommand(argv: string[]): number {
     const headRef =
       headFlag === null || !/^[0-9a-f]{4,64}$/i.test(headFlag)
         ? headFlag
-        : (resolveCommit(headFlag, process.cwd()) ?? headFlag);
+        : ((await resolveCommit(headFlag, process.cwd())) ?? headFlag);
     // A thread of another pull request would settle this one's follow-ups on
     // someone else's resolutions, so it must name this run's pull request.
     if (followUpThreadFor !== null) {

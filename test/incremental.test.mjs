@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { planIncrementalScope } from '../plugins/review-voice/src/diff/incremental.ts';
 
-function withRepository(fn) {
+async function withRepository(fn) {
   const root = mkdtempSync(join(tmpdir(), 'rv-incremental-'));
   const git = (...args) =>
     execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -32,7 +32,7 @@ function withRepository(fn) {
   git('commit', '-q', '-m', 'add files');
 
   try {
-    return fn({ root, git, write, commit, head: () => git('rev-parse', 'HEAD').trim() });
+    return await fn({ root, git, write, commit, head: () => git('rev-parse', 'HEAD').trim() });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -56,13 +56,13 @@ function fullCause(scope) {
   return scope.cause;
 }
 
-test('incremental scope intersects files and counts only commits after the recorded head', () => {
-  withRepository((repository) => {
+test('incremental scope intersects files and counts only commits after the recorded head', async () => {
+  await withRepository(async (repository) => {
     const prior = repository.commit('src/a.ts', 'export const a = 2;\n', 'reviewed');
     repository.commit('src/a.ts', 'export const a = 3;\n', 'follow-up one');
     repository.commit('src/b.ts', 'export const b = 2;\n', 'follow-up two');
 
-    const scope = planIncrementalScope(optionsFor(repository, prior));
+    const scope = await planIncrementalScope(optionsFor(repository, prior));
 
     assert.deepEqual(scope, {
       kind: 'incremental',
@@ -75,33 +75,33 @@ test('incremental scope intersects files and counts only commits after the recor
   });
 });
 
-test('the early full-scope decisions run before any local comparison', () => {
-  withRepository((repository) => {
+test('the early full-scope decisions run before any local comparison', async () => {
+  await withRepository(async (repository) => {
     const prior = repository.head();
-    const noPrior = planIncrementalScope(optionsFor(repository, prior, { priorRun: null }));
+    const noPrior = await planIncrementalScope(optionsFor(repository, prior, { priorRun: null }));
     assert.equal(fullCause(noPrior), 'no-prior-review');
 
-    const requested = planIncrementalScope(optionsFor(repository, prior, { forceFull: true }));
+    const requested = await planIncrementalScope(optionsFor(repository, prior, { forceFull: true }));
     assert.equal(fullCause(requested), 'requested');
 
-    const noNew = planIncrementalScope(optionsFor(repository, prior));
+    const noNew = await planIncrementalScope(optionsFor(repository, prior));
     assert.equal(fullCause(noNew), 'no-new-commits');
 
     repository.commit('src/a.ts', 'export const a = 2;\n', 'new work');
-    const truncated = planIncrementalScope(optionsFor(repository, prior, { truncated: true }));
+    const truncated = await planIncrementalScope(optionsFor(repository, prior, { truncated: true }));
     assert.equal(fullCause(truncated), 'truncated');
   });
 });
 
-test('unreadable commits and failed commands never narrow a pull request', () => {
-  withRepository((repository) => {
+test('unreadable commits and failed commands never narrow a pull request', async () => {
+  await withRepository(async (repository) => {
     const prior = repository.head();
     repository.commit('src/a.ts', 'export const a = 2;\n', 'new work');
 
-    const unavailable = planIncrementalScope(optionsFor(repository, prior, { headAvailable: false }));
+    const unavailable = await planIncrementalScope(optionsFor(repository, prior, { headAvailable: false }));
     assert.equal(fullCause(unavailable), 'compare-unavailable');
 
-    const failed = planIncrementalScope(
+    const failed = await planIncrementalScope(
       optionsFor(repository, prior, {
         git: {
           hasCommit() {
@@ -118,39 +118,39 @@ test('unreadable commits and failed commands never narrow a pull request', () =>
   });
 });
 
-test('rewritten history, merges and base-only updates each keep the full diff', () => {
-  withRepository((repository) => {
+test('rewritten history, merges and base-only updates each keep the full diff', async () => {
+  await withRepository(async (repository) => {
     const common = repository.head();
     const prior = repository.commit('src/a.ts', 'export const a = 2;\n', 'old review head');
     repository.git('checkout', '-q', '-B', 'rewritten', common);
     repository.commit('src/a.ts', 'export const a = 3;\n', 'replacement history');
-    assert.equal(fullCause(planIncrementalScope(optionsFor(repository, prior))), 'history-rewritten');
+    assert.equal(fullCause(await planIncrementalScope(optionsFor(repository, prior))), 'history-rewritten');
   });
 
-  withRepository((repository) => {
+  await withRepository(async (repository) => {
     const prior = repository.head();
     repository.git('checkout', '-q', '-b', 'base-update', prior);
     repository.commit('src/base.ts', 'export const base = 2;\n', 'base update');
     repository.git('checkout', '-q', '-b', 'author-work', prior);
     repository.commit('src/a.ts', 'export const a = 2;\n', 'author work');
     repository.git('merge', '--no-ff', '-q', 'base-update', '-m', 'merge base update');
-    assert.equal(fullCause(planIncrementalScope(optionsFor(repository, prior))), 'base-merged');
+    assert.equal(fullCause(await planIncrementalScope(optionsFor(repository, prior))), 'base-merged');
   });
 
-  withRepository((repository) => {
+  await withRepository(async (repository) => {
     const prior = repository.head();
     repository.commit('src/base.ts', 'export const base = 2;\n', 'base-only update');
-    assert.equal(fullCause(planIncrementalScope(optionsFor(repository, prior))), 'base-sync-only');
+    assert.equal(fullCause(await planIncrementalScope(optionsFor(repository, prior))), 'base-sync-only');
   });
 });
 
-test('a renamed reviewed file is retained when the comparison names its previous path', () => {
-  withRepository((repository) => {
+test('a renamed reviewed file is retained when the comparison names its previous path', async () => {
+  await withRepository(async (repository) => {
     const prior = repository.head();
     repository.git('mv', 'src/a.ts', 'src/renamed.ts');
     repository.git('commit', '-q', '-m', 'rename');
 
-    const scope = planIncrementalScope(
+    const scope = await planIncrementalScope(
       optionsFor(repository, prior, {
         reviewedFiles: [{ path: 'src/renamed.ts', previousPath: 'src/a.ts' }],
         git: {

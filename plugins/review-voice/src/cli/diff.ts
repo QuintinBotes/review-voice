@@ -57,7 +57,7 @@ export async function pullRequestDiffCommand(argv: string[]): Promise<number> {
   let since: string | null = null;
   if (argv.includes('--since')) {
     const wanted = flag(argv, '--since');
-    since = wanted === null ? null : resolveSince(wanted, repository, process.cwd());
+    since = wanted === null ? null : await resolveSince(wanted, repository, process.cwd());
     if (since === null) {
       console.error(
         wanted === null ? '--since needs a commit.' : `--since ${wanted} is not a commit in this clone.`,
@@ -127,7 +127,7 @@ export async function pullRequestDiffCommand(argv: string[]): Promise<number> {
 
   let planned: PlannedScope;
   try {
-    planned = planScope({
+    planned = await planScope({
       priorRun: prior,
       head: result.head,
       headAvailable: result.refs.head.available,
@@ -160,8 +160,8 @@ export async function pullRequestDiffCommand(argv: string[]): Promise<number> {
     };
   }
 
-  const scoped = applyReviewScope(result, pullNumber, planned.scope, process.cwd(), undefined, planned.interdiffPatch, planned.leftOutChanged);
-  return emitDiff({ ...scoped, repository, prior: resolution }, flag(argv, '--out'));
+  const scoped = await applyReviewScope(result, pullNumber, planned.scope, process.cwd(), undefined, planned.interdiffPatch, planned.leftOutChanged);
+  return await emitDiff({ ...scoped, repository, prior: resolution }, flag(argv, '--out'));
 }
 
 /** The paths a recorded run left out by its own rules, or null when it kept no such list or cannot be read. */
@@ -337,19 +337,19 @@ export function diffSummary(result: EmittedDiff): {
  * as of the commit the change starts from (see attributeSource). Outside a
  * repository, or without that commit, nothing is marked.
  */
-function markedGenerated(acquired: EmittedDiff): Set<string> {
+async function markedGenerated(acquired: EmittedDiff): Promise<Set<string>> {
   // A deleted file is asked about too, so a deleted generated file is not read
   // for removed controls; no reviewed-only path is affected by the extra names.
   const asked = (acquired.files ?? []).filter((file) => file.reviewed || file.status === 'deleted').map((file) => file.path);
   try {
     const root = repositoryRoot(process.cwd());
-    return linguistGeneratedPaths(root, asked, attributeSource(root, acquired));
+    return await linguistGeneratedPaths(root, asked, await attributeSource(root, acquired));
   } catch {
     return new Set();
   }
 }
 
-export function emitDiff(acquired: EmittedDiff, outDir: string | null): number {
+export async function emitDiff(acquired: EmittedDiff, outDir: string | null): Promise<number> {
   // Assessed here, from the diff the analyst will read, so the manifest and
   // the summary say the same thing and `record --files` carries it forward.
   const config = repositoryConfig();
@@ -357,7 +357,7 @@ export function emitDiff(acquired: EmittedDiff, outDir: string | null): number {
   // Said on every diff that leaves a file out, since a manifest entry is not a
   // signal, and ten of twelve files once went unread with no word (issue 351).
   if (acquired.exclusions != null) console.error(acquired.exclusions.note);
-  const generated = markedGenerated(acquired);
+  const generated = await markedGenerated(acquired);
   // A narrowed review is flagged for what it reads: files earlier commits
   // changed are not this run's. The pull request stays flagged through the
   // prior runs (ADR 0012, sticky).
@@ -369,7 +369,7 @@ export function emitDiff(acquired: EmittedDiff, outDir: string | null): number {
   // A wholly deleted file is not in the patch, so removed controls read it from
   // the base; it is classified by the same rules as the files the review reads.
   const deletedProduction = deletedProductionPaths(scopedFiles, config?.humanReview, generated);
-  const structure = collectStructure(process.cwd(), acquired, production, config?.structure, deletedProduction);
+  const structure = await collectStructure(process.cwd(), acquired, production, config?.structure, deletedProduction);
   const complexity = applyStructureHumanReviewCap(assessed, structure, config?.humanReview);
   const result: EmittedDiff = {
     ...acquired,
@@ -403,7 +403,7 @@ export function emitDiff(acquired: EmittedDiff, outDir: string | null): number {
   }
 }
 
-export function diffCommand(argv: string[]): number {
+export async function diffCommand(argv: string[]): Promise<number> {
   const baseIndex = argv.indexOf('--base');
   const base = baseIndex === -1 ? null : (argv[baseIndex + 1] ?? null);
   if (baseIndex !== -1 && (base === null || base.startsWith('--'))) {
@@ -412,7 +412,7 @@ export function diffCommand(argv: string[]): number {
   }
 
   try {
-    const result = acquireDiff({
+    const result = await acquireDiff({
       cwd: process.cwd(),
       staged: argv.includes('--staged'),
       base,
@@ -421,7 +421,7 @@ export function diffCommand(argv: string[]): number {
     });
     // An empty diff is a valid answer, not an error: the caller should say so
     // rather than invent something to review.
-    return emitDiff(result, flag(argv, '--out'));
+    return await emitDiff(result, flag(argv, '--out'));
   } catch (error) {
     if (error instanceof GitError) {
       console.error(error.message);
@@ -433,10 +433,10 @@ export function diffCommand(argv: string[]): number {
 }
 
 /** files.json and diff.patch from `diff --out`, or null after saying what was wrong. */
-export function readFilesAndDiff(
+export async function readFilesAndDiff(
   filesPath: string,
   diffPath: string,
-): { manifest: Record<string, unknown>; changed: ChangedFile[]; diffText: string; generated: Set<string> } | null {
+): Promise<{ manifest: Record<string, unknown>; changed: ChangedFile[]; diffText: string; generated: Set<string> } | null> {
   let manifest: Record<string, unknown>;
   let diffText: string;
   try {
@@ -453,6 +453,6 @@ export function readFilesAndDiff(
     console.error(`${filesPath} is not a files.json from \`diff --out\`: it has no files list.`);
     return null;
   }
-  const generated = markedGenerated({ ...manifest, diff: diffText } as unknown as EmittedDiff);
+  const generated = await markedGenerated({ ...manifest, diff: diffText } as unknown as EmittedDiff);
   return { manifest, changed: files as ChangedFile[], diffText, generated };
 }

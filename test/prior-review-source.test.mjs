@@ -21,10 +21,10 @@ import { parseReviewScope, describeScope } from '../plugins/review-voice/src/dif
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const bundle = join(root, 'plugins/review-voice/dist/review-voice.mjs');
 
-function withDir(prefix, body) {
+async function withDir(prefix, body) {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   try {
-    return body(dir);
+    return await body(dir);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -96,23 +96,23 @@ test('a failing GitHub read is no answer, never an error', async () => {
   assert.equal(await latestOwnReview(client, 'acme/web', 7), null);
 });
 
-test('--since resolves only to a commit this clone can read', () => {
-  withDir('rv-since-', (dir) => {
+test('--since resolves only to a commit this clone can read', async () => {
+  await withDir('rv-since-', async (dir) => {
     const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
     git('init', '-q');
     writeFileSync(join(dir, 'a.txt'), 'a\n');
     git('add', '.');
     git('-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-qm', 'one');
     const head = git('rev-parse', 'HEAD').trim();
-    assert.equal(resolveSince(head.slice(0, 10), 'acme/web', dir), head);
+    assert.equal(await resolveSince(head.slice(0, 10), 'acme/web', dir), head);
     // Absent, and no origin pointing at the reviewed repository to fetch from.
-    assert.equal(resolveSince('e'.repeat(40), 'acme/web', dir), null);
-    assert.equal(resolveSince('not-a-commit', 'acme/web', dir), null);
+    assert.equal(await resolveSince('e'.repeat(40), 'acme/web', dir), null);
+    assert.equal(await resolveSince('not-a-commit', 'acme/web', dir), null);
   });
 });
 
-test('diff --pr refuses an unresolvable --since before reading anything', () => {
-  withDir('rv-since-cli-', (dir) => {
+test('diff --pr refuses an unresolvable --since before reading anything', async () => {
+  await withDir('rv-since-cli-', (dir) => {
     execFileSync('git', ['init', '-q'], { cwd: dir });
     let failure;
     try {
@@ -131,8 +131,8 @@ test('diff --pr refuses an unresolvable --since before reading anything', () => 
   });
 });
 
-test('recorded runs of one pull request are listed newest first', () => {
-  withDir('rv-runs-', (dir) => {
+test('recorded runs of one pull request are listed newest first', async () => {
+  await withDir('rv-runs-', (dir) => {
     const db = openDatabase(join(dir, 'review-voice.db'));
     try {
       for (const [head, pullNumber] of [['a'.repeat(40), 7], ['b'.repeat(40), 7], ['c'.repeat(40), 8]]) {
@@ -146,13 +146,13 @@ test('recorded runs of one pull request are listed newest first', () => {
   });
 });
 
-test('every scope the planner produces survives the store and reads back', () => {
+test('every scope the planner produces survives the store and reads back', async () => {
   const scopes = [
     { kind: 'unchanged', since: 'a'.repeat(40), priorRunId: null, priorReviewedAt: null, mergeBase: 'e'.repeat(40), reason: 'base-merged' },
     { kind: 'interdiff', since: 'a'.repeat(40), priorRunId: 'run_001', priorReviewedAt: '2026-09-30T12:00:00.000Z', mergeBase: 'e'.repeat(40), files: ['src/b.ts'], hunks: 2 },
     { kind: 'incremental', since: 'a'.repeat(40), priorRunId: null, priorReviewedAt: null, commits: 1, files: ['src/a.ts'] },
   ];
-  withDir('rv-scope-store-', (dir) => {
+  await withDir('rv-scope-store-', (dir) => {
     const db = openDatabase(join(dir, 'review-voice.db'));
     try {
       for (const scope of scopes) {

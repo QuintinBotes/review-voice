@@ -189,7 +189,7 @@ test('--base without a ref is an invocation error', () => {
   }
 });
 
-test('an empty untracked file counts as reviewable but buys no word budget', () => {
+test('an empty untracked file counts as reviewable but buys no word budget', async () => {
   // reviewedFileCount asks "is there anything to look at" - a new file counts.
   // hunkFileCount asks "how big is this change" - an empty one does not. On a
   // live run a stray directory and another project's notes took the reviewed
@@ -210,7 +210,7 @@ test('an empty untracked file counts as reviewable but buys no word budget', () 
     writeFileSync(join(root, 'a.ts'), 'export const a = 2;\n');
     writeFileSync(join(root, 'stray.ts'), '');
 
-    const result = acquireDiff({ cwd: root, staged: false, base: null, includeGenerated: false });
+    const result = await acquireDiff({ cwd: root, staged: false, base: null, includeGenerated: false });
 
     assert.equal(result.reviewedFileCount, 2, 'the stray file is still reviewable');
     assert.equal(result.hunkFileCount, 1, 'but it contributes no hunk, so it buys no budget');

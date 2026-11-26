@@ -63,7 +63,7 @@ test('a reason that is not text is read as none, and the run goes on', async () 
 
 const lines = (count, prefix) => Array.from({ length: count }, (_, index) => `${prefix} ${index + 1}`).join('\n') + '\n';
 
-function withRepository(fn) {
+async function withRepository(fn) {
   const root = mkdtempSync(join(tmpdir(), 'rv-issue-26-follow-up-'));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const write = (path, contents) => {
@@ -89,14 +89,14 @@ function withRepository(fn) {
   commit('initial');
   git('checkout', '-q', '-b', 'pr');
   try {
-    return fn({ root, git, write, edit, commit, head: () => git('rev-parse', 'HEAD').trim() });
+    return await fn({ root, git, write, edit, commit, head: () => git('rev-parse', 'HEAD').trim() });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-function plan(repository, reviewed, reviewedFiles) {
-  return planScope({
+async function plan(repository, reviewed, reviewedFiles) {
+  return await planScope({
     priorRun: { reviewRunId: 'run_001', headRef: reviewed, createdAt: '2026-09-30T12:00:00.000Z' },
     head: repository.head(),
     headAvailable: true,
@@ -117,23 +117,23 @@ function mergeMovedBase(repository) {
   repository.git('merge', '-q', '--no-ff', 'main', '-m', 'merge main');
 }
 
-test('a file renamed since the review is in the patch, never absorbed by the base', () => {
-  withRepository((repository) => {
+test('a file renamed since the review is in the patch, never absorbed by the base', async () => {
+  await withRepository(async (repository) => {
     repository.write('src/new.ts', lines(12, 'new'));
     const reviewed = repository.commit('author adds a file');
     mergeMovedBase(repository);
     repository.git('mv', 'src/new.ts', 'src/renamed.ts');
     repository.commit('rename it');
 
-    const { scope, interdiffPatch } = plan(repository, reviewed, [{ path: 'src/renamed.ts', previousPath: 'src/new.ts' }]);
+    const { scope, interdiffPatch } = await plan(repository, reviewed, [{ path: 'src/renamed.ts', previousPath: 'src/new.ts' }]);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.equal(scope.absorbedByBase, undefined);
     assert.match(interdiffPatch, /renamed\.ts/);
   });
 });
 
-test('generated output the base absorbed is not listed', () => {
-  withRepository((repository) => {
+test('generated output the base absorbed is not listed', async () => {
+  await withRepository(async (repository) => {
     repository.write('package-lock.json', '{"lockfileVersion": 3}\n');
     repository.edit('src/a.ts', 'a 5\n', 'a 5 by the author\n');
     const reviewed = repository.commit('author work and a lock file');
@@ -143,7 +143,7 @@ test('generated output the base absorbed is not listed', () => {
     repository.git('checkout', '-q', 'pr');
     repository.git('merge', '-q', '--no-ff', 'main', '-m', 'merge main');
 
-    const { scope } = plan(repository, reviewed, [{ path: 'src/a.ts' }]);
+    const { scope } = await plan(repository, reviewed, [{ path: 'src/a.ts' }]);
     assert.equal(scope.kind, 'unchanged', JSON.stringify(scope));
     assert.equal(scope.absorbedByBase, undefined);
   });

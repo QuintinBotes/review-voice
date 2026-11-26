@@ -1,20 +1,16 @@
-import { spawnSync, type SpawnSyncOptionsWithBufferEncoding } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { spawnCommand } from './evidence/run.ts';
 
 /**
- * Synchronous `git cat-file` with a bound that holds when a descendant
- * keeps the pipes open (issue #482).
+ * Bounded git reads that hold when a descendant keeps the pipes open
+ * (issues #482, #493).
  *
  * In a partial clone, `cat-file` lazily starts `git fetch` over ssh. The
  * fetch and ssh hold stdout and stderr, so killing only the direct child
- * leaves the sleeper holding the pipes and spawnSync waiting on them (or,
- * once it gives up, the sleeper outliving the command). Git runs detached
- * in its own process group; when spawnSync gives up (a timeout), the
- * whole group is killed, never after a normal exit, following the
- * pattern in `evidence/run.ts` and `watch/review.ts` for a call that must
- * stay synchronous. spawnSync's own timeout is what makes the call
- * return; the group kill is what makes the descendant go with it.
+ * leaves the sleeper holding the pipes. Git runs detached in its own
+ * process group and the timer ends the whole group (the tree on Windows)
+ * before git is reaped, as `evidence/run.ts` does.
  */
 
 /** One bound for a whole `cat-file --batch`: a large diff can legitimately fetch many blobs. */
@@ -38,22 +34,6 @@ export function catFileBatchTimeoutMs(): number {
 /** The per-blob bound, injectable in tests through the environment. Read at call time. */
 export function catFileBlobTimeoutMs(): number {
   return timeoutFromEnv('REVIEW_VOICE_CAT_FILE_BLOB_TIMEOUT_MS', CAT_FILE_BLOB_TIMEOUT_MS);
-}
-
-function killGroup(pid: number | undefined): void {
-  if (pid === undefined) return;
-  if (process.platform === 'win32') {
-    // No process groups: taskkill ends the tree.
-    // shortcut: spawnSync has already reaped git here, so /T may not reach a fetch or ssh it
-    // started; upgrade to a job object if a Windows user reports a leftover git or ssh.
-    spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
-    return;
-  }
-  try {
-    process.kill(-pid, 'SIGKILL');
-  } catch {
-    // The group is already gone, which is the usual case on success.
-  }
 }
 
 let warnedAboutPartialClone = false;
@@ -112,8 +92,6 @@ export interface GitCatFileOptions {
   input?: string;
   maxBuffer: number;
   timeoutMs: number;
-  /** Ends git's process group or tree; injectable so a test can count calls. */
-  killTree?: (pid: number | undefined) => void;
 }
 
 /** A local-object check (`cat-file -e`, `rev-parse --verify`): a lazy fetch is the only slow case. */
@@ -127,67 +105,55 @@ export function gitTimeoutMs(fallback: number): number {
 }
 
 /** The same bounded, group-killed run for any git command; `maxBuffer` defaults to 64 MiB. Failures carry `status`, `stdout` and `stderr` (strings) as `execFileSync` errors did. */
-export function runGitSync(
+export function runGit(
   root: string,
   args: readonly string[],
   options: { input?: string; maxBuffer?: number; timeoutMs: number },
-): Buffer {
-  return runGitCatFileSync(root, args, { maxBuffer: 64 * 1024 * 1024, ...options });
+): Promise<Buffer> {
+  return runGitCatFile(root, args, { maxBuffer: 64 * 1024 * 1024, ...options });
 }
 
 /**
- * Runs `git <args>` synchronously in `root`, bounded by `timeoutMs`, and
- * returns stdout. Throws on spawn failure, timeout (with `code`
- * `ETIMEDOUT`), overflow or a non-zero exit, as `execFileSync` did, so
- * callers keep treating a failure as an unreadable blob. A timeout in a
- * partial clone names it once on stderr.
+ * Runs `git <args>` in `root`, bounded by `timeoutMs`, and resolves to
+ * stdout. Rejects on spawn failure, timeout (with `code` `ETIMEDOUT`),
+ * overflow or a non-zero exit, as `execFileSync` did, so callers keep
+ * treating a failure as an unreadable blob. A timeout in a partial clone
+ * names it once on stderr.
+ *
+ * The shared `spawnCommand` runner ends the group (POSIX) or the tree
+ * (Windows) from its timer, while git is still unreaped, so the group id
+ * is still ours. It never signals after git has returned (issue #493).
+ * Being async, a stop signal to the CLI is no longer blocked behind git.
  */
-// shortcut: Ctrl-C while this blocks does not kill the detached group. spawnSync blocks the
-// event loop, so no JS SIGINT/SIGTERM handler can run, and the terminal signals only node's
-// own group. Upgrade to an async runner with a signal handler if a leftover git or ssh is reported.
-export function runGitCatFileSync(root: string, args: readonly string[], options: GitCatFileOptions): Buffer {
-  // `detached` is forwarded by spawnSync to spawn, so the child leads
-  // its own process group, though `SpawnSyncOptions` in @types/node
-  // omits it. Naming the extra field here keeps the rest type-checked.
-  const spawnOptions: SpawnSyncOptionsWithBufferEncoding & { detached: boolean } = {
+export async function runGitCatFile(root: string, args: readonly string[], options: GitCatFileOptions): Promise<Buffer> {
+  const result = await spawnCommand('git', {
     cwd: root,
-    ...(options.input === undefined ? {} : { input: options.input }),
-    maxBuffer: options.maxBuffer,
+    env: process.env,
+    shell: false,
+    args,
+    encoding: 'utf8',
     timeout: options.timeoutMs,
     killSignal: 'SIGKILL',
+    maxBuffer: options.maxBuffer,
     detached: process.platform !== 'win32',
-    windowsHide: true,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  };
-  const result = spawnSync('git', [...args], spawnOptions);
-  // End the group only when spawnSync gave up (timeout or its kill signal).
-  // After a normal exit git is reaped and its group id may be reused by an
-  // unrelated group leader, which a kill would hit. On a timeout the
-  // leftover descendants keep the group alive, so the id is still ours. A
-  // pipe-holding descendant makes spawnSync report ETIMEDOUT even when git
-  // itself exited 0.
-  const timedOut = (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
-  if (timedOut || result.signal !== null) {
-    // shortcut: descendants exiting between the reap and this kill leave a small group-id reuse race, and on Windows the tree is reaped first; upgrade to the async runner in issue #493.
-    (options.killTree ?? killGroup)(result.pid);
+    bytes: true,
+    killAfterClose: false,
+    ...(options.input === undefined ? {} : { input: options.input }),
+  });
+  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  if (code === 'ETIMEDOUT') {
+    warnPartialCloneOnce(root);
+    const bound = options.timeoutMs < 1000 ? `${options.timeoutMs}ms` : `${options.timeoutMs / 1000}s`;
+    throw Object.assign(new Error(`git ${args.join(' ')} timed out after ${bound}`), { code: 'ETIMEDOUT' });
   }
-  if (timedOut) warnPartialCloneOnce(root);
-  if (result.error !== undefined) {
-    if (timedOut) {
-      const bound = options.timeoutMs < 1000 ? `${options.timeoutMs}ms` : `${options.timeoutMs / 1000}s`;
-      const error = new Error(`git ${args.join(' ')} timed out after ${bound}`);
-      (error as NodeJS.ErrnoException).code = 'ETIMEDOUT';
-      throw error;
-    }
-    throw result.error;
-  }
+  if (result.error !== undefined) throw result.error;
   if (result.status !== 0) {
-    const stderr = result.stderr?.toString('utf8').trim() ?? '';
+    const stderr = result.stderr.trim();
     throw Object.assign(new Error(`git ${args.join(' ')} failed${stderr === '' ? '' : `: ${stderr}`}`), {
       status: result.status,
-      stdout: result.stdout?.toString('utf8') ?? '',
+      stdout: result.stdout,
       stderr,
     });
   }
-  return result.stdout ?? Buffer.alloc(0);
+  return result.stdoutBytes ?? Buffer.alloc(0);
 }

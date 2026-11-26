@@ -247,25 +247,25 @@ function relevantSections(text: string, changedPaths: readonly string[], budget:
  *
  * Enough for frontmatter and a pointer body, which is all the ranking needs.
  */
-function readHead(tree: TreeReader, path: string, limit: number): string {
-  const raw = tree.read(path);
+async function readHead(tree: TreeReader, path: string, limit: number): Promise<string> {
+  const raw = await tree.read(path);
   if (raw.length <= limit) return raw.toString('utf8');
   const decoder = new TextDecoder('utf8', { fatal: false });
   return decoder.decode(raw.subarray(0, limit));
 }
 
-function readBounded(
+async function readBounded(
   tree: TreeReader,
   path: string,
   changedPaths: readonly string[] = [],
-): {
+): Promise<{
   content: string;
   bytes: number;
   includedBytes: number;
   truncated: boolean;
   scoped: boolean;
-} {
-  const raw = tree.read(path).toString('utf8');
+}> {
+  const raw = (await tree.read(path)).toString('utf8');
   const bytes = Buffer.byteLength(raw, 'utf8');
   if (bytes <= PER_DOCUMENT_BYTES) {
     return { content: raw, bytes, includedBytes: bytes, truncated: false, scoped: false };
@@ -423,11 +423,11 @@ function matchesChange(path: string, changedPaths: readonly string[]): boolean {
  * Discovery is deterministic and here rather than in an agent for the usual
  * reason: which files exist is a fact, and what they mean is a judgement.
  */
-export function discoverConventions(
+export async function discoverConventions(
   root: string,
   changedPaths: readonly string[] = [],
   tree: TreeReader = filesystemReader(root),
-): ConventionReport {
+): Promise<ConventionReport> {
   const documents: ConventionDocument[] = [];
   const skipped: { path: string; reason: string }[] = [];
   const warnings: string[] = [];
@@ -529,7 +529,8 @@ export function discoverConventions(
   // Resolved before ranking, because two things only the content can answer
   // decide where a document belongs: which paths it declares it governs, and
   // whether it is a pointer to the document that actually holds the rule.
-  const sized = ordered.flatMap((entry) => {
+  const sized: { entry: Entry; bytes: number }[] = [];
+  for (const entry of ordered) {
     let bytes = Number.POSITIVE_INFINITY;
     let governs: string[] = [];
     let followed: string[] = [];
@@ -550,7 +551,7 @@ export function discoverConventions(
       // would still cost more than the budget saves, which is what the original
       // gate was protecting.
       {
-        const head = readHead(tree, entry.path, CHEAP_BYTES);
+        const head = await readHead(tree, entry.path, CHEAP_BYTES);
         governs = frontmatterPaths(head);
 
         // A stub may point at several documents. Following only the first was
@@ -588,21 +589,24 @@ export function discoverConventions(
         : base;
     };
 
-    if (followed.length === 0) return [{ entry: withPath(entry.path), bytes }];
+    if (followed.length === 0) {
+      sized.push({ entry: withPath(entry.path), bytes });
+      continue;
+    }
 
     // Expansion, not substitution. One stub becomes one entry per target, each
     // ranked and budgeted on its own size, so a stub with two targets cannot
     // smuggle the second in under the first one's byte count.
-    return followed.map((path) => {
+    for (const path of followed) {
       let targetBytes = Number.POSITIVE_INFINITY;
       try {
         targetBytes = tree.size(path);
       } catch {
         targetBytes = Number.POSITIVE_INFINITY;
       }
-      return { entry: withPath(path), bytes: targetBytes };
-    });
-  });
+      sized.push({ entry: withPath(path), bytes: targetBytes });
+    }
+  }
 
   // Completeness breaks ties inside a relevance tier. It does not outrank one.
   //
@@ -700,7 +704,7 @@ export function discoverConventions(
 
     let read;
     try {
-      read = readBounded(tree, entry.path, changedPaths);
+      read = await readBounded(tree, entry.path, changedPaths);
     } catch (error) {
       skipped.push({ path: entry.path, reason: error instanceof Error ? error.message : String(error) });
       continue;

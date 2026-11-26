@@ -1,7 +1,8 @@
-import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGitSync } from '../git-exec.ts';
+import { execFileSync } from 'node:child_process';
+import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGit } from '../git-exec.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { classify, findHandEdited, firstPartyMatcher, isReviewable, languageOf, type FileClass } from './classify.ts';
+import { classify, handEditedCandidates, hasDoNotEditHeader, firstPartyMatcher, isReviewable, languageOf, type FileClass } from './classify.ts';
 import { excludedReason, FILE_DELETED, summariseExclusions, type ExclusionSummary } from './exclusions.ts';
 
 export interface ChangedFile {
@@ -56,9 +57,9 @@ export interface DiffResult {
 
 export class GitError extends Error {}
 
-function git(args: string[], cwd: string, timeout = GIT_READ_TIMEOUT_MS): string {
+async function git(args: string[], cwd: string, timeout = GIT_READ_TIMEOUT_MS): Promise<string> {
   try {
-    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(timeout) }).toString('utf8');
+    return (await runGit(cwd, args, { timeoutMs: gitTimeoutMs(timeout) })).toString('utf8');
   } catch (error) {
     const stderr = (error as { stderr?: string }).stderr ?? '';
     throw new GitError(`git ${args[0]} failed: ${stderr.trim() || String(error)}`);
@@ -69,9 +70,9 @@ function git(args: string[], cwd: string, timeout = GIT_READ_TIMEOUT_MS): string
  * `git diff --no-index` exits 1 when the files differ, which is the normal
  * case here rather than a failure. Its stdout is still the diff.
  */
-function gitAllowingDifference(args: string[], cwd: string): string {
+async function gitAllowingDifference(args: string[], cwd: string): Promise<string> {
   try {
-    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString('utf8');
+    return (await runGit(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) })).toString('utf8');
   } catch (error) {
     const typed = error as { status?: number; stdout?: string };
     if (typed.status === 1 && typeof typed.stdout === 'string') return typed.stdout;
@@ -86,15 +87,15 @@ function gitAllowingDifference(args: string[], cwd: string): string {
  * user's index - Review Voice is read-only, and that includes their working
  * state.
  */
-function untrackedFiles(root: string): string[] {
-  return git(['ls-files', '--others', '--exclude-standard', '-z'], root)
+async function untrackedFiles(root: string): Promise<string[]> {
+  return (await git(['ls-files', '--others', '--exclude-standard', '-z'], root))
     .split('\0')
     .filter((path) => path.length > 0);
 }
 
-function hasCommitLocally(commit: string, root: string): boolean {
+async function hasCommitLocally(commit: string, root: string): Promise<boolean> {
   try {
-    git(['cat-file', '-e', `${commit}^{commit}`], root, GIT_CHECK_TIMEOUT_MS);
+    await git(['cat-file', '-e', `${commit}^{commit}`], root, GIT_CHECK_TIMEOUT_MS);
     return true;
   } catch {
     return false;
@@ -109,21 +110,21 @@ function hasCommitLocally(commit: string, root: string): boolean {
  * from its merge base, or its base when there is none. Null when that commit
  * is not available here.
  */
-export function attributeSource(
+export async function attributeSource(
   root: string,
   diff: { mode: DiffResult['mode']; base: string | null; head: string },
-): string | null {
+): Promise<string | null> {
   if (diff.mode === 'worktree' || diff.mode === 'staged') {
-    return hasCommitLocally(diff.head, root) ? diff.head : null;
+    return (await hasCommitLocally(diff.head, root)) ? diff.head : null;
   }
   if (diff.base === null) return null;
   try {
-    const mergeBase = git(['merge-base', diff.base, diff.head], root).trim();
+    const mergeBase = (await git(['merge-base', diff.base, diff.head], root)).trim();
     if (mergeBase.length > 0) return mergeBase;
   } catch {
     // The head is not here, or the histories are unrelated: use the base.
   }
-  return hasCommitLocally(diff.base, root) ? diff.base : null;
+  return (await hasCommitLocally(diff.base, root)) ? diff.base : null;
 }
 
 /**
@@ -133,17 +134,17 @@ export function attributeSource(
  * under review. With no source, or when git cannot answer, nothing is marked;
  * the attribute only refines the complexity count.
  */
-export function linguistGeneratedPaths(root: string, paths: readonly string[], source: string | null): Set<string> {
+export async function linguistGeneratedPaths(root: string, paths: readonly string[], source: string | null): Promise<Set<string>> {
   const marked = new Set<string>();
   // An unknown source reads as no attributes rather than as an error, so its
   // presence is checked first.
-  if (paths.length === 0 || source === null || !hasCommitLocally(source, root)) return marked;
+  if (paths.length === 0 || source === null || !(await hasCommitLocally(source, root))) return marked;
   let raw: string;
   try {
-    raw = runGitSync(root, ['check-attr', '--source', source, '-z', '--stdin', 'linguist-generated'], {
+    raw = (await runGit(root, ['check-attr', '--source', source, '-z', '--stdin', 'linguist-generated'], {
       input: `${paths.join('\0')}\0`,
       timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS),
-    }).toString('utf8');
+    })).toString('utf8');
   } catch {
     return marked;
   }
@@ -158,8 +159,23 @@ export function linguistGeneratedPaths(root: string, paths: readonly string[], s
 
 export function repositoryRoot(cwd: string): string {
   // Resolving the root means the command works from any subdirectory, which is
-  // where people actually run it.
-  return git(['rev-parse', '--show-toplevel'], cwd).trim();
+  // where people actually run it. Sync because a dozen commands resolve it
+  // before any other work. `rev-parse --show-toplevel` reads no objects, so it
+  // never starts a lazy fetch: git has no descendants for a group kill to
+  // reach, and a SIGKILL timeout on git alone bounds it.
+  try {
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd,
+      encoding: 'utf8',
+      timeout: gitTimeoutMs(GIT_READ_TIMEOUT_MS),
+      killSignal: 'SIGKILL',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    }).trim();
+  } catch (error) {
+    const stderr = (error as { stderr?: string }).stderr ?? '';
+    throw new GitError(`git rev-parse failed: ${stderr.trim() || String(error)}`);
+  }
 }
 
 const STATUS: Record<string, ChangedFile['status']> = {
@@ -200,7 +216,7 @@ export interface AcquireOptions {
   firstPartyPaths?: readonly string[] | undefined;
 }
 
-export function acquireDiff(options: AcquireOptions): DiffResult {
+export async function acquireDiff(options: AcquireOptions): Promise<DiffResult> {
   const root = repositoryRoot(options.cwd);
   const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
 
@@ -212,12 +228,12 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
 
   const mode: DiffResult['mode'] = options.base !== null ? 'base' : options.staged ? 'staged' : 'worktree';
 
-  const entries = parseNameStatus(git(['diff', '--name-status', '-z', ...range], root));
+  const entries = parseNameStatus(await git(['diff', '--name-status', '-z', ...range], root));
 
   // Per-file line counts, so a caller can judge the size of a change from the
   // tool's own output rather than guessing.
   const numstat = new Map<string, { additions: number; deletions: number }>();
-  for (const line of git(['diff', '--numstat', ...range], root).split('\n')) {
+  for (const line of (await git(['diff', '--numstat', ...range], root)).split('\n')) {
     const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
     if (match === null) continue;
     numstat.set(match[3]!, {
@@ -228,13 +244,13 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
 
   // Only the working tree can have untracked files; --staged and --base both
   // describe content git already knows about.
-  const untracked = new Set(mode === 'worktree' ? untrackedFiles(root) : []);
+  const untracked = new Set(mode === 'worktree' ? await untrackedFiles(root) : []);
   for (const path of untracked) entries.push({ status: 'A', path });
 
   // What git itself calls binary, whatever the name says, since git gives no
   // hunk for it. With -z, so a renamed or quoted path is found under its new name.
   const binary = new Set<string>();
-  const stats = git(['diff', '--numstat', '-z', ...range], root).split('\0');
+  const stats = (await git(['diff', '--numstat', '-z', ...range], root)).split('\0');
   for (let i = 0; i < stats.length; i += 1) {
     const match = /^(-|\d+)\t(-|\d+)\t([^]*)$/.exec(stats[i]!);
     if (match === null) continue;
@@ -242,27 +258,28 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
     const path = match[3] !== '' ? match[3] : stats[(i += 2)];
     if (match[1] === '-' && path !== undefined) binary.add(path);
   }
-  const isBinary = (path: string): boolean =>
+  const isBinary = async (path: string): Promise<boolean> =>
     untracked.has(path)
-      ? gitAllowingDifference(['diff', '--numstat', '--no-index', '--', '/dev/null', path], root).startsWith('-\t-\t')
+      ? (await gitAllowingDifference(['diff', '--numstat', '--no-index', '--', '/dev/null', path], root)).startsWith('-\t-\t')
       : binary.has(path);
 
   // Head content of a generated file, read from where the compared side lives.
-  const readHead = (path: string): string | null => {
+  const readHead = async (path: string): Promise<string | null> => {
     try {
       if (mode === 'worktree') return readFileSync(join(root, path), 'utf8');
-      return git(['show', mode === 'staged' ? `:${path}` : `HEAD:${path}`], root);
+      return await git(['show', mode === 'staged' ? `:${path}` : `HEAD:${path}`], root);
     } catch {
       return null;
     }
   };
-  const handEdited = findHandEdited(
-    entries.filter((entry) => entry.status !== 'D').map((entry) => entry.path),
-    readHead,
-    firstParty,
-  );
+  const handEdited = new Set<string>();
+  for (const path of handEditedCandidates(entries.filter((entry) => entry.status !== 'D').map((entry) => entry.path), firstParty)) {
+    const header = await readHead(path);
+    if (header !== null && hasDoNotEditHeader(header)) handEdited.add(path);
+  }
 
-  const files: ChangedFile[] = entries.map((entry) => {
+  const files: ChangedFile[] = [];
+  for (const entry of entries) {
     const cls = classify(entry.path, firstParty);
     // A deleted file has no content to review; its removal shows up in the
     // diff of whatever referenced it.
@@ -271,9 +288,9 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
     const wanted = !deleted && (suspected || isReviewable(entry.path, options.includeGenerated, firstParty));
     // Whatever its class, the key or the flag say. "Binary files differ" is
     // no content to review, and counting it read hides that (issue 351).
-    const unreadable = wanted && isBinary(entry.path);
+    const unreadable = wanted && (await isBinary(entry.path));
     const reviewed = wanted && !unreadable;
-    return {
+    files.push({
       path: entry.path,
       ...(entry.previousPath === undefined ? {} : { previousPath: entry.previousPath }),
       status: STATUS[entry.status] ?? 'changed',
@@ -284,8 +301,8 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
       reviewed,
       ...(suspected ? { handEditSuspected: true } : {}),
       ...(reviewed ? {} : { excludedBecause: deleted ? FILE_DELETED : excludedReason(unreadable ? 'binary' : cls) }),
-    };
-  });
+    });
+  }
 
   const reviewable = files.filter((file) => file.reviewed).map((file) => file.path);
 
@@ -294,10 +311,10 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
 
   const parts: string[] = [];
   if (trackedReviewable.length > 0) {
-    parts.push(git(['diff', ...PATCH_OPTIONS, ...range, '--', ...trackedReviewable], root));
+    parts.push(await git(['diff', ...PATCH_OPTIONS, ...range, '--', ...trackedReviewable], root));
   }
   for (const path of untrackedReviewable) {
-    parts.push(gitAllowingDifference(['diff', ...PATCH_OPTIONS, '--no-index', '--', '/dev/null', path], root));
+    parts.push(await gitAllowingDifference(['diff', ...PATCH_OPTIONS, '--no-index', '--', '/dev/null', path], root));
   }
   const diff = parts.join('').trim().length === 0 ? '' : parts.join('');
 
@@ -310,14 +327,14 @@ export function acquireDiff(options: AcquireOptions): DiffResult {
     if (path !== undefined && path !== '/dev/null') hunkPaths.add(path);
   }
 
-  const head = git(['rev-parse', 'HEAD'], root).trim();
+  const head = (await git(['rev-parse', 'HEAD'], root)).trim();
   let refs: DiffResult['refs'];
   if (options.base !== null) {
     // The diff above already read both commits, so they are here.
-    const baseSha = git(['rev-parse', `${options.base}^{commit}`], root).trim();
+    const baseSha = (await git(['rev-parse', `${options.base}^{commit}`], root)).trim();
     let mergeBase: string | null = null;
     try {
-      mergeBase = git(['merge-base', baseSha, head], root).trim() || null;
+      mergeBase = (await git(['merge-base', baseSha, head], root)).trim() || null;
     } catch {
       // Unrelated histories have none.
     }

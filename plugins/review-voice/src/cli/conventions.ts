@@ -11,7 +11,7 @@ import { flag, refExists } from './shared.ts';
  * nested CLAUDE.md is only supplied for a diff that actually touches its
  * subtree.
  */
-export function conventionsCommand(argv: string[]): number {
+export async function conventionsCommand(argv: string[]): Promise<number> {
   let root: string;
   try {
     root = repositoryRoot(process.cwd());
@@ -49,7 +49,7 @@ export function conventionsCommand(argv: string[]): number {
     return 2;
   }
 
-  const report = discoverConventions(root, changed, ref === null ? undefined : gitTreeReader(root, ref));
+  const report = await discoverConventions(root, changed, ref === null ? undefined : await gitTreeReader(root, ref));
   // On stderr, where the reviewer reads it; the JSON below goes to a file.
   if (report.documents.length === 0 && report.skipped.length === 0) {
     console.error(`No convention documents found${ref === null ? '' : ` at ${ref}`}. Looked for: ${SEARCHED_PLACES.join(', ')}.`);

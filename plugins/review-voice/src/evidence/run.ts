@@ -1,4 +1,4 @@
-import { spawn as spawnChild } from 'node:child_process';
+import { spawn as spawnChild, spawnSync } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { cleaner, cut, isSarif, memo, parseOutput, replaced } from './parsers.ts';
 import { terminalSafe } from '../terminal.ts';
@@ -308,6 +308,8 @@ export interface CommandResult {
   status: number | null;
   stdout: string;
   stderr: string;
+  /** The raw stdout, only when asked for with `bytes`. */
+  stdoutBytes?: Buffer;
   /** Set when the command could not start, timed out (code ETIMEDOUT) or overflowed (code ENOBUFS). */
   error?: Error;
 }
@@ -325,7 +327,11 @@ export interface CommandOptions {
   killSignal: 'SIGKILL';
   /** Bytes allowed on stdout or on stderr, each. */
   maxBuffer: number;
-  detached: true;
+  detached: boolean;
+  /** Also return stdout undecoded, for binary output. */
+  bytes?: true;
+  /** False: never signal the group once the leader has returned, when its id may be another's. Default true. */
+  killAfterClose?: boolean;
   /** Written to stdin. Without it stdin is empty, never left open, so a command that reads it cannot hang. */
   input?: string;
   /** Given stdout as it arrives, for a command read while it runs. */
@@ -349,6 +355,15 @@ function killGroup(pid: number, signal: NodeJS.Signals): void {
   } catch {
     // Nothing was left in the group, which is the usual case.
   }
+}
+
+/** Ends the group (POSIX) or the tree (Windows), for a caller whose leader is still unreaped. */
+function killTree(pid: number, signal: NodeJS.Signals): void {
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    return;
+  }
+  killGroup(pid, signal);
 }
 
 /** The undo steps of work in progress around a command, such as a reproduction's file in the worktree. */
@@ -418,7 +433,7 @@ export function spawnCommand(command: string, options: CommandOptions): Promise<
       resolve({ status: null, stdout: '', stderr: '', error: Object.assign(new Error(`spawn ${command} ABORT_ERR`), { code: 'ABORT_ERR' }) });
       return;
     }
-    const child = spawnChild(command, options.args ?? [], { cwd: options.cwd, env: options.env, shell: options.shell, detached: options.detached, stdio: 'pipe' });
+    const child = spawnChild(command, options.args ?? [], { cwd: options.cwd, env: options.env, shell: options.shell, detached: options.detached, windowsHide: true, stdio: 'pipe' });
     const pid = child.pid;
     if (pid !== undefined) runningGroups.add(pid);
     const chunks = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
@@ -427,7 +442,7 @@ export function spawnCommand(command: string, options: CommandOptions): Promise<
     let settled = false;
     const stop = (code: 'ETIMEDOUT' | 'ENOBUFS' | 'ABORT_ERR'): void => {
       failure ??= code;
-      if (pid !== undefined) killGroup(pid, options.killSignal);
+      if (pid !== undefined) killTree(pid, options.killSignal);
       // A descendant that left the group (setsid, or a detached spawn) still
       // holds the pipes, and close waits for them, so a timeout or overflow
       // would wait for it. spawnSync stopped reading here; so does this, and
@@ -457,12 +472,14 @@ export function spawnCommand(command: string, options: CommandOptions): Promise<
       settled = true;
       clearTimeout(timer);
       if (pid !== undefined) {
-        killGroup(pid, 'SIGKILL');
+        if (options.killAfterClose !== false) killGroup(pid, 'SIGKILL');
         runningGroups.delete(pid);
       }
+      const stdout = Buffer.concat(chunks.stdout);
       resolve({
         status,
-        stdout: Buffer.concat(chunks.stdout).toString(options.encoding),
+        stdout: stdout.toString(options.encoding),
+        ...(options.bytes === true ? { stdoutBytes: stdout } : {}),
         stderr: Buffer.concat(chunks.stderr).toString(options.encoding),
         ...(error === undefined ? {} : { error }),
       });

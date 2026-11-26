@@ -50,7 +50,7 @@ interface CarriedHeld {
  * a fresh look. An unusable run never fails the review: it only means the held
  * findings were not consulted, which the caller is told on stderr.
  */
-function carriedHeldFindings(runId: string, head: string): CarriedHeld[] {
+async function carriedHeldFindings(runId: string, head: string): Promise<CarriedHeld[]> {
   const db = openDatabase();
   try {
     const detail = runDetail(db, runId);
@@ -75,7 +75,7 @@ function carriedHeldFindings(runId: string, head: string): CarriedHeld[] {
         h.verdict === 'challenge-partly'),
     );
     const inputs = entries.map((h, i) => ({ findingId: String(i), path: h.path, line: h.line, text: '' }));
-    const result = carryFindings(inputs, detail.headRef, head, process.cwd());
+    const result = await carryFindings(inputs, detail.headRef, head, process.cwd());
     return result.carried.map((c) => {
       const entry = entries[Number(c.findingId)] as HeldFinding;
       return { path: c.path, line: c.line, verdict: entry.verdict, reason: entry.reason, text: entry.text, runId };
@@ -285,7 +285,7 @@ function markSiblings(kept: Record<string, unknown>[]): void {
  * on a real run that cost the only pass which found the best defect of the day.
  * Failing here costs one re-run of one agent.
  */
-export function checkCandidatesCommand(argv: string[]): number {
+export async function checkCandidatesCommand(argv: string[]): Promise<number> {
   let raw: unknown[];
   try {
     // The analyst's reply as it came: prose or a fence around the JSON is left out (#417).
@@ -532,7 +532,8 @@ export function checkCandidatesCommand(argv: string[]): number {
     // Several runs when related pull requests (a stack) carry the same code, so
     // an owner's decision on one holds on the others (#173).
     const heldRuns = heldFrom === null ? [] : [...new Set(heldFrom.split(',').map((id) => id.trim()).filter((id) => id !== ''))];
-    const held = headSha === null ? [] : heldRuns.flatMap((runId) => carriedHeldFindings(runId, headSha));
+    const held: CarriedHeld[] = [];
+    if (headSha !== null) for (const runId of heldRuns) held.push(...(await carriedHeldFindings(runId, headSha)));
 
     // The owner's own comments are told apart so the verifier knows whose point
     // it would be repeating. Logins compare without case, as GitHub's do.

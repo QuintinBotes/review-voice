@@ -23,7 +23,7 @@ const lines = (count, prefix) => Array.from({ length: count }, (_, index) => `${
  * src/a.ts. `src/a.ts` is long enough that a base edit near the end does not
  * touch the author's hunk.
  */
-function withPullRequest(fn) {
+async function withPullRequest(fn) {
   const root = mkdtempSync(join(tmpdir(), 'rv-own-diff-'));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const write = (path, contents) => {
@@ -54,15 +54,15 @@ function withPullRequest(fn) {
   const reviewed = commit('author work');
 
   try {
-    return fn({ root, git, write, edit, commit, reviewed, head: () => git('rev-parse', 'HEAD').trim() });
+    return await fn({ root, git, write, edit, commit, reviewed, head: () => git('rev-parse', 'HEAD').trim() });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-function plan(repository, overrides = {}) {
+async function plan(repository, overrides = {}) {
   const base = repository.git('rev-parse', 'main').trim();
-  return planScope({
+  return await planScope({
     priorRun: { reviewRunId: 'run_001', headRef: repository.reviewed, createdAt: '2026-09-30T12:00:00.000Z' },
     head: repository.head(),
     headAvailable: true,
@@ -84,12 +84,12 @@ function advanceBase(repository) {
   repository.git('checkout', '-q', 'pr');
 }
 
-test('a head that only merged the base is unchanged, with nothing to read', () => {
-  withPullRequest((repository) => {
+test('a head that only merged the base is unchanged, with nothing to read', async () => {
+  await withPullRequest(async (repository) => {
     advanceBase(repository);
     repository.git('merge', '-q', '--no-ff', 'main', '-m', 'merge main');
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'unchanged');
     assert.equal(scope.reason, 'base-merged');
     assert.equal(scope.since, repository.reviewed);
@@ -97,25 +97,25 @@ test('a head that only merged the base is unchanged, with nothing to read', () =
   });
 });
 
-test('a rebase that leaves the author content alone is unchanged', () => {
-  withPullRequest((repository) => {
+test('a rebase that leaves the author content alone is unchanged', async () => {
+  await withPullRequest(async (repository) => {
     advanceBase(repository);
     repository.git('rebase', '-q', 'main');
 
-    const { scope } = plan(repository);
+    const { scope } = await plan(repository);
     assert.equal(scope.kind, 'unchanged');
     assert.equal(scope.reason, 'history-rewritten');
   });
 });
 
-test('a merge plus new author work reviews only the new author hunk', () => {
-  withPullRequest((repository) => {
+test('a merge plus new author work reviews only the new author hunk', async () => {
+  await withPullRequest(async (repository) => {
     advanceBase(repository);
     repository.git('merge', '-q', '--no-ff', 'main', '-m', 'merge main');
     repository.edit('src/b.ts', 'b 3\n', 'b 3 changed after the review\n');
     repository.commit('more author work');
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff');
     assert.deepEqual(scope.files, ['src/b.ts']);
     assert.equal(scope.hunks, 1);
@@ -130,15 +130,15 @@ test('a merge plus new author work reviews only the new author hunk', () => {
   });
 });
 
-test('a rebase that amends one hunk reviews that hunk only', () => {
-  withPullRequest((repository) => {
+test('a rebase that amends one hunk reviews that hunk only', async () => {
+  await withPullRequest(async (repository) => {
     advanceBase(repository);
     repository.git('rebase', '-q', 'main');
     repository.edit('src/a.ts', 'a 5 changed by the author\n', 'a 5 changed differently\n');
     repository.git('add', '-A');
     repository.git('commit', '-q', '--amend', '--no-edit');
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff');
     assert.deepEqual(scope.files, ['src/a.ts']);
     assert.match(interdiffPatch, /^\+a 5 changed differently$/m);
@@ -146,11 +146,11 @@ test('a rebase that amends one hunk reviews that hunk only', () => {
   });
 });
 
-test('plain author commits are read as their own-diff hunks, against the merge base', () => {
-  withPullRequest((repository) => {
+test('plain author commits are read as their own-diff hunks, against the merge base', async () => {
+  await withPullRequest(async (repository) => {
     repository.edit('src/b.ts', 'b 3\n', 'b 3 next\n');
     repository.commit('follow-up');
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff');
     assert.deepEqual(scope.files, ['src/b.ts']);
     assert.equal(scope.mergeBase, repository.git('merge-base', 'main', 'HEAD').trim());
@@ -158,11 +158,11 @@ test('plain author commits are read as their own-diff hunks, against the merge b
   });
 });
 
-test('without the base every earlier decision is unchanged', () => {
-  withPullRequest((repository) => {
+test('without the base every earlier decision is unchanged', async () => {
+  await withPullRequest(async (repository) => {
     advanceBase(repository);
     repository.git('merge', '-q', '--no-ff', 'main', '-m', 'merge main');
-    const scope = planIncrementalScope({
+    const scope = await planIncrementalScope({
       priorRun: { reviewRunId: 'run_001', headRef: repository.reviewed, createdAt: '2026-09-30T12:00:00.000Z' },
       head: repository.head(),
       headAvailable: true,
@@ -176,8 +176,8 @@ test('without the base every earlier decision is unchanged', () => {
   });
 });
 
-test('IF the own diff cannot be read THEN the whole pull request is read', () => {
-  withPullRequest((repository) => {
+test('IF the own diff cannot be read THEN the whole pull request is read', async () => {
+  await withPullRequest(async (repository) => {
     advanceBase(repository);
     repository.git('merge', '-q', '--no-ff', 'main', '-m', 'merge main');
     const failing = {
@@ -191,11 +191,11 @@ test('IF the own diff cannot be read THEN the whole pull request is read', () =>
       },
       diffText: () => '',
     };
-    const { scope } = plan(repository, { git: failing });
+    const { scope } = await plan(repository, { git: failing });
     assert.equal(scope.kind, 'full');
     assert.equal(scope.cause, 'compare-unavailable');
 
-    const unknownBase = plan(repository, { base: 'f'.repeat(40) });
+    const unknownBase = await plan(repository, { base: 'f'.repeat(40) });
     assert.equal(unknownBase.scope.kind, 'full');
     assert.equal(unknownBase.scope.cause, 'compare-unavailable');
   });
@@ -212,28 +212,28 @@ test('hunks are matched by what they change and what they sit next to, not by li
 // Every author change since the review must be read: these are the shapes that
 // once produced `unchanged` and silently skipped the change.
 
-function afterMerge(repository, change) {
+async function afterMerge(repository, change) {
   advanceBase(repository);
   repository.git('merge', '-q', '--no-ff', 'main', '-m', 'merge main');
   change(repository);
-  return plan(repository).scope;
+  return (await plan(repository)).scope;
 }
 
-test('a reverted author hunk is never unchanged', () => {
-  withPullRequest((repository) => {
-    const scope = afterMerge(repository, (r) => {
+test('a reverted author hunk is never unchanged', async () => {
+  await withPullRequest(async (repository) => {
+    const scope = await afterMerge(repository, (r) => {
       r.edit('src/a.ts', 'a 5 changed by the author\n', 'a 5\n');
       r.commit('revert the reviewed change');
     });
     assert.notEqual(scope.kind, 'unchanged');
     assert.equal(scope.kind, 'interdiff');
-    assert.match(plan(repository).interdiffPatch, /^-a 5 changed by the author$/m);
+    assert.match((await plan(repository)).interdiffPatch, /^-a 5 changed by the author$/m);
   });
 });
 
-test('the same edit moved elsewhere in the file is never unchanged', () => {
-  withPullRequest((repository) => {
-    const scope = afterMerge(repository, (r) => {
+test('the same edit moved elsewhere in the file is never unchanged', async () => {
+  await withPullRequest(async (repository) => {
+    const scope = await afterMerge(repository, (r) => {
       r.edit('src/a.ts', 'a 5 changed by the author\n', 'a 5\n');
       r.edit('src/a.ts', 'a 20\n', 'a 5 changed by the author\n');
       r.commit('move the edit');
@@ -242,18 +242,18 @@ test('the same edit moved elsewhere in the file is never unchanged', () => {
   });
 });
 
-test('a rename, a mode change and an empty new file are never unchanged', () => {
+test('a rename, a mode change and an empty new file are never unchanged', async () => {
   for (const change of [
     (r) => r.git('mv', 'src/b.ts', 'src/b-renamed.ts'),
     (r) => chmodSync(join(r.root, 'src/b.ts'), 0o755),
     (r) => r.write('src/empty.ts', ''),
   ]) {
-    withPullRequest((repository) => {
+    await withPullRequest(async (repository) => {
       advanceBase(repository);
       repository.git('merge', '-q', '--no-ff', 'main', '-m', 'merge main');
       change(repository);
       repository.commit('metadata-only author change');
-      const { scope } = plan(repository, {
+      const { scope } = await plan(repository, {
         reviewedFiles: [{ path: 'src/a.ts' }, { path: 'src/b.ts' }, { path: 'src/b-renamed.ts', previousPath: 'src/b.ts' }, { path: 'src/empty.ts' }],
       });
       assert.notEqual(scope.kind, 'unchanged');
@@ -261,9 +261,9 @@ test('a rename, a mode change and an empty new file are never unchanged', () => 
   }
 });
 
-test('a rewritten reviewed hunk is reviewed as the new version, not read in full', () => {
-  withPullRequest((repository) => {
-    const scope = afterMerge(repository, (r) => {
+test('a rewritten reviewed hunk is reviewed as the new version, not read in full', async () => {
+  await withPullRequest(async (repository) => {
+    const scope = await afterMerge(repository, (r) => {
       r.edit('src/a.ts', 'a 5 changed by the author\n', 'a 5 rewritten after review\n');
       r.commit('rewrite');
     });
@@ -272,27 +272,27 @@ test('a rewritten reviewed hunk is reviewed as the new version, not read in full
   });
 });
 
-test('code restored to its merge-base state is read as the change since the review', () => {
+test('code restored to its merge-base state is read as the change since the review', async () => {
   // The author withdrew a reviewed change. The commit range shows exactly that:
   // the reviewed line going and the base line coming back, so the follow-up
   // reads the withdrawal instead of the whole pull request.
-  withPullRequest((repository) => {
+  await withPullRequest(async (repository) => {
     repository.edit('src/a.ts', 'a 5 changed by the author\n', 'a 5\n');
     repository.commit('restore the base version');
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff');
     assert.match(interdiffPatch, /^-a 5 changed by the author$/m);
     assert.match(interdiffPatch, /^\+a 5$/m);
   });
 });
 
-test('planning from a subdirectory still sees every author change', () => {
-  withPullRequest((repository) => {
-    const scope = afterMerge(repository, (r) => {
+test('planning from a subdirectory still sees every author change', async () => {
+  await withPullRequest(async (repository) => {
+    const scope = await afterMerge(repository, (r) => {
       r.edit('src/b.ts', 'b 3\n', 'b 3 changed after the review\n');
       r.commit('more author work');
     });
-    const fromSubdirectory = plan(repository, { cwd: join(repository.root, 'src') }).scope;
+    const fromSubdirectory = (await plan(repository, { cwd: join(repository.root, 'src') })).scope;
     assert.equal(scope.kind, 'interdiff');
     assert.deepEqual(fromSubdirectory, scope);
   });
@@ -322,8 +322,8 @@ function acquired() {
   };
 }
 
-test('an unchanged scope reads nothing and says the earlier review still applies', () => {
-  const scoped = applyReviewScope(acquired(), 7, {
+test('an unchanged scope reads nothing and says the earlier review still applies', async () => {
+  const scoped = await applyReviewScope(acquired(), 7, {
     kind: 'unchanged',
     since: '1234567890abcdef',
     priorRunId: null,
@@ -337,10 +337,10 @@ test('an unchanged scope reads nothing and says the earlier review still applies
   assert.equal(scoped.scopeNote, "No change to this pull request's own diff since 1234567; the review at 1234567 still applies.");
 });
 
-test('an interdiff scope reads the planned patch, and only its files', () => {
+test('an interdiff scope reads the planned patch, and only its files', async () => {
   const patch = ['diff --git a/src/b.ts b/src/b.ts', '--- a/src/b.ts', '+++ b/src/b.ts', '@@ -3 +3 @@', '-b 3', '+b 3 next', ''].join('\n');
   const scope = { kind: 'interdiff', since: '1234567890abcdef', priorRunId: 'run_001', priorReviewedAt: '2026-09-30T12:00:00.000Z', mergeBase: 'e'.repeat(40), files: ['src/b.ts'], hunks: 1 };
-  const scoped = applyReviewScope(acquired(), 7, scope, process.cwd(), undefined, patch);
+  const scoped = await applyReviewScope(acquired(), 7, scope, process.cwd(), undefined, patch);
   assert.equal(scoped.diff, patch);
   assert.equal(scoped.reviewedFileCount, 1);
   assert.equal(scoped.hunkFileCount, 1);
@@ -348,7 +348,7 @@ test('an interdiff scope reads the planned patch, and only its files', () => {
   assert.match(scoped.scopeNote, /base-branch changes merged in were not reviewed/);
 
   // Without the planner's patch nothing narrower is known to be safe.
-  const fallback = applyReviewScope(acquired(), 7, scope, process.cwd());
+  const fallback = await applyReviewScope(acquired(), 7, scope, process.cwd());
   assert.equal(fallback.scope.kind, 'full');
   assert.equal(fallback.diff, 'full patch');
 });
