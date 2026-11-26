@@ -48,7 +48,7 @@ import {
   flag,
   repositoryConfig,
   boundLists,
-  refExists,
+  refExistsSync,
   VERDICT_KEYS,
   applyCorrections,
   verificationProblem,
@@ -106,7 +106,7 @@ export function deletedFileCheck(argv: string[]): (candidate: { path: string; li
   const head = flag(argv, '--head');
   const cwd = process.cwd();
   // refExists asks for a commit, which is what both refs must name.
-  if (base === null || head === null || !refExists(base, cwd) || !refExists(head, cwd)) return () => false;
+  if (base === null || head === null || !refExistsSync(base, cwd) || !refExistsSync(head, cwd)) return () => false;
   // The list the diff was read with, so a deleted file is one a review would read here exactly when it is there.
   const firstParty = firstPartyMatcher(repositoryConfig()?.firstPartyPaths ?? []);
   const git = (args: string[]): string => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
@@ -535,7 +535,7 @@ export function scoreCommand(argv: string[]): number {
   }
 
   const baseRef = flag(argv, '--base');
-  if (baseRef !== null && searchRoot !== null && !refExists(baseRef, searchRoot)) {
+  if (baseRef !== null && searchRoot !== null && !refExistsSync(baseRef, searchRoot)) {
     console.error(
       `--base ${baseRef} does not resolve in this repository. Fetch it, or omit the flag ` +
         'to search the working tree. Absence claims would otherwise be checked against nothing.',

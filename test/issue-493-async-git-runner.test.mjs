@@ -43,12 +43,12 @@ function scratchRepo(t) {
 }
 
 /** A bin directory whose `git` is the given script body (after the shebang) for `cat-file`, real git otherwise. */
-function fakeGit(t, body) {
+function fakeGit(t, body, command = 'cat-file') {
   const dir = scratch(t, 'rv-493-fake-');
   const bin = join(dir, 'bin');
   mkdirSync(bin);
   const pids = join(dir, 'pids');
-  writeFileSync(join(bin, 'git'), ['#!/bin/sh', 'if [ "$1" = "cat-file" ]; then', body.replaceAll('$PIDS', `"${pids}"`), 'fi', `exec "${realGit}" "$@"`, ''].join('\n'));
+  writeFileSync(join(bin, 'git'), ['#!/bin/sh', `if [ "$1" = "${command}" ] && [ "$2" != "--show-toplevel" ]; then`, body.replaceAll('$PIDS', `"${pids}"`), 'fi', `exec "${realGit}" "$@"`, ''].join('\n'));
   chmodSync(join(bin, 'git'), 0o755);
   return { bin, pids };
 }
@@ -200,4 +200,67 @@ test('a git that never answers is killed at the bound, and the event loop keeps 
   assert.ok(turns > 0, `timers ran while git was pending (${turns})`);
   assert.equal(await until(() => pidsIn(fake.pids).length > 0), true);
   assert.equal(await gone(pidsIn(fake.pids)[0]), true);
+});
+
+test('ensureRefs gives refs that a fetch made available their real merge base', async (t) => {
+  const { ensureRefs } = await import('../plugins/review-voice/src/diff/pull-request.ts');
+  // An origin whose path reads as github.com/o/r, so the remote check accepts it without a rewrite rule (get-url applies those).
+  const origin = join(scratch(t, 'rv-493-origin-'), 'github.com', 'o', 'r');
+  mkdirSync(origin, { recursive: true });
+  const git = (cwd, ...args) => execFileSync(realGit, args, { cwd, encoding: 'utf8' }).trim();
+  git(origin, 'init', '-q', '-b', 'main');
+  for (const [k, v] of [['user.email', 'test@example.com'], ['user.name', 'Test'], ['commit.gpgsign', 'false']]) git(origin, 'config', k, v);
+  writeFileSync(join(origin, 'a.txt'), 'a\n');
+  git(origin, 'add', '-A');
+  git(origin, 'commit', '-q', '-m', 'initial');
+  const fork = git(origin, 'rev-parse', 'HEAD');
+  git(origin, 'checkout', '-q', '-b', 'topic');
+  writeFileSync(join(origin, 'b.txt'), 'b\n');
+  git(origin, 'add', '-A');
+  git(origin, 'commit', '-q', '-m', 'topic');
+  const head = git(origin, 'rev-parse', 'HEAD');
+  git(origin, 'checkout', '-q', 'main');
+  // The base is the fork point, which the pull ref brings along; head arrives only by the fetch.
+  git(origin, 'update-ref', 'refs/pull/7/head', head);
+  git(origin, 'config', 'uploadpack.allowAnySHA1InWant', 'true');
+  const clone = scratch(t, 'rv-493-clone-');
+  git(clone, 'init', '-q', '-b', 'main');
+  git(clone, 'remote', 'add', 'origin', origin);
+  const result = await ensureRefs({ repository: 'o/r', pullNumber: 7, base: fork, head, cwd: clone });
+  assert.equal(result.base.available && result.head.available, true);
+  assert.equal(result.mergeBase, fork);
+});
+
+test('refExists is false within the bound when rev-parse never answers, and conventions --ref degrades', posixOnly, async (t) => {
+  const { refExists } = await import('../plugins/review-voice/src/cli/shared.ts');
+  const dir = scratchRepo(t);
+  const fake = fakeGit(t, '  echo $$ >> $PIDS\n  exec sleep 60', 'rev-parse');
+  const saved = { path: process.env.PATH, bound: process.env.REVIEW_VOICE_GIT_TIMEOUT_MS };
+  process.env.PATH = `${fake.bin}:${saved.path ?? ''}`;
+  process.env.REVIEW_VOICE_GIT_TIMEOUT_MS = String(BOUND_MS);
+  try {
+    let turns = 0;
+    const ticker = setInterval(() => {
+      turns += 1;
+    }, 5);
+    assert.equal(await refExists('HEAD', dir), false);
+    clearInterval(ticker);
+    assert.ok(turns > 0, 'the event loop kept turning while rev-parse stalled');
+  } finally {
+    process.env.PATH = saved.path;
+    if (saved.bound === undefined) delete process.env.REVIEW_VOICE_GIT_TIMEOUT_MS;
+    else process.env.REVIEW_VOICE_GIT_TIMEOUT_MS = saved.bound;
+  }
+  const pids = pidsIn(fake.pids);
+  assert.ok(pids.length > 0, 'the fake rev-parse ran');
+  for (const pid of pids) assert.equal(await gone(pid), true, 'the stalled git was killed');
+  // The CLI preflight: the same degrade as an unresolvable ref, exit 2.
+  const run = spawnSync(process.execPath, [new URL('../plugins/review-voice/dist/review-voice.mjs', import.meta.url).pathname, 'conventions', '--ref', 'HEAD'], {
+    cwd: dir,
+    env: { ...process.env, PATH: `${fake.bin}:${saved.path}`, REVIEW_VOICE_GIT_TIMEOUT_MS: String(BOUND_MS) },
+    encoding: 'utf8',
+    timeout: 120000,
+  });
+  assert.equal(run.status, 2);
+  assert.match(run.stderr, /does not resolve/);
 });

@@ -5,6 +5,7 @@ import { DEFAULT_LIMITS } from '../contract/limits.ts';
 import type { Database } from '../store/db.ts';
 import { loadConfig } from '../policy/load.ts';
 import { repositoryRoot } from '../diff/acquire.ts';
+import { GIT_CHECK_TIMEOUT_MS, gitTimeoutMs, runGit } from '../git-exec.ts';
 import { GitHubClient } from '../github/client.ts';
 import {
   partlyAddressedProblem,
@@ -116,6 +117,7 @@ export function inferRepository(cwd: string): string | null {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS), killSignal: 'SIGKILL',
     }).trim();
     const match = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url);
     return match?.[1] ?? null;
@@ -132,6 +134,7 @@ export function remoteRepositories(cwd: string): string[] {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS), killSignal: 'SIGKILL',
     });
   } catch {
     return [];
@@ -251,9 +254,19 @@ function containsCut(before: unknown, after: unknown): boolean {
  * one is right is not, so an unrecognised shape is now an error rather than an
  * empty map.
  */
-export function refExists(ref: string, cwd: string): boolean {
+export async function refExists(ref: string, cwd: string): Promise<boolean> {
   try {
-    execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd, stdio: 'ignore' });
+    await runGit(cwd, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { timeoutMs: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** For the sync scoring paths: the same check, bounded by `timeout` (a stalled git is killed, which reads as absent). */
+export function refExistsSync(ref: string, cwd: string): boolean {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd, stdio: 'ignore', timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS), killSignal: 'SIGKILL' });
     return true;
   } catch {
     return false;

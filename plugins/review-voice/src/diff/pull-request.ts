@@ -132,7 +132,7 @@ export async function originRepository(cwd: string): Promise<string | null> {
  * read-only with respect to working state; writing loose objects and one ref
  * under `refs/review-voice/` is the most this may do.
  */
-async function ensureRefs(options: {
+export async function ensureRefs(options: {
   repository: string;
   pullNumber: number;
   base: string;
@@ -145,23 +145,23 @@ async function ensureRefs(options: {
   });
 
   let present = await check();
-  const mergeBase = present.base && present.head ? await mergeBaseOf(options.base, options.head, options.cwd) : null;
-  const result = (fetched: boolean, note: string | null): RefAvailability => ({
+  // After any fetch has refreshed `present`, so refs that arrive by fetch get their merge base.
+  const result = async (fetched: boolean, note: string | null): Promise<RefAvailability> => ({
     base: { sha: options.base, available: present.base },
     head: { sha: options.head, available: present.head },
-    mergeBase,
+    mergeBase: present.base && present.head ? await mergeBaseOf(options.base, options.head, options.cwd) : null,
     fetched,
     note,
   });
 
-  if (present.base && present.head) return result(false, null);
+  if (present.base && present.head) return await result(false, null);
 
   const origin = await originRepository(options.cwd);
   if (origin === null) {
-    return result(false, 'No origin remote resolved, so the pull request commits were not fetched.');
+    return await result(false, 'No origin remote resolved, so the pull request commits were not fetched.');
   }
   if (origin.toLowerCase() !== options.repository.toLowerCase()) {
-    return result(
+    return await result(
       false,
       `origin is ${origin} but the review is of ${options.repository}, so nothing was fetched. ` +
         'Fetching a pull request from an unrelated clone would supply commits from the wrong project.',
@@ -200,11 +200,11 @@ async function ensureRefs(options: {
   }
 
   if (present.base && present.head) {
-    return result(true, null);
+    return await result(true, null);
   }
 
   const missing = [!present.base ? 'base' : null, !present.head ? 'head' : null].filter(Boolean);
-  return result(
+  return await result(
     true,
     `The ${missing.join(' and ')} commit could not be made available locally. ` +
       'Reading code at that ref will fail, so evidence from it is unavailable rather than absent.',

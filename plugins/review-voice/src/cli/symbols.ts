@@ -11,7 +11,7 @@ import { flag, resolveOutPath, repositoryConfig, refExists } from './shared.ts';
  * treating that as a normal `--base` invocation would quietly turn a caller's
  * request for a reviewed tree into a pile of partial working-tree-like data.
  */
-export function symbolsCommand(argv: string[]): number {
+export async function symbolsCommand(argv: string[]): Promise<number> {
   const diffFile = flag(argv, '--diff-file');
   if (diffFile === null) {
     console.error('--diff-file needs a unified diff path.');
@@ -32,7 +32,7 @@ export function symbolsCommand(argv: string[]): number {
     console.error('--base needs a git ref, for example: --base origin/main');
     return 2;
   }
-  if (base !== null && !refExists(base, process.cwd())) {
+  if (base !== null && !(await refExists(base, process.cwd()))) {
     console.error(`--base ${base} does not resolve in this repository. Fetch it before collecting symbol context.`);
     return 2;
   }
@@ -43,7 +43,7 @@ export function symbolsCommand(argv: string[]): number {
     console.error('--head needs a git ref, for example: --head HEAD');
     return 2;
   }
-  if (head !== null && !refExists(head, process.cwd())) {
+  if (head !== null && !(await refExists(head, process.cwd()))) {
     console.error(`--head ${head} does not resolve in this repository. Fetch it before collecting symbol context.`);
     return 2;
   }

@@ -44,7 +44,7 @@ export async function conventionsCommand(argv: string[]): Promise<number> {
     console.error('--ref needs a git ref, for example: --ref origin/main');
     return 2;
   }
-  if (ref !== null && !refExists(ref, root)) {
+  if (ref !== null && !(await refExists(ref, root))) {
     console.error(`--ref ${ref} does not resolve in this repository. Fetch it before collecting conventions.`);
     return 2;
   }

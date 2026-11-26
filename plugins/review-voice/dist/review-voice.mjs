@@ -24523,21 +24523,20 @@ async function ensureRefs(options) {
     head: await hasCommit(options.head, options.cwd)
   });
   let present = await check();
-  const mergeBase = present.base && present.head ? await mergeBaseOf(options.base, options.head, options.cwd) : null;
-  const result = (fetched, note) => ({
+  const result = async (fetched, note) => ({
     base: { sha: options.base, available: present.base },
     head: { sha: options.head, available: present.head },
-    mergeBase,
+    mergeBase: present.base && present.head ? await mergeBaseOf(options.base, options.head, options.cwd) : null,
     fetched,
     note
   });
-  if (present.base && present.head) return result(false, null);
+  if (present.base && present.head) return await result(false, null);
   const origin = await originRepository(options.cwd);
   if (origin === null) {
-    return result(false, "No origin remote resolved, so the pull request commits were not fetched.");
+    return await result(false, "No origin remote resolved, so the pull request commits were not fetched.");
   }
   if (origin.toLowerCase() !== options.repository.toLowerCase()) {
-    return result(
+    return await result(
       false,
       `origin is ${origin} but the review is of ${options.repository}, so nothing was fetched. Fetching a pull request from an unrelated clone would supply commits from the wrong project.`
     );
@@ -24564,10 +24563,10 @@ async function ensureRefs(options) {
     present = await check();
   }
   if (present.base && present.head) {
-    return result(true, null);
+    return await result(true, null);
   }
   const missing = [!present.base ? "base" : null, !present.head ? "head" : null].filter(Boolean);
-  return result(
+  return await result(
     true,
     `The ${missing.join(" and ")} commit could not be made available locally. Reading code at that ref will fail, so evidence from it is unavailable rather than absent.`
   );
@@ -26150,7 +26149,9 @@ function inferRepository(cwd) {
     const url = execFileSync9("git", ["remote", "get-url", "origin"], {
       cwd,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS),
+      killSignal: "SIGKILL"
     }).trim();
     const match = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url);
     return match?.[1] ?? null;
@@ -26164,7 +26165,9 @@ function remoteRepositories(cwd) {
     out = execFileSync9("git", ["config", "--get-regexp", "^remote\\..*\\.url$"], {
       cwd,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS),
+      killSignal: "SIGKILL"
     });
   } catch {
     return [];
@@ -26254,9 +26257,17 @@ function containsCut(before, after) {
   }
   return false;
 }
-function refExists(ref, cwd) {
+async function refExists(ref, cwd) {
   try {
-    execFileSync9("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
+    await runGit(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { timeoutMs: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function refExistsSync(ref, cwd) {
+  try {
+    execFileSync9("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore", timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS), killSignal: "SIGKILL" });
     return true;
   } catch {
     return false;
@@ -29800,7 +29811,7 @@ async function conventionsCommand(argv) {
     console.error("--ref needs a git ref, for example: --ref origin/main");
     return 2;
   }
-  if (ref !== null && !refExists(ref, root)) {
+  if (ref !== null && !await refExists(ref, root)) {
     console.error(`--ref ${ref} does not resolve in this repository. Fetch it before collecting conventions.`);
     return 2;
   }
@@ -31224,7 +31235,7 @@ function worktreeCommand(argv) {
   }
   let sha;
   try {
-    sha = execFileSync14("git", ["rev-parse", "--verify", "--quiet", `${head}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    sha = execFileSync14("git", ["rev-parse", "--verify", "--quiet", `${head}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS), killSignal: "SIGKILL" }).trim();
   } catch {
     console.error(`--head ${head} is not a commit in this clone. Fetch it and run again.`);
     return 2;
@@ -32681,7 +32692,7 @@ function collectSymbolContext(options) {
 }
 
 // plugins/review-voice/src/cli/symbols.ts
-function symbolsCommand(argv) {
+async function symbolsCommand(argv) {
   const diffFile = flag2(argv, "--diff-file");
   if (diffFile === null) {
     console.error("--diff-file needs a unified diff path.");
@@ -32700,7 +32711,7 @@ function symbolsCommand(argv) {
     console.error("--base needs a git ref, for example: --base origin/main");
     return 2;
   }
-  if (base !== null && !refExists(base, process.cwd())) {
+  if (base !== null && !await refExists(base, process.cwd())) {
     console.error(`--base ${base} does not resolve in this repository. Fetch it before collecting symbol context.`);
     return 2;
   }
@@ -32710,7 +32721,7 @@ function symbolsCommand(argv) {
     console.error("--head needs a git ref, for example: --head HEAD");
     return 2;
   }
-  if (head !== null && !refExists(head, process.cwd())) {
+  if (head !== null && !await refExists(head, process.cwd())) {
     console.error(`--head ${head} does not resolve in this repository. Fetch it before collecting symbol context.`);
     return 2;
   }
@@ -34057,7 +34068,7 @@ async function verifyCommand(argv) {
     const commitOf = (ref) => {
       if (ref === null) return null;
       try {
-        return execFileSync16("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        return execFileSync16("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS), killSignal: "SIGKILL" }).trim();
       } catch {
         console.error(`${ref} does not resolve to a commit here, so the verification command is not told about it.`);
         return null;
@@ -35370,7 +35381,7 @@ function deletedFileCheck(argv) {
   const base = flag2(argv, "--base");
   const head = flag2(argv, "--head");
   const cwd = process.cwd();
-  if (base === null || head === null || !refExists(base, cwd) || !refExists(head, cwd)) return () => false;
+  if (base === null || head === null || !refExistsSync(base, cwd) || !refExistsSync(head, cwd)) return () => false;
   const firstParty = firstPartyMatcher(repositoryConfig()?.firstPartyPaths ?? []);
   const git6 = (args) => execFileSync18("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
   let deleted;
@@ -35674,7 +35685,7 @@ function scoreCommand(argv) {
     searchRoot = null;
   }
   const baseRef = flag2(argv, "--base");
-  if (baseRef !== null && searchRoot !== null && !refExists(baseRef, searchRoot)) {
+  if (baseRef !== null && searchRoot !== null && !refExistsSync(baseRef, searchRoot)) {
     console.error(
       `--base ${baseRef} does not resolve in this repository. Fetch it, or omit the flag to search the working tree. Absence claims would otherwise be checked against nothing.`
     );
