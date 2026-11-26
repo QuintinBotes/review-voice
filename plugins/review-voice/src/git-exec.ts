@@ -10,8 +10,8 @@ import { join } from 'node:path';
  * fetch and ssh hold stdout and stderr, so killing only the direct child
  * leaves the sleeper holding the pipes and spawnSync waiting on them (or,
  * once it gives up, the sleeper outliving the command). Git runs detached
- * in its own process group; after spawnSync returns, on timeout, on
- * failure and on success, the whole group is killed, following the
+ * in its own process group; when spawnSync gives up (a timeout), the
+ * whole group is killed, never after a normal exit, following the
  * pattern in `evidence/run.ts` and `watch/review.ts` for a call that must
  * stay synchronous. spawnSync's own timeout is what makes the call
  * return; the group kill is what makes the descendant go with it.
@@ -112,6 +112,8 @@ export interface GitCatFileOptions {
   input?: string;
   maxBuffer: number;
   timeoutMs: number;
+  /** Ends git's process group or tree; injectable so a test can count calls. */
+  killTree?: (pid: number | undefined) => void;
 }
 
 /**
@@ -136,13 +138,16 @@ export function runGitCatFileSync(root: string, args: readonly string[], options
     stdio: ['pipe', 'pipe', 'pipe'],
   };
   const result = spawnSync('git', [...args], spawnOptions);
-  // Whatever the outcome, nothing git started outlives the call. On
-  // Windows the tree kill spawns taskkill, so it runs only when the call
-  // did not finish cleanly, since a pipe-holding descendant makes spawnSync
-  // report ETIMEDOUT even when git itself exited 0.
+  // End the group only when spawnSync gave up (timeout or its kill signal).
+  // After a normal exit git is reaped and its group id may be reused by an
+  // unrelated group leader, which a kill would hit. On a timeout the
+  // leftover descendants keep the group alive, so the id is still ours. A
+  // pipe-holding descendant makes spawnSync report ETIMEDOUT even when git
+  // itself exited 0.
   const timedOut = (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
-  if (process.platform !== 'win32' || result.error !== undefined || result.status !== 0) {
-    killGroup(result.pid);
+  if (timedOut || result.signal !== null) {
+    // shortcut: descendants exiting between the reap and this kill leave a small group-id reuse race, and on Windows the tree is reaped first; upgrade to the async runner in issue #493.
+    (options.killTree ?? killGroup)(result.pid);
   }
   if (timedOut) warnPartialCloneOnce(root);
   if (result.error !== undefined) {

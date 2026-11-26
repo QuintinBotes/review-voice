@@ -10442,8 +10442,8 @@ function runGitCatFileSync(root, args, options) {
   };
   const result = spawnSync("git", [...args], spawnOptions);
   const timedOut = result.error?.code === "ETIMEDOUT";
-  if (process.platform !== "win32" || result.error !== void 0 || result.status !== 0) {
-    killGroup(result.pid);
+  if (timedOut || result.signal !== null) {
+    (options.killTree ?? killGroup)(result.pid);
   }
   if (timedOut) warnPartialCloneOnce(root);
   if (result.error !== void 0) {
