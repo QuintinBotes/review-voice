@@ -252,8 +252,9 @@ function challengeOf(outputJson: string): { held: number; judged: number } {
   for (const entry of Array.isArray(scores) ? scores : []) {
     if (typeof entry !== 'object' || entry === null || !Object.hasOwn(entry, 'challenge')) continue;
     judged += 1;
-    const because = (entry as { rejectedBecause?: unknown }).rejectedBecause;
-    if (typeof because === 'string' && because.startsWith('challenge-')) held += 1;
+    const { gate, rejectedBecause: because } = entry as { gate?: unknown; rejectedBecause?: unknown };
+    // A score stored before #485 has no gate, so the prose still counts.
+    if (typeof gate === 'string' ? gate.startsWith('challenge-') : typeof because === 'string' && because.startsWith('challenge-')) held += 1;
   }
   return { held, judged };
 }

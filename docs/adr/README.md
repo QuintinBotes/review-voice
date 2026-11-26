@@ -51,3 +51,4 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0037](0037-confidence-is-a-floor-materiality-is-a-verdict.md) | Confidence is a floor, materiality is a verdict | Accepted |
 | [0038](0038-the-queue-reviews-what-concerns-the-team.md) | The queue reviews what concerns the team | Accepted |
 | [0039](0039-outcomes-become-precedent.md) | Outcomes become precedent | Accepted |
+| [0041](0041-holds-are-recorded-as-data.md) | Holds are recorded as data | Accepted |

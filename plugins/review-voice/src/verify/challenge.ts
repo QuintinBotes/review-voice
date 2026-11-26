@@ -507,7 +507,7 @@ export function applyChallenge(
     const heldAs = holdReasons.get(id as string);
     return heldAs === undefined
       ? { ...entry, challenge: rest }
-      : { ...entry, challenge: rest, eligible: false, rejectedBecause: `${heldAs.verdict}: ${heldAs.reason}` };
+      : { ...entry, challenge: rest, eligible: false, gate: heldAs.verdict, rejectedBecause: `${heldAs.verdict}: ${heldAs.reason}` };
   };
 
   for (const finding of eligible) {
@@ -559,7 +559,7 @@ export function applyChallenge(
     }
     const reason = `corrected line refused: ${moved.refused}`;
     hold(finding, id, 'challenge-partly', reason);
-    const heldAs = { eligible: false, rejectedBecause: `challenge-partly: ${reason}` };
+    const heldAs = { eligible: false, gate: 'challenge-partly', rejectedBecause: `challenge-partly: ${reason}` };
     document = {
       ...document,
       scores: (document['scores'] as unknown[]).map((e) => (isRecord(e) && idOf(e) === id ? { ...e, ...heldAs } : e)),

@@ -652,6 +652,39 @@ export interface FixRendering {
   withheld?: string;
 }
 
+/**
+ * The rule that held a candidate, as data (#485, docs/adr/0041). Every branch
+ * of `scoreCandidate` and every later stage that holds or rewrites a hold
+ * writes exactly one of these next to its `rejectedBecause` sentence, so a
+ * consumer reads the code instead of parsing the prose. `HOLD_GATES` lists them
+ * all, and a test fails when a code has no branch that writes it.
+ */
+export const HOLD_GATES = [
+  'not-computable',
+  'already-said',
+  'question-premises-false',
+  'question-unverified',
+  'question-gap',
+  'owner-precedent-question',
+  'unverifiable',
+  'verified-false',
+  'confidence-floor',
+  'owner-precedent',
+  'materiality',
+  'score',
+  'stale-consumer',
+  'question-cap',
+  'policy',
+  'uncorrectable-correction',
+  'absence',
+  'echo',
+  'anchor',
+  'citation',
+  'challenge-partly',
+  'challenge-refuted',
+] as const;
+export type HoldGate = (typeof HOLD_GATES)[number];
+
 export interface ScoreBreakdown {
   candidateId: string;
   /** The lane the candidate came from, `diff` when it named none (docs/adr/0023). */
@@ -702,8 +735,19 @@ export interface ScoreBreakdown {
     wouldChangeEligibility: boolean;
   };
   eligible: boolean;
-  /** Why it was rejected, when it was. */
+  /** Why it was rejected, when it was. For people; read `gate` rather than parsing it. */
   rejectedBecause: string | null;
+  /**
+   * The rule that held it, null when eligible. A stage that appends to an
+   * earlier reason (`Also:`) or leads over it records its own code, so a
+   * compound hold is never read as one gate alone. Absent on a breakdown stored
+   * before #485, which `gateOf` still reads from the prose.
+   */
+  gate?: HoldGate | null;
+  /** The verifier's `verified`, copied; null when it gave no verdict or none ran. */
+  verified?: boolean | null;
+  /** The verifier's `premises_verified`, copied; null likewise. */
+  premisesVerified?: boolean | null;
   /**
    * Set by `score --promote`: the owner posted it past the gate that held it.
    * `unverifiable` needs `--allow-unverifiable` and carries the owner's note.
@@ -866,6 +910,7 @@ export function applyQuestionCap(breakdowns: ScoreBreakdown[], limit: number = M
 
   for (const dropped of ranked.slice(limit)) {
     dropped.eligible = false;
+    dropped.gate = 'question-cap';
     dropped.rejectedBecause =
       `this review already asks ${limit} better-evidenced question${limit === 1 ? '' : 's'}, ` +
       'and a review that ends in a list of questions has stopped being a review';
@@ -2047,19 +2092,23 @@ export function scoreCandidate(
   // be asked at once, since a review that ends in five questions has stopped
   // being a review.
   let rejectedBecause: string | null = null;
+  let gate: HoldGate | null = null;
   // Checked explicitly: every comparison against NaN is false, so a
   // non-finite score would otherwise pass both thresholds below.
   if (!Number.isFinite(finalScore) || !Number.isFinite(confidence)) {
+    gate = 'not-computable';
     rejectedBecause = 'score could not be computed from this candidate';
   } else if (alreadySaid !== null) {
     // Not left to the weights. Novelty carries a tenth of the score, so a
     // confident candidate with strong evidence still clears the threshold
     // while repeating a comment already published on that line.
+    gate = 'already-said';
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
   } else if (isQuestion && verification?.premisesVerified === false) {
     // Eligible without a verified answer, which is the point of a question,
     // but not on a premise the verifier found false or could not check: the
     // facts a question rests on are assertions like any other.
+    gate = 'question-premises-false';
     rejectedBecause = withVerifierReason(
       'the verifier could not verify the premises this question rests on (premises_verified: false)',
       verification.reason,
@@ -2068,6 +2117,7 @@ export function scoreCandidate(
     // Fail closed. A question is eligible without a verified answer, but only
     // with verified premises: a verifier that rejected it, or said nothing
     // about its premises, or never saw it, has not backed the facts it rests on.
+    gate = 'question-unverified';
     rejectedBecause = withVerifierReason(
       verification === undefined
         ? 'a question needs the verifier to confirm the premises it rests on (premises_verified: true), and there is no verifier verdict for this one'
@@ -2079,6 +2129,7 @@ export function scoreCandidate(
     // material. Rejected and below even odds, it says the question is more
     // likely moot than not, so it meets a confidence gate: listed in
     // belowGate, and the owner can still --promote it (#219).
+    gate = 'question-gap';
     rejectedBecause =
       `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${QUESTION_GAP_FLOOR}, ` +
       'and the verifier rejected this question (verified: false)';
@@ -2099,6 +2150,7 @@ export function scoreCandidate(
     // What is restored is the part that carries the owner's judgement: a
     // question the owner has dismissed the like of before is not asked again.
     if (ownerAlignment < NEUTRAL_ALIGNMENT) {
+      gate = 'owner-precedent-question';
       rejectedBecause =
         `owner precedent is against asking this (${ownerAlignment.toFixed(2)} alignment), ` +
         'and a question the owner has dismissed the like of before is noise the second time';
@@ -2107,12 +2159,15 @@ export function scoreCandidate(
     // Stated as its own rejection rather than left to the numeric comparison.
     // It used to depend on the cap sitting below the floor, which quietly tied
     // it to a number that has since moved.
+    gate = 'unverifiable';
     rejectedBecause = UNVERIFIABLE_REJECTION;
   } else if (verification?.verified === false) {
     // Not left to the confidence floor: a verifier can reject a claim and
     // still report a number above it for what it could check.
+    gate = 'verified-false';
     rejectedBecause = 'the verifier did not verify this claim (verified: false)';
   } else if (confidence < confidenceFloor) {
+    gate = 'confidence-floor';
     rejectedBecause =
       `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` +
       (confidenceSource === 'analyst'
@@ -2120,17 +2175,21 @@ export function scoreCandidate(
         : `, ${verified.names}`);
   } else if (verifiedVerifierClaim) {
     if (ownerAlignment < NEUTRAL_ALIGNMENT) {
+      gate = 'owner-precedent';
       rejectedBecause =
         `${OWNER_PRECEDENT_PREFIX} (${ownerAlignment.toFixed(2)} alignment), ` +
         'and a finding the owner has dismissed the like of before is noise the second time';
     } else if (materiality.hold !== null) {
+      gate = 'materiality';
       rejectedBecause = materiality.hold;
     }
   } else if (finalScore < thresholds.finalScore) {
     // Four places, because two produced "score 0.78 is below 0.78" on a
     // finalScore of 0.7788996174443317. True, and unreadable.
+    gate = 'score';
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   } else if (materiality.hold !== null) {
+    gate = 'materiality';
     rejectedBecause = materiality.hold;
   }
 
@@ -2165,6 +2224,7 @@ export function scoreCandidate(
           '; outside a document (.md, .rst or .adoc) that holds at every tier, a comment in a source file included, ' +
           'so to post it untraced, have the analyst refile it as an ordinary finding on the changed line ' +
           'its `caused_by` names, with the consumer and its path in the claim and evidence');
+    gate = 'stale-consumer';
     if (rejectedBecause === null) rejectedBecause = untraced;
     else if (rejectedBecause.startsWith('score ')) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
     // Appended, so a local list that shows candidates stopped by one gate
@@ -2218,6 +2278,9 @@ export function scoreCandidate(
     },
     eligible: rejectedBecause === null,
     rejectedBecause,
+    gate,
+    verified: verification?.verified ?? null,
+    premisesVerified: verification?.premisesVerified ?? null,
     duplicateOfPrecedent: alreadySaid?.eventId ?? null,
     precedentIds: precedents.map((p) => p.eventId),
     ...(staleConsumer ? { anchor: STALE_CONSUMER, causedBy: candidate.causedBy ?? null } : {}),

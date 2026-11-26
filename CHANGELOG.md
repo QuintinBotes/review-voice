@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   learned precedent `source: outcome`, and `status` prints the learned
   accepted and dismissed counts and the categories with net negative learned
   precedent. (closes #480, docs/adr/0039)
+- A stored score breakdown records the verifier's verdict and the gate that
+  held it as data: `verified` and `premisesVerified` (null when there is no
+  verification) and `gate`, a code naming the one rule that held the candidate
+  (null when eligible), written by every rejection branch in scoring and by
+  the policy, correction, absence, repeat, anchor, citation, question-cap and
+  challenge holds. `gateOf` and the lists read `gate`; a breakdown stored
+  before it keeps the prose reading. `rejectedBecause` and everything posted
+  are unchanged. (#485, docs/adr/0041)
 - The evidence-verifier may return `material`, `material_reason` (at most
   300 characters) and `severity_fit` (`right` or `too_high`): whether a
   reasonable author would change code, what breaks and for whom, and whether
