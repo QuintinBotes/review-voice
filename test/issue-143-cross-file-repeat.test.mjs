@@ -49,7 +49,10 @@ function checkCandidates(thread) {
   }
 }
 
-test('a repeat of a comment anchored in another file that names this file is flagged for the verifier', () => {
+// #488 supersedes the first rule of #143: a strong match that names the file is
+// now dropped, as a comment on the candidate's own lines is. A weaker one is
+// still only flagged.
+test('a strong repeat of a comment anchored in another file that names this file is dropped', () => {
   const out = checkCandidates([
     {
       path: CONSUMER,
@@ -60,7 +63,24 @@ test('a repeat of a comment anchored in another file that names this file is fla
     },
   ]);
 
-  assert.deepEqual(out.droppedAsRepeat, [], 'only the file name ties them, so it is never dropped');
+  assert.equal(out.kept.length, 0);
+  assert.equal(out.droppedAsRepeat.length, 1);
+  assert.equal(out.droppedAsRepeat[0].commentPath, CONSUMER);
+  assert.equal(out.droppedAsRepeat[0].commentLine, 12);
+});
+
+test('a weaker match in another file that names this file is flagged for the verifier, never dropped', () => {
+  const out = checkCandidates([
+    {
+      path: CONSUMER,
+      line: 12,
+      author: 'other-reviewer',
+      kind: 'review-comment',
+      body: 'Whatever is hand-edited in types.ts can vanish when the client is regenerated.',
+    },
+  ]);
+
+  assert.deepEqual(out.droppedAsRepeat, []);
   assert.equal(out.kept.length, 1);
   assert.equal(out.kept[0].possibleRepeatOf.kind, 'thread');
   assert.equal(out.kept[0].possibleRepeatOf.path, CONSUMER);

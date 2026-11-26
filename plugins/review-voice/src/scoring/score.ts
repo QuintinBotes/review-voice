@@ -873,7 +873,14 @@ export function alreadySaidOnThread(
     if (comment.kind === 'description') continue;
     const anchored = comment.path !== null && comment.line !== null;
     if (anchored) {
-      if (!onFile(comment, candidate.path)) continue;
+      if (!onFile(comment, candidate.path)) {
+        // Another file: only a comment that names this file or symbol can be
+        // the same point, and then at the anchored bar (#488).
+        if (namesCandidate(comment.body, candidate) && overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) {
+          return comment;
+        }
+        continue;
+      }
       if (Math.abs((comment.line as number) - candidate.line) > DUPLICATE_LINE_WINDOW) continue;
       if (overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
       continue;
@@ -981,11 +988,66 @@ export function possiblyRaisedInFile(
   return best?.comment ?? null;
 }
 
-/** Whether `body` names the file at `path`; a full path ends in the file name too. */
+/** Whether `body` names the file at `path`, in any case; a full path ends in the file name too. */
 function namesFile(body: string, path: string): boolean {
   const name = path.slice(path.lastIndexOf('/') + 1);
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-])`).test(body);
+  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-])`, 'i').test(body);
+}
+
+/** camelCase, PascalCase and snake_case names the candidate's prose uses, backticked or not. */
+const SYMBOL = /(?<![\w$])(?:[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*|[A-Za-z][a-z0-9]*(?:_[A-Za-z0-9]+)+)(?![\w$])/g;
+
+function candidateSymbols(candidate: Candidate): string[] {
+  const text = `${candidate.claim} ${candidate.failureMode}`;
+  return [...new Set([...text.matchAll(SYMBOL)].map((match) => match[0]).filter((symbol) => symbol.length > 3))];
+}
+
+/** Whether `body` names the candidate's file or one of its symbols (#488). */
+export function namesCandidate(body: string, candidate: Candidate): boolean {
+  if (namesFile(body, candidate.path)) return true;
+  return candidateSymbols(candidate).some((symbol) => {
+    const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?<![\\w$])${escaped}(?![\\w$])`).test(body);
+  });
+}
+
+/**
+ * Every anchored comment, on any file, that names the candidate's file or
+ * symbol, for the verifier to read as a possible root-cause repeat (#488). The
+ * description is left out, as it is everywhere else.
+ */
+export function commentsNaming(candidate: Candidate, thread: ThreadComment[]): ThreadComment[] {
+  return thread.filter(
+    (comment) =>
+      comment.kind !== 'description' &&
+      comment.path !== null &&
+      comment.line !== null &&
+      namesCandidate(comment.body, candidate),
+  );
+}
+
+/** Words in a check's name that say nothing about which check it is. */
+const GENERIC_CHECK_WORDS = new Set(['check', 'checks', 'status', 'job', 'jobs', 'pipeline', 'workflow']);
+
+/**
+ * A comment that already names this failing check (#488): the check's
+ * distinctive words, as many as `DUPLICATE_OVERLAP` of them, appear in it. A
+ * heads-up line the tool adds to a body is a point like a finding, so another
+ * reviewer or a bot saying it first makes it a repeat. The tool's own earlier
+ * heads-up lines and the description do not count.
+ */
+export function threadRaisesCheck(name: string, thread: ThreadComment[]): ThreadComment | null {
+  const all = significantWords(name);
+  const words = new Set([...all].filter((word) => !GENERIC_CHECK_WORDS.has(word)));
+  const mine = words.size > 0 ? words : all;
+  if (mine.size === 0) return null;
+  for (const comment of thread) {
+    if (comment.kind === 'description') continue;
+    const body = comment.body.split('\n').filter((line) => !/^\s*(?:>\s*)?Heads up:/.test(line)).join('\n');
+    if (overlap(mine, significantWords(body)) >= DUPLICATE_OVERLAP) return comment;
+  }
+  return null;
 }
 
 /** Roughly what a verifier needs to judge a repeat without the whole body. */

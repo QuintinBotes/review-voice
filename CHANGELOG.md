@@ -5,6 +5,22 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.2] - 2026-11-26
+
+### Fixed
+
+- A comment on another file that names the candidate's file (any case) or one
+  of its symbols now rejects the candidate as a repeat when it shares enough
+  wording, the same bar as a comment on its own lines. Every comment naming the
+  file or symbol, at any distance, is handed to the evidence verifier as
+  `possibleRepeatOf.alsoNaming`, so it can reject a root-cause repeat and quote
+  the comment (#488).
+- The CI heads-up lines in a review body are checked against the thread like a
+  finding: a failing check another reviewer or a bot already named is left
+  out, and a line left with no check is dropped. `--recheck-thread` applies the
+  cross-file rule and the heads-up rule to comments added since the run, and
+  refuses with `thread-changed` (#488).
+
 ## [1.29.1] - 2026-11-23
 
 ### Fixed

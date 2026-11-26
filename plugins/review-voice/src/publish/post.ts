@@ -8,6 +8,7 @@ import { REVIEW_EVENTS, WriteViolation, type ReviewWriter } from '../github/writ
 import { readThread } from '../diff/thread.ts';
 import {
   alreadySaidOnThread,
+  threadRaisesCheck,
   citedLocations,
   normaliseCandidate,
   suggestedPatchOf,
@@ -15,13 +16,15 @@ import {
   type RawCandidate,
   type SuggestedPatch,
 } from '../scoring/score.ts';
-import { readCi, type CiRules, type CiState, type GateCheck } from './ci.ts';
+import { readCi, type CiEntry, type CiRules, type CiState, type GateCheck } from './ci.ts';
+import type { ThreadComment } from '../scoring/score.ts';
 import { evaluatePostingGate, type GateResult } from './gate.ts';
 import {
   approvalPathHold,
   buildPayload,
   ciAllowsApproval,
   ciAnnotations,
+  safeCheckName,
   commentSignature,
   decide,
   idempotencyKey,
@@ -491,6 +494,28 @@ async function checkedSuggestions(
 }
 
 /**
+ * The CI state without the checks the thread already names (#488). A heads-up
+ * line is a point like a finding: a check another reviewer or a bot raised is
+ * left out, and a line left with no check is dropped. A thread that cannot be
+ * read leaves the state as it was, so the line is kept.
+ */
+async function ciNotOnThread(
+  options: { client: GitHubClient; repository: string; pullNumber: number },
+  ci: CiState,
+  policy: VerdictPolicy,
+): Promise<Pick<CiState, 'state' | 'failed' | 'rerun'>> {
+  if (ciAnnotations(ci, policy).length === 0) return ci;
+  let comments: ThreadComment[];
+  try {
+    comments = (await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client })).comments;
+  } catch {
+    return ci;
+  }
+  const open = (entries: readonly CiEntry[]): CiEntry[] => entries.filter((entry) => threadRaisesCheck(entry.name, comments) === null);
+  return { state: ci.state, failed: open(ci.failed), rerun: open(ci.rerun) };
+}
+
+/**
  * Computes the verdict, read-only (`RV verdict`, and the first half of `RV post`).
  *
  * Head and CI are read live, never taken from an earlier preview.
@@ -559,6 +584,10 @@ export async function computeVerdict(
     policy,
   });
   decision.reasons.push(...lookupReasons);
+  if (ci !== null && decision.annotations.length > 0) {
+    const open = await ciNotOnThread(options, ci, policy);
+    decision.annotations = open.failed.length + open.rerun.length === 0 ? [] : ciAnnotations(open, policy);
+  }
   // Only a missing assessment is worth saying: a normal one changes nothing.
   if (complexity === null) decision.reasons.push('no complexity assessment was recorded for this run');
   // An approval replaces a request for changes, so only an approval that is
@@ -749,12 +778,10 @@ const PASTED_TEXT_MIN = 40;
  * `check-candidates --thread` drops a repeat by, so a point is a repeat here
  * exactly when it would have been one there. GET only.
  */
-async function raisedByOthers(
-  options: { client: GitHubClient; repository: string; pullNumber: number; db: Database },
+async function commentsSinceRun(
+  options: { client: GitHubClient; repository: string; pullNumber: number },
   run: RunDetail,
-  findings: readonly ReviewFinding[],
-): Promise<RaisedFinding[]> {
-  if (findings.length === 0) return [];
+): Promise<{ comment: ThreadComment; url: string | null }[]> {
   const { data: viewer } = await options.client.get<{ login?: unknown }>('/user');
   if (typeof viewer?.login !== 'string') throw new Error('GitHub did not say whose token this is');
   const me = viewer.login.toLowerCase();
@@ -765,7 +792,7 @@ async function raisedByOthers(
   // A comment quoting this tool's own text is not a point someone else raised.
   const squash = (text: string): string => text.toLowerCase().replace(/\s+/g, ' ').trim();
   const ownTexts = comments.filter((c) => c.author.toLowerCase() === me).map((c) => squash(c.body));
-  const thread = comments
+  return comments
     .filter((comment) => comment.author.toLowerCase() !== me)
     .map((comment) => ({ ...comment, body: comment.body.split('\n').filter((line) => !/^\s*>/.test(line)).join('\n') }))
     .filter((comment) => {
@@ -780,10 +807,27 @@ async function raisedByOthers(
     // Each citation in a review body or conversation comment stands for that
     // comment, so it is expanded one comment at a time to keep its link.
     .flatMap((comment) => citedLocations([comment]).map((located) => ({ comment: located, url: comment.url ?? null })));
+}
+
+/** The findings, and the CI checks a heads-up line names, that the comments since the run already say (#488). */
+async function raisedByOthers(
+  options: { client: GitHubClient; repository: string; pullNumber: number; db: Database },
+  run: RunDetail,
+  findings: readonly ReviewFinding[],
+  checks: readonly CiEntry[] = [],
+): Promise<RaisedFinding[]> {
+  if (findings.length === 0 && checks.length === 0) return [];
+  const thread = await commentsSinceRun(options, run);
   if (thread.length === 0) return [];
 
   const candidates = recordedCandidates(options.db, run.reviewRunId);
   const raised: RaisedFinding[] = [];
+  // A heads-up line is checked like a finding: a check someone named since
+  // the run was recorded is a repeat (#488).
+  for (const check of checks) {
+    const match = thread.find((entry) => threadRaisesCheck(check.name, [entry.comment]) !== null);
+    if (match !== undefined) raised.push({ path: null, line: null, raisedBy: match.comment.author, commentUrl: match.url });
+  }
   for (const finding of findings) {
     if (finding.path === null || finding.severity === null) continue;
     // shortcut: a finding whose candidate was not recorded is matched on its
@@ -981,8 +1025,12 @@ export async function postReview(options: PostOptions): Promise<{ exitCode: numb
       ? []
       : [...computed.planned.inline.filter(inPayload), ...computed.planned.unanchored];
     let raised: RaisedFinding[];
+    // The checks the body's heads-up lines name, so a later comment about one is a repeat too.
+    const named = [...(verdict.ci?.failed ?? []), ...(verdict.ci?.rerun ?? [])].filter((entry) =>
+      verdict.annotations.some((line) => line.includes(`\`${safeCheckName(entry.name)}\``)),
+    );
     try {
-      raised = await raisedByOthers(options, run, findings);
+      raised = await raisedByOthers(options, run, findings, named);
     } catch (error) {
       return refuse(1, [`could not re-read the thread before sending: ${error instanceof Error ? error.message : String(error)}`], verdict, key);
     }
@@ -1024,7 +1072,8 @@ export async function postReview(options: PostOptions): Promise<{ exitCode: numb
     }
     // The note has to describe the CI the approval is sent on. The key does
     // not cover it, so it stays the same.
-    const annotations = ciAnnotations(reread.ci, policy);
+    const open = await ciNotOnThread(options, reread.ci, policy);
+    const annotations = open.failed.length + open.rerun.length === 0 ? [] : ciAnnotations(open, policy);
     if (annotations.join('\n') !== verdict.annotations.join('\n')) {
       payload = { ...payload, body: replaceAnnotations(payload.body, verdict.annotations, annotations) };
       verdict = {

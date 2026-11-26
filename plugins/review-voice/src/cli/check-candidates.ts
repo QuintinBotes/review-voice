@@ -13,6 +13,7 @@ import {
   alreadySaidOnThread,
   citedLocations,
   possiblySaidOnThread,
+  commentsNaming,
   possiblyRaisedInFile,
   possiblyRepeatsDescription,
   normaliseCandidate,
@@ -196,6 +197,9 @@ export function readSignals(file: string, root: string): EvidenceSignal[] {
  * "Property 'total' does not exist on type 'Order'") shares two words in five
  * with it. An analyst echoing the tool shares most of them.
  */
+/** Most comments naming a candidate's file or symbol handed to the verifier beyond the lead one. */
+const MAX_NAMING = 5;
+
 const TOOL_RESTATEMENT_OVERLAP = 0.6;
 
 function matchSignal(candidate: Candidate, signals: EvidenceSignal[]): EvidenceSignal | null {
@@ -604,19 +608,34 @@ export function checkCandidatesCommand(argv: string[]): number {
         possiblySaidOnThread(candidate, located, isOwn) ??
         possiblyRaisedInFile(candidate, located, isOwn) ??
         possiblyRaisedInFile(candidate, located);
-      if (possible !== null) {
+      // Every comment, on any file, that names this candidate's file or symbol
+      // goes to the verifier too, so it can reject a root-cause repeat (#488).
+      const naming = commentsNaming(candidate, located);
+      const lead = possible ?? naming[0] ?? null;
+      const alsoNaming = naming.filter((comment) => comment !== lead).slice(0, MAX_NAMING);
+      if (lead !== null) {
         kept.push({
           ...original,
           possibleRepeatOf: {
-            kind: isOwn(possible) ? 'own-comment' : 'thread',
-            author: possible.author,
-            path: possible.path,
-            line: possible.line,
-            ...(possible.outdated === true ? { outdated: true } : {}),
-            ...(possible.resolved === true ? { resolved: true } : {}),
-            ...(possible.resolved === true && typeof possible.resolvedBy === 'string' ? { resolvedBy: possible.resolvedBy } : {}),
-            ...(typeof possible.id === 'number' ? { commentId: possible.id } : {}),
-            excerpt: possible.body.slice(0, 200),
+            kind: isOwn(lead) ? 'own-comment' : 'thread',
+            author: lead.author,
+            path: lead.path,
+            line: lead.line,
+            ...(lead.outdated === true ? { outdated: true } : {}),
+            ...(lead.resolved === true ? { resolved: true } : {}),
+            ...(lead.resolved === true && typeof lead.resolvedBy === 'string' ? { resolvedBy: lead.resolvedBy } : {}),
+            ...(typeof lead.id === 'number' ? { commentId: lead.id } : {}),
+            excerpt: lead.body.slice(0, 200),
+            ...(alsoNaming.length === 0
+              ? {}
+              : {
+                  alsoNaming: alsoNaming.map((comment) => ({
+                    author: comment.author,
+                    path: comment.path,
+                    line: comment.line,
+                    excerpt: comment.body.slice(0, 200),
+                  })),
+                }),
           },
         });
         return;
