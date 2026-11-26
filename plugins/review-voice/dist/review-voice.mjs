@@ -8925,7 +8925,12 @@ function alreadySaidOnThread(candidate, thread) {
     if (comment.kind === "description") continue;
     const anchored = comment.path !== null && comment.line !== null;
     if (anchored) {
-      if (!onFile(comment, candidate.path)) continue;
+      if (!onFile(comment, candidate.path)) {
+        if (namesFile(comment.body, candidate.path) && namesSymbol(comment.body, candidate) && overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) {
+          return comment;
+        }
+        continue;
+      }
       if (Math.abs(comment.line - candidate.line) > DUPLICATE_LINE_WINDOW) continue;
       if (overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
       continue;
@@ -8979,7 +8984,39 @@ function possiblyRaisedInFile(candidate, thread, accept = () => true) {
 function namesFile(body, path) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-])`).test(body);
+  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-]|\\.\\w)`, "i").test(body);
+}
+var SYMBOL = /(?<![\w$])(?:[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*|[A-Za-z][a-z0-9]*(?:_[A-Za-z0-9]+)+)(?![\w$])/g;
+function candidateSymbols(candidate) {
+  const text5 = `${candidate.claim} ${candidate.failureMode}`;
+  return [...new Set([...text5.matchAll(SYMBOL)].map((match) => match[0]).filter((symbol) => symbol.length > 3))];
+}
+function namesCandidate(body, candidate) {
+  return namesFile(body, candidate.path) || namesSymbol(body, candidate);
+}
+function namesSymbol(body, candidate) {
+  return candidateSymbols(candidate).some((symbol) => {
+    const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?<![\\w$])${escaped}(?![\\w$])`).test(body);
+  });
+}
+function commentsNaming(candidate, thread) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  return thread.filter((comment) => comment.kind !== "description" && namesCandidate(comment.body, candidate)).map((comment, index) => ({ comment, index, share: overlap(mine, significantWords(comment.body)) })).sort((a, b) => b.share - a.share || a.index - b.index).map((entry) => entry.comment);
+}
+var GENERIC_CHECK_WORDS = /* @__PURE__ */ new Set(["check", "job", "ci", "status", "workflow", "run", "build", "test", "tests"]);
+function threadRaisesCheck(name, thread, isOwn = () => false) {
+  const all = name.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const distinctive = all.filter((word) => !GENERIC_CHECK_WORDS.has(word));
+  const mine = new Set(distinctive.length > 0 ? distinctive : all);
+  if (mine.size === 0) return null;
+  for (const comment of thread) {
+    if (comment.kind === "description") continue;
+    const body = isOwn(comment) ? comment.body.split("\n").filter((line3) => !/^\s*(?:>\s*)?Heads up:/.test(line3)).join("\n") : comment.body;
+    const words = new Set(body.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+    if ([...mine].every((word) => words.has(word))) return comment;
+  }
+  return null;
 }
 var DESCRIPTION_EXCERPT_CHARS = 400;
 function possiblyRepeatsDescription(candidate, thread) {
@@ -11572,6 +11609,104 @@ function withoutBaseChanges(delta, base, baseDelta) {
   }
   return { text: kept.length === 0 ? "" : changes.header + kept.join(""), mixed };
 }
+function addedHeadLines(section2) {
+  const parsed2 = sectionHunks(section2);
+  if (parsed2 === null) return null;
+  const added = /* @__PURE__ */ new Set();
+  for (const hunk of parsed2.hunks) {
+    let line3 = hunk.first;
+    for (const text5 of hunk.text.split("\n").slice(1)) {
+      if (text5.startsWith("+")) {
+        added.add(line3);
+        line3++;
+      } else if (text5.startsWith(" ")) {
+        line3++;
+      }
+    }
+  }
+  return added;
+}
+function ownDiffLineMap(section2) {
+  const parsed2 = sectionHunks(section2);
+  if (parsed2 === null) return null;
+  const added = /* @__PURE__ */ new Set();
+  const context2 = /* @__PURE__ */ new Map();
+  const spans = [];
+  let net = 0;
+  for (const hunk of parsed2.hunks) {
+    const [header, ...body] = hunk.text.split("\n");
+    const numbers = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(header);
+    if (numbers === null) return null;
+    const newCount = numbers[4] === void 0 ? 1 : Number(numbers[4]);
+    let oldLine = Number(numbers[1]) + (numbers[2] === "0" ? 1 : 0);
+    let headLine = Number(numbers[3]) + (numbers[4] === "0" ? 1 : 0);
+    let hunkNet = 0;
+    for (const text5 of body) {
+      if (text5.startsWith("+")) {
+        added.add(headLine);
+        headLine++;
+        hunkNet++;
+      } else if (text5.startsWith("-")) {
+        oldLine++;
+        hunkNet--;
+      } else if (text5.startsWith(" ")) {
+        context2.set(headLine, oldLine);
+        headLine++;
+        oldLine++;
+      }
+    }
+    net += hunkNet;
+    spans.push({ endExclusive: newCount === 0 ? Number(numbers[3]) + 1 : Number(numbers[3]) + newCount, netAfter: net });
+  }
+  const mergeBaseLine = (headLine) => {
+    const mapped = context2.get(headLine);
+    if (mapped !== void 0) return mapped;
+    let shift = 0;
+    for (const span of spans) {
+      if (headLine < span.endExclusive) break;
+      shift = span.netAfter;
+    }
+    return headLine - shift;
+  };
+  return { added, mergeBaseLine };
+}
+function demoteBaseAdditions(section2, shouldDemote) {
+  const parsed2 = sectionHunks(section2);
+  if (parsed2 === null || parsed2.hunks.length === 0) return { text: section2, demoted: false };
+  let demoted = false;
+  let touched = false;
+  const kept = [];
+  for (const hunk of parsed2.hunks) {
+    const [header, ...body] = hunk.text.split("\n");
+    const numbers = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(header);
+    if (numbers === null) return { text: section2, demoted: false };
+    let line3 = hunk.first;
+    let changed = false;
+    const lines2 = body.map((text5) => {
+      if (!text5.startsWith("+")) {
+        if (text5.startsWith(" ")) line3++;
+        return text5;
+      }
+      const demote = shouldDemote(line3);
+      line3++;
+      if (!demote) return text5;
+      changed = true;
+      return ` ${text5.slice(1)}`;
+    });
+    if (!changed) {
+      kept.push(hunk.text);
+      continue;
+    }
+    touched = true;
+    if (!lines2.some((text5) => text5.startsWith("+") || text5.startsWith("-"))) continue;
+    demoted = true;
+    const oldCount = lines2.filter((text5) => text5.startsWith(" ") || text5.startsWith("-")).length;
+    const newCount = lines2.filter((text5) => text5.startsWith(" ") || text5.startsWith("+")).length;
+    kept.push([`@@ -${numbers[1]},${oldCount} +${numbers[2]},${newCount} @@${numbers[3]}`, ...lines2].join("\n"));
+  }
+  if (!touched) return { text: section2, demoted: false };
+  return { text: kept.length === 0 ? "" : parsed2.header + kept.join(""), demoted };
+}
 function hasReplayMarkers(section2) {
   return /^-<{7} /m.test(section2) && /^->{7} /m.test(section2);
 }
@@ -11588,6 +11723,7 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
   const narrowed = [];
   const whole = [];
   const mixed = [];
+  const demoted = [];
   const resolved = [];
   for (const [path, section2] of own) {
     const delta = sinceReview.get(path);
@@ -11600,10 +11736,19 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
       };
     }
     if (fresh.text.length === 0) continue;
+    const ownMap = ownDiffLineMap(section2);
+    const baseSection = baseDelta.get(path);
+    const baseAdded = baseSection === void 0 ? null : addedHeadLines(baseSection);
+    const shown = ownMap === null ? { text: fresh.text, demoted: false } : demoteBaseAdditions(
+      fresh.text,
+      (headLine) => !ownMap.added.has(headLine) && (baseAdded === null || baseAdded.has(ownMap.mergeBaseLine(headLine)))
+    );
+    if (shown.text.length === 0) continue;
+    if (shown.demoted) demoted.push(path);
     if (fresh.mixed) mixed.push(path);
     else if (narrowToResolution(section2, resolutions.get(path)) === null) whole.push(path);
     else narrowed.push(path);
-    resolved.push(fresh.text);
+    resolved.push(shown.text);
   }
   const rest = paths.filter((path) => !own.has(path));
   const leaked = [];
@@ -11624,6 +11769,7 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
     narrowed.length === 0 ? null : `narrowed to the merge resolution after a conflicting replay: ${narrowed.sort().join(", ")}`,
     whole.length === 0 ? null : `read as the two-head diff minus base changes after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(", ")}`,
     mixed.length === 0 ? null : `kept whole hunks where the base's and the author's edits could not be separated after a conflicting replay: ${mixed.sort().join(", ")}`,
+    demoted.length === 0 ? null : `shown as context where the base added lines after a conflicting replay: ${demoted.sort().join(", ")}`,
     leaked.length === 0 ? null : `read as the pull request's own diff after a conflicting replay, so no conflict marker is shown: ${leaked.sort().join(", ")}`
   ].filter((note) => note !== null);
   const detail = notes.length === 0 ? {} : { detail: notes.join("; ") };
@@ -19375,6 +19521,22 @@ async function checkedSuggestions(options, run, planned, head) {
   }
   return { suggestions, withheld };
 }
+async function ciNotOnThread(options, ci, policy) {
+  if (ciAnnotations(ci, policy).length === 0) return ci;
+  let comments;
+  let me;
+  try {
+    const { data: viewer } = await options.client.get("/user");
+    if (typeof viewer?.login !== "string") return ci;
+    me = viewer.login.toLowerCase();
+    comments = (await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client })).comments;
+  } catch {
+    return ci;
+  }
+  const isOwn = (comment) => comment.author.toLowerCase() === me;
+  const open = (entries) => entries.filter((entry) => threadRaisesCheck(entry.name, comments, isOwn) === null);
+  return { state: ci.state, failed: open(ci.failed), rerun: open(ci.rerun) };
+}
 async function computeVerdict(options) {
   const head = options.head.toLowerCase();
   if (!SHA2.test(head)) return refusal(options.head, "--head must be the full commit sha the review read");
@@ -19410,6 +19572,10 @@ async function computeVerdict(options) {
     policy
   });
   decision.reasons.push(...lookupReasons);
+  if (ci !== null && decision.annotations.length > 0) {
+    const open = await ciNotOnThread(options, ci, policy);
+    decision.annotations = open.failed.length + open.rerun.length === 0 ? [] : ciAnnotations(open, policy);
+  }
   if (complexity === null) decision.reasons.push("no complexity assessment was recorded for this run");
   const staleRequestChanges = !(decision.event === "APPROVE" && decision.action !== "refuse") && (needsHuman || (options.owner ?? "") !== "") ? await staleRequest(options, planned, decision.reasons) : null;
   let payload = null;
@@ -19511,8 +19677,7 @@ function recordedCandidates(db, runId) {
   });
 }
 var PASTED_TEXT_MIN = 40;
-async function raisedByOthers(options, run, findings) {
-  if (findings.length === 0) return [];
+async function commentsSinceRun(options, run) {
   const { data: viewer } = await options.client.get("/user");
   if (typeof viewer?.login !== "string") throw new Error("GitHub did not say whose token this is");
   const me = viewer.login.toLowerCase();
@@ -19521,13 +19686,21 @@ async function raisedByOthers(options, run, findings) {
   const started = Date.parse(run.createdAt);
   const squash2 = (text5) => text5.toLowerCase().replace(/\s+/g, " ").trim();
   const ownTexts = comments.filter((c) => c.author.toLowerCase() === me).map((c) => squash2(c.body));
-  const thread = comments.filter((comment) => comment.author.toLowerCase() !== me).map((comment) => ({ ...comment, body: comment.body.split("\n").filter((line3) => !/^\s*>/.test(line3)).join("\n") })).filter((comment) => {
+  return comments.filter((comment) => comment.author.toLowerCase() !== me).map((comment) => ({ ...comment, body: comment.body.split("\n").filter((line3) => !/^\s*>/.test(line3)).join("\n") })).filter((comment) => {
     const text5 = squash2(comment.body);
     return text5 !== "" && !(text5.length >= PASTED_TEXT_MIN && ownTexts.some((own) => own.includes(text5)));
   }).filter((comment) => comment.createdAt === void 0 || !(Date.parse(comment.createdAt) <= started)).filter((comment) => comment.inReplyTo === void 0 || !mine.has(comment.inReplyTo)).flatMap((comment) => citedLocations([comment]).map((located) => ({ comment: located, url: comment.url ?? null })));
+}
+async function raisedByOthers(options, run, findings, checks = []) {
+  if (findings.length === 0 && checks.length === 0) return [];
+  const thread = await commentsSinceRun(options, run);
   if (thread.length === 0) return [];
   const candidates = recordedCandidates(options.db, run.reviewRunId);
   const raised = [];
+  for (const check of checks) {
+    const match = thread.find((entry) => threadRaisesCheck(check.name, [entry.comment]) !== null);
+    if (match !== void 0) raised.push({ path: null, line: null, raisedBy: match.comment.author, commentUrl: match.url });
+  }
   for (const finding of findings) {
     if (finding.path === null || finding.severity === null) continue;
     const candidate = candidates.find((c) => c.path === finding.path && c.line === finding.line) ?? {
@@ -19662,8 +19835,11 @@ async function postReview(options) {
     const inPayload = (finding) => payload.comments.some((comment) => comment.path === finding.path && comment.line === finding.line);
     const findings = computed.planned === void 0 ? [] : [...computed.planned.inline.filter(inPayload), ...computed.planned.unanchored];
     let raised;
+    const named = [...verdict2.ci?.failed ?? [], ...verdict2.ci?.rerun ?? []].filter(
+      (entry) => verdict2.annotations.some((line3) => line3.includes(`\`${safeCheckName(entry.name)}\``))
+    );
     try {
-      raised = await raisedByOthers(options, run, findings);
+      raised = await raisedByOthers(options, run, findings, named);
     } catch (error) {
       return refuse(1, [`could not re-read the thread before sending: ${error instanceof Error ? error.message : String(error)}`], verdict2, key2);
     }
@@ -19698,7 +19874,8 @@ async function postReview(options) {
         key2
       );
     }
-    const annotations = ciAnnotations(reread.ci, policy);
+    const open = await ciNotOnThread(options, reread.ci, policy);
+    const annotations = open.failed.length + open.rerun.length === 0 ? [] : ciAnnotations(open, policy);
     if (annotations.join("\n") !== verdict2.annotations.join("\n")) {
       payload = { ...payload, body: replaceAnnotations(payload.body, verdict2.annotations, annotations) };
       verdict2 = {
@@ -34561,6 +34738,18 @@ function readSignals(file2, root) {
     ];
   });
 }
+var NAMING_BUDGET_BYTES = 4e3;
+function withinBudget(items, size) {
+  const fits = [];
+  let used = 0;
+  for (const item of items) {
+    const next = size(item);
+    if (used + next > NAMING_BUDGET_BYTES) break;
+    used += next;
+    fits.push(item);
+  }
+  return { fits, omitted: items.length - fits.length };
+}
 var TOOL_RESTATEMENT_OVERLAP = 0.6;
 function matchSignal(candidate, signals) {
   if (isSuppressionExempt(candidate.category)) return null;
@@ -34847,19 +35036,33 @@ function checkCandidatesCommand(argv) {
         priorRunId: heldMatch.entry.runId
       };
       const possible = possiblySaidOnThread(candidate, located, isOwn) ?? possiblyRaisedInFile(candidate, located, isOwn) ?? possiblyRaisedInFile(candidate, located);
-      if (possible !== null) {
+      const naming = commentsNaming(candidate, located);
+      const lead = possible ?? naming[0] ?? null;
+      const brief = (comment) => ({
+        author: comment.author,
+        path: comment.path,
+        line: comment.line,
+        excerpt: comment.body.slice(0, 200)
+      });
+      const { fits: alsoNaming, omitted } = withinBudget(
+        naming.filter((comment) => comment !== lead).map(brief),
+        (entry) => Buffer.byteLength(JSON.stringify(entry))
+      );
+      if (lead !== null) {
         kept.push({
           ...original,
           possibleRepeatOf: {
-            kind: isOwn(possible) ? "own-comment" : "thread",
-            author: possible.author,
-            path: possible.path,
-            line: possible.line,
-            ...possible.outdated === true ? { outdated: true } : {},
-            ...possible.resolved === true ? { resolved: true } : {},
-            ...possible.resolved === true && typeof possible.resolvedBy === "string" ? { resolvedBy: possible.resolvedBy } : {},
-            ...typeof possible.id === "number" ? { commentId: possible.id } : {},
-            excerpt: possible.body.slice(0, 200)
+            kind: isOwn(lead) ? "own-comment" : "thread",
+            author: lead.author,
+            path: lead.path,
+            line: lead.line,
+            ...lead.outdated === true ? { outdated: true } : {},
+            ...lead.resolved === true ? { resolved: true } : {},
+            ...lead.resolved === true && typeof lead.resolvedBy === "string" ? { resolvedBy: lead.resolvedBy } : {},
+            ...typeof lead.id === "number" ? { commentId: lead.id } : {},
+            excerpt: lead.body.slice(0, 200),
+            ...alsoNaming.length === 0 ? {} : { alsoNaming },
+            ...omitted === 0 ? {} : { alsoNamingOmitted: omitted }
           }
         });
         return;

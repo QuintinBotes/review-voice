@@ -924,6 +924,126 @@ function withoutBaseChanges(delta: string, base: string | undefined, baseDelta: 
   return { text: kept.length === 0 ? '' : changes.header + kept.join(''), mixed };
 }
 
+/** The head-side line numbers a section adds, or null when it cannot be read. */
+function addedHeadLines(section: string): Set<number> | null {
+  const parsed = sectionHunks(section);
+  if (parsed === null) return null;
+  const added = new Set<number>();
+  for (const hunk of parsed.hunks) {
+    let line = hunk.first;
+    for (const text of hunk.text.split('\n').slice(1)) {
+      if (text.startsWith('+')) {
+        added.add(line);
+        line++;
+      } else if (text.startsWith(' ')) {
+        line++;
+      }
+    }
+  }
+  return added;
+}
+
+/**
+ * Where each head line sits in the merge-base file, from the own diff
+ * (merge base to head), or null when it cannot be read. A head line the own
+ * diff does not add is the merge-base line the own hunks show it against;
+ * outside every hunk the two files run together, shifted only by the net
+ * of the hunks before it.
+ */
+function ownDiffLineMap(section: string): { added: Set<number>; mergeBaseLine: (headLine: number) => number } | null {
+  const parsed = sectionHunks(section);
+  if (parsed === null) return null;
+  const added = new Set<number>();
+  const context = new Map<number, number>();
+  const spans: { endExclusive: number; netAfter: number }[] = [];
+  let net = 0;
+  for (const hunk of parsed.hunks) {
+    const [header, ...body] = hunk.text.split('\n');
+    const numbers = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(header!);
+    if (numbers === null) return null;
+    const newCount = numbers[4] === undefined ? 1 : Number(numbers[4]);
+    let oldLine = Number(numbers[1]) + (numbers[2] === '0' ? 1 : 0);
+    let headLine = Number(numbers[3]) + (numbers[4] === '0' ? 1 : 0);
+    let hunkNet = 0;
+    for (const text of body) {
+      if (text.startsWith('+')) {
+        added.add(headLine);
+        headLine++;
+        hunkNet++;
+      } else if (text.startsWith('-')) {
+        oldLine++;
+        hunkNet--;
+      } else if (text.startsWith(' ')) {
+        context.set(headLine, oldLine);
+        headLine++;
+        oldLine++;
+      }
+    }
+    net += hunkNet;
+    spans.push({ endExclusive: newCount === 0 ? Number(numbers[3]) + 1 : Number(numbers[3]) + newCount, netAfter: net });
+  }
+  const mergeBaseLine = (headLine: number): number => {
+    const mapped = context.get(headLine);
+    if (mapped !== undefined) return mapped;
+    let shift = 0;
+    for (const span of spans) {
+      if (headLine < span.endExclusive) break;
+      shift = span.netAfter;
+    }
+    return headLine - shift;
+  };
+  return { added, mergeBaseLine };
+}
+
+/**
+ * A kept-whole hunk can carry `+` lines the base brought in, which are not
+ * changed lines of the pull request's own diff, so an anchor on one is
+ * refused when the review is posted (#477). Each such line - a `+` the own
+ * diff does not add and the base added between the two merge bases - is
+ * shown as the context it is in that diff instead, and the header
+ * recounted. A `+` the base did not add, such as a line the reviewed head
+ * deleted and the head restores, stays a `+`: demoting it would hide the
+ * withdrawn deletion. A hunk left with no change is dropped, and a
+ * section left with no hunk goes with it.
+ */
+function demoteBaseAdditions(section: string, shouldDemote: (headLine: number) => boolean): { text: string; demoted: boolean } {
+  const parsed = sectionHunks(section);
+  if (parsed === null || parsed.hunks.length === 0) return { text: section, demoted: false };
+  let demoted = false;
+  let touched = false;
+  const kept: string[] = [];
+  for (const hunk of parsed.hunks) {
+    const [header, ...body] = hunk.text.split('\n');
+    const numbers = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(header!);
+    if (numbers === null) return { text: section, demoted: false };
+    let line = hunk.first;
+    let changed = false;
+    const lines = body.map((text) => {
+      if (!text.startsWith('+')) {
+        if (text.startsWith(' ')) line++;
+        return text;
+      }
+      const demote = shouldDemote(line);
+      line++;
+      if (!demote) return text;
+      changed = true;
+      return ` ${text.slice(1)}`;
+    });
+    if (!changed) {
+      kept.push(hunk.text);
+      continue;
+    }
+    touched = true;
+    if (!lines.some((text) => text.startsWith('+') || text.startsWith('-'))) continue;
+    demoted = true;
+    const oldCount = lines.filter((text) => text.startsWith(' ') || text.startsWith('-')).length;
+    const newCount = lines.filter((text) => text.startsWith(' ') || text.startsWith('+')).length;
+    kept.push([`@@ -${numbers[1]},${oldCount} +${numbers[2]},${newCount} @@${numbers[3]}`, ...lines].join('\n'));
+  }
+  if (!touched) return { text: section, demoted: false };
+  return { text: kept.length === 0 ? '' : parsed.header + kept.join(''), demoted };
+}
+
 /**
  * True when a file's section removes a replay's conflict block: an opening
  * and a closing marker line, which git writes and no author does.
@@ -977,6 +1097,7 @@ function interdiffFrom(
   const narrowed: string[] = [];
   const whole: string[] = [];
   const mixed: string[] = [];
+  const demoted: string[] = [];
   const resolved: string[] = [];
   for (const [path, section] of own) {
     const delta = sinceReview.get(path);
@@ -989,10 +1110,25 @@ function interdiffFrom(
       };
     }
     if (fresh.text.length === 0) continue;
+    const ownMap = ownDiffLineMap(section);
+    // A missing or unreadable base move keeps the wider demotion: only a
+    // base move that was read can spare a restored line.
+    const baseSection = baseDelta.get(path);
+    const baseAdded = baseSection === undefined ? null : addedHeadLines(baseSection);
+    const shown =
+      ownMap === null
+        ? { text: fresh.text, demoted: false }
+        : demoteBaseAdditions(
+            fresh.text,
+            (headLine) =>
+              !ownMap.added.has(headLine) && (baseAdded === null || baseAdded.has(ownMap.mergeBaseLine(headLine))),
+          );
+    if (shown.text.length === 0) continue;
+    if (shown.demoted) demoted.push(path);
     if (fresh.mixed) mixed.push(path);
     else if (narrowToResolution(section, resolutions.get(path)) === null) whole.push(path);
     else narrowed.push(path);
-    resolved.push(fresh.text);
+    resolved.push(shown.text);
   }
   const rest = paths.filter((path) => !own.has(path));
   // A replay's conflict markers are never the author's lines, yet a file read
@@ -1024,6 +1160,9 @@ function interdiffFrom(
     mixed.length === 0
       ? null
       : `kept whole hunks where the base's and the author's edits could not be separated after a conflicting replay: ${mixed.sort().join(', ')}`,
+    demoted.length === 0
+      ? null
+      : `shown as context where the base added lines after a conflicting replay: ${demoted.sort().join(', ')}`,
     leaked.length === 0
       ? null
       : `read as the pull request's own diff after a conflicting replay, so no conflict marker is shown: ${leaked.sort().join(', ')}`,

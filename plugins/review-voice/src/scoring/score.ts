@@ -873,7 +873,15 @@ export function alreadySaidOnThread(
     if (comment.kind === 'description') continue;
     const anchored = comment.path !== null && comment.line !== null;
     if (anchored) {
-      if (!onFile(comment, candidate.path)) continue;
+      if (!onFile(comment, candidate.path)) {
+        // Another file: only a comment that names this file and one of its
+        // symbols is dropped, at the anchored bar (#488). One of the two alone
+        // goes to the verifier.
+        if (namesFile(comment.body, candidate.path) && namesSymbol(comment.body, candidate) && overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) {
+          return comment;
+        }
+        continue;
+      }
       if (Math.abs((comment.line as number) - candidate.line) > DUPLICATE_LINE_WINDOW) continue;
       if (overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
       continue;
@@ -981,11 +989,82 @@ export function possiblyRaisedInFile(
   return best?.comment ?? null;
 }
 
-/** Whether `body` names the file at `path`; a full path ends in the file name too. */
+/** Whether `body` names the file at `path`, in any case; a full path ends in the file name too. */
 function namesFile(body: string, path: string): boolean {
   const name = path.slice(path.lastIndexOf('/') + 1);
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-])`).test(body);
+  // The name ends at a token end, whitespace, punctuation other than a dot, or
+  // a `:line`; `Child.tsx.bak` is another file. A sentence-ending dot is fine.
+  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-]|\\.\\w)`, 'i').test(body);
+}
+
+/** camelCase, PascalCase and snake_case names the candidate's prose uses, backticked or not. */
+const SYMBOL = /(?<![\w$])(?:[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*|[A-Za-z][a-z0-9]*(?:_[A-Za-z0-9]+)+)(?![\w$])/g;
+
+function candidateSymbols(candidate: Candidate): string[] {
+  const text = `${candidate.claim} ${candidate.failureMode}`;
+  return [...new Set([...text.matchAll(SYMBOL)].map((match) => match[0]).filter((symbol) => symbol.length > 3))];
+}
+
+/** Whether `body` names the candidate's file or one of its symbols (#488). */
+export function namesCandidate(body: string, candidate: Candidate): boolean {
+  return namesFile(body, candidate.path) || namesSymbol(body, candidate);
+}
+
+function namesSymbol(body: string, candidate: Candidate): boolean {
+  return candidateSymbols(candidate).some((symbol) => {
+    const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?<![\\w$])${escaped}(?![\\w$])`).test(body);
+  });
+}
+
+/**
+ * Every comment, anchored or not and on any file, that names the candidate's
+ * file or symbol, best wording overlap first, for the verifier to read as a
+ * possible root-cause repeat (#488). A review body or a conversation comment
+ * can carry the point too. The description is left out, as it is everywhere
+ * else.
+ */
+export function commentsNaming(candidate: Candidate, thread: ThreadComment[]): ThreadComment[] {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  return thread
+    .filter((comment) => comment.kind !== 'description' && namesCandidate(comment.body, candidate))
+    .map((comment, index) => ({ comment, index, share: overlap(mine, significantWords(comment.body)) }))
+    .sort((a, b) => b.share - a.share || a.index - b.index)
+    .map((entry) => entry.comment);
+}
+
+/** Words in a check's name that say nothing about which check it is. */
+const GENERIC_CHECK_WORDS = new Set(['check', 'job', 'ci', 'status', 'workflow', 'run', 'build', 'test', 'tests']);
+
+/**
+ * A comment that already names this failing check (#488): every word of the
+ * check's name, bar the generic ones, appears in it as a whole word, short
+ * words such as "pr" included. One shared word such as "size" is not enough,
+ * and "get under the PR size limit" is enough for "Check PR size". A heads-up
+ * line the tool adds to a body is a point like a finding, so another reviewer
+ * or a bot saying it first makes it a repeat. The tool's own earlier heads-up
+ * lines and the description do not count.
+ */
+export function threadRaisesCheck(
+  name: string,
+  thread: ThreadComment[],
+  isOwn: (comment: ThreadComment) => boolean = () => false,
+): ThreadComment | null {
+  const all = name.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const distinctive = all.filter((word) => !GENERIC_CHECK_WORDS.has(word));
+  const mine = new Set(distinctive.length > 0 ? distinctive : all);
+  if (mine.size === 0) return null;
+  for (const comment of thread) {
+    if (comment.kind === 'description') continue;
+    // Only this tool's own heads-up lines are ignored; another author's count.
+    const body = isOwn(comment)
+      ? comment.body.split('\n').filter((line) => !/^\s*(?:>\s*)?Heads up:/.test(line)).join('\n')
+      : comment.body;
+    const words = new Set(body.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+    if ([...mine].every((word) => words.has(word))) return comment;
+  }
+  return null;
 }
 
 /** Roughly what a verifier needs to judge a repeat without the whole body. */
