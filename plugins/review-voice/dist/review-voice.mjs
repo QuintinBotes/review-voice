@@ -8925,7 +8925,12 @@ function alreadySaidOnThread(candidate, thread) {
     if (comment.kind === "description") continue;
     const anchored = comment.path !== null && comment.line !== null;
     if (anchored) {
-      if (!onFile(comment, candidate.path)) continue;
+      if (!onFile(comment, candidate.path)) {
+        if (namesFile(comment.body, candidate.path) && namesSymbol(comment.body, candidate) && overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) {
+          return comment;
+        }
+        continue;
+      }
       if (Math.abs(comment.line - candidate.line) > DUPLICATE_LINE_WINDOW) continue;
       if (overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) return comment;
       continue;
@@ -8979,7 +8984,39 @@ function possiblyRaisedInFile(candidate, thread, accept = () => true) {
 function namesFile(body, path) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-])`).test(body);
+  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-]|\\.\\w)`, "i").test(body);
+}
+var SYMBOL = /(?<![\w$])(?:[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*|[A-Za-z][a-z0-9]*(?:_[A-Za-z0-9]+)+)(?![\w$])/g;
+function candidateSymbols(candidate) {
+  const text5 = `${candidate.claim} ${candidate.failureMode}`;
+  return [...new Set([...text5.matchAll(SYMBOL)].map((match) => match[0]).filter((symbol) => symbol.length > 3))];
+}
+function namesCandidate(body, candidate) {
+  return namesFile(body, candidate.path) || namesSymbol(body, candidate);
+}
+function namesSymbol(body, candidate) {
+  return candidateSymbols(candidate).some((symbol) => {
+    const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?<![\\w$])${escaped}(?![\\w$])`).test(body);
+  });
+}
+function commentsNaming(candidate, thread) {
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  return thread.filter((comment) => comment.kind !== "description" && namesCandidate(comment.body, candidate)).map((comment, index) => ({ comment, index, share: overlap(mine, significantWords(comment.body)) })).sort((a, b) => b.share - a.share || a.index - b.index).map((entry) => entry.comment);
+}
+var GENERIC_CHECK_WORDS = /* @__PURE__ */ new Set(["check", "job", "ci", "status", "workflow", "run", "build", "test", "tests"]);
+function threadRaisesCheck(name, thread, isOwn = () => false) {
+  const all = name.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const distinctive = all.filter((word) => !GENERIC_CHECK_WORDS.has(word));
+  const mine = new Set(distinctive.length > 0 ? distinctive : all);
+  if (mine.size === 0) return null;
+  for (const comment of thread) {
+    if (comment.kind === "description") continue;
+    const body = isOwn(comment) ? comment.body.split("\n").filter((line3) => !/^\s*(?:>\s*)?Heads up:/.test(line3)).join("\n") : comment.body;
+    const words = new Set(body.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+    if ([...mine].every((word) => words.has(word))) return comment;
+  }
+  return null;
 }
 var DESCRIPTION_EXCERPT_CHARS = 400;
 function possiblyRepeatsDescription(candidate, thread) {
@@ -18878,6 +18915,22 @@ async function checkedSuggestions(options, run, planned, head) {
   }
   return { suggestions, withheld };
 }
+async function ciNotOnThread(options, ci, policy) {
+  if (ciAnnotations(ci, policy).length === 0) return ci;
+  let comments;
+  let me;
+  try {
+    const { data: viewer } = await options.client.get("/user");
+    if (typeof viewer?.login !== "string") return ci;
+    me = viewer.login.toLowerCase();
+    comments = (await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client })).comments;
+  } catch {
+    return ci;
+  }
+  const isOwn = (comment) => comment.author.toLowerCase() === me;
+  const open = (entries) => entries.filter((entry) => threadRaisesCheck(entry.name, comments, isOwn) === null);
+  return { state: ci.state, failed: open(ci.failed), rerun: open(ci.rerun) };
+}
 async function computeVerdict(options) {
   const head = options.head.toLowerCase();
   if (!SHA2.test(head)) return refusal(options.head, "--head must be the full commit sha the review read");
@@ -18913,6 +18966,10 @@ async function computeVerdict(options) {
     policy
   });
   decision.reasons.push(...lookupReasons);
+  if (ci !== null && decision.annotations.length > 0) {
+    const open = await ciNotOnThread(options, ci, policy);
+    decision.annotations = open.failed.length + open.rerun.length === 0 ? [] : ciAnnotations(open, policy);
+  }
   if (complexity === null) decision.reasons.push("no complexity assessment was recorded for this run");
   const staleRequestChanges = !(decision.event === "APPROVE" && decision.action !== "refuse") && (needsHuman || (options.owner ?? "") !== "") ? await staleRequest(options, planned, decision.reasons) : null;
   let payload = null;
@@ -19014,8 +19071,7 @@ function recordedCandidates(db, runId) {
   });
 }
 var PASTED_TEXT_MIN = 40;
-async function raisedByOthers(options, run, findings) {
-  if (findings.length === 0) return [];
+async function commentsSinceRun(options, run) {
   const { data: viewer } = await options.client.get("/user");
   if (typeof viewer?.login !== "string") throw new Error("GitHub did not say whose token this is");
   const me = viewer.login.toLowerCase();
@@ -19024,13 +19080,21 @@ async function raisedByOthers(options, run, findings) {
   const started = Date.parse(run.createdAt);
   const squash2 = (text5) => text5.toLowerCase().replace(/\s+/g, " ").trim();
   const ownTexts = comments.filter((c) => c.author.toLowerCase() === me).map((c) => squash2(c.body));
-  const thread = comments.filter((comment) => comment.author.toLowerCase() !== me).map((comment) => ({ ...comment, body: comment.body.split("\n").filter((line3) => !/^\s*>/.test(line3)).join("\n") })).filter((comment) => {
+  return comments.filter((comment) => comment.author.toLowerCase() !== me).map((comment) => ({ ...comment, body: comment.body.split("\n").filter((line3) => !/^\s*>/.test(line3)).join("\n") })).filter((comment) => {
     const text5 = squash2(comment.body);
     return text5 !== "" && !(text5.length >= PASTED_TEXT_MIN && ownTexts.some((own) => own.includes(text5)));
   }).filter((comment) => comment.createdAt === void 0 || !(Date.parse(comment.createdAt) <= started)).filter((comment) => comment.inReplyTo === void 0 || !mine.has(comment.inReplyTo)).flatMap((comment) => citedLocations([comment]).map((located) => ({ comment: located, url: comment.url ?? null })));
+}
+async function raisedByOthers(options, run, findings, checks = []) {
+  if (findings.length === 0 && checks.length === 0) return [];
+  const thread = await commentsSinceRun(options, run);
   if (thread.length === 0) return [];
   const candidates = recordedCandidates(options.db, run.reviewRunId);
   const raised = [];
+  for (const check of checks) {
+    const match = thread.find((entry) => threadRaisesCheck(check.name, [entry.comment]) !== null);
+    if (match !== void 0) raised.push({ path: null, line: null, raisedBy: match.comment.author, commentUrl: match.url });
+  }
   for (const finding of findings) {
     if (finding.path === null || finding.severity === null) continue;
     const candidate = candidates.find((c) => c.path === finding.path && c.line === finding.line) ?? {
@@ -19165,8 +19229,11 @@ async function postReview(options) {
     const inPayload = (finding) => payload.comments.some((comment) => comment.path === finding.path && comment.line === finding.line);
     const findings = computed.planned === void 0 ? [] : [...computed.planned.inline.filter(inPayload), ...computed.planned.unanchored];
     let raised;
+    const named = [...verdict2.ci?.failed ?? [], ...verdict2.ci?.rerun ?? []].filter(
+      (entry) => verdict2.annotations.some((line3) => line3.includes(`\`${safeCheckName(entry.name)}\``))
+    );
     try {
-      raised = await raisedByOthers(options, run, findings);
+      raised = await raisedByOthers(options, run, findings, named);
     } catch (error) {
       return refuse(1, [`could not re-read the thread before sending: ${error instanceof Error ? error.message : String(error)}`], verdict2, key2);
     }
@@ -19201,7 +19268,8 @@ async function postReview(options) {
         key2
       );
     }
-    const annotations = ciAnnotations(reread.ci, policy);
+    const open = await ciNotOnThread(options, reread.ci, policy);
+    const annotations = open.failed.length + open.rerun.length === 0 ? [] : ciAnnotations(open, policy);
     if (annotations.join("\n") !== verdict2.annotations.join("\n")) {
       payload = { ...payload, body: replaceAnnotations(payload.body, verdict2.annotations, annotations) };
       verdict2 = {
@@ -34299,6 +34367,18 @@ function readSignals(file2, root) {
     ];
   });
 }
+var NAMING_BUDGET_BYTES = 4e3;
+function withinBudget(items, size) {
+  const fits = [];
+  let used = 0;
+  for (const item of items) {
+    const next = size(item);
+    if (used + next > NAMING_BUDGET_BYTES) break;
+    used += next;
+    fits.push(item);
+  }
+  return { fits, omitted: items.length - fits.length };
+}
 var TOOL_RESTATEMENT_OVERLAP = 0.6;
 function matchSignal(candidate, signals) {
   if (isSuppressionExempt(candidate.category)) return null;
@@ -34585,19 +34665,33 @@ function checkCandidatesCommand(argv) {
         priorRunId: heldMatch.entry.runId
       };
       const possible = possiblySaidOnThread(candidate, located, isOwn) ?? possiblyRaisedInFile(candidate, located, isOwn) ?? possiblyRaisedInFile(candidate, located);
-      if (possible !== null) {
+      const naming = commentsNaming(candidate, located);
+      const lead = possible ?? naming[0] ?? null;
+      const brief = (comment) => ({
+        author: comment.author,
+        path: comment.path,
+        line: comment.line,
+        excerpt: comment.body.slice(0, 200)
+      });
+      const { fits: alsoNaming, omitted } = withinBudget(
+        naming.filter((comment) => comment !== lead).map(brief),
+        (entry) => Buffer.byteLength(JSON.stringify(entry))
+      );
+      if (lead !== null) {
         kept.push({
           ...original,
           possibleRepeatOf: {
-            kind: isOwn(possible) ? "own-comment" : "thread",
-            author: possible.author,
-            path: possible.path,
-            line: possible.line,
-            ...possible.outdated === true ? { outdated: true } : {},
-            ...possible.resolved === true ? { resolved: true } : {},
-            ...possible.resolved === true && typeof possible.resolvedBy === "string" ? { resolvedBy: possible.resolvedBy } : {},
-            ...typeof possible.id === "number" ? { commentId: possible.id } : {},
-            excerpt: possible.body.slice(0, 200)
+            kind: isOwn(lead) ? "own-comment" : "thread",
+            author: lead.author,
+            path: lead.path,
+            line: lead.line,
+            ...lead.outdated === true ? { outdated: true } : {},
+            ...lead.resolved === true ? { resolved: true } : {},
+            ...lead.resolved === true && typeof lead.resolvedBy === "string" ? { resolvedBy: lead.resolvedBy } : {},
+            ...typeof lead.id === "number" ? { commentId: lead.id } : {},
+            excerpt: lead.body.slice(0, 200),
+            ...alsoNaming.length === 0 ? {} : { alsoNaming },
+            ...omitted === 0 ? {} : { alsoNamingOmitted: omitted }
           }
         });
         return;
