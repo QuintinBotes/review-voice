@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGitSync } from '../git-exec.ts';
 import type { GitHubClient } from '../github/client.ts';
 import { gitFailure, type PriorPullReview } from './incremental.ts';
 
@@ -40,13 +40,13 @@ interface RawReview {
   user?: { login?: string } | null;
 }
 
-function git(args: string[], cwd: string): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 60_000 });
+function git(args: string[], cwd: string, fallbackMs = GIT_READ_TIMEOUT_MS): string {
+  return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(fallbackMs) }).toString('utf8');
 }
 
 export function resolveCommit(ref: string, cwd: string): string | null {
   try {
-    return git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd).trim() || null;
+    return git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS).trim() || null;
   } catch {
     return null;
   }
@@ -100,7 +100,7 @@ export function fetchPriorHead(sha: string, repository: string, cwd: string): st
   }
   const args = ['fetch', '--no-tags', '--quiet', 'origin', sha];
   try {
-    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 });
+    runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) });
     return null;
   } catch (error) {
     return gitFailure(args, error);

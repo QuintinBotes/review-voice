@@ -1,7 +1,6 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
-import { catFileBlobTimeoutMs, runGitCatFileSync } from '../git-exec.ts';
+import { GIT_READ_TIMEOUT_MS, catFileBlobTimeoutMs, gitTimeoutMs, runGitCatFileSync, runGitSync } from '../git-exec.ts';
 
 /**
  * Everything convention discovery asks of a tree, with repository-relative
@@ -50,10 +49,9 @@ const GIT_BUFFER = 512 * 1024 * 1024;
  * resolves.
  */
 export function gitTreeReader(root: string, ref: string): TreeReader {
-  const listing = execFileSync('git', ['ls-tree', '-r', '-l', '--full-tree', '-z', ref], {
-    cwd: root,
-    stdio: ['ignore', 'pipe', 'pipe'],
+  const listing = runGitSync(root, ['ls-tree', '-r', '-l', '--full-tree', '-z', ref], {
     maxBuffer: GIT_BUFFER,
+    timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS),
   });
   const files = new Map<string, { object: string; size: number }>();
   const directories = new Map<string, Set<string>>();
