@@ -415,6 +415,34 @@ test('the built bundle holds a not-material minor in belowGate and --promote pos
     assert.equal(promoted.scores[0].ownerPromotion.heldBecause, reason);
   }));
 
+test('a material_reason that contains " Also: " still leaves the hold in belowGate and --promote posts it', () =>
+  withDir((dir) => {
+    const verifications = [
+      { candidate_id: 'cand_001', verified: true, technical_confidence: 0.9, material: false, material_reason: 'harmless. Also: nobody calls it' },
+    ];
+    const held = runScore(dir, [RAW], verifications);
+    assert.equal(held.belowGate.length, 1);
+    assert.equal(held.belowGate[0].gate, 'materiality');
+    const promoted = runScore(dir, [RAW], verifications, ['--promote', 'cand_001']);
+    assert.equal(promoted.eligible.length, 1);
+    assert.equal(promoted.scores[0].ownerPromotion.gate, 'materiality');
+  }));
+
+test('--severity alone does not release a not-material important finding, --promote does', () =>
+  withDir((dir) => {
+    const raw = { ...RAW, category: 'api_contract', severity: 'important' };
+    const verifications = [
+      { candidate_id: 'cand_001', verified: true, technical_confidence: 0.9, material: false, material_reason: 'taste only' },
+    ];
+    const held = runScore(dir, [raw], verifications, ['--severity', 'cand_001=nit']);
+    assert.deepEqual(held.eligible, []);
+    assert.equal(held.belowGate.length, 1);
+    assert.equal(held.belowGate[0].gate, 'materiality');
+    assert.equal(held.scores[0].severity.severity, 'nit');
+    const promoted = runScore(dir, [raw], verifications, ['--severity', 'cand_001=nit', '--promote', 'cand_001']);
+    assert.equal(promoted.eligible.length, 1);
+  }));
+
 test('the built bundle holds a verified, not-material nit in belowGate, not in unverified', () =>
   withDir((dir) => {
     const held = runScore(

@@ -549,6 +549,8 @@ export function applyLaneSeverity(
   };
 }
 
+const materialityHold = (reason: string): string => (reason === '' ? NOT_MATERIAL_PREFIX : `${NOT_MATERIAL_PREFIX} ${reason}`);
+
 /**
  * The verifier's materiality verdict, applied to the tier scoring already
  * derived, bounded and laned (#479). Materiality is separate from truth: it
@@ -573,9 +575,10 @@ function applyMaterialityVerdict(
   if (!notMaterial && !tooHigh) return unchanged;
   const at = TIER_ORDER.indexOf(derived.severity as (typeof TIER_ORDER)[number]);
   if (at === -1) return unchanged;
-  const reason = verification.materialReason?.replace(/\s+/g, ' ').trim() ?? '';
+  // Verifier text must not read as the " Also: " join of a compound reason, or gateOf drops the hold.
+  const reason = verification.materialReason?.replace(/\s+/g, ' ').replaceAll(' Also: ', ' also: ').trim() ?? '';
   if (notMaterial && at <= TIER_ORDER.indexOf('minor') && !isSuppressionExempt(candidate.category)) {
-    return { severity: derived, hold: reason === '' ? NOT_MATERIAL_PREFIX : `${NOT_MATERIAL_PREFIX} ${reason}` };
+    return { severity: derived, hold: materialityHold(reason) };
   }
   // too_high alone lowers only important or blocking; a nit has no lower tier.
   if (at === 0 || (!notMaterial && at <= TIER_ORDER.indexOf('minor'))) return unchanged;
@@ -1898,6 +1901,20 @@ export function scoreCandidate(
   // The verifier's materiality verdict bounds the tier last, so the floor
   // below is read from the tier the finding is actually reported at (#479).
   const materiality = applyMaterialityVerdict(boundedSeverity, candidate, verification);
+  // An owner --severity lowers the final tier after this, so the hold is decided on that tier:
+  // a downgrade alone must not release an immaterial finding; only --promote does.
+  if (
+    materiality.hold === null &&
+    ownerTier !== undefined &&
+    TIER_ORDER.indexOf(ownerTier as (typeof TIER_ORDER)[number]) <= TIER_ORDER.indexOf('minor') &&
+    verification?.verified === true &&
+    verification.material === false &&
+    !isSuppressionExempt(candidate.category)
+  ) {
+    materiality.hold = materialityHold(
+      verification.materialReason?.replace(/\s+/g, ' ').replaceAll(' Also: ', ' also: ').trim() ?? '',
+    );
+  }
   const severity = materiality.severity;
 
   // Which floor applies depends on who established the number. The verifier

@@ -8869,6 +8869,7 @@ function applyLaneSeverity(derived, candidate, lane, verification2) {
     reason: `${result.reason}, raised to ${escalate.to} by lane ${lane.name} because the verifier confirmed the blocker and traced its impact at confidence ${confidence.toFixed(2)}`
   };
 }
+var materialityHold = (reason2) => reason2 === "" ? NOT_MATERIAL_PREFIX : `${NOT_MATERIAL_PREFIX} ${reason2}`;
 function applyMaterialityVerdict(derived, candidate, verification2) {
   const unchanged = { severity: derived, hold: null };
   if (verification2?.verified !== true || derived.severity === "question") return unchanged;
@@ -8877,9 +8878,9 @@ function applyMaterialityVerdict(derived, candidate, verification2) {
   if (!notMaterial && !tooHigh) return unchanged;
   const at2 = TIER_ORDER.indexOf(derived.severity);
   if (at2 === -1) return unchanged;
-  const reason2 = verification2.materialReason?.replace(/\s+/g, " ").trim() ?? "";
+  const reason2 = verification2.materialReason?.replace(/\s+/g, " ").replaceAll(" Also: ", " also: ").trim() ?? "";
   if (notMaterial && at2 <= TIER_ORDER.indexOf("minor") && !isSuppressionExempt(candidate.category)) {
-    return { severity: derived, hold: reason2 === "" ? NOT_MATERIAL_PREFIX : `${NOT_MATERIAL_PREFIX} ${reason2}` };
+    return { severity: derived, hold: materialityHold(reason2) };
   }
   if (at2 === 0 || !notMaterial && at2 <= TIER_ORDER.indexOf("minor")) return unchanged;
   const lowered = TIER_ORDER[at2 - 1];
@@ -9412,6 +9413,11 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     lane
   );
   const materiality = applyMaterialityVerdict(boundedSeverity, candidate, verification2);
+  if (materiality.hold === null && ownerTier !== void 0 && TIER_ORDER.indexOf(ownerTier) <= TIER_ORDER.indexOf("minor") && verification2?.verified === true && verification2.material === false && !isSuppressionExempt(candidate.category)) {
+    materiality.hold = materialityHold(
+      verification2.materialReason?.replace(/\s+/g, " ").replaceAll(" Also: ", " also: ").trim() ?? ""
+    );
+  }
   const severity = materiality.severity;
   const verified = verifiedFloor(candidate.category, ownerTier ?? severity.severity, thresholds);
   const confidenceFloor = confidenceSource === "verifier" ? verified.floor : thresholds.analystOnlyConfidence;
