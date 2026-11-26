@@ -5,7 +5,7 @@ import { DIFF_LANE, eligibleLanes } from '../review/lanes.ts';
 import { flag, repositoryConfig } from './shared.ts';
 import { readFilesAndDiff } from './diff.ts';
 
-export function planCommand(argv: string[]): number {
+export async function planCommand(argv: string[]): Promise<number> {
   const filesPath = flag(argv, '--files');
   const diffPath = flag(argv, '--diff-file');
   const modeFlag = flag(argv, '--mode');
@@ -29,7 +29,7 @@ export function planCommand(argv: string[]): number {
     }
   }
 
-  const input = readFilesAndDiff(filesPath, diffPath);
+  const input = await readFilesAndDiff(filesPath, diffPath);
   if (input === null) return 2;
   const { manifest, changed, diffText, generated } = input;
 
@@ -53,14 +53,14 @@ export function planCommand(argv: string[]): number {
 }
 
 /** Which configured lanes run on this change (docs/adr/0023). */
-export function lanesCommand(argv: string[]): number {
+export async function lanesCommand(argv: string[]): Promise<number> {
   const filesPath = flag(argv, '--files');
   const diffPath = flag(argv, '--diff-file');
   if (filesPath === null || diffPath === null) {
     console.error('Usage: lanes --files <files.json> --diff-file <diff.patch>');
     return 2;
   }
-  const input = readFilesAndDiff(filesPath, diffPath);
+  const input = await readFilesAndDiff(filesPath, diffPath);
   if (input === null) return 2;
   const config = repositoryConfig();
   for (const warning of config?.warnings ?? []) console.error(`Warning: ${warning}`);

@@ -174,7 +174,7 @@ async function dispatch(argv: string[]): Promise<number> {
     case 'diff':
       return argv.includes('--pr')
         ? await pullRequestDiffCommand(argv.slice(1))
-        : diffCommand(argv.slice(1));
+        : await diffCommand(argv.slice(1));
 
     case 'symbols':
       return symbolsCommand(argv.slice(1));
@@ -301,7 +301,7 @@ async function dispatch(argv: string[]): Promise<number> {
       return policyCommand(argv.slice(1));
 
     case 'check-candidates':
-      return checkCandidatesCommand(argv.slice(1));
+      return await checkCandidatesCommand(argv.slice(1));
 
     case 'check-verification':
       return checkVerificationCommand(argv.slice(1));
@@ -313,7 +313,7 @@ async function dispatch(argv: string[]): Promise<number> {
       return checkIntentCommand(argv.slice(1));
 
     case 'conventions':
-      return conventionsCommand(argv.slice(1));
+      return await conventionsCommand(argv.slice(1));
 
     case 'evidence':
       return await whileStoppable(() => evidenceCommand(argv.slice(1)));
@@ -333,16 +333,16 @@ async function dispatch(argv: string[]): Promise<number> {
       return await whileStoppable(() => verifyCommand(argv));
 
     case 'record':
-      return recordCommand(argv.slice(1));
+      return await recordCommand(argv.slice(1));
 
     case 'carry':
-      return carryCommand(argv.slice(1));
+      return await carryCommand(argv.slice(1));
 
     case 'plan':
-      return planCommand(argv.slice(1));
+      return await planCommand(argv.slice(1));
 
     case 'lanes':
-      return lanesCommand(argv.slice(1));
+      return await lanesCommand(argv.slice(1));
 
     case 'reanchor':
       return reanchorCommand(argv.slice(1));
@@ -351,7 +351,7 @@ async function dispatch(argv: string[]): Promise<number> {
       return challengeCommand(argv.slice(1));
 
     case 'carry-candidates':
-      return carryCandidatesCommand(argv.slice(1));
+      return await carryCandidatesCommand(argv.slice(1));
 
     case 'feedback':
       return feedbackCommand(argv.slice(1));

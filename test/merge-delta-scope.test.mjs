@@ -26,7 +26,7 @@ const lines = (count, prefix) => Array.from({ length: count }, (_, index) => `${
  * `main`, and a pull-request branch `pr` whose reviewed head edits lines 5 and
  * 13 of src/a.ts: two hunks, seven unchanged lines apart.
  */
-function withPullRequest(fn) {
+async function withPullRequest(fn) {
   const root = mkdtempSync(join(tmpdir(), 'rv-merge-delta-'));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const write = (path, contents) => {
@@ -60,14 +60,14 @@ function withPullRequest(fn) {
   const reviewed = commit('author work');
 
   try {
-    return fn({ root, git, write, edit, commit, reviewed, head: () => git('rev-parse', 'HEAD').trim() });
+    return await fn({ root, git, write, edit, commit, reviewed, head: () => git('rev-parse', 'HEAD').trim() });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-function plan(repository, overrides = {}) {
-  return planScope({
+async function plan(repository, overrides = {}) {
+  return await planScope({
     priorRun: { reviewRunId: 'run_001', headRef: repository.reviewed, createdAt: '2026-09-30T12:00:00.000Z' },
     head: repository.head(),
     headAvailable: true,
@@ -101,12 +101,12 @@ function holdsNoBaseChange(patch) {
   assert.doesNotMatch(patch, /base-only/);
 }
 
-test('(a) a base merge with no author change since the review is unchanged', () => {
-  withPullRequest((repository) => {
+test('(a) a base merge with no author change since the review is unchanged', async () => {
+  await withPullRequest(async (repository) => {
     advanceBase(repository);
     repository.git('merge', '-q', '--no-ff', 'main', '-m', 'merge main');
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'unchanged', JSON.stringify(scope));
     assert.equal(scope.reason, 'base-merged');
     assert.equal(scope.mergeBase, repository.git('rev-parse', 'main').trim());
@@ -121,12 +121,12 @@ function mergeRewritingLine5(repository) {
   repository.commit('merge main');
 }
 
-test('(b) a merge whose resolution rewrites a reviewed line reads that rewrite and no base change', () => {
-  withPullRequest((repository) => {
+test('(b) a merge whose resolution rewrites a reviewed line reads that rewrite and no base change', async () => {
+  await withPullRequest(async (repository) => {
     advanceBase(repository);
     mergeRewritingLine5(repository);
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.deepEqual(scope.files, ['src/a.ts']);
     assert.equal(scope.hunks, 1);
@@ -138,14 +138,14 @@ test('(b) a merge whose resolution rewrites a reviewed line reads that rewrite a
   });
 });
 
-test('(c) a merge plus a new author commit reads both the rewrite and the commit', () => {
-  withPullRequest((repository) => {
+test('(c) a merge plus a new author commit reads both the rewrite and the commit', async () => {
+  await withPullRequest(async (repository) => {
     advanceBase(repository);
     mergeRewritingLine5(repository);
     repository.edit('src/b.ts', 'b 3\n', 'b 3 after the review\n');
     repository.commit('more author work');
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.deepEqual(scope.files, ['src/a.ts', 'src/b.ts']);
     assert.match(interdiffPatch, /^\+a 5 by the author, fixed in the merge$/m);
@@ -154,15 +154,15 @@ test('(c) a merge plus a new author commit reads both the rewrite and the commit
   });
 });
 
-test('(d) a rebase onto a newer base with an edited reviewed line reads that edit only', () => {
-  withPullRequest((repository) => {
+test('(d) a rebase onto a newer base with an edited reviewed line reads that edit only', async () => {
+  await withPullRequest(async (repository) => {
     advanceBase(repository);
     repository.git('rebase', '-q', 'main');
     repository.edit('src/a.ts', 'a 13 by the author\n', 'a 13 edited after the rebase\n');
     repository.git('add', '-A');
     repository.git('commit', '-q', '--amend', '--no-edit');
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.deepEqual(scope.files, ['src/a.ts']);
     assert.match(interdiffPatch, /^-a 13 by the author$/m);
@@ -188,12 +188,12 @@ function mergeResolving(repository, resolved) {
   repository.commit('merge main');
 }
 
-test('(e) a merge whose conflict the author resolves by rewriting their own line reads that resolution', () => {
-  withPullRequest((repository) => {
+test('(e) a merge whose conflict the author resolves by rewriting their own line reads that resolution', async () => {
+  await withPullRequest(async (repository) => {
     baseEditsLine5(repository);
     mergeResolving(repository, lines(40, 'a').replace('a 5\n', 'a 5 resolved by the author\n').replace('a 13\n', 'a 13 by the author\n'));
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.deepEqual(scope.files, ['src/a.ts']);
     assert.match(scope.detail, /narrowed to the merge resolution after a conflicting replay: src\/a\.ts/);
@@ -205,29 +205,29 @@ test('(e) a merge whose conflict the author resolves by rewriting their own line
   });
 });
 
-test('(e) a conflicted file the author resolves by dropping all their changes is listed, never read through conflict markers', () => {
-  withPullRequest((repository) => {
+test('(e) a conflicted file the author resolves by dropping all their changes is listed, never read through conflict markers', async () => {
+  await withPullRequest(async (repository) => {
     baseEditsLine5(repository);
     mergeResolving(repository, lines(40, 'a').replace('a 5\n', 'a 5 changed on main\n'));
 
     // The pull request no longer changes src/a.ts, so its own diff there is
     // empty. The replay's marker diff was the only other place it showed, and
     // markers read as a bad resolution (#73): it is listed instead.
-    const { scope, interdiffPatch } = plan(repository, { reviewedFiles: [{ path: 'src/b.ts' }] });
+    const { scope, interdiffPatch } = await plan(repository, { reviewedFiles: [{ path: 'src/b.ts' }] });
     assert.equal(scope.kind, 'unchanged', JSON.stringify(scope));
     assert.deepEqual(scope.noLongerChanged, ['src/a.ts']);
     assert.equal(interdiffPatch, null);
   });
 });
 
-test('(f) a base change in a file the pull request touches is not in the patch', () => {
-  withPullRequest((repository) => {
+test('(f) a base change in a file the pull request touches is not in the patch', async () => {
+  await withPullRequest(async (repository) => {
     advanceBase(repository);
     repository.git('merge', '-q', '--no-ff', 'main', '-m', 'merge main');
     repository.edit('src/a.ts', 'a 20\n', 'a 20 after the review\n');
     repository.commit('more author work in the same file');
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.deepEqual(scope.files, ['src/a.ts']);
     assert.equal(scope.hunks, 1);
@@ -239,8 +239,8 @@ test('(f) a base change in a file the pull request touches is not in the patch',
 
 // The files a plain follow-up is read over.
 
-test('a plain follow-up that undoes a rename shows the old path coming back', () => {
-  withPullRequest((repository) => {
+test('a plain follow-up that undoes a rename shows the old path coming back', async () => {
+  await withPullRequest(async (repository) => {
     repository.git('checkout', '-q', 'main');
     repository.write('src/old-name.ts', lines(6, 'named'));
     repository.commit('a file to rename');
@@ -252,22 +252,22 @@ test('a plain follow-up that undoes a rename shows the old path coming back', ()
     repository.commit('undo the rename');
 
     // The head no longer renames anything, so the full read lists src/a.ts only.
-    const { scope, interdiffPatch } = plan({ ...repository, reviewed: renamed }, { reviewedFiles: [{ path: 'src/a.ts' }] });
+    const { scope, interdiffPatch } = await plan({ ...repository, reviewed: renamed }, { reviewedFiles: [{ path: 'src/a.ts' }] });
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.match(interdiffPatch, /^(?:rename to src\/old-name\.ts|\+\+\+ b\/src\/old-name\.ts)$/m);
     assert.ok(scope.files.includes('src/old-name.ts'), JSON.stringify(scope.files));
   });
 });
 
-test('a plain follow-up that deletes a file the pull request modified shows the deletion', () => {
-  withPullRequest((repository) => {
+test('a plain follow-up that deletes a file the pull request modified shows the deletion', async () => {
+  await withPullRequest(async (repository) => {
     repository.edit('src/b.ts', 'b 3\n', 'b 3 by the author\n');
     const reviewed = repository.commit('author work on b');
     repository.git('rm', '-q', 'src/b.ts');
     repository.commit('delete b');
 
     // A deleted file is not reviewed in a full read; it comes in as deleted.
-    const { scope, interdiffPatch } = plan(
+    const { scope, interdiffPatch } = await plan(
       { ...repository, reviewed },
       { reviewedFiles: [{ path: 'src/a.ts' }], deletedFiles: ['src/b.ts'] },
     );
@@ -278,18 +278,18 @@ test('a plain follow-up that deletes a file the pull request modified shows the 
   });
 });
 
-test('a plain follow-up with no pull request files to read is unchanged, never the whole range', () => {
-  withPullRequest((repository) => {
+test('a plain follow-up with no pull request files to read is unchanged, never the whole range', async () => {
+  await withPullRequest(async (repository) => {
     repository.edit('src/base-only.ts', 'base 2\n', 'base 2 outside the reviewed files\n');
     repository.commit('a change in no reviewed file');
 
-    const { scope, interdiffPatch } = plan(repository, { reviewedFiles: [] });
+    const { scope, interdiffPatch } = await plan(repository, { reviewedFiles: [] });
     assert.equal(scope.kind, 'unchanged', JSON.stringify(scope));
     assert.equal(interdiffPatch, null);
   });
 });
 
-test('an interdiff that only deletes a file is still a review of that file', () => {
+test('an interdiff that only deletes a file is still a review of that file', async () => {
   const file = (path, status, reviewed) => ({
     path,
     status,
@@ -321,7 +321,7 @@ test('an interdiff that only deletes a file is still a review of that file', () 
   const patch = ['diff --git a/src/b.ts b/src/b.ts', 'deleted file mode 100644', '--- a/src/b.ts', '+++ /dev/null', '@@ -1 +0,0 @@', '-b 1', ''].join('\n');
   const scope = { kind: 'interdiff', since: '1234567890abcdef', priorRunId: null, priorReviewedAt: null, mergeBase: 'e'.repeat(40), files: ['src/b.ts'], hunks: 1 };
 
-  const scoped = applyReviewScope(acquired, 7, scope, process.cwd(), undefined, patch);
+  const scoped = await applyReviewScope(acquired, 7, scope, process.cwd(), undefined, patch);
   assert.equal(scoped.diff, patch);
   assert.ok(scoped.reviewedFileCount > 0, 'a deletion-only follow-up is not "nothing to review"');
   const deleted = scoped.files.find((entry) => entry.path === 'src/b.ts');

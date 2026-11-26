@@ -1,4 +1,4 @@
-import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGitSync } from '../git-exec.ts';
+import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGit } from '../git-exec.ts';
 import { topPathspecs } from './incremental.ts';
 import { DEFAULT_LIMITS } from '../contract/limits.ts';
 import { reason, type FileHunks } from './hunks.ts';
@@ -84,9 +84,9 @@ interface OldHunk {
 }
 
 /** True when `ref` names a commit this clone can read. */
-export function commitReadable(ref: string, cwd: string): boolean {
+export async function commitReadable(ref: string, cwd: string): Promise<boolean> {
   try {
-    runGitSync(cwd, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { timeoutMs: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS) });
+    await runGit(cwd, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { timeoutMs: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS) });
     return true;
   } catch {
     return false;
@@ -135,17 +135,17 @@ export function remapLine(hunks: OldHunk[], line: number): { line: number } | { 
 
 export class CarryError extends Error {}
 
-function gitOut(args: string[], cwd: string): string {
+async function gitOut(args: string[], cwd: string): Promise<string> {
   try {
-    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString('utf8');
+    return (await runGit(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) })).toString('utf8');
   } catch (error) {
     throw new CarryError(`git ${args.join(' ')} failed: ${(error as Error).message}`);
   }
 }
 
-function existsAt(ref: string, path: string, cwd: string): boolean {
+async function existsAt(ref: string, path: string, cwd: string): Promise<boolean> {
   try {
-    runGitSync(cwd, ['cat-file', '-e', `${ref}:${path}`], { timeoutMs: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS) });
+    await runGit(cwd, ['cat-file', '-e', `${ref}:${path}`], { timeoutMs: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS) });
     return true;
   } catch {
     return false;
@@ -157,15 +157,15 @@ function existsAt(ref: string, path: string, cwd: string): boolean {
  * followed: the file is gone, or the line or one of the two either side of
  * it changed.
  */
-export function followLine(
+export async function followLine(
   previousHead: string,
   head: string,
   path: string,
   line: number,
   cwd: string,
-): { line: number } | { reason: string } {
-  if (!existsAt(head, path, cwd)) return { reason: 'file deleted or renamed' };
-  const patch = gitOut(
+): Promise<{ line: number } | { reason: string }> {
+  if (!(await existsAt(head, path, cwd))) return { reason: 'file deleted or renamed' };
+  const patch = await gitOut(
     ['diff', '--unified=0', '--no-ext-diff', '--src-prefix=a/', '--dst-prefix=b/', previousHead, head, '--', ...topPathspecs([path])],
     cwd,
   );
@@ -185,16 +185,16 @@ function rewriteAnchor(text: string, path: string, oldLine: number, line: number
  * A finding in `hold` (by id, with the reason) is checked first and is left out
  * of both lists, whatever happened to its line.
  */
-export function carryFindings(
+export async function carryFindings(
   findings: CarryInput[],
   previousHead: string,
   head: string,
   cwd: string,
   hold: ReadonlyMap<string, string> = new Map(),
   noLongerChanged: ReadonlySet<string> = new Set(),
-): CarryResult {
+): Promise<CarryResult> {
   for (const ref of [previousHead, head]) {
-    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
+    if (!(await commitReadable(ref, cwd))) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
   }
 
   const carried: CarriedFinding[] = [];
@@ -226,7 +226,7 @@ export function carryFindings(
       });
       continue;
     }
-    const moved = followLine(previousHead, head, finding.path, finding.line, cwd);
+    const moved = await followLine(previousHead, head, finding.path, finding.line, cwd);
     if ('reason' in moved) {
       notCarried.push({
         findingId: finding.findingId,
@@ -321,8 +321,8 @@ export interface RefusedCandidate {
 }
 
 /** Files that differ between two commits, under both names when renamed. */
-export function changedFiles(previousHead: string, head: string, cwd: string): Set<string> {
-  const out = gitOut(['diff', '--name-only', '--no-renames', '-z', previousHead, head], cwd);
+export async function changedFiles(previousHead: string, head: string, cwd: string): Promise<Set<string>> {
+  const out = await gitOut(['diff', '--name-only', '--no-renames', '-z', previousHead, head], cwd);
   return new Set(out.split('\0').filter((name) => name.length > 0));
 }
 
@@ -349,18 +349,18 @@ export function namesFile(text: string, path: string): boolean {
  * be a changed line of the new head's diff, the same check `reanchor` makes.
  * Anything else is refused by name, so it is verified again.
  */
-export function carryCandidates(
+export async function carryCandidates(
   candidates: CandidateToCarry[],
   previousHead: string,
   head: string,
   hunks: Map<string, FileHunks>,
   cwd: string,
-): { carried: CarriedCandidate[]; refused: RefusedCandidate[] } {
+): Promise<{ carried: CarriedCandidate[]; refused: RefusedCandidate[] }> {
   for (const ref of [previousHead, head]) {
-    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
+    if (!(await commitReadable(ref, cwd))) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
   }
 
-  const changed = changedFiles(previousHead, head, cwd);
+  const changed = await changedFiles(previousHead, head, cwd);
   const carried: CarriedCandidate[] = [];
   const refused: RefusedCandidate[] = [];
   for (const candidate of candidates) {
@@ -383,7 +383,7 @@ export function carryCandidates(
       continue;
     }
 
-    const moved = followLine(previousHead, head, candidate.path, candidate.line, cwd);
+    const moved = await followLine(previousHead, head, candidate.path, candidate.line, cwd);
     if ('reason' in moved) {
       refuse(`${candidate.path}:${candidate.line}: ${moved.reason}`);
       continue;
@@ -396,7 +396,7 @@ export function carryCandidates(
         refuse('a stale consumer with no caused_by');
         continue;
       }
-      const followed = followLine(previousHead, head, from.path, from.line, cwd);
+      const followed = await followLine(previousHead, head, from.path, from.line, cwd);
       if ('reason' in followed) {
         refuse(`its cause ${from.path}:${from.line}: ${followed.reason}`);
         continue;

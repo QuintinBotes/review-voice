@@ -221,7 +221,7 @@ test('a renamed file is measured against its previous path, and the threshold co
 
 test('a pull request whose head commit is not here has no head side to read', async () => {
   const { changeSides } = await import('../plugins/review-voice/src/diff/structure.ts');
-  const sides = changeSides(root, { mode: 'pull-request', base: null, head: 'f'.repeat(40), refs: { head: { available: false } } });
+  const sides = await changeSides(root, { mode: 'pull-request', base: null, head: 'f'.repeat(40), refs: { head: { available: false } } });
   assert.deepEqual(sides, { base: null, head: null });
 });
 
@@ -239,10 +239,10 @@ test('a follow-up review measures from the reviewed head, so an earlier crossing
     const files = [{ path: 'src/big.ts', status: 'modified', class: 'source', language: 'typescript', additions: 5, deletions: 0, reviewed: true }];
     const change = { mode: 'pull-request', base: start, head, diff: '', files, refs: { head: { available: true } } };
 
-    const full = collectStructure(scratch.repo, change, ['src/big.ts']);
+    const full = await collectStructure(scratch.repo, change, ['src/big.ts']);
     assert.deepEqual(full.sizeCrossings.map((c) => [c.baseLines, c.headLines]), [[950, 1055]]);
 
-    const followUp = collectStructure(scratch.repo, { ...change, scope: { kind: 'interdiff', since: reviewed } }, ['src/big.ts']);
+    const followUp = await collectStructure(scratch.repo, { ...change, scope: { kind: 'interdiff', since: reviewed } }, ['src/big.ts']);
     assert.deepEqual(followUp.sizeCrossings, []);
     assert.equal(followUp.unmeasured.count, 0);
   } finally {
@@ -256,7 +256,7 @@ test('a deleted file is neither a crossing nor unmeasured', async () => {
   try {
     rmSync(join(scratch.repo, 'src/big.ts'));
     const files = [{ path: 'src/big.ts', status: 'deleted', class: 'source', language: 'typescript', additions: 0, deletions: 950, reviewed: true }];
-    const signals = collectStructure(scratch.repo, { mode: 'worktree', base: null, head: scratch.git('rev-parse', 'HEAD'), diff: '', files }, ['src/big.ts']);
+    const signals = await collectStructure(scratch.repo, { mode: 'worktree', base: null, head: scratch.git('rev-parse', 'HEAD'), diff: '', files }, ['src/big.ts']);
     assert.deepEqual(signals, { sizeCrossings: [], branchGrowth: [], typeEscapes: [], removedControls: [], riskMarkers: [], unmeasured: { count: 0, paths: [] } });
   } finally {
     scratch.cleanup();

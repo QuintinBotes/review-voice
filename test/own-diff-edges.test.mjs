@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { planScope } from '../plugins/review-voice/src/diff/incremental.ts';
 
-function scenario(base, reviewed, next) {
+async function scenario(base, reviewed, next) {
   const root = mkdtempSync(join(tmpdir(), 'rv-own-edge-'));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' });
   const commit = (contents, message) => {
@@ -27,7 +27,7 @@ function scenario(base, reviewed, next) {
     git('checkout', '-q', '-b', 'pr');
     const priorHead = commit(reviewed, 'reviewed');
     const head = commit(next, 'next');
-    return planScope({
+    return (await planScope({
       priorRun: { reviewRunId: 'run_001', headRef: priorHead, createdAt: '2026-09-30T12:00:00.000Z' },
       head,
       headAvailable: true,
@@ -36,29 +36,29 @@ function scenario(base, reviewed, next) {
       truncated: false,
       forceFull: false,
       base: baseSha,
-    }).scope;
+    })).scope;
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-test('one rewrite on a shared site does not hide a second reviewed hunk being reverted from the follow-up', () => {
+test('one rewrite on a shared site does not hide a second reviewed hunk being reverted from the follow-up', async () => {
   const base = 'function a() {\n}\nfunction b() {\n}\nend();\n';
   const reviewed = 'function a() {\n}\nlockA();\nfunction b() {\n}\nlockB();\nend();\n';
   const next = 'function a() {\n}\nfunction b() {\n}\nlockB2();\nend();\n';
-  const scope = scenario(base, reviewed, next);
+  const scope = await scenario(base, reviewed, next);
   assert.equal(scope.kind, 'interdiff');
   assert.deepEqual(scope.files, ['src.ts']);
 });
 
-test('a line-ending-only edit is not unchanged', () => {
+test('a line-ending-only edit is not unchanged', async () => {
   const base = 'first();\n';
-  const scope = scenario(base, 'first();\nnewline();\n', 'first();\nnewline();\r\n');
+  const scope = await scenario(base, 'first();\nnewline();\n', 'first();\nnewline();\r\n');
   assert.notEqual(scope.kind, 'unchanged');
 });
 
-test('removing the final newline is not unchanged', () => {
+test('removing the final newline is not unchanged', async () => {
   const base = 'first();\n';
-  const scope = scenario(base, 'first();\ntail();\n', 'first();\ntail();');
+  const scope = await scenario(base, 'first();\ntail();\n', 'first();\ntail();');
   assert.notEqual(scope.kind, 'unchanged');
 });

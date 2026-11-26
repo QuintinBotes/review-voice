@@ -1,3 +1,4 @@
+import { GIT_CHECK_TIMEOUT_MS, gitTimeoutMs } from '../git-exec.ts';
 import { statSync, lstatSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -57,7 +58,7 @@ export function worktreeCommand(argv: string[]): number {
   }
   let sha: string;
   try {
-    sha = execFileSync('git', ['rev-parse', '--verify', '--quiet', `${head}^{commit}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    sha = execFileSync('git', ['rev-parse', '--verify', '--quiet', `${head}^{commit}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS), killSignal: 'SIGKILL' }).trim();
   } catch {
     console.error(`--head ${head} is not a commit in this clone. Fetch it and run again.`);
     return 2;

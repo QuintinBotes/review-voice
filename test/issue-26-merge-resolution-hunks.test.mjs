@@ -21,7 +21,7 @@ import { diffSummary } from '../plugins/review-voice/src/cli.ts';
 const lines = (count, prefix) => Array.from({ length: count }, (_, index) => `${prefix} ${index + 1}`).join('\n') + '\n';
 
 /** A pull request whose reviewed head edits lines 5 and 300 of src/a.ts. */
-function withPullRequest(fn) {
+async function withPullRequest(fn) {
   const root = mkdtempSync(join(tmpdir(), 'rv-issue-26-'));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const write = (path, contents) => {
@@ -56,14 +56,14 @@ function withPullRequest(fn) {
   const reviewed = commit('author work');
 
   try {
-    return fn({ root, git, write, read, edit, commit, reviewed, head: () => git('rev-parse', 'HEAD').trim() });
+    return await fn({ root, git, write, read, edit, commit, reviewed, head: () => git('rev-parse', 'HEAD').trim() });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-function plan(repository, reviewedFiles = ['src/a.ts']) {
-  return planScope({
+async function plan(repository, reviewedFiles = ['src/a.ts']) {
+  return await planScope({
     priorRun: { reviewRunId: 'run_001', headRef: repository.reviewed, createdAt: '2026-09-30T12:00:00.000Z' },
     head: repository.head(),
     headAvailable: true,
@@ -84,13 +84,13 @@ function baseRewritesLine5(repository) {
   assert.throws(() => repository.git('merge', '-q', '--no-ff', 'main', '-m', 'merge main'));
 }
 
-test('a conflicted file is cut to the hunk its resolution touched', () => {
-  withPullRequest((repository) => {
+test('a conflicted file is cut to the hunk its resolution touched', async () => {
+  await withPullRequest(async (repository) => {
     baseRewritesLine5(repository);
     repository.write('src/a.ts', lines(400, 'a').replace('a 5\n', 'a 5 resolved by the author\n').replace('a 300\n', 'a 300 by the author\n'));
     repository.commit('merge main');
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.deepEqual(scope.files, ['src/a.ts']);
     assert.equal(scope.hunks, 1);
@@ -102,8 +102,8 @@ test('a conflicted file is cut to the hunk its resolution touched', () => {
   });
 });
 
-test('an edit made in a clean part of a conflicted file while resolving is kept', () => {
-  withPullRequest((repository) => {
+test('an edit made in a clean part of a conflicted file while resolving is kept', async () => {
+  await withPullRequest(async (repository) => {
     baseRewritesLine5(repository);
     repository.write(
       'src/a.ts',
@@ -114,7 +114,7 @@ test('an edit made in a clean part of a conflicted file while resolving is kept'
     );
     repository.commit('merge main');
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.equal(scope.hunks, 2);
     assert.match(interdiffPatch, /^\+a 5 resolved by the author$/m);
@@ -123,15 +123,15 @@ test('an edit made in a clean part of a conflicted file while resolving is kept'
   });
 });
 
-test('a resolution that cannot be matched to hunks reads the two-head diff, and the scope note says so', () => {
-  withPullRequest((repository) => {
+test('a resolution that cannot be matched to hunks reads the two-head diff, and the scope note says so', async () => {
+  await withPullRequest(async (repository) => {
     baseRewritesLine5(repository);
     // The base's side is taken at line 5: no own diff is left there, so that
     // part of the resolution has no hunk to be cut to.
     repository.write('src/a.ts', lines(400, 'a').replace('a 5\n', 'a 5 rewritten on main\n').replace('a 300\n', 'a 300 by the author\n'));
     repository.commit('merge main');
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     // The two-head diff, except the base's line taken at line 5 is not a
     // changed line of the pull request's own diff, so it reads as context
@@ -145,14 +145,14 @@ test('a resolution that cannot be matched to hunks reads the two-head diff, and 
     assert.match(scope.detail, /read as the two-head diff minus base changes after a conflicting replay, as its resolution could not be matched to hunks: src\/a\.ts/);
     assert.match(scope.detail, /shown as context where the base added lines after a conflicting replay: src\/a\.ts/);
 
-    const scoped = applyReviewScope(acquired(repository), 7, scope, repository.root, undefined, interdiffPatch);
+    const scoped = await applyReviewScope(acquired(repository), 7, scope, repository.root, undefined, interdiffPatch);
     assert.match(scoped.scopeNote, /could not be matched to hunks: src\/a\.ts; shown as context where the base added lines after a conflicting replay: src\/a\.ts\.$/);
     assert.equal(diffSummary({ ...scoped, mode: 'pull-request' }).scope.detail, scope.detail);
   });
 });
 
-test('a file the base now changes the same way is listed as absorbed, not reviewed', () => {
-  withPullRequest((repository) => {
+test('a file the base now changes the same way is listed as absorbed, not reviewed', async () => {
+  await withPullRequest(async (repository) => {
     repository.edit('src/b.ts', 'b 3\n', 'b 3 shared fix\n');
     repository.reviewed = repository.commit('author fixes b');
 
@@ -165,20 +165,20 @@ test('a file the base now changes the same way is listed as absorbed, not review
     repository.edit('src/a.ts', 'a 100\n', 'a 100 after the review\n');
     repository.commit('more author work');
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.deepEqual(scope.files, ['src/a.ts']);
     assert.deepEqual(scope.absorbedByBase, ['src/b.ts']);
     assert.doesNotMatch(interdiffPatch, /b\.ts|on main/);
     assert.deepEqual(parseReviewScope(JSON.parse(JSON.stringify(scope))), scope);
 
-    const scoped = applyReviewScope(acquired(repository), 7, scope, repository.root, undefined, interdiffPatch);
+    const scoped = await applyReviewScope(acquired(repository), 7, scope, repository.root, undefined, interdiffPatch);
     assert.deepEqual(diffSummary({ ...scoped, mode: 'pull-request' }).absorbedByBase, ['src/b.ts']);
   });
 });
 
-test('a merge that only absorbs a change is unchanged, and still lists the file', () => {
-  withPullRequest((repository) => {
+test('a merge that only absorbs a change is unchanged, and still lists the file', async () => {
+  await withPullRequest(async (repository) => {
     repository.edit('src/b.ts', 'b 3\n', 'b 3 shared fix\n');
     repository.reviewed = repository.commit('author fixes b');
 
@@ -188,20 +188,20 @@ test('a merge that only absorbs a change is unchanged, and still lists the file'
     repository.git('checkout', '-q', 'pr');
     repository.git('merge', '-q', '--no-ff', 'main', '-m', 'merge main');
 
-    const { scope } = plan(repository);
+    const { scope } = await plan(repository);
     assert.equal(scope.kind, 'unchanged', JSON.stringify(scope));
     assert.deepEqual(scope.absorbedByBase, ['src/b.ts']);
   });
 });
 
-test('a withdrawal with no base move is shown, never listed as absorbed', () => {
-  withPullRequest((repository) => {
+test('a withdrawal with no base move is shown, never listed as absorbed', async () => {
+  await withPullRequest(async (repository) => {
     repository.edit('src/b.ts', 'b 3\n', 'b 3 by the author\n');
     repository.reviewed = repository.commit('author edits b');
     repository.edit('src/b.ts', 'b 3 by the author\n', 'b 3\n');
     repository.commit('author withdraws it');
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.equal(scope.absorbedByBase, undefined);
     assert.match(interdiffPatch, /^-b 3 by the author$/m);

@@ -234,7 +234,7 @@ test('diff says nothing about exclusions when every changed file is read, and --
   assert.equal(all.summary.reviewedFileCount, 13);
 });
 
-test('review.first_party_paths brings the vendor files into the diff, the complexity count, the plan and the lane line counts, and a lock file under it stays out', (t) => {
+test('review.first_party_paths brings the vendor files into the diff, the complexity count, the plan and the lane line counts, and a lock file under it stays out', async (t) => {
   const lanes = (repo, found) => JSON.parse(cli(t, repo, ['lanes', '--files', join(found.out, 'files.json'), '--diff-file', join(found.out, 'diff.patch')]).stdout);
   const plan = (repo, found) => JSON.parse(cli(t, repo, ['plan', '--files', join(found.out, 'files.json'), '--diff-file', join(found.out, 'diff.patch')]).stdout);
 
@@ -244,7 +244,7 @@ test('review.first_party_paths brings the vendor files into the diff, the comple
   assert.deepEqual(excluded.stderr.trim().split('\n'), ['Excluded 11 of 13 changed files: 10 vendored dependency, 1 lock file.']);
   assert.equal(excluded.manifest.complexity.decisionPoints, 1, 'the loop line of src/app.ts');
   assert.equal(lanes(without, excluded)[1].reason, '6 changed source lines, under the minimum of 40');
-  assert.equal(plan(without, excluded).reason, 'auto: production source changed within the standard limits');
+  assert.equal((await plan(without, excluded)).reason, 'auto: production source changed within the standard limits');
 
   const withKey = repository(t, { ...CHANGE, ...LOCK }, { '.review-voice/config.yaml': `${FIRST_PARTY}${LANE}` });
   const read = diffOut(t, withKey);
@@ -262,7 +262,7 @@ test('review.first_party_paths brings the vendor files into the diff, the comple
   const lane = lanes(withKey, read)[1];
   assert.equal(lane.eligible, true);
   assert.equal(lane.reason, '176 changed source lines, at least 40');
-  assert.equal(plan(withKey, read).reason, 'auto: 176 production lines changed (over 150)');
+  assert.equal((await plan(withKey, read)).reason, 'auto: 176 production lines changed (over 150)');
 });
 
 test('a first_party_paths that is not a list of globs warns with the key and the entry, and the files stay excluded', (t) => {
@@ -770,7 +770,7 @@ test('the review command passes the exclusion line on, and records a change whos
 const changed = (path, extra = {}) => ({ path, status: 'modified', class: 'source', language: 'typescript', additions: 1, deletions: 0, reviewed: true, ...extra });
 const patchOf = (path) => [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, '@@ -1,1 +1,2 @@', ' x', '+y', ''].join('\n');
 
-test('an incremental, an interdiff and an unchanged scope count only the files that changed since the earlier review', () => {
+test('an incremental, an interdiff and an unchanged scope count only the files that changed since the earlier review', async () => {
   const files = [
     changed('src/new.ts'),
     changed('src/earlier.ts'),
@@ -790,36 +790,36 @@ test('an incremental, an interdiff and an unchanged scope count only the files t
   const since = ['vendor/lib/a.ts'];
   const narrowed = { changedFiles: 2, excludedFiles: 1, reasons: [{ reason: 'vendored dependency', files: 1 }], note: 'Excluded 1 of 2 changed files: 1 vendored dependency.' };
   const scopes = {
-    incremental: (changedSince) => applyReviewScope(acquired, PR, { kind: 'incremental', ...prior, commits: 1, files: ['src/new.ts'] }, '/nonexistent', () => patchOf('src/new.ts'), null, changedSince),
-    interdiff: (changedSince) =>
-      applyReviewScope(acquired, PR, { kind: 'interdiff', ...prior, mergeBase: 'b'.repeat(40), files: ['src/new.ts'], hunks: 1 }, '/nonexistent', undefined, patchOf('src/new.ts'), changedSince),
-    unchanged: (changedSince) => applyReviewScope(acquired, PR, { kind: 'unchanged', ...prior, mergeBase: 'b'.repeat(40), reason: 'base-merged' }, '/nonexistent', undefined, null, changedSince),
+    incremental: async (changedSince) => await applyReviewScope(acquired, PR, { kind: 'incremental', ...prior, commits: 1, files: ['src/new.ts'] }, '/nonexistent', () => patchOf('src/new.ts'), null, changedSince),
+    interdiff: async (changedSince) =>
+      await applyReviewScope(acquired, PR, { kind: 'interdiff', ...prior, mergeBase: 'b'.repeat(40), files: ['src/new.ts'], hunks: 1 }, '/nonexistent', undefined, patchOf('src/new.ts'), changedSince),
+    unchanged: async (changedSince) => await applyReviewScope(acquired, PR, { kind: 'unchanged', ...prior, mergeBase: 'b'.repeat(40), reason: 'base-merged' }, '/nonexistent', undefined, null, changedSince),
   };
 
-  const full = applyReviewScope(acquired, PR, { kind: 'full', cause: 'requested', since: null, priorRunId: null }, '/nonexistent');
+  const full = await applyReviewScope(acquired, PR, { kind: 'full', cause: 'requested', since: null, priorRunId: null }, '/nonexistent');
   assert.equal(full.exclusions.note, 'Excluded 3 of 5 changed files: 2 vendored dependency, 1 file deleted.');
 
-  const incremental = scopes.incremental(since);
+  const incremental = await scopes.incremental(since);
   assert.equal(incremental.files[1].excludedBecause, 'unchanged since the last review (aaaaaaa)');
   assert.deepEqual(incremental.exclusions, narrowed);
   assert.equal(incremental.excludedFileCount, 4, 'the manifest still lists every file the review does not read');
   // What the next review is told this one left out: not the file an earlier review covered.
   assert.deepEqual(leftOutPaths(incremental.files), ['vendor/lib/a.ts', 'vendor/lib/b.ts', 'src/gone.ts']);
-  assert.deepEqual(scopes.interdiff(since).exclusions, narrowed);
-  assert.equal(scopes.unchanged(since).exclusions.note, 'Excluded 1 of 1 changed file: 1 vendored dependency.');
+  assert.deepEqual((await scopes.interdiff(since)).exclusions, narrowed);
+  assert.equal((await scopes.unchanged(since)).exclusions.note, 'Excluded 1 of 1 changed file: 1 vendored dependency.');
 
   // A follow-up that touched no left-out file leaves none out, whatever the whole pull request holds.
-  for (const [kind, scoped] of Object.entries(scopes)) assert.equal(scoped([]).exclusions, null, kind);
+  for (const [kind, scoped] of Object.entries(scopes)) assert.equal((await scoped([])).exclusions, null, kind);
 });
 
-test('the planner names the left-out files that changed since the review, and reads in full a file the earlier review left out', (t) => {
+test('the planner names the left-out files that changed since the review, and reads in full a file the earlier review left out', async (t) => {
   const repo = repository(t, CHANGE);
   const first = repo.head;
   followUp(repo, { 'src/app.ts': APP_HEAD.replace('return sum;', 'return sum + 0;'), [vendorPaths[0]]: vendorSource(1).replace('return 0;', 'return -1;') });
   const source = [{ path: 'src/app.ts' }, { path: 'src/util.ts' }];
   const vendor = vendorPaths.map((path) => ({ path }));
-  const plan = (extra) =>
-    planScope({
+  const plan = async (extra) =>
+    await planScope({
       priorRun: { reviewRunId: 'run-1', headRef: first, createdAt: null },
       head: repo.head,
       headAvailable: true,
@@ -832,36 +832,36 @@ test('the planner names the left-out files that changed since the review, and re
       ...extra,
     });
 
-  const interdiff = plan({});
+  const interdiff = await plan({});
   assert.equal(interdiff.scope.kind, 'interdiff', JSON.stringify(interdiff.scope));
   assert.deepEqual(interdiff.scope.files, ['src/app.ts']);
   assert.deepEqual(interdiff.leftOutChanged, [vendorPaths[0]]);
-  const range = plan({ base: undefined });
+  const range = await plan({ base: undefined });
   assert.equal(range.scope.kind, 'incremental', JSON.stringify(range.scope));
   assert.deepEqual(range.leftOutChanged, [vendorPaths[0]]);
 
   // The key now names the vendor files, so this review reads them. The earlier one left them out.
   const read = { reviewedFiles: [...source, ...vendor], leftOutFiles: [] };
   for (const base of [repo.base, undefined]) {
-    assert.deepEqual(plan({ ...read, base, priorLeftOut: vendorPaths }), {
+    assert.deepEqual(await plan({ ...read, base, priorLeftOut: vendorPaths }), {
       scope: { kind: 'full', cause: 'not-read-before', since: first, priorRunId: 'run-1', detail: '10 files the earlier review is not known to have read are read now' },
       interdiffPatch: null,
     });
-    assert.equal(plan({ ...read, base, priorLeftOut: [vendorPaths[1]] }).scope.detail, '1 file the earlier review is not known to have read is read now');
+    assert.equal((await plan({ ...read, base, priorLeftOut: [vendorPaths[1]] })).scope.detail, '1 file the earlier review is not known to have read is read now');
     // A left-out file the follow-up touched is in the narrowed scope, which holds one line of its seventeen.
-    const touched = plan({ ...read, base, priorLeftOut: [vendorPaths[0]] });
+    const touched = await plan({ ...read, base, priorLeftOut: [vendorPaths[0]] });
     assert.deepEqual(
       [touched.scope.kind, touched.scope.cause, touched.scope.detail, touched.interdiffPatch],
       ['full', 'not-read-before', '1 file the earlier review is not known to have read is read now', null],
     );
   }
   // Files the earlier review read need no second read.
-  const covered = plan({ ...read, priorLeftOut: [] });
+  const covered = await plan({ ...read, priorLeftOut: [] });
   assert.equal(covered.scope.kind, 'interdiff', JSON.stringify(covered.scope));
   assert.deepEqual(covered.scope.files, [vendorPaths[0], 'src/app.ts']);
 });
 
-test('the planner reads in full a file renamed since out of a path the earlier review did not read', (t) => {
+test('the planner reads in full a file renamed since out of a path the earlier review did not read', async (t) => {
   const rate = vendorPaths[0];
   const big = 'src/big.ts';
   const edited = (n) => vendorSource(n).replace('return 0;', `return order.total > 5 ? ${n} : 0;`);
@@ -873,8 +873,8 @@ test('the planner reads in full a file renamed since out of a path the earlier r
     repo.git('mv', big, 'src/large.ts');
     repo.git('commit', '-q', '-m', 'move both');
   });
-  const plan = (renamed, priorLeftOut) =>
-    planScope({
+  const plan = async (renamed, priorLeftOut) =>
+    await planScope({
       priorRun: { reviewRunId: 'run-1', headRef: first, createdAt: null },
       head: repo.head,
       headAvailable: true,
@@ -889,13 +889,13 @@ test('the planner reads in full a file renamed since out of a path the earlier r
 
   // Out of the vendor directory: no review reads the old path by the default rules, whether or not a list says so.
   const fromVendor = { path: 'packages/rate1.ts', previousPath: rate };
-  assert.deepEqual(plan(fromVendor, [rate]), { scope: unread, interdiffPatch: null });
-  assert.deepEqual(plan(fromVendor, []), { scope: unread, interdiffPatch: null });
+  assert.deepEqual(await plan(fromVendor, [rate]), { scope: unread, interdiffPatch: null });
+  assert.deepEqual(await plan(fromVendor, []), { scope: unread, interdiffPatch: null });
   // From a path the earlier review left out for another reason, as when GitHub served no patch for it.
   const fromSource = { path: 'src/large.ts', previousPath: big };
-  assert.deepEqual(plan(fromSource, [big]), { scope: unread, interdiffPatch: null });
+  assert.deepEqual(await plan(fromSource, [big]), { scope: unread, interdiffPatch: null });
   // A file the earlier review read is the same file under its new name, and the rename is all there is to show.
-  const read = plan(fromSource, []);
+  const read = await plan(fromSource, []);
   assert.deepEqual([read.scope.kind, read.scope.files, read.scope.hunks], ['interdiff', ['src/large.ts'], 0]);
   assert.match(read.interdiffPatch, /^rename from src\/big\.ts$/m);
 });
@@ -1000,7 +1000,7 @@ test('every reason a pull request file is left out for reaches the file list, th
 const BINARY = Buffer.from(Array.from({ length: 4096 }, (_, index) => (index * 7) % 251));
 const OWN_VENDOR = ['vendor/**'];
 
-test('a file git reports as binary is left out as binary and counted, whatever its name, the first-party list or --include-generated say, and a text file beside it is read', (t) => {
+test('a file git reports as binary is left out as binary and counted, whatever its name, the first-party list or --include-generated say, and a text file beside it is read', async (t) => {
   const repo = repository(
     t,
     // One binary under the first-party path, one whose name the classifier takes for source, and a text file beside them.
@@ -1036,7 +1036,7 @@ test('a file git reports as binary is left out as binary and counted, whatever i
   // Not yet tracked, so no numstat line names them and git is asked about each.
   repo.write({ 'vendor/new.dat': BINARY, 'vendor/new.ts': UTIL });
   for (const includeGenerated of [false, true]) {
-    const worktree = acquireDiff({ cwd: repo.dir, staged: false, base: null, includeGenerated, firstPartyPaths: OWN_VENDOR });
+    const worktree = await acquireDiff({ cwd: repo.dir, staged: false, base: null, includeGenerated, firstPartyPaths: OWN_VENDOR });
     assert.deepEqual(
       worktree.files.map((file) => [file.path, file.reviewed, file.excludedBecause]),
       [['vendor/new.dat', false, 'binary'], ['vendor/new.ts', true, undefined]],
@@ -1087,9 +1087,9 @@ test('a hand-edited generated file under a first-party path is kept for review, 
 
   const repo = repository(t, { [path]: `${HEADER}export const client = 2;\n` }, { [path]: `${HEADER}export const client = 1;\n` });
   repo.git('checkout', '-q', 'feature');
-  const local = (firstPartyPaths) => acquireDiff({ cwd: repo.dir, staged: false, base: 'main', includeGenerated: false, firstPartyPaths }).files[0];
-  assert.deepEqual([local([]).reviewed, local([]).excludedBecause], [false, 'vendored dependency']);
-  const read = local([`${VENDOR}/**`]);
+  const local = async (firstPartyPaths) => (await acquireDiff({ cwd: repo.dir, staged: false, base: 'main', includeGenerated: false, firstPartyPaths })).files[0];
+  assert.deepEqual([(await local([])).reviewed, (await local([])).excludedBecause], [false, 'vendored dependency']);
+  const read = await local([`${VENDOR}/**`]);
   assert.deepEqual([read.reviewed, read.handEditSuspected, read.class], [true, true, 'generated']);
 
   // No head commit in this clone, so the header comes from the added lines of the patch.
@@ -1113,7 +1113,7 @@ test('a hand-edited generated file under a first-party path is kept for review, 
   assert.deepEqual([kept.reviewed, kept.handEditSuspected, kept.class], [true, true, 'generated']);
 });
 
-test('a withdrawn first-party file the base absorbed is listed, as any file a review would have read', (t) => {
+test('a withdrawn first-party file the base absorbed is listed, as any file a review would have read', async (t) => {
   const repo = repository(t, { 'src/app.ts': APP_HEAD, [`${VENDOR}/src/rate1.ts`]: vendorSource(1) });
   const { git, dir } = repo;
   // The base lands the same vendor file, the pull request merges it, and its own diff no longer holds the file.
@@ -1125,8 +1125,8 @@ test('a withdrawn first-party file the base absorbed is listed, as any file a re
   git('checkout', '-q', 'feature');
   git('merge', '-q', '--no-ff', 'main', '-m', 'merge main');
   const head = git('rev-parse', 'HEAD').trim();
-  const plan = (firstPartyPaths) =>
-    planScope({
+  const plan = async (firstPartyPaths) =>
+    (await planScope({
       priorRun: { reviewRunId: 'run-1', headRef: repo.head, createdAt: null },
       head,
       headAvailable: true,
@@ -1136,9 +1136,9 @@ test('a withdrawn first-party file the base absorbed is listed, as any file a re
       forceFull: false,
       base,
       firstPartyPaths,
-    }).scope;
-  assert.equal(plan([]).absorbedByBase, undefined);
-  const scope = plan([`${VENDOR}/**`]);
+    })).scope;
+  assert.equal((await plan([])).absorbedByBase, undefined);
+  const scope = await plan([`${VENDOR}/**`]);
   assert.equal(scope.kind, 'unchanged', JSON.stringify(scope));
   assert.deepEqual(scope.absorbedByBase, [`${VENDOR}/src/rate1.ts`]);
 });

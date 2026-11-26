@@ -24,7 +24,7 @@ const lines = (count, prefix) => Array.from({ length: count }, (_, index) => `${
  * from main without the feature, changing f.ts:5 its own way, and this pull
  * request is rebased onto the rewritten parent with its own commit unchanged.
  */
-function withRewrittenParent(fn) {
+async function withRewrittenParent(fn) {
   const root = mkdtempSync(join(tmpdir(), 'rv-issue-73-'));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   const write = (path, contents) => writeFileSync(join(root, path), contents);
@@ -60,14 +60,14 @@ function withRewrittenParent(fn) {
     write('a.ts', lines(20, 'a').replace('a 9\n', 'a 9 by the author\n'));
     const head = commit('author work, rebased');
 
-    return fn({ root, reviewed, parent, head });
+    return await fn({ root, reviewed, parent, head });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-function plan({ root, reviewed, parent, head }) {
-  return planScope({
+async function plan({ root, reviewed, parent, head }) {
+  return await planScope({
     priorRun: { reviewRunId: 'run_001', headRef: reviewed, createdAt: '2026-09-30T12:00:00.000Z' },
     head,
     headAvailable: true,
@@ -79,9 +79,9 @@ function plan({ root, reviewed, parent, head }) {
   });
 }
 
-test('a file only the rewritten parent changed is listed, and no conflict marker reaches the patch', () => {
-  withRewrittenParent((repository) => {
-    const { scope, interdiffPatch } = plan(repository);
+test('a file only the rewritten parent changed is listed, and no conflict marker reaches the patch', async () => {
+  await withRewrittenParent(async (repository) => {
+    const { scope, interdiffPatch } = await plan(repository);
     assert.notEqual(scope.kind, 'full', JSON.stringify(scope));
     assert.deepEqual(scope.noLongerChanged, ['f.ts'], JSON.stringify(scope));
     assert.doesNotMatch(interdiffPatch ?? '', /<<<<<<<|>>>>>>>/);
@@ -89,9 +89,9 @@ test('a file only the rewritten parent changed is listed, and no conflict marker
   });
 });
 
-test('the diff summary carries noLongerChanged, and an empty list when there is none', () => {
-  withRewrittenParent((repository) => {
-    const { scope } = plan(repository);
+test('the diff summary carries noLongerChanged, and an empty list when there is none', async () => {
+  await withRewrittenParent(async (repository) => {
+    const { scope } = await plan(repository);
     const summary = diffSummary({ diff: '', mode: 'pull-request', base: repository.parent, head: repository.head, reviewedFileCount: 1, hunkFileCount: 0, excludedFileCount: 0, scope });
     assert.deepEqual(summary.noLongerChanged, ['f.ts']);
   });

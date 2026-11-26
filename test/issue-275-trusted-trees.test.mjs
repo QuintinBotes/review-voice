@@ -45,7 +45,7 @@ function commit(dir, files) {
 
 const cli = (dir, args, input = '') => spawnSync(process.execPath, [bundle, ...args], { cwd: dir, encoding: 'utf8', input });
 
-test('conventions --ref reads the base commit with the head checked out, and without it the checkout as before', (t) => {
+test('conventions --ref reads the base commit with the head checked out, and without it the checkout as before', async (t) => {
   const dir = scratch(t);
   const base = commit(dir, {
     'CLAUDE.md': 'Base rule: handlers validate before they persist.\n',
@@ -70,11 +70,11 @@ test('conventions --ref reads the base commit with the head checked out, and wit
   const checkout = cli(dir, ['conventions', '--path', 'src/app.ts']);
   assert.equal(checkout.status, 0, checkout.stderr);
   const { trust: _trust, note: _note, searched: _searched, ...withoutRef } = JSON.parse(checkout.stdout);
-  assert.deepEqual(withoutRef, discoverConventions(dir, ['src/app.ts'], filesystemReader(dir)));
+  assert.deepEqual(withoutRef, await discoverConventions(dir, ['src/app.ts'], filesystemReader(dir)));
   assert.match(withoutRef.documents.find((document) => document.path === 'CLAUDE.md').content, /optional/);
 });
 
-test('the git reader ranks, budgets, truncates and skips exactly as the filesystem reader does on the same tree', (t) => {
+test('the git reader ranks, budgets, truncates and skips exactly as the filesystem reader does on the same tree', async (t) => {
   const dir = scratch(t);
   const huge = (name) => `# ${name}\n${`${name} guidance line.\n`.repeat(900)}`;
   const sectioned = ['# House rules', 'Applies to the whole repository.', '## Controller conventions', 'Controllers must return ActionResult.', '## Filler', 'Unrelated guidance.\n'.repeat(1200)].join('\n');
@@ -94,8 +94,8 @@ test('the git reader ranks, budgets, truncates and skips exactly as the filesyst
   });
   const changed = ['src/thing.test.ts', 'src/Controllers/UserController.cs'];
 
-  const fromDisk = discoverConventions(dir, changed);
-  const fromGit = discoverConventions(dir, changed, gitTreeReader(dir, 'HEAD'));
+  const fromDisk = await discoverConventions(dir, changed);
+  const fromGit = await discoverConventions(dir, changed, await gitTreeReader(dir, 'HEAD'));
   assert.deepEqual(fromGit, fromDisk);
   // The fixture reaches every path that matters, so the equality says something.
   assert.ok(fromDisk.skipped.some((entry) => /budget/.test(entry.reason)), JSON.stringify(fromDisk.skipped));
@@ -105,7 +105,7 @@ test('the git reader ranks, budgets, truncates and skips exactly as the filesyst
   assert.ok(fromDisk.documents.some((document) => document.path === '.agents/rules/controllers.md'));
 });
 
-test('a symbolic link in the trusted tree is not followed, wherever it points', (t) => {
+test('a symbolic link in the trusted tree is not followed, wherever it points', async (t) => {
   const dir = scratch(t);
   const outside = mkdtempSync(join(tmpdir(), 'rv-275-outside-'));
   t.after(() => rmSync(outside, { recursive: true, force: true }));
@@ -115,9 +115,9 @@ test('a symbolic link in the trusted tree is not followed, wherever it points', 
   symlinkSync('inside.md', join(dir, 'AGENTS.md'));
   const base = commit(dir, {});
 
-  const onDisk = discoverConventions(dir, []).documents.map((document) => document.path);
+  const onDisk = (await discoverConventions(dir, [])).documents.map((document) => document.path);
   assert.deepEqual(onDisk.sort(), ['AGENTS.md', 'CLAUDE.md'], 'the checkout follows both links, so the next check is not vacuous');
-  assert.deepEqual(discoverConventions(dir, [], gitTreeReader(dir, base)), { documents: [], totalBytes: 0, skipped: [], warnings: [] });
+  assert.deepEqual(await discoverConventions(dir, [], await gitTreeReader(dir, base)), { documents: [], totalBytes: 0, skipped: [], warnings: [] });
 });
 
 test('conventions --ref with a ref that does not resolve, or no ref at all, exits 2, and the help names the flag', (t) => {

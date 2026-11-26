@@ -1,3 +1,4 @@
+import { GIT_CHECK_TIMEOUT_MS, gitTimeoutMs } from '../git-exec.ts';
 import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -62,7 +63,7 @@ export async function verifyCommand(argv: string[]): Promise<number> {
     const commitOf = (ref: string | null): string | null => {
       if (ref === null) return null;
       try {
-        return execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        return execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS), killSignal: 'SIGKILL' }).trim();
       } catch {
         console.error(`${ref} does not resolve to a commit here, so the verification command is not told about it.`);
         return null;

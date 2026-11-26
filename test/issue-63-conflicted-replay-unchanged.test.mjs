@@ -19,7 +19,7 @@ import { planScope } from '../plugins/review-voice/src/diff/incremental.ts';
 const lines = (count, prefix) => Array.from({ length: count }, (_, index) => `${prefix} ${index + 1}`).join('\n') + '\n';
 
 /** A pull request whose reviewed head edits lines 5 and 300 of src/a.ts. */
-function withPullRequest(fn) {
+async function withPullRequest(fn) {
   const root = mkdtempSync(join(tmpdir(), 'rv-issue-63-'));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const write = (path, contents) => {
@@ -54,14 +54,14 @@ function withPullRequest(fn) {
   const reviewed = commit('author work');
 
   try {
-    return fn({ root, git, write, read, edit, commit, reviewed, head: () => git('rev-parse', 'HEAD').trim() });
+    return await fn({ root, git, write, read, edit, commit, reviewed, head: () => git('rev-parse', 'HEAD').trim() });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-function plan(repository, reviewedFiles = ['src/a.ts']) {
-  return planScope({
+async function plan(repository, reviewedFiles = ['src/a.ts']) {
+  return await planScope({
     priorRun: { reviewRunId: 'run_001', headRef: repository.reviewed, createdAt: '2026-09-30T12:00:00.000Z' },
     head: repository.head(),
     headAvailable: true,
@@ -89,34 +89,34 @@ function conflictingMerge(repository, { alsoLine100 = false } = {}) {
 const asReviewed = (base = lines(400, 'a')) =>
   base.replace('a 5\n', 'a 5 by the author\n').replace('a 300\n', 'a 300 by the author\n');
 
-test('a conflicted file the same at both heads leaves the scope unchanged, as a base merge', () => {
-  withPullRequest((repository) => {
+test('a conflicted file the same at both heads leaves the scope unchanged, as a base merge', async () => {
+  await withPullRequest(async (repository) => {
     conflictingMerge(repository);
     repository.write('src/a.ts', asReviewed());
     repository.commit('merge main');
     assert.equal(repository.git('diff', repository.reviewed, 'HEAD', '--', 'src/a.ts'), '');
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'unchanged', JSON.stringify(scope));
     assert.equal(scope.reason, 'base-merged');
     assert.equal(interdiffPatch, null);
   });
 });
 
-test("the base's clean change in a conflicted file does not bring back the author's reviewed hunks", () => {
-  withPullRequest((repository) => {
+test("the base's clean change in a conflicted file does not bring back the author's reviewed hunks", async () => {
+  await withPullRequest(async (repository) => {
     conflictingMerge(repository, { alsoLine100: true });
     repository.write('src/a.ts', asReviewed(lines(400, 'a').replace('a 100\n', 'a 100 changed on main\n')));
     repository.commit('merge main');
 
-    const { scope } = plan(repository);
+    const { scope } = await plan(repository);
     assert.equal(scope.kind, 'unchanged', JSON.stringify(scope));
     assert.equal(scope.reason, 'base-merged');
   });
 });
 
-test('a conflicted file keeps only the own hunks that changed since the review', () => {
-  withPullRequest((repository) => {
+test('a conflicted file keeps only the own hunks that changed since the review', async () => {
+  await withPullRequest(async (repository) => {
     conflictingMerge(repository, { alsoLine100: true });
     repository.write(
       'src/a.ts',
@@ -127,7 +127,7 @@ test('a conflicted file keeps only the own hunks that changed since the review',
     );
     repository.commit('merge main');
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.equal(scope.hunks, 1);
     assert.match(interdiffPatch, /^\+a 300 rewritten while merging$/m);
@@ -137,14 +137,14 @@ test('a conflicted file keeps only the own hunks that changed since the review',
   });
 });
 
-test('a conflicted file unchanged since the review drops out while another file still reads', () => {
-  withPullRequest((repository) => {
+test('a conflicted file unchanged since the review drops out while another file still reads', async () => {
+  await withPullRequest(async (repository) => {
     conflictingMerge(repository);
     repository.write('src/a.ts', asReviewed());
     repository.edit('src/b.ts', 'b 7\n', 'b 7 new since the review\n');
     repository.commit('merge main');
 
-    const { scope, interdiffPatch } = plan(repository, ['src/a.ts', 'src/b.ts']);
+    const { scope, interdiffPatch } = await plan(repository, ['src/a.ts', 'src/b.ts']);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.deepEqual(scope.files, ['src/b.ts']);
     assert.doesNotMatch(interdiffPatch, /src\/a\.ts/);
@@ -152,13 +152,13 @@ test('a conflicted file unchanged since the review drops out while another file 
   });
 });
 
-test("taking the base's side in a conflict reads the withdrawal since review", () => {
-  withPullRequest((repository) => {
+test("taking the base's side in a conflict reads the withdrawal since review", async () => {
+  await withPullRequest(async (repository) => {
     conflictingMerge(repository);
     repository.write('src/a.ts', lines(400, 'a').replace('a 5\n', 'a 5 rewritten on main\n').replace('a 300\n', 'a 300 by the author\n'));
     repository.commit('merge main');
 
-    const { scope, interdiffPatch } = plan(repository);
+    const { scope, interdiffPatch } = await plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     // The two-head change, except the base's line taking its place is not a
     // changed line of the pull request's own diff, so it reads as context

@@ -1,5 +1,5 @@
 /**
- * Issue #482: `review-voice diff` hung for about 7 hours in
+ * Issue #482 (async since #493): `review-voice diff` hung for about 7 hours in
  * `git cat-file --batch` (`readBlobs`), which in a partial clone starts
  * a lazy fetch over ssh that stalled on a dead connection. Both that
  * batch and the per-blob `cat-file blob` in conventions/tree.ts are now
@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { readBlobs } from '../plugins/review-voice/src/diff/structure.ts';
 import { gitTreeReader } from '../plugins/review-voice/src/conventions/tree.ts';
 import { discoverConventions } from '../plugins/review-voice/src/conventions/discover.ts';
-import { CAT_FILE_BATCH_TIMEOUT_MS, runGitCatFileSync, catFileBatchTimeoutMs, isPartialClone, resetCatFileTimeoutWarning } from '../plugins/review-voice/src/git-exec.ts';
+import { CAT_FILE_BATCH_TIMEOUT_MS, catFileBatchTimeoutMs, isPartialClone, resetCatFileTimeoutWarning } from '../plugins/review-voice/src/git-exec.ts';
 
 // Long enough for the fake git's shell to start its sleeper on a loaded machine (400 ms was not),
 // far below the 60 s sleeper the bounded call must not wait on.
@@ -76,11 +76,11 @@ function fakeGit(t) {
 }
 
 /**
- * Runs `fn` synchronously with the fake git first on PATH and both
+ * Runs `fn` with the fake git first on PATH and both
  * cat-file timeouts injected, capturing stderr lines printed through
  * console.error. Everything is restored afterwards.
  */
-function withHangingGit(fake, fn) {
+async function withHangingGit(fake, fn) {
   const saved = {
     path: process.env.PATH,
     batch: process.env.REVIEW_VOICE_CAT_FILE_BATCH_TIMEOUT_MS,
@@ -93,7 +93,7 @@ function withHangingGit(fake, fn) {
   process.env.REVIEW_VOICE_CAT_FILE_BLOB_TIMEOUT_MS = String(TIMEOUT_MS);
   console.error = (...args) => stderrLines.push(args.join(' '));
   try {
-    return { value: fn(), stderrLines };
+    return { value: await fn(), stderrLines };
   } finally {
     if (saved.path === undefined) delete process.env.PATH;
     else process.env.PATH = saved.path;
@@ -138,7 +138,7 @@ test('readBlobs returns nulls within the bound when cat-file hangs holding stdou
   const fake = fakeGit(t);
   resetCatFileTimeoutWarning();
   const started = Date.now();
-  const { value: blobs, stderrLines } = withHangingGit(fake, () => readBlobs(dir, ['HEAD:CLAUDE.md', 'HEAD:src.ts']));
+  const { value: blobs, stderrLines } = await withHangingGit(fake, async () => readBlobs(dir, ['HEAD:CLAUDE.md', 'HEAD:src.ts']));
   const elapsed = Date.now() - started;
   // Well under the 60 s sleeper, with room for a loaded machine: a 5 s margin flaked once at 14 s.
   assert.ok(elapsed < 30000, `returned without waiting on the sleeper (took ${elapsed}ms)`);
@@ -152,15 +152,15 @@ test('the tree blob read fails as unreadable within the bound, and discovery ski
   const fake = fakeGit(t);
   resetCatFileTimeoutWarning();
   const started = Date.now();
-  const { value } = withHangingGit(fake, () => {
-    const reader = gitTreeReader(dir, 'HEAD');
+  const { value } = await withHangingGit(fake, async () => {
+    const reader = await gitTreeReader(dir, 'HEAD');
     let readError = null;
     try {
-      reader.read('CLAUDE.md');
+      await reader.read('CLAUDE.md');
     } catch (error) {
       readError = error;
     }
-    const report = discoverConventions(dir, [], gitTreeReader(dir, 'HEAD'));
+    const report = await discoverConventions(dir, [], await gitTreeReader(dir, 'HEAD'));
     return { readError, report };
   });
   const elapsed = Date.now() - started;
@@ -180,24 +180,24 @@ test('a timeout in a partial clone prints one stderr line naming it, once', posi
   assert.equal(isPartialClone(dir), true, 'the fixture reads as a partial clone');
   const fake = fakeGit(t);
   resetCatFileTimeoutWarning();
-  const { stderrLines } = withHangingGit(fake, () => {
-    readBlobs(dir, ['HEAD:CLAUDE.md']);
-    readBlobs(dir, ['HEAD:CLAUDE.md']);
+  const { stderrLines } = await withHangingGit(fake, async () => {
+    await readBlobs(dir, ['HEAD:CLAUDE.md']);
+    await readBlobs(dir, ['HEAD:CLAUDE.md']);
   });
   assert.equal(stderrLines.length, 1, 'once per command, not once per batch');
   assert.match(stderrLines[0], /partial clone/);
   await assertSleepersGone(fake.pidFile);
 });
 
-test('with a real git, readBlobs and the tree reader return the blobs as before', (t) => {
+test('with a real git, readBlobs and the tree reader return the blobs as before', async (t) => {
   const dir = scratchRepo(t);
   assert.equal(isPartialClone(dir), false);
-  const blobs = readBlobs(dir, ['HEAD:CLAUDE.md', 'HEAD:missing.md']);
+  const blobs = await readBlobs(dir, ['HEAD:CLAUDE.md', 'HEAD:missing.md']);
   assert.equal(blobs.get('HEAD:CLAUDE.md')?.toString('utf8'), 'Handlers validate before they persist.\n');
   assert.equal(blobs.get('HEAD:missing.md'), null);
-  const reader = gitTreeReader(dir, 'HEAD');
-  assert.equal(reader.read('CLAUDE.md').toString('utf8'), 'Handlers validate before they persist.\n');
-  const report = discoverConventions(dir, [], reader);
+  const reader = await gitTreeReader(dir, 'HEAD');
+  assert.equal((await reader.read('CLAUDE.md')).toString('utf8'), 'Handlers validate before they persist.\n');
+  const report = await discoverConventions(dir, [], reader);
   assert.deepEqual(report.documents.map((document) => document.path), ['CLAUDE.md']);
 });
 
@@ -212,38 +212,4 @@ test('an environment override can only shorten the bounds, never lift them', () 
     if (saved === undefined) delete process.env.REVIEW_VOICE_CAT_FILE_BATCH_TIMEOUT_MS;
     else process.env.REVIEW_VOICE_CAT_FILE_BATCH_TIMEOUT_MS = saved;
   }
-});
-
-test('a normal git exit, clean or non-zero, sends no group kill', (t) => {
-  const dir = scratchRepo(t);
-  const kills = [];
-  const options = { maxBuffer: 1 << 20, timeoutMs: TIMEOUT_MS, killTree: (pid) => kills.push(pid) };
-  const out = runGitCatFileSync(dir, ['cat-file', 'blob', 'HEAD:CLAUDE.md'], options);
-  assert.equal(out.toString('utf8'), 'Handlers validate before they persist.\n');
-  assert.throws(() => runGitCatFileSync(dir, ['cat-file', 'blob', 'HEAD:missing.md'], options), /failed/);
-  assert.deepEqual(kills, [], 'the group id may be reused once git is reaped, so nothing is killed');
-});
-
-test('a timeout sends exactly one group kill', posixOnly, (t) => {
-  const dir = scratchRepo(t);
-  const fake = fakeGit(t);
-  const kills = [];
-  const killTree = (pid) => {
-    kills.push(pid);
-    try {
-      process.kill(-pid, 'SIGKILL');
-    } catch {
-      // Empty group: the fake git was killed before it started its sleeper.
-    }
-  };
-  const { value } = withHangingGit(fake, () => {
-    try {
-      runGitCatFileSync(dir, ['cat-file', 'blob', 'HEAD:CLAUDE.md'], { maxBuffer: 1 << 20, timeoutMs: 500, killTree });
-    } catch (error) {
-      return error;
-    }
-    return null;
-  });
-  assert.equal(value?.code, 'ETIMEDOUT');
-  assert.equal(kills.length, 1);
 });
