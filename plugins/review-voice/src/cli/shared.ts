@@ -12,6 +12,8 @@ import {
   IMPACT_CLASSES,
   isImpactClass,
   CONTEXT_KINDS,
+  SEVERITY_FITS,
+  isSeverityFit,
 } from '../scoring/score.ts';
 
 /** What each stdin-reading command expects, for the message a terminal gets. */
@@ -334,6 +336,19 @@ export function verificationProblem(list: Record<string, unknown>[]): string | n
     const blocker = entry['blocker_confirmed'] ?? entry['blockerConfirmed'];
     if (blocker !== undefined && typeof blocker !== 'boolean') {
       return `${who}: blocker_confirmed must be true or false.`;
+    }
+    // Refused rather than ignored: a materiality verdict in the wrong shape
+    // would otherwise read as absent, which means material (#479).
+    if (entry['material'] !== undefined && typeof entry['material'] !== 'boolean') {
+      return `${who}: material must be true or false.`;
+    }
+    const materialReason = entry['material_reason'] ?? entry['materialReason'];
+    if (materialReason !== undefined && (typeof materialReason !== 'string' || materialReason.length > 300)) {
+      return `${who}: material_reason must be a string of at most 300 characters.`;
+    }
+    const severityFit = entry['severity_fit'] ?? entry['severityFit'];
+    if (severityFit !== undefined && !isSeverityFit(severityFit)) {
+      return `${who}: severity_fit must be one of ${SEVERITY_FITS.join(', ')}, not ${JSON.stringify(severityFit)}.`;
     }
     // Refused rather than ignored: a misspelt "no exposure" would otherwise
     // read as absent and leave a boundary finding blocking with no word why.

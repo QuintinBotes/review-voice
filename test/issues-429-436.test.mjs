@@ -40,10 +40,11 @@ const raw = (over = {}) => ({
   technical_confidence: 0.9,
   ...over,
 });
-const score = (over, verification) => scoreCandidate(normaliseCandidate(raw(over), 0), [], [], undefined, { candidateId: 'c1', reach: REACH('repository'), ...verification });
+const score = (over, verification, thresholds = undefined) => scoreCandidate(normaliseCandidate(raw(over), 0), [], [], thresholds, { candidateId: 'c1', reach: REACH('repository'), ...verification });
 
 test('#435: a finding held at minor is gated at the minor floor, not the important one', () => {
-  const result = score({}, { verified: true, technicalConfidence: 0.72 });
+  // The pre-#479 tiered floors, set explicitly: 0.72 sits between them, which is the case this pins.
+  const result = score({}, { verified: true, technicalConfidence: 0.72 }, { technicalConfidence: 0.8, minorConfidence: 0.7, analystOnlyConfidence: 0.7, finalScore: 0.68 });
   assert.equal(result.severity.severity, 'minor');
   assert.doesNotMatch(result.rejectedBecause ?? '', /floor for an important finding/);
   assert.equal(result.confidenceFloor, 0.7);

@@ -1,6 +1,6 @@
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { catFileBatchTimeoutMs, runGitCatFileSync } from '../git-exec.ts';
 import { attributeSource, repositoryRoot, type ChangedFile, type DiffResult } from './acquire.ts';
 import { parseHunks } from './hunks.ts';
 import { countHunks } from './complexity.ts';
@@ -145,18 +145,20 @@ export function changeSides(root: string, diff: MeasuredChange): ChangeSides {
 
 /**
  * Blob contents by `<rev>:<path>` spec, from one `git cat-file --batch`.
- * A spec git cannot resolve maps to null, as does every spec when git fails.
+ * A spec git cannot resolve maps to null, as does every spec when git
+ * fails or the batch bound (`CAT_FILE_BATCH_TIMEOUT_MS`) runs out. In a
+ * partial clone the batch can wait on a lazy fetch, and a dead fetch
+ * must degrade to unmeasured files, never hang (issue #482).
  */
-function readBlobs(root: string, specs: readonly string[]): Map<string, Buffer | null> {
+export function readBlobs(root: string, specs: readonly string[]): Map<string, Buffer | null> {
   const blobs = new Map<string, Buffer | null>(specs.map((spec) => [spec, null]));
   if (specs.length === 0) return blobs;
   let out: Buffer;
   try {
-    out = execFileSync('git', ['cat-file', '--batch'], {
-      cwd: root,
+    out = runGitCatFileSync(root, ['cat-file', '--batch'], {
       input: `${specs.join('\n')}\n`,
       maxBuffer: 512 * 1024 * 1024,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      timeoutMs: catFileBatchTimeoutMs(),
     });
   } catch {
     return blobs;

@@ -53,8 +53,8 @@ function score(dir, candidates, verification) {
 const candidates = [candidate('c1', 10), candidate('c2', 20), candidate('c3', 30)];
 const verification = [
   { candidate_id: 'c1', verified: true, technical_confidence: 0.95 },
-  // Verified, but under the confidence floor: listed below the gate.
-  { candidate_id: 'c2', verified: true, technical_confidence: 0.5 },
+  // Verified, but under the 0.7 confidence floor (#479): listed below the gate.
+  { candidate_id: 'c2', verified: true, technical_confidence: 0.65 },
   // Held for context the verifier could not reach.
   { candidate_id: 'c3', verified: false, technical_confidence: 0.72, required_context_missing: ['the pricing service'] },
 ];

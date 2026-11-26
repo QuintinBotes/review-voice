@@ -241,9 +241,11 @@ export function normaliseHeld(entry: unknown): unknown {
       verdict: 'below-gate',
       source: 'score',
       reason:
-        typeof score === 'number' && typeof e['threshold'] === 'number'
-          ? `below the ${e['gate']} gate: ${label} ${score} under ${e['threshold']}`
-          : `below the ${e['gate']} gate`,
+        (e['gate'] === 'materiality' || e['gate'] === 'owner-precedent') && typeof e['rejectedBecause'] === 'string'
+          ? e['rejectedBecause']
+          : typeof score === 'number' && typeof e['threshold'] === 'number'
+            ? `below the ${e['gate']} gate: ${label} ${score} under ${e['threshold']}`
+            : `below the ${e['gate']} gate`,
     };
   } else if (e['rejectedBecause'] !== undefined) {
     mapped = { verdict: 'refuted', source: 'score', reason: str(e['rejectedBecause']) };

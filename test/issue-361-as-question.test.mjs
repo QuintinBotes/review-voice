@@ -112,18 +112,20 @@ function postThrough(dir, scoreText, review, minPostedTier = 'nit') {
 test('a below-gate minor posted with --as-question validates as a question and comments', () =>
   withDir((dir) => {
     repository(dir);
-    const held = scored(dir, ['--min-score', '0.99']).out;
+    // Held below the 0.7 confidence floor; since #479 the numeric score no longer holds a verified claim.
+    const low = { verifications: [{ ...verified[0], technical_confidence: 0.65 }] };
+    const held = scored(dir, [], low).out;
     assert.equal(held.belowGate.length, 1);
     assert.equal(held.belowGate[0].severity, 'minor');
 
-    const { out, text } = scored(dir, ['--min-score', '0.99', '--as-question', 'cand_001']);
+    const { out, text } = scored(dir, ['--as-question', 'cand_001'], low);
     assert.deepEqual(out.belowGate, []);
     assert.equal(out.eligible.length, 1);
     assert.equal(out.eligible[0].severity, 'question');
     assert.equal(out.eligible[0].requestedSeverity, 'minor');
     assert.match(out.eligible[0].severityReason, /the owner posted this as a question$/);
     assert.equal(out.scores[0].ownerQuestion, true);
-    assert.equal(out.scores[0].ownerPromotion.gate, 'score');
+    assert.equal(out.scores[0].ownerPromotion.gate, 'confidence');
 
     // The tag must now be the question one: the minor tag no longer matches the score.
     const scores = join(dir, 'scores.json');
@@ -139,12 +141,12 @@ test('a below-gate minor posted with --as-question validates as a question and c
 test('a below-gate nit posted with --as-question comments where it would have approved', () =>
   withDir((dir) => {
     repository(dir);
-    const nit = { candidates: [candidate({ category: 'style' })] };
-    const promoted = scored(dir, ['--min-score', '0.99', '--promote', 'cand_001'], nit);
+    const nit = { candidates: [candidate({ category: 'style' })], verifications: [{ ...verified[0], technical_confidence: 0.65 }] };
+    const promoted = scored(dir, ['--promote', 'cand_001'], nit);
     assert.equal(promoted.out.eligible[0].severity, 'nit');
     assert.equal(postThrough(dir, promoted.text, NIT).mapped, 'APPROVE');
 
-    const { out, text } = scored(dir, ['--min-score', '0.99', '--as-question', 'cand_001'], nit);
+    const { out, text } = scored(dir, ['--as-question', 'cand_001'], nit);
     assert.equal(out.eligible[0].severity, 'question');
     assert.equal(out.eligible[0].requestedSeverity, 'minor');
     assert.equal(postThrough(dir, text, QUESTION).mapped, 'COMMENT');
@@ -153,13 +155,14 @@ test('a below-gate nit posted with --as-question comments where it would have ap
 test('a nit posted as a question stays below a minor posting tier, as a promoted nit does', () =>
   withDir((dir) => {
     repository(dir);
-    const nit = { candidates: [candidate({ category: 'style' })] };
-    const promoted = postThrough(dir, scored(dir, ['--min-score', '0.99', '--promote', 'cand_001'], nit).text, NIT, 'minor').planned;
+    const nit = { candidates: [candidate({ category: 'style' })], verifications: [{ ...verified[0], technical_confidence: 0.65 }] };
+    const promoted = postThrough(dir, scored(dir, ['--promote', 'cand_001'], nit).text, NIT, 'minor').planned;
     assert.equal(promoted.mapped, 'APPROVE');
     assert.deepEqual(promoted.belowTier.map((f) => f.severity), ['nit']);
 
-    for (const extra of [['--min-score', '0.99', '--as-question', 'cand_001'], ['--as-question', 'cand_001']]) {
-      const { out, text } = scored(dir, extra, nit);
+    // Held below the floor, then eligible on the default verification: the same outcome either way.
+    for (const options of [nit, { candidates: nit.candidates }]) {
+      const { out, text } = scored(dir, ['--as-question', 'cand_001'], options);
       assert.equal(out.scores[0].ownerQuestionFrom, 'nit');
       const planned = postThrough(dir, text, QUESTION, 'minor').planned;
       assert.equal(planned.mapped, 'APPROVE');
@@ -278,9 +281,9 @@ test('an unknown or repeated candidate id is refused', () =>
 test('--promote with --as-question on one candidate equals --as-question alone', () =>
   withDir((dir) => {
     repository(dir);
-    for (const gate of [['--min-score', '0.99'], []]) {
-      const alone = scored(dir, [...gate, '--as-question', 'cand_001']).text;
-      const both = scored(dir, [...gate, '--promote', 'cand_001', '--as-question', 'cand_001']).text;
+    for (const options of [{ verifications: [{ ...verified[0], technical_confidence: 0.65 }] }, {}]) {
+      const alone = scored(dir, ['--as-question', 'cand_001'], options).text;
+      const both = scored(dir, ['--promote', 'cand_001', '--as-question', 'cand_001'], options).text;
       assert.equal(both, alone);
     }
     // Alone, --promote refuses a finding that is already eligible.
@@ -348,7 +351,13 @@ test('the question cap does not hold a question the owner posted, nor count it a
       at('cand_002', 3, 'question', 'Does constant b need to match the runner timeout value?', 0.95),
       at('cand_003', 4, 'minor', 'Constant c duplicates the timeout defined in the runner config.', 0.9),
     ];
-    const verifications = candidates.map((c) => ({ candidate_id: c.candidate_id, verified: true, premises_verified: true, technical_confidence: c.technical_confidence }));
+    // cand_003 is held below the 0.7 floor, so posting it as a question is a promotion past that gate.
+    const verifications = candidates.map((c) => ({
+      candidate_id: c.candidate_id,
+      verified: true,
+      premises_verified: true,
+      technical_confidence: c.candidate_id === 'cand_003' ? 0.65 : c.technical_confidence,
+    }));
     const held = scored(dir, [], { candidates, verifications }).out;
     assert.deepEqual(held.belowGate.map((b) => b.candidate_id), ['cand_003']);
 
@@ -385,8 +394,11 @@ test('explain shows the owner question on the finding it backs when another cand
       candidate(),
       candidate({ candidate_id: 'cand_002', claim: 'The guard returns true for every input, so the filter is a no-op.', failure_mode: 'Every path passes the guard, so excluded paths run.' }),
     ];
-    const verifications = [verified[0], { ...verified[0], candidate_id: 'cand_002' }];
-    const { out, text } = scored(dir, ['--min-score', '0.99', '--as-question', 'cand_002'], { candidates, verifications });
+    const verifications = [
+      { ...verified[0], technical_confidence: 0.65 },
+      { ...verified[0], candidate_id: 'cand_002', technical_confidence: 0.65 },
+    ];
+    const { out, text } = scored(dir, ['--as-question', 'cand_002'], { candidates, verifications });
     assert.deepEqual(out.scores.map((s) => [s.candidate_id, s.eligible]), [['cand_001', false], ['cand_002', true]]);
     const { runId } = postThrough(dir, text, '[question] `ci/paths.ts:2` - Does the guard return true for every input?\n');
     const explained = run(dir, ['explain', '--run', runId]);

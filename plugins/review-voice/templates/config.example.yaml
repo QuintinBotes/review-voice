@@ -79,9 +79,10 @@ review:
   # `--min-score`; the flags win. The verifier's confidence must reach
   # confidence_threshold at blocking or important, and
   # minor_confidence_threshold at minor or nit, which is never above the
-  # first. A security, authorization, authentication, data integrity or trust
-  # boundary finding takes confidence_threshold at every tier.
-  confidence_threshold: 0.80
+  # first. Both default to one floor of 0.70 (ADR 0037). A security,
+  # authorization, authentication, data integrity or trust boundary finding
+  # takes the higher of 0.80 and confidence_threshold at every tier.
+  confidence_threshold: 0.70
   minor_confidence_threshold: 0.70
   final_score_threshold: 0.68
   # true posts a verified repair of at most five added lines as a suggestion
