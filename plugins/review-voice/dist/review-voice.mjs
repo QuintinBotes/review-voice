@@ -13028,7 +13028,7 @@ function recordRun(db, input) {
     throw new Error("A review may record at most one body-only simplification finding.");
   }
   const reviewRunId = randomUUID3();
-  const findings = assignIds(input.output, input.candidates ?? [], { toolSignals: input.toolSignals, conventions: input.conventions });
+  const findings = assignIds(input.output, (input.candidates ?? []).filter((hint) => hint.held !== true), { toolSignals: input.toolSignals, conventions: input.conventions });
   if (input.carried !== void 0) {
     const { matches, mismatches } = matchCarried(findings, input.carried.findings);
     if (mismatches.length > 0) throw new CarryMismatch(mismatches.join("\n"));
@@ -19361,7 +19361,7 @@ function candidateSetAgreement(db) {
       continue;
     }
     const list3 = Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? [];
-    const located = list3.map((candidate) => {
+    const located = list3.filter((candidate) => candidate["held"] !== true).map((candidate) => {
       const line3 = Number(candidate["line"]);
       return {
         path: String(candidate["path"] ?? ""),
@@ -19823,6 +19823,7 @@ function recordedCandidates(db, runId) {
   }
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((entry, index) => {
+    if (entry?.held === true) return [];
     try {
       const { suggested_patch: _patch, ...rest } = entry;
       return [normaliseCandidate(rest, index)];
@@ -25521,10 +25522,20 @@ ${checked.stderr.trim()}`;
   writeFileSync7(at(run, "review.txt"), run.text);
   await must(run, validate, run.text, 1);
 }
+function recordCandidates(run, scores) {
+  const eligible = list2(scores["eligible"]);
+  const eligibleIds = new Set(eligible.map(idOf3));
+  const inputFile = at(run, "score-input.json");
+  const input = existsSync11(inputFile) ? list2(parsed(readFileSync14(inputFile, "utf8"))["candidates"]) : [];
+  return [
+    ...eligible.map((entry) => ({ ...entry, held: false })),
+    ...input.filter((entry) => !eligibleIds.has(idOf3(entry))).map((entry) => ({ ...entry, held: true }))
+  ];
+}
 async function recordStage(run) {
   const scores = at(run, "scores.challenged.json");
   const scored = existsSync11(scores);
-  if (scored) writeJson(at(run, "record-candidates.json"), { candidates: list2(parsed(readFileSync14(scores, "utf8"))["eligible"]) });
+  if (scored) writeJson(at(run, "record-candidates.json"), { candidates: recordCandidates(run, parsed(readFileSync14(scores, "utf8"))) });
   await record2(run, [
     ...scored ? ["--scores", scores, "--candidates", at(run, "record-candidates.json")] : [],
     ...run.secondPass ? ["--verdicts", at(run, "second-pass.json")] : [],
