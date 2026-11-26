@@ -9,15 +9,25 @@ export function retrieveCommand(argv: string[]): number {
     console.error('retrieve needs --text "<claim and failure mode>".');
     return 2;
   }
+  const excludePull = argv.includes('--exclude-pull') ? numericFlag(argv, '--exclude-pull', 0) : null;
+  if (argv.includes('--exclude-pull') && excludePull === null) {
+    console.error('--exclude-pull needs a pull request number.');
+    return 2;
+  }
 
   const db = openDatabase();
   try {
+    const config = repositoryConfig();
     const precedents = retrievePrecedents(db, {
       text,
       repository: flag(argv, '--repository') ?? undefined,
-      allowlist: repositoryConfig()?.allowlist,
+      allowlist: config?.allowlist,
+      ownerReviewer: config?.ownerReviewer,
+      botPatterns: config?.queue.skip.authorPatterns,
+      category: flag(argv, '--category') ?? undefined,
       filePath: flag(argv, '--path') ?? undefined,
       language: flag(argv, '--language') ?? undefined,
+      excludePullNumber: excludePull ?? undefined,
       maxPositive: numericFlag(argv, '--max-positive', 3) ?? 3,
       maxNegative: numericFlag(argv, '--max-negative', 2) ?? 2,
     });

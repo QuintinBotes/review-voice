@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Outcomes of the tool's own posted findings become precedent at retrieval
+  time: a strong `dismissed` counts as a dismissal and a `fixed` as an
+  acceptance, weighted by who decided it, so owner and repository alignment
+  can fall below neutral and the owner-precedent gate can fire. No new rows
+  are written, so deleting the outcomes unlearns them. `explain` marks each
+  learned precedent `source: outcome`, and `status` prints the learned
+  accepted and dismissed counts and the categories with net negative learned
+  precedent. (closes #480, docs/adr/0039)
 - The evidence-verifier may return `material`, `material_reason` (at most
   300 characters) and `severity_fit` (`right` or `too_high`): whether a
   reasonable author would change code, what breaks and for whom, and whether

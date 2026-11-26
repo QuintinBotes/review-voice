@@ -49,3 +49,4 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0035](0035-one-bounded-reply-per-own-finding.md) | One bounded reply per own finding | Accepted |
 | [0036](0036-approvals-are-followed-to-an-outcome.md) | Approvals are followed to an outcome | Accepted |
 | [0037](0037-confidence-is-a-floor-materiality-is-a-verdict.md) | Confidence is a floor, materiality is a verdict | Accepted |
+| [0039](0039-outcomes-become-precedent.md) | Outcomes become precedent | Accepted |

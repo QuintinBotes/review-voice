@@ -20848,12 +20848,15 @@ var COMMAND_HELP = {
       "  Find weighted precedents for a candidate finding.",
       "  With no synced history it also returns baseline: true and voice, the baseline",
       "  voice guide the editor writes from. Each precedent names its reviewerLogin.",
+      "  Strong outcomes of posted findings are derived as precedents too, with source: outcome.",
       "",
       "Flags:",
       "  --text <query>        Candidate claim and failure mode (required)",
       "  --repository <name>   Prefer precedents from this repository",
       "  --path <path>         Prefer precedents on this file",
       "  --language <lang>     Prefer precedents in this language",
+      "  --category <name>     Candidate category, used to rank outcome precedents",
+      "  --exclude-pull <n>    Exclude precedents from this pull request",
       "  --max-positive <n>    Positive precedents to return (default 3)",
       "  --max-negative <n>    Negative precedents to return (default 2)",
       "Reads: nothing on stdin; the local store.",
@@ -26078,6 +26081,31 @@ function eventWeight(parts) {
   return multiplied * recencyWeight(parts.createdAt, parts.now) * specificityWeight(parts.specificity) * contextWeight(parts.context);
 }
 
+// plugins/review-voice/src/github/roles.ts
+var BOT_HINTS = [
+  /\[bot\]$/i,
+  /^(dependabot|renovate|greenkeeper|snyk|codecov|coveralls|sonarcloud|sonarqube|github-actions|copilot|mergify|allcontributors|imgbot|semantic-release|stale|codeclimate|deepsource|reviewpad|restyled)/i,
+  /-bot$/i,
+  /^bot-/i
+];
+function isBot2(login, accountType) {
+  if (accountType !== void 0 && accountType.toLowerCase() === "bot") return true;
+  return BOT_HINTS.some((pattern) => pattern.test(login));
+}
+function classifyReviewer(input) {
+  if (isBot2(input.login, input.accountType)) return "bot";
+  const login = input.login.toLowerCase();
+  if (login === input.ownerLogin.toLowerCase()) return "owner";
+  if ((input.reviewerLogins ?? []).some((reviewer) => reviewer.toLowerCase() === login)) return "owner";
+  const team = (input.teamLogins ?? []).map((login2) => login2.toLowerCase());
+  if (team.includes(input.login.toLowerCase())) return "team";
+  const association = (input.authorAssociation ?? "").toUpperCase();
+  if (association === "OWNER" || association === "MEMBER" || association === "COLLABORATOR") {
+    return "team";
+  }
+  return "external";
+}
+
 // plugins/review-voice/src/retrieval/retrieve.ts
 function toMatchQuery(text5) {
   const terms = text5.toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((term) => term.length > 2 && !STOPWORDS.has(term));
@@ -26125,6 +26153,104 @@ var STOPWORDS = /* @__PURE__ */ new Set([
   "used"
 ]);
 var EXCERPT_CHARS = 220;
+function significantWordsOf(text5) {
+  return new Set(
+    text5.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 3 && !STOPWORDS.has(word))
+  );
+}
+function isBotLogin(login, botPatterns) {
+  if (isBot2(login)) return true;
+  const patterns = botPatterns ?? DEFAULT_AUTHOR_PATTERNS;
+  for (const pattern of patterns) {
+    try {
+      if (new RegExp(pattern, "i").test(login)) return true;
+    } catch {
+    }
+  }
+  return false;
+}
+var ECHO_WORDS = /* @__PURE__ */ new Set([
+  "fixed",
+  "done",
+  "addressed",
+  "applied",
+  "updated",
+  "fix",
+  "fixes",
+  "fixing",
+  "in",
+  "on",
+  "commit",
+  "commits",
+  "sha",
+  "thanks",
+  "thank",
+  "you",
+  "good",
+  "catch",
+  "nice",
+  "agreed",
+  "will",
+  "do",
+  "resolved",
+  "completed",
+  "handled",
+  "ok",
+  "okay",
+  "yes",
+  "yep",
+  "sure",
+  "please",
+  "see",
+  "pull",
+  "request",
+  "the",
+  "a",
+  "an",
+  "this",
+  "that",
+  "it",
+  "is",
+  "now",
+  "already",
+  "suggestion"
+]);
+function isEchoOnlyFix(text5) {
+  if (text5 === null || text5 === void 0) return false;
+  const cleaned = text5.trim().toLowerCase().replace(/https?:\/\/\S+/g, " ").replace(/\b[0-9a-f]{7,40}\b/g, " ").replace(/[`"'.,;:!?()[\]{}<>#@_*~+\\/|-]+/g, " ");
+  const words = cleaned.split(/\s+/).filter((word) => word.length > 0);
+  if (words.length === 0) return true;
+  if (words.length > 6) return false;
+  return words.every((word) => ECHO_WORDS.has(word) || /^[0-9]+$/.test(word) || word === "pr");
+}
+function outcomeRole(input) {
+  const decidedBy = input.decidedBy;
+  if (decidedBy !== null && decidedBy.length > 0 && isBotLogin(decidedBy, input.botPatterns)) return "bot";
+  if (typeof input.evidence === "string" && input.evidence.includes("owner recorded dismiss")) {
+    return isEchoOnlyFix(input.evidence) ? "team" : "owner";
+  }
+  if (decidedBy !== null && decidedBy.length > 0 && input.ownerReviewer !== null && input.ownerReviewer !== void 0 && decidedBy.toLowerCase() === input.ownerReviewer.toLowerCase()) {
+    return isEchoOnlyFix(input.evidence) ? "team" : "owner";
+  }
+  return "team";
+}
+function inScope(repository, query) {
+  if (query.allowlist === void 0) return true;
+  const wanted = repository.toLowerCase();
+  const exact = query.allowlist.filter((entry) => !entry.endsWith("/*")).map((entry) => entry.toLowerCase());
+  if (query.repository !== void 0) exact.push(query.repository.toLowerCase());
+  if (exact.includes(wanted)) return true;
+  for (const entry of query.allowlist.filter((item) => item.endsWith("/*"))) {
+    if (wanted.startsWith(entry.slice(0, -1).toLowerCase())) return true;
+  }
+  return false;
+}
+function isExcludedPull(repository, pullNumber, query) {
+  if (query.excludePullNumber === void 0 || pullNumber === null) return false;
+  if (pullNumber !== query.excludePullNumber) return false;
+  if (query.repository === void 0) return true;
+  return repository.toLowerCase() === query.repository.toLowerCase();
+}
 function scopeClause(query) {
   if (query.allowlist === void 0) return { sql: "", params: [] };
   const exact = query.allowlist.filter((entry) => !entry.endsWith("/*"));
@@ -26136,18 +26262,164 @@ function scopeClause(query) {
   ];
   return { sql: `AND (${clauses.length === 0 ? "0" : clauses.join(" OR ")})`, params: [...exact, ...owners] };
 }
+function loadOutcomeFindings(db, keep) {
+  const rows = [];
+  try {
+    const statement = db.prepare(
+      `SELECT o.review_run_id, o.finding_id, o.repository, o.pull_number, o.outcome, o.strength,
+                o.evidence, o.checked_at, o.decided_by, r.output_json, r.candidates_json
+         FROM finding_outcomes o
+         JOIN review_runs r ON r.review_run_id = o.review_run_id
+         WHERE o.strength = 'strong' AND o.outcome IN ('dismissed', 'fixed')
+         ORDER BY o.checked_at DESC, o.review_run_id ASC, o.finding_id ASC`
+    );
+    for (const row of statement.iterate()) {
+      if (keep !== void 0 && !keep(row)) continue;
+      rows.push(row);
+      if (rows.length >= 500) break;
+    }
+  } catch {
+    return [];
+  }
+  const findingsByRun = /* @__PURE__ */ new Map();
+  const hintsByRun = /* @__PURE__ */ new Map();
+  const findingsOf = (row) => {
+    let known = findingsByRun.get(row.review_run_id);
+    if (known !== void 0) return known;
+    known = /* @__PURE__ */ new Map();
+    findingsByRun.set(row.review_run_id, known);
+    try {
+      const parsed2 = JSON.parse(row.output_json);
+      for (const finding of parsed2.findings ?? []) {
+        if (typeof finding?.findingId === "string") known.set(finding.findingId, finding);
+      }
+    } catch {
+    }
+    return known;
+  };
+  const hintsOf = (row) => {
+    let known = hintsByRun.get(row.review_run_id);
+    if (known !== void 0) return known;
+    known = [];
+    hintsByRun.set(row.review_run_id, known);
+    try {
+      const parsed2 = JSON.parse(row.candidates_json);
+      if (Array.isArray(parsed2)) known = parsed2;
+      hintsByRun.set(row.review_run_id, known);
+    } catch {
+    }
+    return known;
+  };
+  const out = [];
+  for (const row of rows) {
+    const finding = findingsOf(row).get(row.finding_id);
+    if (finding === void 0 || typeof finding.path !== "string" || typeof finding.text !== "string") continue;
+    const hint = hintsOf(row).find((entry) => entry["path"] === finding.path && entry["line"] === finding.line);
+    const category = typeof finding.category === "string" && finding.category.length > 0 ? finding.category : typeof hint?.["category"] === "string" && hint["category"].length > 0 ? hint["category"] : null;
+    const prose = parseFinding(finding.text, 0).prose || finding.text;
+    const claimParts = [hint?.["claim"], hint?.["failureMode"], hint?.["failure_mode"]].filter((part) => typeof part === "string");
+    out.push({ row, finding, category, prose, searchText: [prose, ...claimParts, finding.path].join(" ") });
+  }
+  return out;
+}
+function outcomePrecedents(db, query, queryLanguage) {
+  const queryWords = significantWordsOf(query.text);
+  if (queryWords.size === 0) return [];
+  const scored = [];
+  for (const { row, finding, category, prose, searchText } of loadOutcomeFindings(
+    db,
+    (row2) => inScope(row2.repository, query) && !isExcludedPull(row2.repository, row2.pull_number, query)
+  )) {
+    const theirs = significantWordsOf(searchText);
+    const sharedWords = [...queryWords].filter((word) => theirs.has(word));
+    const shared = sharedWords.length;
+    const overlapRatio = shared / queryWords.size;
+    if (shared === 0) continue;
+    if (shared === 1 && ((sharedWords[0]?.length ?? 0) < 5 || overlapRatio < 0.06)) continue;
+    if (overlapRatio < 0.05) continue;
+    const mapped = row.outcome === "dismissed" ? "dismissed" : "accepted";
+    const role = outcomeRole({
+      decidedBy: row.decided_by,
+      ownerReviewer: query.ownerReviewer,
+      botPatterns: query.botPatterns,
+      evidence: row.evidence
+    });
+    const rowLanguage = languageOf(finding.path);
+    const weight = eventWeight({
+      role,
+      outcome: mapped,
+      createdAt: row.checked_at,
+      specificity: { hasFilePath: true, hasLine: Number.isInteger(finding.line), hasDiffHunk: false },
+      context: {
+        sameRepository: query.repository !== void 0 && row.repository.toLowerCase() === query.repository.toLowerCase(),
+        samePath: query.filePath !== void 0 && finding.path === query.filePath,
+        sameLanguage: queryLanguage !== null && rowLanguage === queryLanguage,
+        differentLanguage: queryLanguage !== null && rowLanguage !== null && rowLanguage !== queryLanguage
+      },
+      now: query.now,
+      ownerMultiplier: query.ownerMultiplier
+    });
+    let relevance = shared * 1.2 + overlapRatio * 4;
+    if (query.category !== void 0 && category !== null) {
+      relevance *= query.category.toLowerCase() === category.toLowerCase() ? 1.15 : 0.85;
+    }
+    scored.push({
+      eventId: `outcome:${row.review_run_id}:${row.finding_id}`,
+      repository: row.repository,
+      reviewerLogin: row.decided_by ?? "unknown",
+      role,
+      outcome: mapped,
+      createdAt: row.checked_at,
+      filePath: finding.path,
+      lineStart: Number.isInteger(finding.line) ? finding.line : null,
+      excerpt: prose.length > EXCERPT_CHARS ? `${prose.slice(0, EXCERPT_CHARS)}\u2026` : prose,
+      weight,
+      relevance,
+      matchStrength: 0,
+      polarity: weight < 0 ? "negative" : "positive",
+      source: "outcome",
+      category
+    });
+  }
+  scored.sort((a, b) => b.relevance - a.relevance || b.createdAt.localeCompare(a.createdAt) || a.eventId.localeCompare(b.eventId));
+  return scored;
+}
+function learnedPrecedentStats(db, options = {}) {
+  const byCategory = /* @__PURE__ */ new Map();
+  let accepted = 0;
+  let dismissed = 0;
+  for (const { row, category } of loadOutcomeFindings(db)) {
+    const mapped = row.outcome === "dismissed" ? "dismissed" : "accepted";
+    if (mapped === "accepted") accepted += 1;
+    else dismissed += 1;
+    const key2 = category ?? "unknown";
+    const role = outcomeRole({
+      decidedBy: row.decided_by,
+      ownerReviewer: options.ownerReviewer,
+      botPatterns: options.botPatterns,
+      evidence: row.evidence
+    });
+    const entry = byCategory.get(key2) ?? { net: 0, accepted: 0, dismissed: 0 };
+    entry.net += baseWeight(role, mapped);
+    if (mapped === "accepted") entry.accepted += 1;
+    else entry.dismissed += 1;
+    byCategory.set(key2, entry);
+  }
+  const netNegative = [...byCategory.entries()].filter(([, entry]) => entry.net < 0).map(([category, entry]) => ({ category, ...entry })).sort((a, b) => a.net - b.net || a.category.localeCompare(b.category));
+  return { total: accepted + dismissed, accepted, dismissed, netNegative };
+}
 function retrievePrecedents(db, query) {
   const match = toMatchQuery(query.text);
   if (match.length === 0) return [];
   const scope = scopeClause(query);
-  let rows;
+  let rows = [];
   try {
     rows = db.prepare(
       `SELECT e.event_id, e.repository, e.reviewer_login, e.reviewer_role,
                 -- A weak outcome cannot move a weight on its own (adr/0004).
                 CASE WHEN e.outcome_certainty = 'strong' THEN e.outcome_status ELSE 'unknown' END AS outcome_status,
                 e.created_at, e.file_path, e.line_start,
-                e.body_redacted, e.diff_hunk_redacted, e.language,
+                e.body_redacted, e.diff_hunk_redacted, e.language, e.category,
                 bm25(review_events_fts) AS rank
          FROM review_events_fts
          JOIN review_events e ON e.rowid = review_events_fts.rowid
@@ -26166,7 +26438,7 @@ function retrievePrecedents(db, query) {
       ...scope.params
     );
   } catch {
-    return [];
+    rows = [];
   }
   const queryLanguage = query.language ?? (query.filePath === void 0 ? null : languageOf(query.filePath));
   const scored = rows.map((row) => {
@@ -26209,14 +26481,19 @@ function retrievePrecedents(db, query) {
       weight,
       relevance,
       matchStrength: 0,
-      polarity: weight < 0 ? "negative" : "positive"
+      polarity: weight < 0 ? "negative" : "positive",
+      source: "corpus",
+      category: row.category ?? null
     };
   });
-  const best = Math.max(...scored.map((p2) => p2.relevance), 1);
+  scored.push(...outcomePrecedents(db, query, queryLanguage));
+  if (scored.length === 0) return [];
+  const bestOf = (source) => Math.max(...scored.filter((p2) => (p2.source ?? "corpus") === source).map((p2) => p2.relevance), 1);
+  const best = { corpus: bestOf("corpus"), outcome: bestOf("outcome") };
   for (const precedent of scored) {
-    precedent.matchStrength = Math.max(0, Math.min(1, precedent.relevance / best));
+    precedent.matchStrength = Math.max(0, Math.min(1, precedent.relevance / best[precedent.source ?? "corpus"]));
   }
-  const rank2 = (a, b) => Math.abs(b.weight) * b.matchStrength - Math.abs(a.weight) * a.matchStrength;
+  const rank2 = (a, b) => Math.abs(b.weight) * b.matchStrength - Math.abs(a.weight) * a.matchStrength || b.relevance - a.relevance || a.eventId.localeCompare(b.eventId);
   const positive = scored.filter((p2) => p2.weight > 0).sort(rank2).slice(0, query.maxPositive);
   const negative = scored.filter((p2) => p2.weight < 0).sort(rank2).slice(0, query.maxNegative);
   return [...negative, ...positive];
@@ -26245,14 +26522,24 @@ function retrieveCommand(argv) {
     console.error('retrieve needs --text "<claim and failure mode>".');
     return 2;
   }
+  const excludePull = argv.includes("--exclude-pull") ? numericFlag(argv, "--exclude-pull", 0) : null;
+  if (argv.includes("--exclude-pull") && excludePull === null) {
+    console.error("--exclude-pull needs a pull request number.");
+    return 2;
+  }
   const db = openDatabase();
   try {
+    const config2 = repositoryConfig();
     const precedents = retrievePrecedents(db, {
       text: text5,
       repository: flag(argv, "--repository") ?? void 0,
-      allowlist: repositoryConfig()?.allowlist,
+      allowlist: config2?.allowlist,
+      ownerReviewer: config2?.ownerReviewer,
+      botPatterns: config2?.queue.skip.authorPatterns,
+      category: flag(argv, "--category") ?? void 0,
       filePath: flag(argv, "--path") ?? void 0,
       language: flag(argv, "--language") ?? void 0,
+      excludePullNumber: excludePull ?? void 0,
       maxPositive: numericFlag(argv, "--max-positive", 3) ?? 3,
       maxNegative: numericFlag(argv, "--max-negative", 2) ?? 2
     });
@@ -31106,31 +31393,6 @@ async function postCommand(argv) {
   }
 }
 
-// plugins/review-voice/src/github/roles.ts
-var BOT_HINTS = [
-  /\[bot\]$/i,
-  /^(dependabot|renovate|greenkeeper|snyk|codecov|coveralls|sonarcloud|sonarqube|github-actions|copilot|mergify|allcontributors|imgbot|semantic-release|stale|codeclimate|deepsource|reviewpad|restyled)/i,
-  /-bot$/i,
-  /^bot-/i
-];
-function isBot2(login, accountType) {
-  if (accountType !== void 0 && accountType.toLowerCase() === "bot") return true;
-  return BOT_HINTS.some((pattern) => pattern.test(login));
-}
-function classifyReviewer(input) {
-  if (isBot2(input.login, input.accountType)) return "bot";
-  const login = input.login.toLowerCase();
-  if (login === input.ownerLogin.toLowerCase()) return "owner";
-  if ((input.reviewerLogins ?? []).some((reviewer) => reviewer.toLowerCase() === login)) return "owner";
-  const team = (input.teamLogins ?? []).map((login2) => login2.toLowerCase());
-  if (team.includes(input.login.toLowerCase())) return "team";
-  const association = (input.authorAssociation ?? "").toUpperCase();
-  if (association === "OWNER" || association === "MEMBER" || association === "COLLABORATOR") {
-    return "team";
-  }
-  return "external";
-}
-
 // plugins/review-voice/src/corpus/eligibility.ts
 var APPROVAL_PHRASES = /\b(lgtm|looks good(?: to me)?|ship it|approv(?:ed|ing|al)|sgtm|ack(?:nowledged)?|thanks|thank you|ty|nice work|nice one|great|\+1|done|no comments?|nothing from me|all good|fine by me)\b/gi;
 var DECORATION = /[\s.!?,;:\u2013\u2014-]|👍|🚀|✅|🎉|💯|🙏|😄/gu;
@@ -32840,9 +33102,11 @@ function explainCommand(argv) {
       if (score2?.novelty !== void 0) {
         console.log(`  novelty           ${score2.novelty.toFixed(2)}`);
       }
-      const precedentIds = score2?.precedentIds ?? (score2?.precedents ?? []).flatMap((p2) => typeof p2.eventId === "string" ? [p2.eventId] : []);
-      if (precedentIds.length > 0) {
-        console.log(`  precedents        ${precedentIds.join(", ")}`);
+      const precedentLabels = score2?.precedents !== void 0 && score2.precedents.length > 0 ? score2.precedents.flatMap(
+        (p2) => typeof p2.eventId === "string" ? [`${p2.eventId}${p2.source === "outcome" || p2.eventId.startsWith("outcome:") ? " (source: outcome)" : ""}`] : []
+      ) : (score2?.precedentIds ?? []).map((id) => `${id}${id.startsWith("outcome:") ? " (source: outcome)" : ""}`);
+      if (precedentLabels.length > 0) {
+        console.log(`  precedents        ${precedentLabels.join(", ")}`);
       }
       if (score2?.duplicateOfPrecedent != null) {
         console.log(`  already stated in ${score2.duplicateOfPrecedent}`);
@@ -32961,10 +33225,12 @@ function statusCommand() {
     let allowlist = [];
     let maxRepositoryShare;
     let ownerReviewer = null;
+    let botPatterns;
     let escapeWarn = DEFAULT_OUTCOMES.approvalEscapeWarn;
     try {
       const config2 = loadConfig(repositoryRoot(process.cwd()));
       ownerReviewer = config2.ownerReviewer;
+      botPatterns = config2.queue.skip.authorPatterns;
       escapeWarn = config2.outcomes.approvalEscapeWarn;
       allowlist = namedRepositories(config2.allowlist, "status");
       maxRepositoryShare = scaledRepositoryShare(allowlist.length);
@@ -33023,6 +33289,15 @@ function statusCommand() {
       console.log(`  ${repository.padEnd(45)} ${n}`);
     }
     for (const warning of coverage.warnings) console.log(`  warning        ${warning}`);
+    const learned = terminalSafeDeep(learnedPrecedentStats(db, { ownerReviewer, botPatterns }));
+    console.log(
+      `learned precedents ${learned.total} from outcomes: ${learned.accepted} accepted, ${learned.dismissed} dismissed`
+    );
+    for (const negative of learned.netNegative) {
+      console.log(
+        `learned negative   ${negative.category} (net ${negative.net.toFixed(2)} from ${negative.accepted} accepted, ${negative.dismissed} dismissed)`
+      );
+    }
     for (const line3 of watchSummary(db)) console.log(line3);
     return 0;
   } finally {
@@ -33970,6 +34245,9 @@ function scoreCommand(argv) {
         text: `${candidate.claim} ${candidate.failureMode}`,
         repository: flag(argv, "--repository") ?? void 0,
         allowlist: loadedConfig?.allowlist,
+        ownerReviewer: loadedConfig?.ownerReviewer,
+        botPatterns: loadedConfig?.queue.skip.authorPatterns,
+        category: candidate.category,
         filePath: candidate.path,
         // A comment on the pull request under review is the conversation, not
         // precedent, and it is the route by which a posted review comes back
