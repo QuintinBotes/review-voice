@@ -9943,7 +9943,8 @@ function allowlistEntryProblem(entry) {
 var SEARCH_BASE = "is:pr is:open draft:false";
 var SEARCH_PER_PAGE = 100;
 var SEARCH_MAX_PAGES = 5;
-function searchQuery(source, allows) {
+var UPDATED_SINCE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+function searchQuery(source, allows, updatedSince) {
   if (source === "requested") return `${SEARCH_BASE} user-review-requested:@me`;
   if (source === "assigned") return `${SEARCH_BASE} assignee:@me`;
   if (source === "reviewed") return `${SEARCH_BASE} reviewed-by:@me`;
@@ -9957,6 +9958,19 @@ function searchQuery(source, allows) {
     const match = /^([^/#]+)\/([^/#]+)#([1-9]\d*)$/.exec(source.slice("reverts:".length));
     if (match !== null && GITHUB_NAME.test(match[1]) && REPOSITORY_NAME.test(match[2]) && allows(`${match[1]}/${match[2]}`)) {
       return `is:pr is:merged repo:${match[1]}/${match[2]} "Reverts ${match[1]}/${match[2]}#${match[3]}" in:body`;
+    }
+  }
+  if (typeof source === "string" && source.startsWith("discovered:")) {
+    const scope = source.slice("discovered:".length);
+    const since = updatedSince !== void 0 && UPDATED_SINCE.test(updatedSince) ? ` updated:>=${updatedSince}` : null;
+    if (since !== null) {
+      const [owner, repo, ...rest] = scope.split("/");
+      if (owner !== void 0 && repo === "*" && rest.length === 0 && GITHUB_NAME.test(owner) && allows(`${owner}/discovery-scope-probe`)) {
+        return `${SEARCH_BASE} org:${owner}${since}`;
+      }
+      if (owner !== void 0 && repo !== void 0 && rest.length === 0 && GITHUB_NAME.test(owner) && REPOSITORY_NAME.test(repo) && allows(`${owner}/${repo}`)) {
+        return `${SEARCH_BASE} repo:${owner}/${repo}${since}`;
+      }
     }
   }
   throw new NotAllowlisted(`Refused a search source that is not one Review Voice builds: ${JSON.stringify(source)}.`);
@@ -9999,6 +10013,8 @@ var GitHubClient = class {
   allowlist;
   /** Owners whose every repository is allowlisted, from `owner/*` entries. */
   allowedOwners;
+  /** The allowlist as configured, normalised: exact `owner/repo` entries and `owner/*` globs. */
+  entries = [];
   baseUrl;
   doFetch;
   sleep;
@@ -10011,8 +10027,10 @@ var GitHubClient = class {
         const problem = options.allowGlobs === true ? allowlistEntryProblem(entry) : `"${entry}" is a pattern, and this client reads only repositories named one by one.`;
         if (problem !== null) throw new NotAllowlisted(`Refused allowlist entry ${problem}`);
         this.allowedOwners.add(entry.slice(0, -2).toLowerCase());
+        this.entries.push(`${entry.slice(0, -2).toLowerCase()}/*`);
       } else {
         this.allowlist.add(entry.toLowerCase());
+        this.entries.push(entry.toLowerCase());
       }
     }
     this.baseUrl = options.baseUrl ?? "https://api.github.com";
@@ -10023,6 +10041,14 @@ var GitHubClient = class {
   authorization() {
     this.token ??= githubToken();
     return `Bearer ${this.token}`;
+  }
+  /**
+   * The allowlist entries as configured, normalised to lower case, so a
+   * search scoped per entry (relevance discovery, docs/adr/0038) can name
+   * exactly the scopes this client may read and no other.
+   */
+  allowlistEntries() {
+    return [...this.entries];
   }
   /** Whether `owner/name` is inside the allowlist, by exact entry or `owner/*`. */
   allows(repository) {
@@ -10197,15 +10223,16 @@ var GitHubClient = class {
    * Pages are numbered here rather than followed from a Link header, and stop
    * at five.
    */
-  async searchPullRequests(source) {
-    const q = encodeURIComponent(searchQuery(source, (repository) => this.allows(repository)));
+  async searchPullRequests(source, options = {}) {
+    const q = encodeURIComponent(searchQuery(source, (repository) => this.allows(repository), options.updatedSince));
+    const order = typeof source === "string" && source.startsWith("discovered:") ? "sort=updated&order=desc" : "sort=created&order=asc";
     const pullRequests = [];
     let outsideAllowlist = 0;
     let truncated = false;
     let seen = 0;
     for (let page = 1; page <= SEARCH_MAX_PAGES; page += 1) {
       const { data } = await this.request(
-        `/search/issues?q=${q}&sort=created&order=asc&per_page=${SEARCH_PER_PAGE}&page=${page}`,
+        `/search/issues?q=${q}&${order}&per_page=${SEARCH_PER_PAGE}&page=${page}`,
         true
       );
       const items = Array.isArray(data?.items) ? data.items : [];
@@ -14189,6 +14216,20 @@ function idempotencyKey(repository, pullNumber, payload) {
 
 // plugins/review-voice/src/queue/config.ts
 var QUEUE_SOURCES = ["requested", "assigned", "team", "follow-up", "dismissed"];
+var DEFAULT_MIN_OWNED_SHARE = 0.2;
+var DEFAULT_DISCOVER_UPDATED_WITHIN_HOURS = 24;
+var DEFAULT_DISCOVER_MAX_PULLS = 50;
+function defaultRelevanceConfig(teams = []) {
+  return {
+    teams: [...teams],
+    minOwnedShare: DEFAULT_MIN_OWNED_SHARE,
+    ignoreOwnedPaths: [],
+    paths: [],
+    addedLinePatterns: [],
+    authors: [],
+    keywords: []
+  };
+}
 var DEFAULT_AUTHOR_PATTERNS = ["\\[bot\\]$", "-bot$", "^renovate", "^dependabot"];
 function defaultQueueConfig() {
   return {
@@ -16543,9 +16584,11 @@ var CONFIG_KEYS = {
   "runners.gemini": ["command", "timeout_seconds", "label", "env_passthrough"],
   "runners.use": ["challenge", "agent_authored_challenge"],
   verification: ["enabled", "command", "runner", "family", "name", "timeout_seconds", "drop_threshold", "env_passthrough"],
-  queue: ["sources", "teams", "max_per_pass", "follow_up_days", "skip"],
+  queue: ["sources", "teams", "max_per_pass", "follow_up_days", "skip", "relevance"],
   "queue.skip": ["authors", "assigned_to", "author_patterns", "allow_bots_when_requested", "drafts", "approved_at_head_by"],
   "queue.skip.approved_at_head_by": ["logins", "sources"],
+  "queue.relevance": ["teams", "min_owned_share", "ignore_owned_paths", "paths", "added_line_patterns", "authors", "keywords", "discover"],
+  "queue.relevance.discover": ["updated_within_hours", "max_pulls"],
   watch: ["workspace", "interval", "post", "lock_port", "run_repository_commands", "review_timeout", "max_attempts_per_head"],
   retention: ["runs_days", "audit_days"],
   outcomes: ["approval_window_days", "approval_escape_warn"],
@@ -17070,7 +17113,7 @@ function readQueue(block, result) {
     result.warnings.push(`queue.${key2} must be a whole number above zero; using the default.`);
     return void 0;
   };
-  const flag2 = (record3, key2) => {
+  const flag3 = (record3, key2) => {
     const value = record3[key2];
     if (value === void 0) return void 0;
     if (typeof value === "boolean") return value;
@@ -17088,6 +17131,7 @@ function readQueue(block, result) {
   }
   queue.maxPerPass = wholeAboveZero("max_per_pass") ?? queue.maxPerPass;
   queue.followUpDays = wholeAboveZero("follow_up_days") ?? queue.followUpDays;
+  readQueueRelevance(block["relevance"], queue, result);
   if (block["skip"] === void 0) return;
   const skip2 = section(block["skip"], "queue.skip", result.warnings);
   if (skip2 === null) {
@@ -17109,8 +17153,8 @@ function readQueue(block, result) {
       }
     }
   }
-  queue.skip.allowBotsWhenRequested = flag2(skip2, "allow_bots_when_requested") ?? queue.skip.allowBotsWhenRequested;
-  queue.skip.drafts = flag2(skip2, "drafts") ?? queue.skip.drafts;
+  queue.skip.allowBotsWhenRequested = flag3(skip2, "allow_bots_when_requested") ?? queue.skip.allowBotsWhenRequested;
+  queue.skip.drafts = flag3(skip2, "drafts") ?? queue.skip.drafts;
   if (skip2["approved_at_head_by"] !== void 0) {
     const approved = section(skip2["approved_at_head_by"], "queue.skip.approved_at_head_by", result.warnings);
     if (approved === null) {
@@ -17122,6 +17166,99 @@ function readQueue(block, result) {
       };
     }
   }
+}
+function readQueueRelevance(value, queue, result) {
+  if (value === void 0) return;
+  const block = section(value, "queue.relevance", result.warnings);
+  if (block === null) {
+    result.warnings.push("queue.relevance must be a mapping; ignoring it.");
+    return;
+  }
+  const relevance = defaultRelevanceConfig(queue.teams);
+  const strings = (key2, what) => {
+    const entries = block[key2];
+    if (entries === void 0) return void 0;
+    if (!Array.isArray(entries)) {
+      result.warnings.push(`queue.relevance.${key2} must be a list; using the default.`);
+      return void 0;
+    }
+    const kept = [];
+    for (const entry of entries) {
+      if (typeof entry === "string" && entry.length > 0) kept.push(entry);
+      else result.warnings.push(`queue.relevance.${key2}: ${JSON.stringify(entry)} is not ${what}; skipping it.`);
+    }
+    return kept;
+  };
+  const globs = (key2) => {
+    const kept = [];
+    for (const entry of strings(key2, "a glob") ?? []) {
+      try {
+        globToRegExp(entry);
+        kept.push(entry);
+      } catch {
+        result.warnings.push(`queue.relevance.${key2}: ${JSON.stringify(entry)} is not a glob; skipping it.`);
+      }
+    }
+    return block[key2] === void 0 ? void 0 : kept;
+  };
+  const teams = block["teams"];
+  if (teams !== void 0) {
+    if (!Array.isArray(teams)) {
+      result.warnings.push("queue.relevance.teams must be a list; using queue.teams.");
+    } else {
+      relevance.teams = [];
+      for (const entry of teams) {
+        if (typeof entry === "string" && TEAM.test(entry)) relevance.teams.push(entry);
+        else result.warnings.push(`queue.relevance.teams: ${JSON.stringify(entry)} is not org/team-slug; skipping it.`);
+      }
+    }
+  }
+  const share = block["min_owned_share"];
+  if (share !== void 0) {
+    if (typeof share === "number" && share >= 0 && share <= 1) relevance.minOwnedShare = share;
+    else result.warnings.push(`queue.relevance.min_owned_share must be a number from 0 to 1; using ${DEFAULT_MIN_OWNED_SHARE}.`);
+  }
+  relevance.ignoreOwnedPaths = globs("ignore_owned_paths") ?? relevance.ignoreOwnedPaths;
+  relevance.paths = globs("paths") ?? relevance.paths;
+  const patterns = block["added_line_patterns"];
+  if (patterns !== void 0) {
+    if (!Array.isArray(patterns)) {
+      result.warnings.push("queue.relevance.added_line_patterns must be a list; using the default.");
+    } else {
+      relevance.addedLinePatterns = [];
+      for (const entry of patterns) {
+        try {
+          if (typeof entry !== "string" || entry.length === 0) throw new Error("not text");
+          new RegExp(entry, "i");
+          relevance.addedLinePatterns.push(entry);
+        } catch {
+          result.warnings.push(`queue.relevance.added_line_patterns: ${JSON.stringify(entry)} is not a regular expression; skipping it.`);
+        }
+      }
+    }
+  }
+  relevance.authors = strings("authors", "a login") ?? relevance.authors;
+  relevance.keywords = strings("keywords", "a word") ?? relevance.keywords;
+  const discoverValue = block["discover"];
+  if (discoverValue !== void 0) {
+    const discover2 = section(discoverValue, "queue.relevance.discover", result.warnings);
+    if (discover2 === null) {
+      result.warnings.push("queue.relevance.discover must be a mapping; ignoring it.");
+    } else {
+      const whole = (key2, fallback) => {
+        const entry = discover2[key2];
+        if (entry === void 0) return fallback;
+        if (typeof entry === "number" && Number.isInteger(entry) && entry > 0) return entry;
+        result.warnings.push(`queue.relevance.discover.${key2} must be a whole number above zero; using ${fallback}.`);
+        return fallback;
+      };
+      relevance.discover = {
+        updatedWithinHours: whole("updated_within_hours", DEFAULT_DISCOVER_UPDATED_WITHIN_HOURS),
+        maxPulls: whole("max_pulls", DEFAULT_DISCOVER_MAX_PULLS)
+      };
+    }
+  }
+  queue.relevance = relevance;
 }
 function readWatch(block, result) {
   if (block === null) {
@@ -17591,6 +17728,235 @@ function loadConfig(repositoryRoot2, baselinePath, path, db, source) {
   return result;
 }
 
+// plugins/review-voice/src/queue/relevance.ts
+var MAX_RELEVANCE_FILES = 3e3;
+var CODEOWNERS_PATHS = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
+var lower = (value) => value.toLowerCase();
+var round2 = (value) => Math.round(value * 100) / 100;
+var fixed2 = (value) => value.toFixed(2);
+function parseCodeowners(text5) {
+  const entries = [];
+  for (const raw of text5.split(/\r?\n/)) {
+    const line3 = raw.trim();
+    if (line3 === "" || line3.startsWith("#") || line3.startsWith("\\#")) continue;
+    const tokens = line3.split(/\s+/).filter((token) => token.length > 0);
+    const first = tokens[0];
+    if (first === void 0) continue;
+    const owners = [];
+    for (const token of tokens.slice(1)) {
+      if (token.startsWith("#")) break;
+      owners.push(token);
+    }
+    entries.push({ pattern: first, owners });
+  }
+  return entries;
+}
+function codeownersPatternMatches(pattern, path) {
+  const target = path.replace(/^\//, "");
+  let body = pattern;
+  const directory = body.endsWith("/");
+  if (directory) body = body.slice(0, -1);
+  if (body === "") return false;
+  const anchored = body.includes("/");
+  if (body.startsWith("/")) body = body.slice(1);
+  if (body === "") return false;
+  const tests = [];
+  const add = (glob) => {
+    try {
+      tests.push(globToRegExp(glob));
+    } catch {
+    }
+  };
+  if (anchored) {
+    add(body);
+    if (directory) add(`${body}/**`);
+    else if (!/[*?[]/.test(body.slice(body.lastIndexOf("/") + 1))) add(`${body}/**`);
+  } else {
+    add(body);
+    add(`**/${body}`);
+    if (directory || !/[*?[]/.test(body)) {
+      add(`${body}/**`);
+      add(`**/${body}/**`);
+    }
+  }
+  return tests.some((candidate) => candidate.test(target));
+}
+function codeownersOwners(entries, path) {
+  let owners = null;
+  for (const entry of entries) {
+    if (codeownersPatternMatches(entry.pattern, path)) owners = entry.owners;
+  }
+  return owners;
+}
+function globMatchesPath(glob, path) {
+  try {
+    if (globToRegExp(glob).test(path)) return true;
+    return !glob.includes("/") && globToRegExp(`**/${glob}`).test(path);
+  } catch {
+    return false;
+  }
+}
+function addedLineMatch(patch, pattern) {
+  let headLine = 0;
+  for (const line3 of patch.split("\n")) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line3);
+    if (hunk !== null) {
+      headLine = Number(hunk[1]);
+      continue;
+    }
+    if (line3.startsWith("+") && !line3.startsWith("+++")) {
+      if (pattern.test(line3.slice(1))) return headLine;
+      headLine += 1;
+    } else if (line3.startsWith(" ") || line3 === "") {
+      headLine += 1;
+    }
+  }
+  return null;
+}
+function keywordMatches(keyword, text5) {
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  try {
+    return new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, "iu").test(text5);
+  } catch {
+    return false;
+  }
+}
+async function readCodeowners(client, repository, baseSha) {
+  if (baseSha === "") return { kind: "unreadable", detail: "the pull request named no base commit" };
+  for (const path of CODEOWNERS_PATHS) {
+    const encoded = path.split("/").map(encodeURIComponent).join("/");
+    let data;
+    try {
+      ({ data } = await client.get(
+        `/repos/${repository}/contents/${encoded}?ref=${encodeURIComponent(baseSha)}`
+      ));
+    } catch (error) {
+      if (error instanceof GitHubError && error.status === 404) continue;
+      return { kind: "unreadable", detail: error instanceof Error ? error.message : String(error) };
+    }
+    if (data?.type !== "file" || data.encoding !== "base64" || typeof data.content !== "string") {
+      return { kind: "unreadable", detail: `${path} exists at the base but could not be read as a text file` };
+    }
+    return { kind: "found", path, entries: parseCodeowners(Buffer.from(data.content, "base64").toString("utf8")) };
+  }
+  return { kind: "missing" };
+}
+async function readFiles(client, repository, pull, maxFiles) {
+  const files2 = [];
+  let truncated = false;
+  let next = `/repos/${repository}/pulls/${pull}/files?per_page=100`;
+  while (next !== null) {
+    const page = await client.get(next);
+    if (!Array.isArray(page.data)) break;
+    for (const raw of page.data) {
+      if (files2.length >= maxFiles) {
+        truncated = true;
+        break;
+      }
+      if (typeof raw?.filename !== "string" || raw.filename.length === 0) continue;
+      const lines2 = (value) => typeof value === "number" && value > 0 ? value : 0;
+      files2.push({
+        filename: raw.filename,
+        previousFilename: typeof raw.previous_filename === "string" ? raw.previous_filename : null,
+        changedLines: lines2(raw.additions) + lines2(raw.deletions),
+        patch: typeof raw.patch === "string" ? raw.patch : null
+      });
+    }
+    if (truncated) break;
+    next = page.linkNext;
+    if (next !== null && files2.length >= maxFiles) truncated = true;
+  }
+  return { files: files2, truncated };
+}
+async function checkRelevance(deps) {
+  const { client, config: config2, repository, pull, pullRequest } = deps;
+  const signals = [];
+  const { files: files2, truncated } = await readFiles(client, repository, pull, deps.maxFiles ?? MAX_RELEVANCE_FILES);
+  let ownedShare = null;
+  let ownedNote;
+  let ownedSignal = false;
+  if (config2.teams.length === 0) {
+    ownedNote = "Owned share not checked: no teams are configured (queue.relevance.teams and queue.teams are empty).";
+  } else {
+    const codeowners = await readCodeowners(client, repository, pullRequest.baseSha);
+    if (codeowners.kind === "missing") {
+      ownedNote = `Owned share unknown: no CODEOWNERS at the base (${CODEOWNERS_PATHS.join(", ")}).`;
+    } else if (codeowners.kind === "unreadable") {
+      ownedNote = `Owned share unknown: CODEOWNERS at the base could not be read (${codeowners.detail}).`;
+    } else {
+      const wanted = new Set(config2.teams.map((team) => `@${lower(team)}`));
+      const matchedTeams = /* @__PURE__ */ new Set();
+      let total = 0;
+      let owned = 0;
+      for (const file2 of files2) {
+        total += file2.changedLines;
+        const owners = codeownersOwners(codeowners.entries, file2.filename) ?? [];
+        const teamsHere = owners.filter((owner) => wanted.has(lower(owner)));
+        if (teamsHere.length === 0) continue;
+        if (config2.ignoreOwnedPaths.some((glob) => globMatchesPath(glob, file2.filename))) continue;
+        owned += file2.changedLines;
+        for (const team of teamsHere) {
+          matchedTeams.add(config2.teams.find((configured) => `@${lower(configured)}` === lower(team)) ?? team.replace(/^@/, ""));
+        }
+      }
+      if (total === 0) {
+        ownedShare = 0;
+        ownedNote = "Owned share 0.00: the pull request changes no lines in the files read.";
+      } else {
+        const share = owned / total;
+        ownedShare = round2(share);
+        if (owned > 0 && share >= config2.minOwnedShare) {
+          ownedSignal = true;
+          signals.push({
+            kind: "owned",
+            detail: `owned share ${fixed2(share)} meets min_owned_share ${fixed2(config2.minOwnedShare)} (${owned} of ${total} changed lines in files owned by ${[...matchedTeams].map((team) => `@${team}`).join(", ")} via ${codeowners.path})`
+          });
+          ownedNote = "";
+        } else {
+          ownedNote = `Owned share ${fixed2(share)} is below min_owned_share ${fixed2(config2.minOwnedShare)} (${owned} of ${total} changed lines in team-owned files via ${codeowners.path}).`;
+        }
+      }
+    }
+  }
+  for (const glob of config2.paths) {
+    const file2 = files2.find(
+      (candidate) => globMatchesPath(glob, candidate.filename) || candidate.previousFilename !== null && globMatchesPath(glob, candidate.previousFilename)
+    );
+    if (file2 !== void 0) signals.push({ kind: "path", detail: `path ${glob} matched ${file2.filename}` });
+  }
+  for (const source of config2.addedLinePatterns) {
+    let pattern;
+    try {
+      pattern = new RegExp(source, "i");
+    } catch {
+      continue;
+    }
+    for (const file2 of files2) {
+      if (file2.patch === null) continue;
+      const line3 = addedLineMatch(file2.patch, pattern);
+      if (line3 !== null) {
+        signals.push({ kind: "added_line", detail: `added line pattern ${source} matched ${file2.filename}:${line3}` });
+        break;
+      }
+    }
+  }
+  if (config2.authors.some((login) => lower(login) === lower(pullRequest.author))) {
+    signals.push({ kind: "author", detail: `author @${pullRequest.author} is in queue.relevance.authors` });
+  }
+  const text5 = `${pullRequest.title}
+${pullRequest.body}`;
+  for (const keyword of config2.keywords) {
+    if (keywordMatches(keyword, text5)) {
+      signals.push({ kind: "keyword", detail: `keyword "${keyword}" in the title or description` });
+    }
+  }
+  const reasons = signals.map((signal2) => signal2.detail);
+  if (!ownedSignal && ownedNote !== "") reasons.push(ownedNote);
+  if (truncated) reasons.push(`The file list was truncated at ${files2.length} files; the owned share covers only those.`);
+  if (signals.length === 0) reasons.push("No relevance signal matched.");
+  return { relevant: signals.length > 0, signals, ownedShare, truncated, reasons };
+}
+
 // plugins/review-voice/src/store/watch.ts
 var isFailure2 = (status) => status === "failed" || status === "failed-open" || status === "failed-closed";
 var fromRow = (row) => ({
@@ -17715,9 +18081,9 @@ function lastSentRow(db, repository, pull, head) {
 }
 
 // plugins/review-voice/src/queue/queue.ts
-var SOURCE_ORDER = ["requested", "assigned", "team", "follow-up", "dismissed"];
+var SOURCE_ORDER = ["requested", "assigned", "team", "follow-up", "dismissed", "discovered"];
 var MAX_REVIEWS = 1e3;
-var lower = (value) => value.toLowerCase();
+var lower2 = (value) => value.toLowerCase();
 function reviewsOf(client, repository, pull) {
   return client.paginate(`/repos/${repository}/pulls/${pull}/reviews?per_page=100`, MAX_REVIEWS);
 }
@@ -17727,7 +18093,7 @@ async function buildQueue(deps) {
   let outsideAllowlist = 0;
   let truncated = false;
   const add = (repository, pull, source) => {
-    const key2 = `${lower(repository)}#${pull}`;
+    const key2 = `${lower2(repository)}#${pull}`;
     let candidate = candidates.get(key2);
     if (candidate === void 0) {
       candidate = { repository, pull, sources: /* @__PURE__ */ new Set() };
@@ -17767,6 +18133,12 @@ async function buildQueue(deps) {
     const entry = await classify2(deps, candidate);
     if (entry !== null) listed.push(entry);
   }
+  if (config2.relevance?.discover !== void 0) {
+    const found2 = await discover(deps, new Set(candidates.keys()));
+    outsideAllowlist += found2.outsideAllowlist;
+    truncated ||= found2.truncated;
+    listed.push(...found2.entries);
+  }
   listed.sort(
     (a, b) => a.createdAt.localeCompare(b.createdAt) || a.repository.localeCompare(b.repository) || a.pull - b.pull
   );
@@ -17787,7 +18159,7 @@ async function buildQueue(deps) {
 }
 async function latestOwnReviewDismissed(client, repository, pull, me) {
   const own = (await reviewsOf(client, repository, pull)).filter(
-    (review2) => lower(review2.user?.login ?? "") === lower(me) && review2.state !== "PENDING"
+    (review2) => lower2(review2.user?.login ?? "") === lower2(me) && review2.state !== "PENDING"
   );
   return own.at(-1)?.state === "DISMISSED";
 }
@@ -17796,7 +18168,7 @@ async function classify2(deps, candidate) {
   const { data: pull } = await client.get(`/repos/${candidate.repository}/pulls/${candidate.pull}`);
   const head = pull.head?.sha;
   if (pull.state !== "open" || typeof head !== "string" || head.length === 0) return null;
-  if (candidate.followUpFrom !== void 0 && lower(candidate.followUpFrom) === lower(head)) {
+  if (candidate.followUpFrom !== void 0 && lower2(candidate.followUpFrom) === lower2(head)) {
     candidate.sources.delete("follow-up");
     if (candidate.sources.size === 0) return null;
   }
@@ -17817,28 +18189,93 @@ async function classify2(deps, candidate) {
   if (rule !== null) return entry({ kind: "skip", rule });
   if (sent !== null) return entry({ kind: "recheck-ci" });
   if (runRecordedAtHead(db, candidate.repository, candidate.pull, head)) return entry({ kind: "verdict-only" });
+  if (deps.config.relevance !== void 0 && sources.length === 1 && sources[0] === "team") {
+    const relevance = await checkRelevance({
+      client,
+      config: deps.config.relevance,
+      repository: candidate.repository,
+      pull: candidate.pull,
+      pullRequest: relevancePullOf(pull)
+    });
+    if (!relevance.relevant) return entry({ kind: "skip", rule: "relevance", reasons: relevance.reasons });
+  }
   return entry({ kind: "review" });
+}
+function relevancePullOf(pull) {
+  return {
+    title: pull.title ?? "",
+    body: pull.body ?? "",
+    author: pull.user?.login ?? "",
+    baseSha: pull.base?.sha ?? ""
+  };
+}
+async function discover(deps, known) {
+  const { client, config: config2 } = deps;
+  const relevance = config2.relevance;
+  const discoverConfig = relevance.discover;
+  const updatedSince = new Date(deps.now.getTime() - discoverConfig.updatedWithinHours * 36e5).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const fresh = [];
+  const seen = new Set(known);
+  let outsideAllowlist = 0;
+  let truncated = false;
+  for (const scope of deps.allowlist ?? client.allowlistEntries()) {
+    const result = await client.searchPullRequests(`discovered:${scope}`, { updatedSince });
+    outsideAllowlist += result.outsideAllowlist;
+    truncated ||= result.truncated;
+    for (const found2 of result.pullRequests) {
+      const key2 = `${lower2(found2.repository)}#${found2.number}`;
+      if (seen.has(key2)) continue;
+      seen.add(key2);
+      fresh.push(found2);
+    }
+  }
+  const entries = [];
+  for (const found2 of fresh.slice(0, discoverConfig.maxPulls)) {
+    const { data: pull } = await client.get(`/repos/${found2.repository}/pulls/${found2.number}`);
+    const head = pull.head?.sha;
+    if (pull.state !== "open" || typeof head !== "string" || head.length === 0) continue;
+    const candidate = { repository: found2.repository, pull: found2.number, sources: /* @__PURE__ */ new Set(["discovered"]) };
+    if (await skipRule(deps, candidate, pull, head, ["discovered"]) !== null) continue;
+    const result = await checkRelevance({
+      client,
+      config: relevance,
+      repository: found2.repository,
+      pull: found2.number,
+      pullRequest: relevancePullOf(pull)
+    });
+    if (!result.relevant) continue;
+    entries.push({
+      repository: found2.repository,
+      pull: found2.number,
+      head,
+      author: pull.user?.login ?? "",
+      sources: ["discovered"],
+      action: { kind: "surface", signals: result.signals },
+      createdAt: pull.created_at ?? ""
+    });
+  }
+  return { entries, outsideAllowlist, truncated };
 }
 async function skipRule(deps, candidate, pull, head, sources) {
   const { client, me } = deps;
   const skip2 = deps.config.skip;
-  const author = lower(pull.user?.login ?? "");
-  if (author === lower(me)) return "own";
+  const author = lower2(pull.user?.login ?? "");
+  if (author === lower2(me)) return "own";
   if (skip2.drafts && pull.draft === true) return "drafts";
-  if (skip2.authors.some((login) => lower(login) === author)) return "authors";
-  const botLike = lower(pull.user?.type ?? "") === "bot" || skip2.authorPatterns.some((pattern) => new RegExp(pattern, "i").test(author));
+  if (skip2.authors.some((login) => lower2(login) === author)) return "authors";
+  const botLike = lower2(pull.user?.type ?? "") === "bot" || skip2.authorPatterns.some((pattern) => new RegExp(pattern, "i").test(author));
   if (botLike && !(skip2.allowBotsWhenRequested && sources.includes("requested"))) return "author_patterns";
-  const assignees = (pull.assignees ?? []).map((assignee) => lower(assignee.login ?? ""));
-  if (skip2.assignedTo.some((login) => assignees.includes(lower(login)))) return "assigned_to";
-  const approvers = skip2.approvedAtHeadBy.logins.map(lower);
+  const assignees = (pull.assignees ?? []).map((assignee) => lower2(assignee.login ?? ""));
+  if (skip2.assignedTo.some((login) => assignees.includes(lower2(login)))) return "assigned_to";
+  const approvers = skip2.approvedAtHeadBy.logins.map(lower2);
   if (approvers.length > 0 && sources.some((source) => skip2.approvedAtHeadBy.sources.includes(source))) {
     const standing = /* @__PURE__ */ new Map();
     for (const review2 of await reviewsOf(client, candidate.repository, candidate.pull)) {
-      const login = lower(review2.user?.login ?? "");
+      const login = lower2(review2.user?.login ?? "");
       if (approvers.includes(login) && review2.state !== "PENDING" && review2.state !== "COMMENTED") standing.set(login, review2);
     }
     const approved = [...standing.values()].some(
-      (review2) => review2.state === "APPROVED" && lower(review2.commit_id ?? "") === lower(head)
+      (review2) => review2.state === "APPROVED" && lower2(review2.commit_id ?? "") === lower2(head)
     );
     if (approved) return "approved_at_head_by";
   }
@@ -17850,10 +18287,11 @@ var LABEL = {
   review: "REVIEW",
   "verdict-only": "VERDICT-ONLY",
   "recheck-ci": "RECHECK-CI",
-  skip: "SKIP"
+  skip: "SKIP",
+  surface: "SURFACE"
 };
 function line2(entry) {
-  const rule = entry.action.kind === "skip" ? ` (${entry.action.rule})` : "";
+  const rule = entry.action.kind === "skip" ? ` (${entry.action.rule}${entry.action.reasons === void 0 ? "" : `: ${entry.action.reasons.join("; ")}`})` : entry.action.kind === "surface" ? ` (${entry.action.signals.map((signal2) => signal2.detail).join("; ")})` : "";
   return `${LABEL[entry.action.kind]} ${entry.repository}#${entry.pull} ${entry.head.slice(0, 7)} @${entry.author} [${entry.sources.join(", ")}]${rule}`;
 }
 function renderQueue(result) {
@@ -17926,12 +18364,71 @@ async function queueCommand(argv, deps) {
   }
   const db = deps.openDb();
   try {
-    const result = await buildQueue({ client, db, config: queue, me: viewer.login, now: deps.now, maxAttemptsPerHead });
+    const result = await buildQueue({ client, db, config: queue, me: viewer.login, now: deps.now, maxAttemptsPerHead, allowlist: config2.allowlist });
     deps.out(argv.includes("--json") ? JSON.stringify(result, null, 2) : renderQueue(result));
     return 0;
   } finally {
     db.close();
   }
+}
+
+// plugins/review-voice/src/queue/relevance-command.ts
+function flag(argv, name) {
+  const index = argv.indexOf(name);
+  if (index === -1) return null;
+  const value = argv[index + 1];
+  return value === void 0 || value.startsWith("--") ? null : value;
+}
+async function relevanceCommand(argv, deps) {
+  const pullNumber = Number(flag(argv, "--pr"));
+  if (!Number.isInteger(pullNumber) || pullNumber < 1) {
+    deps.err("--pr needs a pull request number.");
+    return 2;
+  }
+  if (argv.includes("--repository") && flag(argv, "--repository") === null) {
+    deps.err("--repository needs a value.");
+    return 2;
+  }
+  const repository = flag(argv, "--repository") ?? deps.inferRepository();
+  if (repository === null) {
+    deps.err("Cannot tell which repository. Pass --repository <owner/repo>.");
+    return 2;
+  }
+  const config2 = deps.config;
+  for (const warning of config2?.warnings ?? []) deps.err(`Warning: ${warning}`);
+  if (config2 === null || config2.allowlist.length === 0) {
+    deps.err("No repositories are allowlisted. Run /review-voice:init first.");
+    return 2;
+  }
+  if (config2.queue.relevance === void 0) {
+    deps.err("queue.relevance is not configured; running the check on its defaults, with queue.teams as its teams.");
+  }
+  const relevance = config2.queue.relevance ?? defaultRelevanceConfig(config2.queue.teams);
+  const client = deps.client(config2.allowlist);
+  let result;
+  try {
+    const { data: pull } = await client.get(`/repos/${repository}/pulls/${pullNumber}`);
+    result = await checkRelevance({
+      client,
+      config: relevance,
+      repository,
+      pull: pullNumber,
+      pullRequest: {
+        title: pull.title ?? "",
+        body: pull.body ?? "",
+        author: pull.user?.login ?? "",
+        baseSha: pull.base?.sha ?? ""
+      }
+    });
+  } catch (error) {
+    if (error instanceof GitHubError && (error.status === 401 || error.status === 403)) {
+      deps.err(`GitHub refused the request (status ${error.status}); check the token's access.`);
+      return 2;
+    }
+    throw error;
+  }
+  deps.out(JSON.stringify(result, null, 2));
+  return 0;
 }
 
 // plugins/review-voice/src/watch/command.ts
@@ -19967,15 +20464,24 @@ async function runPass(options, json2) {
       config: options.queue,
       me: viewer.login,
       now: deps.now(),
-      maxAttemptsPerHead: config2.watch.maxAttemptsPerHead
+      maxAttemptsPerHead: config2.watch.maxAttemptsPerHead,
+      allowlist: config2.allowlist
     });
     const rows = [];
     const lines2 = [];
     const held = [];
+    const surfaced = [];
     const counts = /* @__PURE__ */ new Map();
     for (const entry of queue.entries) {
-      const outcome = terminalSafeDeep(await handle(options, client, db, entry));
       const summary2 = `${entry.repository}#${entry.pull}: ${entry.action.kind}`;
+      if (entry.action.kind === "surface") {
+        const text5 = terminalSafeDeep(`${summary2} (${entry.action.signals.map((signal2) => signal2.detail).join("; ")})`);
+        lines2.push(text5);
+        surfaced.push(text5);
+        counts.set("surfaced", (counts.get("surfaced") ?? 0) + 1);
+        continue;
+      }
+      const outcome = terminalSafeDeep(await handle(options, client, db, entry));
       if (outcome.row === null) {
         lines2.push(`${summary2} (no row: ${outcome.detail})`);
         counts.set("retried", (counts.get("retried") ?? 0) + 1);
@@ -19994,6 +20500,7 @@ async function runPass(options, json2) {
     const swept = sweepRetention(db, config2, deps);
     if (json2) {
       deps.out(JSON.stringify(rows, null, 2));
+      if (surfaced.length > 0) deps.err(surfaced.join("\n"));
       if (held.length > 0) deps.err(held.join("\n"));
       if (swept !== null) deps.err(swept);
     } else {
@@ -20024,8 +20531,16 @@ async function handle(options, client, db, entry) {
   if (entry.action.kind !== "skip" && !client.allows(entry.repository)) return { row: { ...base, status: "skipped", detail: NOT_ALLOWED } };
   try {
     switch (entry.action.kind) {
+      case "surface":
+        return { row: null, detail: "report-only" };
       case "skip":
-        return { row: { ...base, status: "skipped", detail: entry.action.rule } };
+        return {
+          row: {
+            ...base,
+            status: "skipped",
+            detail: (entry.action.reasons === void 0 ? entry.action.rule : `${entry.action.rule}: ${entry.action.reasons.join("; ")}`).slice(0, 300)
+          }
+        };
       case "review":
         return await review(options, entry);
       case "verdict-only":
@@ -21277,9 +21792,33 @@ var COMMAND_HELP = {
       "                         failed, failed-open or failed-closed watch.max_attempts_per_head",
       "                         times), with their detail; reads only the local store",
       "Reads: nothing on stdin; GitHub search and pull requests (read-only), the local store and config.",
-      "Writes: one line per entry on stdout (REVIEW, VERDICT-ONLY, RECHECK-CI or SKIP with its",
-      "  rule), then a totals line; or JSON with --json. Nothing is written to the store.",
+      "  With queue.relevance set, a team-only entry the relevance check (see `relevance`) finds no",
+      "  signal for is SKIP relevance with its reasons; with queue.relevance.discover, a recently",
+      "  updated unrequested pull request that concerns the team is listed as SURFACE, report-only.",
+      "Writes: one line per entry on stdout (REVIEW, VERDICT-ONLY, RECHECK-CI, SURFACE with its",
+      "  signals, or SKIP with its rule), then a totals line; or JSON with --json. Nothing is",
+      "  written to the store, and a SURFACE entry is never reviewed.",
       "Exit codes: 0 ok, 1 a GitHub read failed, 2 bad invocation, empty allowlist or credential problem."
+    )
+  },
+  relevance: {
+    summary: "Show whether a pull request concerns the configured team (reads only)",
+    body: lines(
+      "review-voice relevance --pr <number> [--repository <owner/repo>]",
+      "  Run the deterministic relevance check of queue.relevance (docs/adr/0038) on one pull",
+      "  request: the share of its changed lines in files the configured teams own in CODEOWNERS",
+      "  at the base, and the configured path, added-line, author and keyword signals. No model",
+      "  runs and nothing is cloned. With no queue.relevance block the check still runs, on its",
+      "  defaults with queue.teams as its teams, and says so on stderr.",
+      "",
+      "Flags:",
+      "  --pr <number>          Pull request to check (required)",
+      "  --repository <name>    owner/repo; inferred from the git remote if absent",
+      "Reads: nothing on stdin; the pull request, its files with patches and CODEOWNERS at the",
+      "  base from GitHub (read-only, inside the allowlist), and the config.",
+      "Writes: JSON on stdout: { relevant, signals, ownedShare, truncated, reasons }. ownedShare",
+      "  is null when CODEOWNERS is missing or unreadable at the base, with the reason in reasons.",
+      "Exit codes: 0 ok, relevant or not, 2 bad invocation, empty allowlist or credential problem."
     )
   },
   watch: {
@@ -21288,7 +21827,8 @@ var COMMAND_HELP = {
       "review-voice watch [flags]",
       "  Each pass builds the queue, then handles every entry in turn: review runs `review` in a",
       "  workspace clone, verdict-only and recheck-ci compute the verdict on the recorded run and",
-      "  post it with --post, and skip is recorded. One row per head remembers what was done, so a",
+      "  post it with --post, and skip is recorded. A surface entry (queue.relevance.discover) is",
+      "  only printed, with its signals: never reviewed, posted or recorded. One row per head remembers what was done, so a",
       "  head that was posted, carried, skipped or held is never handled again, and a failed head",
       "  is retried up to watch.max_attempts_per_head. Then outcomes are followed for at most 20",
       "  pull requests with a review sent in the last 7 days. One watcher runs per data directory:",
@@ -25482,7 +26022,7 @@ function remoteRepositories(cwd) {
   }
   return slugs;
 }
-function flag(argv, name) {
+function flag2(argv, name) {
   const index = argv.indexOf(name);
   if (index === -1) return null;
   const value = argv[index + 1];
@@ -25752,8 +26292,8 @@ function buildDraft(input) {
 
 // plugins/review-voice/src/cli/draft.ts
 function draftCommand(argv) {
-  const repository = flag(argv, "--repository");
-  const pullNumber = Number(flag(argv, "--pr") ?? NaN);
+  const repository = flag2(argv, "--repository");
+  const pullNumber = Number(flag2(argv, "--pr") ?? NaN);
   if (repository === null || !Number.isInteger(pullNumber)) {
     console.error("draft needs --repository <owner/repo> and --pr <number>.");
     return 2;
@@ -25771,10 +26311,10 @@ function draftCommand(argv) {
 // plugins/review-voice/src/cli/record-post.ts
 var EVENTS2 = ["APPROVE", "COMMENT", "REQUEST_CHANGES"];
 function recordPostCommand(argv) {
-  const run = flag(argv, "--run");
-  const event = flag(argv, "--event");
-  const url = flag(argv, "--url");
-  const reviewId = flag(argv, "--review-id");
+  const run = flag2(argv, "--run");
+  const event = flag2(argv, "--event");
+  const url = flag2(argv, "--url");
+  const reviewId = flag2(argv, "--review-id");
   if (run === null || url === null || url.trim() === "" || event === null || !EVENTS2.includes(event)) {
     console.error(`record-post needs --run <id>, --url <review url> and --event ${EVENTS2.join("|")}.`);
     return 2;
@@ -25886,7 +26426,7 @@ async function discoverCommand() {
 import { statSync as statSync4 } from "node:fs";
 import { resolve as resolve6 } from "node:path";
 async function evidenceCommand(argv) {
-  const cwdFlag = flag(argv, "--cwd");
+  const cwdFlag = flag2(argv, "--cwd");
   if (argv.includes("--cwd") && cwdFlag === null) {
     console.error("--cwd needs a directory.");
     return 2;
@@ -25928,12 +26468,12 @@ async function reproduceCommand(argv) {
   const probeOnly = argv.includes("--probe");
   const required = probeOnly ? ["--worktree", "--run-dir"] : ["--worktree", "--verification", "--candidates", "--out", "--run-dir"];
   for (const name of required) {
-    if (flag(argv, name) === null) {
+    if (flag2(argv, name) === null) {
       console.error(`${name} needs a value.`);
       return 2;
     }
   }
-  const values = Object.fromEntries(required.map((name) => [name, resolve7(flag(argv, name))]));
+  const values = Object.fromEntries(required.map((name) => [name, resolve7(flag2(argv, name))]));
   for (const name of ["--worktree", "--run-dir"]) {
     if (!isDirectory(values[name])) {
       console.error(`${name} ${values[name]} is not a directory.`);
@@ -26517,7 +27057,7 @@ function baselineVoice() {
 
 // plugins/review-voice/src/cli/retrieve.ts
 function retrieveCommand(argv) {
-  const text5 = flag(argv, "--text");
+  const text5 = flag2(argv, "--text");
   if (text5 === null) {
     console.error('retrieve needs --text "<claim and failure mode>".');
     return 2;
@@ -26532,13 +27072,13 @@ function retrieveCommand(argv) {
     const config2 = repositoryConfig();
     const precedents = retrievePrecedents(db, {
       text: text5,
-      repository: flag(argv, "--repository") ?? void 0,
+      repository: flag2(argv, "--repository") ?? void 0,
       allowlist: config2?.allowlist,
       ownerReviewer: config2?.ownerReviewer,
       botPatterns: config2?.queue.skip.authorPatterns,
-      category: flag(argv, "--category") ?? void 0,
-      filePath: flag(argv, "--path") ?? void 0,
-      language: flag(argv, "--language") ?? void 0,
+      category: flag2(argv, "--category") ?? void 0,
+      filePath: flag2(argv, "--path") ?? void 0,
+      language: flag2(argv, "--language") ?? void 0,
       excludePullNumber: excludePull ?? void 0,
       maxPositive: numericFlag(argv, "--max-positive", 3) ?? 3,
       maxNegative: numericFlag(argv, "--max-negative", 2) ?? 2
@@ -26570,8 +27110,8 @@ function feedbackCommand(argv) {
     const result = recordFeedback(db, {
       findingRef,
       action,
-      reason: flag(argv, "--reason") ?? void 0,
-      replacementText: flag(argv, "--replacement") ?? void 0,
+      reason: flag2(argv, "--reason") ?? void 0,
+      replacementText: flag2(argv, "--replacement") ?? void 0,
       actor: "owner"
     });
     if (!result.ok) {
@@ -26587,7 +27127,7 @@ function feedbackCommand(argv) {
 
 // plugins/review-voice/src/cli/decline.ts
 function declineCommand(argv) {
-  const runId = flag(argv, "--run");
+  const runId = flag2(argv, "--run");
   const at2 = /^(.+):(\d+)$/u.exec(argv.find((arg) => /^[^-].*:\d+$/u.test(arg)) ?? "");
   if (runId === null || at2 === null) {
     console.error("Usage: decline --run <run-id> <path:line> [--reason <text>]");
@@ -26595,7 +27135,7 @@ function declineCommand(argv) {
   }
   const db = openDatabase();
   try {
-    const result = declineHeld(db, runId, { path: at2[1], line: Number(at2[2]) }, flag(argv, "--reason") ?? "declined by the owner");
+    const result = declineHeld(db, runId, { path: at2[1], line: Number(at2[2]) }, flag2(argv, "--reason") ?? "declined by the owner");
     if (!result.ok) {
       console.error(result.error);
       return 1;
@@ -26644,10 +27184,10 @@ function extractAnchors(output, checks = {}) {
 
 // plugins/review-voice/src/cli/anchors.ts
 function anchorsCommand(argv) {
-  const diffFile = flag(argv, "--diff-file");
-  const scoresFile = flag(argv, "--scores");
+  const diffFile = flag2(argv, "--diff-file");
+  const scoresFile = flag2(argv, "--scores");
   for (const name of ["--diff-file", "--scores"]) {
-    if (argv.includes(name) && flag(argv, name) === null) {
+    if (argv.includes(name) && flag2(argv, name) === null) {
       console.error(`${name} needs a file path.`);
       return 2;
     }
@@ -26922,7 +27462,7 @@ function validateOutputCommand(argv) {
   const scaledNote = argv.includes("--max-total-words") && limits.maxTotalWords !== maxTotal ? ` (--max-total-words ${maxTotal}, scaled to ${scaleTo} file${scaleTo === 1 ? "" : "s"})` : "";
   const output = readStdin();
   const result = validateOutput(output, limits);
-  const scoresFlag = flag(argv, "--scores");
+  const scoresFlag = flag2(argv, "--scores");
   if (argv.includes("--scores") && scoresFlag === null) {
     console.error("--scores needs the JSON file that `RV score` printed.");
     return 2;
@@ -27114,12 +27654,12 @@ function settleFollowUps(open, evidence) {
 
 // plugins/review-voice/src/cli/follow-ups.ts
 function followUpsCommand(argv) {
-  const pullNumber = Number(flag(argv, "--pr"));
+  const pullNumber = Number(flag2(argv, "--pr"));
   if (!Number.isInteger(pullNumber) || pullNumber < 1) {
     console.error("--pr needs a pull request number.");
     return 2;
   }
-  const repository = flag(argv, "--repository") ?? inferRepository(process.cwd());
+  const repository = flag2(argv, "--repository") ?? inferRepository(process.cwd());
   if (repository === null) {
     console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
     return 2;
@@ -27257,7 +27797,7 @@ function purgeCommand(argv) {
 // plugins/review-voice/src/cli/policy.ts
 function scopeFlag(argv) {
   if (!argv.includes("--scope")) return null;
-  const value = flag(argv, "--scope");
+  const value = flag2(argv, "--scope");
   if (value === "global") return { ...GLOBAL_SCOPE };
   if (value !== null && value.startsWith("path:") && value.slice("path:".length).trim().length > 0) {
     return { type: "path", key: value.slice("path:".length).trim() };
@@ -27708,7 +28248,7 @@ function recallMetrics(results) {
 function evaluateCommand(argv) {
   let recall = null;
   if (argv.includes("--recall")) {
-    const file2 = flag(argv, "--recall");
+    const file2 = flag2(argv, "--recall");
     if (file2 === null) {
       console.error("--recall needs a results file written by `review-voice recall`.");
       return 2;
@@ -27722,7 +28262,7 @@ function evaluateCommand(argv) {
   }
   let windowDays = DEFAULT_WINDOW_DAYS;
   if (argv.includes("--since")) {
-    const wanted = flag(argv, "--since");
+    const wanted = flag2(argv, "--since");
     const match = wanted === null ? null : /^(\d{1,5})d$/.exec(wanted);
     if (match === null) {
       console.error("--since takes a whole number of days, such as 30d.");
@@ -27732,7 +28272,7 @@ function evaluateCommand(argv) {
   }
   const json2 = argv.includes("--json");
   const html = argv.includes("--html");
-  const out = flag(argv, "--out");
+  const out = flag2(argv, "--out");
   if (json2 && html) {
     console.error("--json and --html are exclusive.");
     return 2;
@@ -28278,7 +28818,7 @@ function conventionsCommand(argv) {
     console.error(error instanceof Error ? error.message : String(error));
     return 2;
   }
-  const filesFlag = flag(argv, "--files");
+  const filesFlag = flag2(argv, "--files");
   const changed = [];
   if (filesFlag !== null) {
     try {
@@ -28291,7 +28831,7 @@ function conventionsCommand(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--path" && argv[i + 1] !== void 0) changed.push(argv[i + 1]);
   }
-  const ref = flag(argv, "--ref");
+  const ref = flag2(argv, "--ref");
   if (argv.includes("--ref") && ref === null) {
     console.error("--ref needs a git ref, for example: --ref origin/main");
     return 2;
@@ -28371,7 +28911,7 @@ function gatherReplies(text5, key2) {
 
 // plugins/review-voice/src/cli/check-intent.ts
 function checkIntentCommand(argv) {
-  const threadFile = flag(argv, "--thread");
+  const threadFile = flag2(argv, "--thread");
   if (threadFile === null) {
     console.error("--thread needs the thread.json the intent-extractor read.");
     return 2;
@@ -28404,7 +28944,7 @@ function checkIntentCommand(argv) {
   const intent2 = parseIntent(document, description, issues);
   for (const problem of intent2.dropped) console.error(`${intent2.problem === null ? "Dropped" : "Invalid"} statement ${problem}.`);
   for (const note of intent2.removed) console.error(`${note}.`);
-  const summaryFile = flag(argv, "--summary");
+  const summaryFile = flag2(argv, "--summary");
   if (summaryFile !== null) {
     const kind = (prefix) => intent2.removed.filter((note) => note.startsWith(prefix));
     const summary2 = {
@@ -29147,17 +29687,17 @@ async function recallCommand(argv, runInProcess2) {
     }
   }
   for (const name of valued) {
-    if (argv.includes(name) && flag(argv, name) === null) {
+    if (argv.includes(name) && flag2(argv, name) === null) {
       console.error(`${name} needs a value.`);
       return 2;
     }
   }
-  const fixtures = flag(argv, "--fixtures");
+  const fixtures = flag2(argv, "--fixtures");
   if (fixtures === null) {
     console.error("recall needs --fixtures <dir>.");
     return 2;
   }
-  const classText = flag(argv, "--class");
+  const classText = flag2(argv, "--class");
   const classes = [];
   for (const name of classText === null ? RECALL_CLASSES : classText.split(",")) {
     const found2 = RECALL_CLASSES.find((known2) => known2 === name);
@@ -29167,23 +29707,23 @@ async function recallCommand(argv, runInProcess2) {
     }
     if (!classes.includes(found2)) classes.push(found2);
   }
-  const runner = flag(argv, "--runner") ?? "claude";
+  const runner = flag2(argv, "--runner") ?? "claude";
   if (runner !== "claude" && runner !== "fake") {
     console.error("--runner takes claude or fake.");
     return 2;
   }
-  const modeFlag = flag(argv, "--mode");
+  const modeFlag = flag2(argv, "--mode");
   const mode = MODES.find((candidate) => candidate === modeFlag);
   if (argv.includes("--mode") && mode === void 0) {
     console.error(`--mode takes one of ${MODES.join(", ")}.`);
     return 2;
   }
-  const runsText = flag(argv, "--runs") ?? "1";
+  const runsText = flag2(argv, "--runs") ?? "1";
   if (!/^[1-9]\d*$/.test(runsText) || Number(runsText) > MAX_RUNS) {
     console.error(`--runs takes a positive whole number up to ${MAX_RUNS}; ${runsText} is not one.`);
     return 2;
   }
-  const out = resolve10(flag(argv, "--out") ?? "results.json");
+  const out = resolve10(flag2(argv, "--out") ?? "results.json");
   let linked = false;
   try {
     linked = lstatSync5(out).isSymbolicLink();
@@ -29207,7 +29747,7 @@ async function recallCommand(argv, runInProcess2) {
   try {
     mkdirSync10(dirname16(out), { recursive: true });
     run = await runRecall(
-      { fixtures, classes, runner, mode, only: flag(argv, "--only"), keep: argv.includes("--keep"), runs: Number(runsText) },
+      { fixtures, classes, runner, mode, only: flag2(argv, "--only"), keep: argv.includes("--keep"), runs: Number(runsText) },
       {
         commandWith: (fetchImpl) => (args, stdin) => runInProcess2(args, { stdin, fetchImpl }),
         onResult: (result) => console.log(`${result.name.padEnd(48)} ${describe(result)}`)
@@ -29516,15 +30056,15 @@ function importBenchmarkCommand(argv) {
     }
   }
   for (const name of valued) {
-    if (argv.includes(name) && flag(argv, name) === null) {
+    if (argv.includes(name) && flag2(argv, name) === null) {
       console.error(`${name} needs a value.`);
       return 2;
     }
   }
-  const from = flag(argv, "--from");
-  const setVersion = flag(argv, "--set-version");
-  const setLicence = flag(argv, "--set-licence");
-  const outFlag = flag(argv, "--out");
+  const from = flag2(argv, "--from");
+  const setVersion = flag2(argv, "--set-version");
+  const setLicence = flag2(argv, "--set-licence");
+  const outFlag = flag2(argv, "--out");
   if (from === null || setVersion === null || setLicence === null || outFlag === null) {
     console.error("import-benchmark needs --from <file>, --set-version <version>, --set-licence <spdx> and --out <dir>.");
     return 2;
@@ -29539,13 +30079,13 @@ function importBenchmarkCommand(argv) {
   }
   let first = null;
   if (argv.includes("--first")) {
-    first = Number(flag(argv, "--first"));
+    first = Number(flag2(argv, "--first"));
     if (!Number.isInteger(first) || first < 1) {
       console.error("--first needs a positive whole number.");
       return 2;
     }
   }
-  const diffs = flag(argv, "--diffs");
+  const diffs = flag2(argv, "--diffs");
   if (diffs !== null && !(existsSync19(diffs) && statSync9(diffs).isDirectory())) {
     console.error(`--diffs ${diffs} is not a directory.`);
     return 2;
@@ -29608,7 +30148,7 @@ function importBenchmarkCommand(argv) {
     return 2;
   }
   const licences = /* @__PURE__ */ new Map();
-  const licencesPath = flag(argv, "--licences");
+  const licencesPath = flag2(argv, "--licences");
   if (licencesPath !== null) {
     let parsed2;
     try {
@@ -29679,7 +30219,7 @@ import { join as join29, resolve as resolve12 } from "node:path";
 import { execFileSync as execFileSync18 } from "node:child_process";
 function worktreeCommand(argv) {
   const action = argv[0];
-  const dir = flag(argv, "--dir");
+  const dir = flag2(argv, "--dir");
   if (action !== "add" && action !== "remove" || dir === null) {
     console.error("Usage: review-voice worktree add --dir <dir> --head <commit> | review-voice worktree remove --dir <dir>");
     return 2;
@@ -29713,7 +30253,7 @@ function worktreeCommand(argv) {
     console.log(JSON.stringify({ path: headDir, removed: true }));
     return 0;
   }
-  const head = flag(argv, "--head");
+  const head = flag2(argv, "--head");
   if (head === null || head.startsWith("-")) {
     console.error("worktree add needs --head <commit>.");
     return 2;
@@ -29740,12 +30280,12 @@ import { createHash as createHash8 } from "node:crypto";
 import { existsSync as existsSync20, lstatSync as lstatSync9, mkdirSync as mkdirSync13, readFileSync as readFileSync27, realpathSync as realpathSync4, rmSync as rmSync14, statSync as statSync11, writeFileSync as writeFileSync14 } from "node:fs";
 import { dirname as dirname18, isAbsolute as isAbsolute7, join as join30, resolve as resolve13 } from "node:path";
 async function configCommand(argv) {
-  const dir = flag(argv, "--dir");
+  const dir = flag2(argv, "--dir");
   if (argv[0] !== "resolve" || dir === null) {
     console.error("Usage: review-voice config resolve --pr <n> --dir <dir> [--repository owner/repo] [--config <path>]");
     return 2;
   }
-  const pullNumber = Number(flag(argv, "--pr"));
+  const pullNumber = Number(flag2(argv, "--pr"));
   if (!Number.isInteger(pullNumber) || pullNumber < 1) {
     console.error("--pr needs a pull request number.");
     return 2;
@@ -29757,12 +30297,12 @@ async function configCommand(argv) {
   }
   const trusted = join30(resolve13(dir), TRUSTED_CONFIG);
   rmSync14(trusted, { force: true });
-  const flagged = flag(argv, "--config");
+  const flagged = flag2(argv, "--config");
   if (argv.includes("--config") && flagged === null) {
     console.error("--config needs a value.");
     return 2;
   }
-  const repository = flag(argv, "--repository") ?? inferRepository(process.cwd());
+  const repository = flag2(argv, "--repository") ?? inferRepository(process.cwd());
   if (repository === null) {
     console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
     return 2;
@@ -29958,19 +30498,19 @@ async function resolvePrior(options) {
 
 // plugins/review-voice/src/cli/diff.ts
 async function pullRequestDiffCommand(argv) {
-  const pullNumber = Number(flag(argv, "--pr"));
+  const pullNumber = Number(flag2(argv, "--pr"));
   if (!Number.isInteger(pullNumber) || pullNumber < 1) {
     console.error("--pr needs a pull request number.");
     return 2;
   }
-  const repository = flag(argv, "--repository") ?? inferRepository(process.cwd());
+  const repository = flag2(argv, "--repository") ?? inferRepository(process.cwd());
   if (repository === null) {
     console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
     return 2;
   }
   let since = null;
   if (argv.includes("--since")) {
-    const wanted = flag(argv, "--since");
+    const wanted = flag2(argv, "--since");
     since = wanted === null ? null : resolveSince(wanted, repository, process.cwd());
     if (since === null) {
       console.error(
@@ -30047,7 +30587,7 @@ async function pullRequestDiffCommand(argv) {
     };
   }
   const scoped = applyReviewScope(result, pullNumber, planned.scope, process.cwd(), void 0, planned.interdiffPatch, planned.leftOutChanged);
-  return emitDiff({ ...scoped, repository, prior: resolution }, flag(argv, "--out"));
+  return emitDiff({ ...scoped, repository, prior: resolution }, flag2(argv, "--out"));
 }
 function leftOutBy(runId) {
   try {
@@ -30166,7 +30706,7 @@ function diffCommand(argv) {
       includeGenerated: argv.includes("--include-generated"),
       firstPartyPaths: repositoryConfig()?.firstPartyPaths ?? []
     });
-    return emitDiff(result, flag(argv, "--out"));
+    return emitDiff(result, flag2(argv, "--out"));
   } catch (error) {
     if (error instanceof GitError) {
       console.error(error.message);
@@ -30200,12 +30740,12 @@ function readFilesAndDiff(filesPath, diffPath) {
 // plugins/review-voice/src/cli/thread.ts
 import { writeFileSync as writeFileSync16 } from "node:fs";
 async function threadCommand(argv) {
-  const pullNumber = Number(flag(argv, "--pr"));
+  const pullNumber = Number(flag2(argv, "--pr"));
   if (!Number.isInteger(pullNumber) || pullNumber < 1) {
     console.error("--pr needs a pull request number.");
     return 2;
   }
-  const repository = flag(argv, "--repository") ?? inferRepository(process.cwd());
+  const repository = flag2(argv, "--repository") ?? inferRepository(process.cwd());
   if (repository === null) {
     console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
     return 2;
@@ -30213,7 +30753,7 @@ async function threadCommand(argv) {
   const linkedIssues = repositoryConfig()?.linkedIssues === true;
   const result = await readThread({ repository, pullNumber, client: githubClient([repository]), linkedIssues });
   for (const warning of result.warnings ?? []) console.error(`Warning: ${warning}`);
-  const out = flag(argv, "--out");
+  const out = flag2(argv, "--out");
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));
     return 0;
@@ -31179,7 +31719,7 @@ function collectSymbolContext(options) {
 
 // plugins/review-voice/src/cli/symbols.ts
 function symbolsCommand(argv) {
-  const diffFile = flag(argv, "--diff-file");
+  const diffFile = flag2(argv, "--diff-file");
   if (diffFile === null) {
     console.error("--diff-file needs a unified diff path.");
     return 2;
@@ -31192,7 +31732,7 @@ function symbolsCommand(argv) {
     return 2;
   }
   const baseIndex = argv.indexOf("--base");
-  const base = flag(argv, "--base");
+  const base = flag2(argv, "--base");
   if (baseIndex !== -1 && base === null) {
     console.error("--base needs a git ref, for example: --base origin/main");
     return 2;
@@ -31202,7 +31742,7 @@ function symbolsCommand(argv) {
     return 2;
   }
   const headIndex = argv.indexOf("--head");
-  const head = flag(argv, "--head");
+  const head = flag2(argv, "--head");
   if (headIndex !== -1 && head === null) {
     console.error("--head needs a git ref, for example: --head HEAD");
     return 2;
@@ -31213,7 +31753,7 @@ function symbolsCommand(argv) {
   }
   let maxMs = DEFAULT_MAX_MS;
   if (argv.includes("--max-ms")) {
-    const wanted = flag(argv, "--max-ms");
+    const wanted = flag2(argv, "--max-ms");
     maxMs = wanted !== null && /^\d+$/.test(wanted) ? Number(wanted) : Number.NaN;
     if (!Number.isSafeInteger(maxMs) || maxMs < 1) {
       console.error("--max-ms needs a positive number of milliseconds, for example: --max-ms 60000");
@@ -31223,7 +31763,7 @@ function symbolsCommand(argv) {
   const config2 = repositoryConfig();
   const testPaths = config2?.humanReview.testPaths ?? DEFAULT_TEST_PATHS;
   const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, head, testPaths, firstPartyPaths: config2?.firstPartyPaths ?? [], maxMs });
-  const out = flag(argv, "--out");
+  const out = flag2(argv, "--out");
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));
     return 0;
@@ -31256,11 +31796,11 @@ function symbolsCommand(argv) {
 // plugins/review-voice/src/cli/plan.ts
 import { readFileSync as readFileSync30 } from "node:fs";
 function planCommand(argv) {
-  const filesPath = flag(argv, "--files");
-  const diffPath = flag(argv, "--diff-file");
-  const modeFlag = flag(argv, "--mode");
+  const filesPath = flag2(argv, "--files");
+  const diffPath = flag2(argv, "--diff-file");
+  const modeFlag = flag2(argv, "--mode");
   const requested = MODES.find((mode) => mode === modeFlag);
-  const authorshipPath = flag(argv, "--authorship");
+  const authorshipPath = flag2(argv, "--authorship");
   if (filesPath === null || diffPath === null || argv.includes("--mode") && requested === void 0 || argv.includes("--authorship") && authorshipPath === null) {
     console.error("Usage: plan --files <files.json> --diff-file <diff.patch> [--mode fast|standard|thorough|auto] [--authorship <authorship.json>]");
     return 2;
@@ -31298,8 +31838,8 @@ function planCommand(argv) {
   return 0;
 }
 function lanesCommand(argv) {
-  const filesPath = flag(argv, "--files");
-  const diffPath = flag(argv, "--diff-file");
+  const filesPath = flag2(argv, "--files");
+  const diffPath = flag2(argv, "--diff-file");
   if (filesPath === null || diffPath === null) {
     console.error("Usage: lanes --files <files.json> --diff-file <diff.patch>");
     return 2;
@@ -31327,15 +31867,15 @@ function asLevel(value) {
 
 // plugins/review-voice/src/cli/verdict.ts
 function reviewTarget(argv, command) {
-  const pullNumber = Number(flag(argv, "--pr"));
-  const repository = flag(argv, "--repository") ?? inferRepository(process.cwd());
-  const head = flag(argv, "--head");
+  const pullNumber = Number(flag2(argv, "--pr"));
+  const repository = flag2(argv, "--repository") ?? inferRepository(process.cwd());
+  const head = flag2(argv, "--head");
   if (!Number.isInteger(pullNumber) || pullNumber < 1 || repository === null || head === null) {
     return `${command} needs --pr <number>, --head <sha> and --repository <owner/repo>, with the validated review on stdin.`;
   }
   const review2 = readStdin();
   if (review2.trim().length === 0) return "Nothing on stdin. Pipe the validated review in.";
-  return { repository, pullNumber, head, review: review2, runId: flag(argv, "--run") ?? void 0 };
+  return { repository, pullNumber, head, review: review2, runId: flag2(argv, "--run") ?? void 0 };
 }
 async function verdictCommand(argv) {
   const target = reviewTarget(argv, "verdict");
@@ -31378,7 +31918,7 @@ async function postCommand(argv) {
       // Built from the recorded run's repository, not from --repository.
       writerFor: (allowlist) => new ReviewWriter({ allowlist, ...inProcessState()?.fetchImpl === void 0 ? {} : { fetchImpl: inProcessState().fetchImpl } }),
       confirm: argv.includes("--confirm"),
-      event: flag(argv, "--event")?.toUpperCase(),
+      event: flag2(argv, "--event")?.toUpperCase(),
       postingEnabled: config2?.postingEnabled ?? false,
       gateChecks: config2?.ciGateChecks ?? [],
       ciRules: config2?.ciRules ?? {},
@@ -31893,7 +32433,7 @@ function namedRepositories(entries, command) {
 function consentPlanCommand(argv) {
   const root = repositoryRoot(process.cwd());
   const config2 = loadConfig(root);
-  const owner = flag(argv, "--owner") ?? config2.ownerReviewer;
+  const owner = flag2(argv, "--owner") ?? config2.ownerReviewer;
   if (owner === null) {
     console.error("No owner reviewer yet. Pass --owner <login>.");
     return 2;
@@ -31939,7 +32479,7 @@ async function syncCommand(argv) {
   const window = resolveSyncWindow({
     quick: argv.includes("--quick"),
     target: explicitTarget,
-    since: flag(argv, "--since")
+    since: flag2(argv, "--since")
   });
   if ("error" in window) {
     console.error(window.error);
@@ -32035,12 +32575,12 @@ function pendingQuestionLine(question) {
   return `${question.repository}#${question.pullNumber} ${question.findingId} ${question.path}:${question.line} question from ${question.askedBy} awaiting a reply; run reply --pr ${question.pullNumber}`;
 }
 async function outcomesCommand(argv) {
-  const repository = flag(argv, "--repository");
+  const repository = flag2(argv, "--repository");
   if (argv.includes("--repository") && (repository === null || !/^[^/\s]+\/[^/\s]+$/.test(repository))) {
     console.error("--repository takes owner/repo.");
     return 2;
   }
-  const sinceFlag = flag(argv, "--since");
+  const sinceFlag = flag2(argv, "--since");
   const days = sinceFlag === null ? 30 : /^(\d+)d$/.exec(sinceFlag)?.[1];
   if (days === void 0 || argv.includes("--since") && sinceFlag === null) {
     console.error("--since takes a number of days such as 30d.");
@@ -32255,12 +32795,12 @@ async function postReplies(options) {
 
 // plugins/review-voice/src/cli/reply.ts
 async function replyCommand(argv) {
-  const pullNumber = Number(flag(argv, "--pr"));
+  const pullNumber = Number(flag2(argv, "--pr"));
   if (!Number.isInteger(pullNumber) || pullNumber < 1) {
     console.error("--pr needs a pull request number.");
     return 2;
   }
-  const named = flag(argv, "--repository");
+  const named = flag2(argv, "--repository");
   if (argv.includes("--repository") && (named === null || !/^[^/\s]+\/[^/\s]+$/.test(named))) {
     console.error("--repository takes owner/repo.");
     return 2;
@@ -32270,7 +32810,7 @@ async function replyCommand(argv) {
     console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
     return 2;
   }
-  const sinceFlag = flag(argv, "--since");
+  const sinceFlag = flag2(argv, "--since");
   const days = sinceFlag === null ? 30 : /^(\d+)d$/.exec(sinceFlag)?.[1];
   if (days === void 0 || argv.includes("--since") && sinceFlag === null) {
     console.error("--since takes a number of days such as 30d.");
@@ -32337,7 +32877,7 @@ function nearestSentence(texts, wrong) {
   return best?.sentence ?? null;
 }
 function checkVerificationCommand(argv) {
-  const candidatesFile = flag(argv, "--candidates");
+  const candidatesFile = flag2(argv, "--candidates");
   let kept = null;
   if (candidatesFile !== null) {
     try {
@@ -32347,7 +32887,7 @@ function checkVerificationCommand(argv) {
       return 2;
     }
   }
-  const outFile = flag(argv, "--out");
+  const outFile = flag2(argv, "--out");
   if (argv.includes("--out") && outFile === null) {
     console.error("--out needs a file path.");
     return 2;
@@ -32419,12 +32959,12 @@ function checkVerificationCommand(argv) {
 // plugins/review-voice/src/cli/check-simplification.ts
 import { readFileSync as readFileSync32 } from "node:fs";
 function checkSimplificationCommand(argv) {
-  const diffFile = flag(argv, "--diff-file");
+  const diffFile = flag2(argv, "--diff-file");
   if (diffFile === null) {
     console.error("--diff-file needs the patch the simplification pass reviewed.");
     return 2;
   }
-  const candidateFile = flag(argv, "--candidate");
+  const candidateFile = flag2(argv, "--candidate");
   if (argv.includes("--candidate") && candidateFile === null) {
     console.error("--candidate needs the checked analyst output.");
     return 2;
@@ -32513,7 +33053,7 @@ import { statSync as statSync12 } from "node:fs";
 import { resolve as resolve14 } from "node:path";
 import { execFileSync as execFileSync21 } from "node:child_process";
 async function verifyCommand(argv) {
-  const cwdFlag = flag(argv, "--cwd");
+  const cwdFlag = flag2(argv, "--cwd");
   if (argv.includes("--cwd") && cwdFlag === null) {
     console.error("--cwd needs a directory.");
     return 2;
@@ -32560,15 +33100,15 @@ async function verifyCommand(argv) {
         return null;
       }
     };
-    const base = commitOf(flag(argv, "--base"));
-    const head = commitOf(flag(argv, "--head"));
+    const base = commitOf(flag2(argv, "--base"));
+    const head = commitOf(flag2(argv, "--head"));
     const report = await verifyFindings(findings, config2.verification, {
       cwd: cwdFlag === null ? root : resolve14(cwdFlag),
       context: {
-        repository: flag(argv, "--repository") ?? inferRepository(root),
+        repository: flag2(argv, "--repository") ?? inferRepository(root),
         // Resolved here, where the caller named it: with --cwd the command runs
         // elsewhere, and a relative path would be read against that directory.
-        diffPath: flag(argv, "--diff-file") === null ? null : resolve14(flag(argv, "--diff-file")),
+        diffPath: flag2(argv, "--diff-file") === null ? null : resolve14(flag2(argv, "--diff-file")),
         // Only when the caller says they are readable. A ref that is not there
         // is worse than no ref: a command told to read it fails in a way it may
         // mistake for evidence.
@@ -32600,8 +33140,8 @@ function reconcileCommand(argv) {
     console.error('Expected {"candidates": [...]} on stdin, as they were before the second pass.');
     return 2;
   }
-  const verificationFile = flag(argv, "--verification");
-  const secondPassFile = flag(argv, "--second-pass");
+  const verificationFile = flag2(argv, "--verification");
+  const secondPassFile = flag2(argv, "--second-pass");
   if (verificationFile === null || secondPassFile === null) {
     console.error("reconcile needs --verification <file> (step 3) and --second-pass <file> (the verify report).");
     return 2;
@@ -32630,7 +33170,7 @@ function reconcileCommand(argv) {
     return 2;
   }
   let tieBreaks = null;
-  const tieBreaksFile = flag(argv, "--tie-breaks");
+  const tieBreaksFile = flag2(argv, "--tie-breaks");
   if (tieBreaksFile !== null) {
     try {
       const replies = gatherReplies(readFileSync33(tieBreaksFile, "utf8"), "tie_breaks");
@@ -32665,13 +33205,13 @@ function reconcileCommand(argv) {
 import { readFileSync as readFileSync34, writeFileSync as writeFileSync19 } from "node:fs";
 import { resolve as resolve15, sep as sep6 } from "node:path";
 function challengeCommand(argv) {
-  const scoresFile = flag(argv, "--scores");
-  const candidatesFile = flag(argv, "--candidates");
+  const scoresFile = flag2(argv, "--scores");
+  const candidatesFile = flag2(argv, "--candidates");
   const emit = argv.includes("--emit-prompts");
-  const diffFile = flag(argv, "--diff-file");
-  const intentFile = flag(argv, "--intent");
-  const reproductionsFile = flag(argv, "--reproductions");
-  const outFile = flag(argv, "--out");
+  const diffFile = flag2(argv, "--diff-file");
+  const intentFile = flag2(argv, "--intent");
+  const reproductionsFile = flag2(argv, "--reproductions");
+  const outFile = flag2(argv, "--out");
   if (scoresFile === null || candidatesFile === null || !emit && diffFile === null) {
     console.error(
       "Usage: challenge --scores <file> --candidates <file> [--intent <file>] [--reproductions <file>] [--diff-file <patch>] [--cwd <dir>] [--head <sha>] --emit-prompts\n       challenge --scores <file> --candidates <file> --diff-file <patch> [--reproductions <file>] [--cwd <dir>] [--post-narrowed <id>]... [--out <file>] < verdicts.json"
@@ -32679,7 +33219,7 @@ function challengeCommand(argv) {
     return 2;
   }
   for (const name of ["--intent", "--reproductions", "--diff-file", "--out", "--cwd", "--head"]) {
-    if (argv.includes(name) && flag(argv, name) === null) {
+    if (argv.includes(name) && flag2(argv, name) === null) {
       console.error(`${name} needs a value.`);
       return 2;
     }
@@ -32713,13 +33253,13 @@ function challengeCommand(argv) {
         return 2;
       }
     }
-    const cwd = flag(argv, "--cwd");
+    const cwd = flag2(argv, "--cwd");
     let dir = null;
     try {
       dir = cwd === null ? repositoryRoot(process.cwd()) : resolve15(cwd);
     } catch {
     }
-    const head = { dir, sha: flag(argv, "--head") };
+    const head = { dir, sha: flag2(argv, "--head") };
     console.log(JSON.stringify({ prompts: challengePrompts(scores, candidates, statements, diffFile, reproductions, head) }, null, 2));
     return 0;
   }
@@ -32737,7 +33277,7 @@ function challengeCommand(argv) {
     return 2;
   }
   verdicts = replies.value;
-  const headDir = flag(argv, "--cwd");
+  const headDir = flag2(argv, "--cwd");
   const root = headDir === null ? null : resolve15(headDir);
   const readHead3 = root === null ? null : (path) => {
     const file2 = resolve15(root, path);
@@ -32774,15 +33314,15 @@ function challengeCommand(argv) {
 // plugins/review-voice/src/cli/reanchor.ts
 import { readFileSync as readFileSync35, writeFileSync as writeFileSync20, renameSync as renameSync5, rmSync as rmSync15 } from "node:fs";
 function reanchorCommand(argv) {
-  const candidateId = flag(argv, "--candidate");
-  const line3 = Number(flag(argv, "--line"));
-  const scoresFile = flag(argv, "--scores");
-  const diffFile = flag(argv, "--diff-file");
+  const candidateId = flag2(argv, "--candidate");
+  const line3 = Number(flag2(argv, "--line"));
+  const scoresFile = flag2(argv, "--scores");
+  const diffFile = flag2(argv, "--diff-file");
   if (candidateId === null || !Number.isInteger(line3) || line3 < 1 || scoresFile === null || diffFile === null) {
     console.error("Usage: reanchor --candidate <id> --line <n> [--path <p>] --scores <file> --diff-file <patch> [--candidates <file>]");
     return 2;
   }
-  if (argv.includes("--path") && flag(argv, "--path") === null) {
+  if (argv.includes("--path") && flag2(argv, "--path") === null) {
     console.error("--path needs the file the finding belongs in.");
     return 2;
   }
@@ -32796,12 +33336,12 @@ function reanchorCommand(argv) {
     console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
   }
-  const result = reanchorScores(scores, candidateId, { path: flag(argv, "--path"), line: line3 }, hunks);
+  const result = reanchorScores(scores, candidateId, { path: flag2(argv, "--path"), line: line3 }, hunks);
   if (!result.ok) {
     console.error(`Not re-anchored: ${result.refused}`);
     return 1;
   }
-  const candidatesFile = flag(argv, "--candidates");
+  const candidatesFile = flag2(argv, "--candidates");
   let candidates = null;
   if (candidatesFile !== null) {
     try {
@@ -32839,9 +33379,9 @@ function reanchorCommand(argv) {
 import { readFileSync as readFileSync36, statSync as statSync13 } from "node:fs";
 import { dirname as dirname19, resolve as resolve16 } from "node:path";
 async function agentCommand(argv) {
-  const name = flag(argv, "--name");
-  const model = flag(argv, "--model");
-  const schemaPath = flag(argv, "--schema");
+  const name = flag2(argv, "--name");
+  const model = flag2(argv, "--model");
+  const schemaPath = flag2(argv, "--schema");
   if (name === null || model === null || schemaPath === null) {
     console.error("agent needs --name <agent>, --model <model> and --schema <file.json>.");
     return 2;
@@ -32878,7 +33418,7 @@ async function agentCommand(argv) {
     }
     throw error;
   }
-  const cwd = flag(argv, "--cwd") ?? process.cwd();
+  const cwd = flag2(argv, "--cwd") ?? process.cwd();
   let isDirectory2 = false;
   try {
     isDirectory2 = statSync13(cwd).isDirectory();
@@ -33027,7 +33567,7 @@ function describeReproduction(record3) {
 function explainCommand(argv) {
   const db = openDatabase();
   try {
-    const detail = terminalSafeDeep(runDetail(db, flag(argv, "--run") ?? void 0));
+    const detail = terminalSafeDeep(runDetail(db, flag2(argv, "--run") ?? void 0));
     if (detail === null) {
       console.log("No review has been recorded yet.");
       return 0;
@@ -33462,25 +34002,25 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   return carryFindings(detail.findings, detail.headRef, head, root, hold, noLongerChanged);
 }
 function carryCommand(argv) {
-  const from = flag(argv, "--from");
-  const head = flag(argv, "--head");
+  const from = flag2(argv, "--from");
+  const head = flag2(argv, "--head");
   if (from === null || head === null) {
     console.error("Usage: carry --from <run-id> --head <sha> [--repository <owner/repo>] [--text] [--thread <thread.json>] [--files <files.json>]");
     return 2;
   }
-  const threadFile = flag(argv, "--thread");
+  const threadFile = flag2(argv, "--thread");
   if (argv.includes("--thread") && threadFile === null) {
     console.error("--thread needs a thread JSON path.");
     return 2;
   }
-  const filesFile = flag(argv, "--files");
+  const filesFile = flag2(argv, "--files");
   if (argv.includes("--files") && filesFile === null) {
     console.error("--files needs the files.json path from `RV diff --pr`.");
     return 2;
   }
   const db = openDatabase();
   try {
-    const result = carryForRun(db, from, head, flag(argv, "--repository"), threadFile, filesFile);
+    const result = carryForRun(db, from, head, flag2(argv, "--repository"), threadFile, filesFile);
     if (threadFile === null && runDetail(db, from)?.pullNumber !== null) {
       console.error(
         "Findings the author resolved or dismissed on the pull request were not checked. Pass --thread <thread.json> from `RV thread` to hold them back."
@@ -33608,19 +34148,19 @@ function partialDiffReason(diffFile) {
   return `${diffFile} is the ${scope.kind} patch \`diff --pr\` wrote, not the whole pull request's diff. carry-candidates checks each anchor against the whole pull request: run \`diff --pr <number> --full --out <dir>\` and pass its diff.patch.`;
 }
 function carryCandidatesCommand(argv) {
-  const candidatesFile = flag(argv, "--candidates");
-  const verificationFile = flag(argv, "--verification");
-  const since = flag(argv, "--since");
-  const head = flag(argv, "--head");
-  const diffFile = flag(argv, "--diff-file");
-  const outDir = flag(argv, "--out");
+  const candidatesFile = flag2(argv, "--candidates");
+  const verificationFile = flag2(argv, "--verification");
+  const since = flag2(argv, "--since");
+  const head = flag2(argv, "--head");
+  const diffFile = flag2(argv, "--diff-file");
+  const outDir = flag2(argv, "--out");
   if ([candidatesFile, verificationFile, since, head, diffFile, outDir].includes(null)) {
     console.error(
       "Usage: carry-candidates --candidates <file> --verification <file> --since <sha> --head <sha> --diff-file <patch> --out <dir> [--interdiff <dir> --interdiff-candidates <file> --interdiff-verification <file>] [--held <file>]"
     );
     return 2;
   }
-  const interdiffFlags = ["--interdiff", "--interdiff-candidates", "--interdiff-verification"].map((name) => flag(argv, name));
+  const interdiffFlags = ["--interdiff", "--interdiff-candidates", "--interdiff-verification"].map((name) => flag2(argv, name));
   if (interdiffFlags.some((value) => value !== null) && interdiffFlags.some((value) => value === null)) {
     console.error("--interdiff, --interdiff-candidates and --interdiff-verification go together.");
     return 2;
@@ -33646,7 +34186,7 @@ function carryCandidatesCommand(argv) {
     hunks = parseHunks(readFileSync37(diffFile, "utf8"));
     const partial = partialDiffReason(diffFile);
     if (partial !== null) throw new Error(partial);
-    const heldFile = flag(argv, "--held");
+    const heldFile = flag2(argv, "--held");
     if (heldFile !== null) {
       heldIn = listIn(JSON.parse(readFileSync37(heldFile, "utf8")), ["held"]);
       if (heldIn === null) throw new Error(`${heldFile} is not an array or {"held": [...]}`);
@@ -33864,8 +34404,8 @@ function anchorFor(hunks, candidate) {
   return candidateAnchor(hunks, candidate);
 }
 function deletedFileCheck(argv) {
-  const base = flag(argv, "--base");
-  const head = flag(argv, "--head");
+  const base = flag2(argv, "--base");
+  const head = flag2(argv, "--head");
   const cwd = process.cwd();
   if (base === null || head === null || !refExists(base, cwd) || !refExists(head, cwd)) return () => false;
   const firstParty = firstPartyMatcher(repositoryConfig()?.firstPartyPaths ?? []);
@@ -34041,7 +34581,7 @@ function scoreCommand(argv) {
     return 2;
   }
   const allowUnverifiable = argv.includes("--allow-unverifiable");
-  const ownerNote = flag(argv, "--owner-note");
+  const ownerNote = flag2(argv, "--owner-note");
   if (allowUnverifiable && (ownerNote === null || ownerNote.trim() === "")) {
     console.error('--allow-unverifiable needs --owner-note "<why>": the run records why the owner posted it.');
     return 2;
@@ -34050,18 +34590,18 @@ function scoreCommand(argv) {
   const configured = repositoryConfig()?.thresholds ?? {};
   const thresholds = {
     technicalConfidence: Number(
-      flag(argv, "--min-confidence") ?? configured.technicalConfidence ?? DEFAULT_THRESHOLDS.technicalConfidence
+      flag2(argv, "--min-confidence") ?? configured.technicalConfidence ?? DEFAULT_THRESHOLDS.technicalConfidence
     ),
     minorConfidence: Number(
-      flag(argv, "--min-minor-confidence") ?? configured.minorConfidence ?? DEFAULT_THRESHOLDS.minorConfidence
+      flag2(argv, "--min-minor-confidence") ?? configured.minorConfidence ?? DEFAULT_THRESHOLDS.minorConfidence
     ),
     analystOnlyConfidence: Number(
-      flag(argv, "--min-analyst-confidence") ?? DEFAULT_THRESHOLDS.analystOnlyConfidence
+      flag2(argv, "--min-analyst-confidence") ?? DEFAULT_THRESHOLDS.analystOnlyConfidence
     ),
-    finalScore: Number(flag(argv, "--min-score") ?? configured.finalScore ?? DEFAULT_THRESHOLDS.finalScore)
+    finalScore: Number(flag2(argv, "--min-score") ?? configured.finalScore ?? DEFAULT_THRESHOLDS.finalScore)
   };
   const verifications = /* @__PURE__ */ new Map();
-  const verificationFlag = flag(argv, "--verification");
+  const verificationFlag = flag2(argv, "--verification");
   if (verificationFlag !== null) {
     try {
       const parsed2 = JSON.parse(readFileSync38(verificationFlag, "utf8"));
@@ -34166,7 +34706,7 @@ function scoreCommand(argv) {
   } catch {
     searchRoot = null;
   }
-  const baseRef = flag(argv, "--base");
+  const baseRef = flag2(argv, "--base");
   if (baseRef !== null && searchRoot !== null && !refExists(baseRef, searchRoot)) {
     console.error(
       `--base ${baseRef} does not resolve in this repository. Fetch it, or omit the flag to search the working tree. Absence claims would otherwise be checked against nothing.`
@@ -34176,7 +34716,7 @@ function scoreCommand(argv) {
   let reachDiff = null;
   let anchorHunks = null;
   if (argv.includes("--diff-file")) {
-    const path = flag(argv, "--diff-file");
+    const path = flag2(argv, "--diff-file");
     if (path === null) {
       console.error("--diff-file needs a unified diff path.");
       return 2;
@@ -34192,7 +34732,7 @@ function scoreCommand(argv) {
   const onDeletedFile = deletedFileCheck(argv);
   let thread = [];
   if (argv.includes("--thread")) {
-    const path = flag(argv, "--thread");
+    const path = flag2(argv, "--thread");
     if (path === null) {
       console.error("--thread needs a thread JSON path.");
       return 2;
@@ -34224,7 +34764,7 @@ function scoreCommand(argv) {
       });
     }
   }
-  const owner = flag(argv, "--owner") ?? configuredOwner();
+  const owner = flag2(argv, "--owner") ?? configuredOwner();
   const pullFlag = argv.includes("--exclude-pull") ? numericFlag(argv, "--exclude-pull", 0) : null;
   if (argv.includes("--exclude-pull") && pullFlag === null) {
     console.error("--exclude-pull needs a pull request number.");
@@ -34243,7 +34783,7 @@ function scoreCommand(argv) {
     for (const candidate of candidates) {
       const precedents = retrievePrecedents(db, {
         text: `${candidate.claim} ${candidate.failureMode}`,
-        repository: flag(argv, "--repository") ?? void 0,
+        repository: flag2(argv, "--repository") ?? void 0,
         allowlist: loadedConfig?.allowlist,
         ownerReviewer: loadedConfig?.ownerReviewer,
         botPatterns: loadedConfig?.queue.skip.authorPatterns,
@@ -34288,7 +34828,7 @@ function scoreCommand(argv) {
             searchRoot,
             baseRef,
             void 0,
-            flag(argv, "--repository"),
+            flag2(argv, "--repository"),
             void 0,
             void 0,
             // Only a line the change added: there the absent name is the
@@ -34758,7 +35298,7 @@ function checkCandidatesCommand(argv) {
     };
     let intentFailures = [];
     if (argv.includes("--intent")) {
-      const intentFile = flag(argv, "--intent");
+      const intentFile = flag2(argv, "--intent");
       if (intentFile === null) {
         console.error("--intent needs the intent.json check-intent wrote.");
         return 2;
@@ -34789,7 +35329,7 @@ function checkCandidatesCommand(argv) {
       console.log(JSON.stringify({ valid: true, candidates: candidates.length }, null, 2));
       return 0;
     }
-    const diffFile = flag(argv, "--diff-file");
+    const diffFile = flag2(argv, "--diff-file");
     if (diffFile === null) {
       console.error("--diff-file needs a unified diff path.");
       return 2;
@@ -34847,12 +35387,12 @@ function checkCandidatesCommand(argv) {
       }
       return 1;
     }
-    const heldFrom = flag(argv, "--held-from");
+    const heldFrom = flag2(argv, "--held-from");
     if (argv.includes("--held-from") && heldFrom === null) {
       console.error("--held-from needs a run id, or several separated by commas.");
       return 2;
     }
-    const headSha = flag(argv, "--head");
+    const headSha = flag2(argv, "--head");
     if (heldFrom !== null && headSha === null) {
       console.error("--held-from needs --head <sha>, the head being reviewed.");
       return 2;
@@ -34865,7 +35405,7 @@ function checkCandidatesCommand(argv) {
     }
     let thread = [];
     if (argv.includes("--thread")) {
-      const threadFile = flag(argv, "--thread");
+      const threadFile = flag2(argv, "--thread");
       if (threadFile === null) {
         console.error("--thread needs a thread JSON path.");
         return 2;
@@ -34881,7 +35421,7 @@ function checkCandidatesCommand(argv) {
     }
     let signals = [];
     if (argv.includes("--evidence")) {
-      const evidenceFile = flag(argv, "--evidence");
+      const evidenceFile = flag2(argv, "--evidence");
       if (evidenceFile === null) {
         console.error("--evidence needs the evidence.json the evidence command wrote.");
         return 2;
@@ -34900,7 +35440,7 @@ function checkCandidatesCommand(argv) {
     }
     const heldRuns = heldFrom === null ? [] : [...new Set(heldFrom.split(",").map((id) => id.trim()).filter((id) => id !== ""))];
     const held = headSha === null ? [] : heldRuns.flatMap((runId) => carriedHeldFindings(runId, headSha));
-    const owner = argv.includes("--thread") ? (flag(argv, "--owner") ?? configuredOwner())?.toLowerCase() ?? null : null;
+    const owner = argv.includes("--thread") ? (flag2(argv, "--owner") ?? configuredOwner())?.toLowerCase() ?? null : null;
     const isOwn = (comment) => owner !== null && comment.author.toLowerCase() === owner;
     const located = citedLocations(thread);
     const droppable = located.filter((comment) => !(isOwn(comment) && comment.path !== null && comment.line !== null));
@@ -35035,24 +35575,24 @@ function policyVersionRefs(value) {
 }
 function recordCommand(argv) {
   for (const name of ["--base", "--head"]) {
-    if (argv.includes(name) && (flag(argv, name) ?? "") === "") {
+    if (argv.includes(name) && (flag2(argv, name) ?? "") === "") {
       console.error(`${name} needs a git ref or sha; it was empty. Leave the flag out to record none.`);
       return 2;
     }
   }
-  const originFlag = flag(argv, "--origin");
+  const originFlag = flag2(argv, "--origin");
   const origin = argv.includes("--origin") ? ORIGINS.find((known) => known === originFlag) : "interactive";
   if (origin === void 0) {
     console.error(`--origin takes one of ${ORIGINS.join(", ")}.`);
     return 2;
   }
-  const modeFlag = flag(argv, "--mode");
+  const modeFlag = flag2(argv, "--mode");
   const provenanceMode = PROVENANCE_MODES.find((known) => known === modeFlag) ?? null;
   if (argv.includes("--mode") && provenanceMode === null) {
     console.error(`--mode takes one of ${PROVENANCE_MODES.join(", ")}.`);
     return 2;
   }
-  const claudeFlag = flag(argv, "--claude-version");
+  const claudeFlag = flag2(argv, "--claude-version");
   const claudeVersion = claudeFlag !== null && /^[\w.\- ()]{1,100}$/.test(claudeFlag) ? claudeFlag : null;
   const output = readStdin();
   if (output.trim().length === 0) {
@@ -35075,7 +35615,7 @@ function recordCommand(argv) {
     if (contract.findingCount === 0) console.error(noFindingsHint());
     return 2;
   }
-  const diffFile = flag(argv, "--diff-file");
+  const diffFile = flag2(argv, "--diff-file");
   let diff = "";
   if (diffFile !== null) {
     try {
@@ -35089,7 +35629,7 @@ function recordCommand(argv) {
       "No --diff-file, so this run cannot be compared with another run of the same diff. Pass the patch that `diff --out` wrote. Recording anyway."
     );
   }
-  const bodyFindingsFile = flag(argv, "--body-findings");
+  const bodyFindingsFile = flag2(argv, "--body-findings");
   let bodyFindings = [];
   if (argv.includes("--body-findings")) {
     if (bodyFindingsFile === null) {
@@ -35120,7 +35660,7 @@ function recordCommand(argv) {
       return 2;
     }
   }
-  const filesFile = flag(argv, "--files");
+  const filesFile = flag2(argv, "--files");
   let pullNumber;
   let manifestRepository = null;
   let manifestMode = null;
@@ -35169,7 +35709,7 @@ function recordCommand(argv) {
       console.error(`Cannot read ${filesFile}; recording without pull-request scope.`);
     }
   }
-  const candidatesFile = flag(argv, "--candidates");
+  const candidatesFile = flag2(argv, "--candidates");
   let candidates = [];
   if (candidatesFile !== null) {
     try {
@@ -35180,7 +35720,7 @@ function recordCommand(argv) {
       return 2;
     }
   }
-  const scoresFile = flag(argv, "--scores");
+  const scoresFile = flag2(argv, "--scores");
   let scores = [];
   let scoredPolicyVersions = null;
   if (scoresFile !== null) {
@@ -35193,7 +35733,7 @@ function recordCommand(argv) {
       return 2;
     }
   }
-  const verdictsFile = flag(argv, "--verdicts");
+  const verdictsFile = flag2(argv, "--verdicts");
   let verdicts = [];
   if (verdictsFile !== null) {
     try {
@@ -35212,7 +35752,7 @@ function recordCommand(argv) {
       return 2;
     }
   }
-  const tieBreaksFile = flag(argv, "--tie-breaks");
+  const tieBreaksFile = flag2(argv, "--tie-breaks");
   let tieBreaks = [];
   if (tieBreaksFile !== null) {
     try {
@@ -35222,7 +35762,7 @@ function recordCommand(argv) {
       return 2;
     }
   }
-  const heldFile = flag(argv, "--held");
+  const heldFile = flag2(argv, "--held");
   let held = [];
   if (heldFile !== null) {
     try {
@@ -35236,7 +35776,7 @@ function recordCommand(argv) {
       });
       held = normalised2;
       for (const candidate of candidates) knownPaths.add(candidate.path);
-      const heldHead = flag(argv, "--head");
+      const heldHead = flag2(argv, "--head");
       const atHead = manifestMode !== "worktree" && manifestMode !== "staged" && heldHead !== null;
       const heldRevision = manifestMode === "staged" ? "" : atHead && !heldHead.startsWith("-") ? resolveCommit(heldHead, process.cwd()) : null;
       if (knownPaths.size > 0 && held.length > 0 && atHead && heldRevision === null) {
@@ -35266,7 +35806,7 @@ function recordCommand(argv) {
       return 2;
     }
   }
-  const stagesFile = flag(argv, "--stages");
+  const stagesFile = flag2(argv, "--stages");
   let stages = [];
   if (stagesFile !== null) {
     try {
@@ -35279,8 +35819,8 @@ function recordCommand(argv) {
       return 2;
     }
   }
-  const evidenceFile = flag(argv, "--evidence");
-  const symbolsFile = flag(argv, "--symbols");
+  const evidenceFile = flag2(argv, "--evidence");
+  const symbolsFile = flag2(argv, "--symbols");
   let checks;
   let toolSignals = [];
   if (argv.includes("--evidence") || argv.includes("--symbols")) {
@@ -35306,7 +35846,7 @@ function recordCommand(argv) {
       return 2;
     }
   }
-  const conventionsFile = flag(argv, "--conventions");
+  const conventionsFile = flag2(argv, "--conventions");
   let conventions = [];
   if (argv.includes("--conventions")) {
     if (conventionsFile === null) {
@@ -35326,7 +35866,7 @@ function recordCommand(argv) {
       return 2;
     }
   }
-  const reproductionsFile = flag(argv, "--reproductions");
+  const reproductionsFile = flag2(argv, "--reproductions");
   let reproductions;
   if (argv.includes("--reproductions")) {
     if (reproductionsFile === null) {
@@ -35340,7 +35880,7 @@ function recordCommand(argv) {
       return 2;
     }
   }
-  const followUpThreadFile = flag(argv, "--thread");
+  const followUpThreadFile = flag2(argv, "--thread");
   let followUpThread = null;
   let followUpThreadFor = null;
   if (argv.includes("--thread")) {
@@ -35360,7 +35900,7 @@ function recordCommand(argv) {
       return 2;
     }
   }
-  const rulingsFile = flag(argv, "--follow-ups");
+  const rulingsFile = flag2(argv, "--follow-ups");
   let rulings = [];
   if (argv.includes("--follow-ups")) {
     if (rulingsFile === null) {
@@ -35390,15 +35930,15 @@ function recordCommand(argv) {
       const to = renamed.get(plainPath2(entry.path));
       return to === void 0 ? entry : { ...entry, path: to };
     }).filter((entry) => stillChanged(plainPath2(entry.path)));
-    const carriedFrom = flag(argv, "--carried-from");
+    const carriedFrom = flag2(argv, "--carried-from");
     if (carriedFrom !== null) {
-      const head = flag(argv, "--head");
+      const head = flag2(argv, "--head");
       if (head === null) {
         console.error("--carried-from needs --head, the commit the findings were carried to.");
         return 2;
       }
       try {
-        const result = carryForRun(db, carriedFrom, head, flag(argv, "--repository"), followUpThreadFile, filesFile);
+        const result = carryForRun(db, carriedFrom, head, flag2(argv, "--repository"), followUpThreadFile, filesFile);
         const serious = seriousNotCarried(result.notCarried);
         if (serious.length > 0) {
           console.error(
@@ -35423,9 +35963,9 @@ function recordCommand(argv) {
       const own = new Set(held.filter((entry) => challengeNotRun(entry) || heldBelowConfidenceGate(entry)).map(place));
       held = [...held, ...unjudged(runDetail(db, scope.priorRunId)?.held).filter((entry) => !own.has(place(entry)))];
     }
-    const carryFile = flag(argv, "--carry");
+    const carryFile = flag2(argv, "--carry");
     if (carryFile !== null) {
-      const head = flag(argv, "--head");
+      const head = flag2(argv, "--head");
       let marker = null;
       try {
         const parsed2 = JSON.parse(readFileSync40(carryFile, "utf8"));
@@ -35454,8 +35994,8 @@ function recordCommand(argv) {
       }
       if (carry2 === void 0 || marker.covered === false) carry2 = marker;
     }
-    const repository = flag(argv, "--repository") ?? manifestRepository ?? inferRepository(process.cwd());
-    const headFlag = flag(argv, "--head");
+    const repository = flag2(argv, "--repository") ?? manifestRepository ?? inferRepository(process.cwd());
+    const headFlag = flag2(argv, "--head");
     const headRef = headFlag === null || !/^[0-9a-f]{4,64}$/i.test(headFlag) ? headFlag : resolveCommit(headFlag, process.cwd()) ?? headFlag;
     if (followUpThreadFor !== null) {
       const sameRepository = typeof followUpThreadFor.repository === "string" && repository !== null && followUpThreadFor.repository.toLowerCase() === repository.toLowerCase();
@@ -35480,7 +36020,7 @@ function recordCommand(argv) {
     }
     const { reviewRunId, findings, provenance, families } = recordRun(db, {
       repository,
-      baseRef: flag(argv, "--base"),
+      baseRef: flag2(argv, "--base"),
       headRef,
       pullNumber,
       scope,
@@ -35668,6 +36208,14 @@ ${topLevelHelp()}`);
         out: (text5) => console.log(text5),
         err: (text5) => console.error(text5)
       });
+    case "relevance":
+      return await relevanceCommand(argv.slice(1), {
+        config: repositoryConfig(),
+        client: (allowlist) => new GitHubClient({ allowlist, allowGlobs: true }),
+        inferRepository: () => inferRepository(process.cwd()),
+        out: (text5) => console.log(text5),
+        err: (text5) => console.error(text5)
+      });
     case "watch": {
       let root = null;
       try {
@@ -35807,7 +36355,7 @@ async function runInProcess(argv, options = {}) {
   return { code: code3, stdout: out.join(""), stderr: err.join("") };
 }
 async function reviewCommand(argv) {
-  const base = flag(argv, "--base");
+  const base = flag2(argv, "--base");
   if (argv.includes("--base") && (base === null || base.startsWith("-"))) {
     console.error("--base needs a git ref, for example: --base origin/main");
     return 2;
@@ -35821,30 +36369,30 @@ async function reviewCommand(argv) {
     console.error(`${pullOnly} applies to a pull request review; --base reviews a local branch.`);
     return 2;
   }
-  const pullNumber = base === null ? Number(flag(argv, "--pr")) : null;
+  const pullNumber = base === null ? Number(flag2(argv, "--pr")) : null;
   if (pullNumber !== null && (!Number.isInteger(pullNumber) || pullNumber < 1)) {
     console.error("--pr needs a pull request number, or --base <ref> to review a local branch.");
     return 2;
   }
-  const modeFlag = flag(argv, "--mode");
+  const modeFlag = flag2(argv, "--mode");
   const mode = MODES.find((known) => known === modeFlag);
   if (argv.includes("--mode") && mode === void 0) {
     console.error(`--mode takes one of ${MODES.join(", ")}.`);
     return 2;
   }
   for (const name of ["--out", "--since", "--repository", "--expect-head", "--config"]) {
-    if (argv.includes(name) && flag(argv, name) === null) {
+    if (argv.includes(name) && flag2(argv, name) === null) {
       console.error(`${name} needs a value.`);
       return 2;
     }
   }
-  const originFlag = flag(argv, "--origin");
+  const originFlag = flag2(argv, "--origin");
   const reviewOrigin = argv.includes("--origin") ? ["watch", "action"].find((known) => known === originFlag) : "driver";
   if (reviewOrigin === void 0) {
     console.error("--origin takes one of watch, action.");
     return 2;
   }
-  const repository = flag(argv, "--repository") ?? inferRepository(process.cwd());
+  const repository = flag2(argv, "--repository") ?? inferRepository(process.cwd());
   if (repository === null) {
     console.error("Cannot tell which repository. Pass --repository <owner/repo>.");
     return 2;
@@ -35856,12 +36404,12 @@ async function reviewCommand(argv) {
       base,
       mode,
       post: argv.includes("--post"),
-      out: flag(argv, "--out"),
-      since: flag(argv, "--since"),
+      out: flag2(argv, "--out"),
+      since: flag2(argv, "--since"),
       full: argv.includes("--full"),
       recheckThread: !argv.includes("--no-recheck-thread"),
-      expectHead: flag(argv, "--expect-head"),
-      config: flag(argv, "--config"),
+      expectHead: flag2(argv, "--expect-head"),
+      config: flag2(argv, "--config"),
       origin: reviewOrigin
     },
     {

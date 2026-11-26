@@ -22,6 +22,7 @@ import { stopCommandsOnSignal } from './evidence/run.ts';
 import { GitHubClient, NotAllowlisted, ReadOnlyViolation } from './github/client.ts';
 import { AuthError } from './github/auth.ts';
 import { queueCommand } from './queue/command.ts';
+import { relevanceCommand } from './queue/relevance-command.ts';
 import { reviewSpawnOptions, watchCommand, watchConfigSource } from './watch/command.ts';
 import { spawnReview } from './watch/review.ts';
 import { gitPrepareClone } from './watch/workspace.ts';
@@ -247,6 +248,15 @@ async function dispatch(argv: string[]): Promise<number> {
         client: (allowlist) => new GitHubClient({ allowlist, allowGlobs: true }),
         openDb: () => openDatabase(),
         now: new Date(),
+        out: (text) => console.log(text),
+        err: (text) => console.error(text),
+      });
+
+    case 'relevance':
+      return await relevanceCommand(argv.slice(1), {
+        config: repositoryConfig(),
+        client: (allowlist) => new GitHubClient({ allowlist, allowGlobs: true }),
+        inferRepository: () => inferRepository(process.cwd()),
         out: (text) => console.log(text),
         err: (text) => console.error(text),
       });

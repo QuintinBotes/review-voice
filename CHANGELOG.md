@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `queue.relevance` and a `relevance --pr <n>` command: a deterministic check
+  (CODEOWNERS share, paths, added-line patterns, authors, keywords) that skips
+  team-only requests that do not concern the team, and with `discover` lists
+  unrequested matches as report-only `SURFACE` entries that `watch` never
+  reviews or posts. Off by default (#483).
 - Outcomes of the tool's own posted findings become precedent at retrieval
   time: a strong `dismissed` counts as a dismissal and a `fixed` as an
   acceptance, weighted by who decided it, so owner and repository alignment
@@ -55,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   final and anchored scores are still computed and reported, and the
   anchored shadow is read through that owner gate. Analyst-only candidates
   keep the numeric final-score gate. (#479, docs/adr/0037)
+
 ### Fixed
 
 - `git cat-file` reads are bounded (one 120 s bound for the structure

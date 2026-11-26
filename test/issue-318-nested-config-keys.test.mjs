@@ -84,6 +84,7 @@ test('an unknown key in every section the loader parses is named by its full dot
     'queue:',
     '  bogus: 1',
     '  skip: { drafts: true, bogus: 1, approved_at_head_by: { logins: [], bogus: 1 } }',
+    '  relevance: { bogus: 1, discover: { bogus: 1 } }',
     '',
   ].join('\n');
   withRepo(config, (dir) => {
@@ -117,6 +118,8 @@ test('an unknown key in every section the loader parses is named by its full dot
       'queue.bogus',
       'queue.skip.bogus',
       'queue.skip.approved_at_head_by.bogus',
+      'queue.relevance.bogus',
+      'queue.relevance.discover.bogus',
     ].map(unknown).sort());
     // Known keys beside the unknown ones still apply.
     assert.equal(verdictPolicy.neverApprove, true);
@@ -187,6 +190,7 @@ test('the loader reads exactly the keys CONFIG_KEYS lists for each section', () 
       '  use: {}',
       'queue:',
       '  skip: { approved_at_head_by: {} }',
+      '  relevance: { discover: {} }',
       '',
     ].join('\n'),
   );
