@@ -5,6 +5,18 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- `git cat-file` reads are bounded (one 120 s bound for the structure
+  step's `--batch`, 30 s per blob for trusted-tree convention reads),
+  and git runs in its own process group so the bound holds when a lazy
+  fetch over ssh in a partial clone is the process holding the pipes.
+  A timed-out batch reports its files unmeasured and a timed-out blob
+  reads as unreadable; a timeout in a partial clone names it once on
+  stderr. (#482)
+
 ## [1.29.1] - 2026-11-23
 
 ### Fixed
