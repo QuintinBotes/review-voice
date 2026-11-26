@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `evaluate calibration --stability <k>` re-verifies a fixed set of labelled
+  candidates k times with no cache and reports per-candidate confidence min,
+  max and standard deviation, and the share of candidates whose gate decision
+  flips across runs under the current and a proposed threshold set. It prints
+  k times the candidate count as the model calls it will make, and refuses
+  above `evaluate.stability_max_calls` (default 200) without `--confirm`
+  (#484).
 - `queue.relevance` and a `relevance --pr <n>` command: a deterministic check
   (CODEOWNERS share, paths, added-line patterns, authors, keywords) that skips
   team-only requests that do not concern the team, and with `discover` lists

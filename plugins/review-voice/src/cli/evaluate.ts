@@ -1,5 +1,6 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { openDatabase, openDatabaseReadOnly, StoreOutdatedError } from '../store/db.ts';
 import type { Database } from '../store/db.ts';
 import { byFamily, computeMetrics, DEFAULT_WINDOW_DAYS, describeByFamily, evaluationReport, formatMetricValue, metricMark, metricTarget } from '../evaluate/metrics.ts';
@@ -16,8 +17,12 @@ import {
   sampleCandidates,
   type LabelEntry,
 } from '../evaluate/calibration.ts';
-import type { Thresholds } from '../scoring/score.ts';
-import { flag, resolveOutPath } from './shared.ts';
+import { formatStabilityText, runStability, type StabilityVerifier } from '../evaluate/stability.ts';
+import { readAgentTools, runAgent } from '../agents/runner.ts';
+import { SCHEMAS, verifierPrompt } from '../review/prompts.ts';
+import { DEFAULT_THRESHOLDS, type Thresholds } from '../scoring/score.ts';
+import { DEFAULT_STABILITY_MAX_CALLS } from '../policy/load.ts';
+import { flag, repositoryConfig, resolveOutPath } from './shared.ts';
 import { terminalSafe, terminalSafeDeep } from '../terminal.ts';
 
 /** The first token `argv` holds that is none of the named flags or a flag's value, or null. */
@@ -52,15 +57,101 @@ function readStore(): Database | null | undefined {
   }
 }
 
-/** `review-voice evaluate calibration --labels <file> [--thresholds <file>] [--repository <o/r>] [--text]` (#481). */
-function calibrationCommand(argv: string[]): number {
-  const unknown = unknownArg(argv, ['--labels', '--thresholds', '--repository'], ['--text', '--json']);
+/**
+ * The real verifier: the evidence-verifier agent over one candidate, run in the
+ * current directory (a checkout of the head the candidate was found at). Every
+ * call is a fresh agent run; nothing is read from or written to a cache.
+ */
+const modelVerifier: StabilityVerifier = async (candidate) => {
+  const dir = mkdtempSync(join(tmpdir(), 'rv-stability-'));
+  try {
+    const hint = candidate.candidate ?? {
+      candidate_id: candidate.candidateId,
+      path: candidate.path,
+      line: candidate.line,
+      category: candidate.category,
+      claim: candidate.claim,
+      severity: candidate.severity,
+    };
+    writeFileSync(join(dir, 'checked.json'), JSON.stringify({ kept: [hint] }), 'utf8');
+    const name = 'evidence-verifier';
+    const spec = { name, model: 'sonnet', tools: readAgentTools(name), schema: SCHEMAS.verification };
+    const prompt = verifierPrompt({ dir, intent: false, followUps: false, reproductionRunners: null });
+    const result = await runAgent(spec, prompt, process.cwd(), [dir]);
+    const entries = (result.output as { verifications?: unknown } | null)?.verifications;
+    const entry = (Array.isArray(entries) ? entries : []).find(
+      (item): item is Record<string, unknown> => typeof item === 'object' && item !== null,
+    );
+    const confidence = entry?.['technical_confidence'] ?? entry?.['technicalConfidence'];
+    if (!result.ok || typeof entry?.['verified'] !== 'boolean' || typeof confidence !== 'number') return null;
+    return { technicalConfidence: confidence, verified: entry['verified'] };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+/** `evaluate calibration --labels <file> --stability <k> [--confirm]` (#484): see `runStability`. */
+async function stabilityCommand(
+  argv: string[],
+  labels: LabelEntry[],
+  thresholds: Thresholds | null,
+  repository: string | null,
+  verify: StabilityVerifier,
+): Promise<number> {
+  const wanted = flag(argv, '--stability');
+  if (wanted === null || !/^\d+$/.test(wanted) || Number(wanted) < 2 || !Number.isSafeInteger(Number(wanted))) {
+    console.error('--stability needs a whole number of runs, 2 or more, such as 5.');
+    return 2;
+  }
+  const k = Number(wanted);
+  const db = readStore();
+  if (db === undefined) return 2;
+  let candidates;
+  try {
+    const stored = new Map(
+      loadStoredRuns(db, { repository })
+        .flatMap((run) => run.candidates)
+        .map((candidate) => [`${candidate.run}\0${candidate.candidateId}`, candidate]),
+    );
+    // The labelled set is the fixed set; a blank sheet row names a candidate just the same.
+    candidates = labels.flatMap((entry) => stored.get(`${entry.run}\0${entry.candidate_id}`) ?? []);
+  } finally {
+    db?.close();
+  }
+  const config = repositoryConfig();
+  const cap = config?.evaluate.stabilityMaxCalls ?? DEFAULT_STABILITY_MAX_CALLS;
+  const expected = k * candidates.length;
+  console.error(`Stability: ${k} runs x ${candidates.length} candidates = ${expected} model calls (cap ${cap} without --confirm).`);
+  if (expected > cap && !argv.includes('--confirm')) {
+    console.error(`Refusing: ${expected} calls is above evaluate.stability_max_calls (${cap}). Pass --confirm to run them.`);
+    return 2;
+  }
+  const report = terminalSafeDeep(
+    await runStability(candidates, {
+      k,
+      verify,
+      current: { ...DEFAULT_THRESHOLDS, ...config?.thresholds },
+      proposed: thresholds,
+    }),
+  );
+  if (argv.includes('--text')) process.stdout.write(terminalSafe(formatStabilityText(report)));
+  else console.log(JSON.stringify(report, null, 2));
+  return 0;
+}
+
+/** `review-voice evaluate calibration --labels <file> [--thresholds <file>] [--repository <o/r>] [--text] [--stability <k> [--confirm]]` (#481, #484). */
+function calibrationCommand(argv: string[]): number | Promise<number> {
+  const unknown = unknownArg(argv, ['--labels', '--thresholds', '--repository', '--stability'], ['--text', '--json', '--confirm']);
   if (unknown !== null) {
     console.error(`evaluate calibration: unknown argument ${unknown}.`);
     return 2;
   }
   if (argv.includes('--text') && argv.includes('--json')) {
     console.error('--text and --json are exclusive.');
+    return 2;
+  }
+  if (argv.includes('--confirm') && !argv.includes('--stability')) {
+    console.error('--confirm needs --stability.');
     return 2;
   }
   const labelsFile = requiredFlag(argv, '--labels', 'file');
@@ -101,6 +192,7 @@ function calibrationCommand(argv: string[]): number {
       return 2;
     }
   }
+  if (argv.includes('--stability')) return stabilityCommand(argv, labels, thresholds, repository, modelVerifier);
   const db = readStore();
   if (db === undefined) return 2;
   try {
@@ -184,7 +276,7 @@ function labelSampleCommand(argv: string[]): number {
   }
 }
 
-export function evaluateCommand(argv: string[]): number {
+export function evaluateCommand(argv: string[]): number | Promise<number> {
   if (argv[0] === 'calibration') return calibrationCommand(argv.slice(1));
   if (argv[0] === 'label-sample') return labelSampleCommand(argv.slice(1));
   if (argv[0] !== undefined && !argv[0].startsWith('--')) {

@@ -420,6 +420,12 @@ outcomes:
   # is above this and at least 30 approvals are settled. Nothing is sent.
   approval_escape_warn: 0.05
 
+# `evaluate calibration --stability <k>` re-verifies each labelled candidate k
+# times with a real model. It prints k x candidates, the model calls it will
+# make, and refuses above this many unless `--confirm` is passed (#484).
+evaluate:
+  stability_max_calls: 200
+
 writes:
   # Review Voice is read-only through v1. This exists so the setting is visible,
   # not because flipping it does anything yet.

@@ -213,7 +213,7 @@ async function dispatch(argv: string[]): Promise<number> {
       return scoreCommand(argv.slice(1));
 
     case 'evaluate':
-      return evaluateCommand(argv.slice(1));
+      return await evaluateCommand(argv.slice(1));
 
     case 'recall':
       return await recallCommand(argv.slice(1), runInProcess);

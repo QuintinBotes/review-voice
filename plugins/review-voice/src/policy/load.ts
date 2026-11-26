@@ -86,6 +86,8 @@ export interface LoadedConfig {
   retention: RetentionConfig;
   /** `outcomes:`, how sent approvals are followed and when `status` warns (docs/adr/0036). */
   outcomes: OutcomesConfig;
+  /** `evaluate:`; `stability_max_calls` is the model calls `evaluate calibration --stability` runs without `--confirm` (#484). */
+  evaluate: { stabilityMaxCalls: number };
   staticEvidence: {
     enabled: boolean;
     commands: { name: string; run: string; timeoutSeconds?: number; version?: string }[];
@@ -181,7 +183,7 @@ function positiveInt(value: unknown): number | undefined {
  * exactly these. review.models is a map of stages, checked against MODEL_KEYS.
  */
 export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
-  '': ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'reproduction', 'runners', 'verification', 'queue', 'watch', 'retention', 'outcomes', 'writes'],
+  '': ['identity', 'repositories', 'review', 'ci', 'verdict', 'static_evidence', 'reproduction', 'runners', 'verification', 'queue', 'watch', 'retention', 'outcomes', 'evaluate', 'writes'],
   identity: ['owner_reviewer', 'reviewers'],
   repositories: ['include'],
   review: [
@@ -223,6 +225,7 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
   watch: ['workspace', 'interval', 'post', 'lock_port', 'run_repository_commands', 'review_timeout', 'max_attempts_per_head'],
   retention: ['runs_days', 'audit_days'],
   outcomes: ['approval_window_days', 'approval_escape_warn'],
+  evaluate: ['stability_max_calls'],
   writes: ['github_posting_enabled'],
 };
 
@@ -1075,6 +1078,16 @@ function readOutcomes(block: Record<string, unknown> | null, result: LoadedConfi
   }
 }
 
+export const DEFAULT_STABILITY_MAX_CALLS = 200;
+
+/** `evaluate:` (#484). A bad value warns and keeps the default. */
+function readEvaluate(block: Record<string, unknown> | null, result: LoadedConfig): void {
+  const cap = block?.['stability_max_calls'];
+  if (cap === undefined) return;
+  if (typeof cap === 'number' && Number.isInteger(cap) && cap > 0) result.evaluate.stabilityMaxCalls = cap;
+  else result.warnings.push(`evaluate.stability_max_calls must be a whole number above zero; using ${DEFAULT_STABILITY_MAX_CALLS}.`);
+}
+
 function contentHash(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
@@ -1307,6 +1320,7 @@ export function readConfigDocument(value: unknown, repositoryRoot: string, resul
   if (doc['watch'] !== undefined) readWatch(section(doc['watch'], 'watch', result.warnings), result);
   if (doc['retention'] !== undefined) readRetention(section(doc['retention'], 'retention', result.warnings), result);
   if (doc['outcomes'] !== undefined) readOutcomes(section(doc['outcomes'], 'outcomes', result.warnings), result);
+  if (doc['evaluate'] !== undefined) readEvaluate(section(doc['evaluate'], 'evaluate', result.warnings), result);
 
   const staticEvidence = section(doc['static_evidence'], 'static_evidence', result.warnings);
   if (staticEvidence !== null) {
@@ -1524,6 +1538,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     watch: defaultWatchConfig(),
     retention: { ...DEFAULT_RETENTION },
     outcomes: { ...DEFAULT_OUTCOMES },
+    evaluate: { stabilityMaxCalls: DEFAULT_STABILITY_MAX_CALLS },
     staticEvidence: { enabled: false, commands: [], envPassthrough: [] },
     reproduction: defaultReproduction(),
     runners: { external: {}, use: { challenge: 'claude', agentAuthoredChallenge: null } },

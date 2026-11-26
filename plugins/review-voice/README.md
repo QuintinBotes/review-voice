@@ -106,7 +106,7 @@ posts or records it. See [ADR 0038](../../docs/adr/0038-the-queue-reviews-what-c
 
 Two `evaluate` subcommands check whether verifier confidence means what the
 gates assume, using only the local store - no network, no model calls, no
-writes to the store:
+writes to the store (except `--stability`, below):
 
 ```
 node dist/review-voice.mjs evaluate label-sample --out sheet.json --n 40 --seed 1
@@ -123,6 +123,23 @@ precision by band and by category with Wilson 95% lower bounds, how much
 volume the recorded thresholds ship and what a proposed set would ship
 instead, and how often the verifier rejected a finding a human calls true.
 See [ADR 0040](../../docs/adr/0040-calibration-is-measured-against-labels.md).
+
+`--stability <k>` measures how much the verifier disagrees with itself. It
+re-verifies every labelled candidate k times (2 or more) with the
+evidence-verifier, never from a cache, and reports per candidate the
+confidence min, max and population standard deviation, plus the share of
+candidates whose gate decision flips across runs under the current thresholds
+and, with `--thresholds`, the proposed set. The decision is the scorer's own
+gate logic with the stored final score held fixed. Run it in a checkout of the
+head the candidates were found at:
+
+```
+node dist/review-voice.mjs evaluate calibration --labels sheet.json --stability 5 [--thresholds proposed.yaml] [--text]
+```
+
+This calls a model, so it first prints `k x candidates` as the number of calls
+it will make, and refuses (exit 2) above `evaluate.stability_max_calls`
+(default 200) unless `--confirm` is passed.
 
 ## Requirements
 

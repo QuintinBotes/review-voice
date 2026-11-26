@@ -163,6 +163,7 @@ test('the loader reads exactly the keys CONFIG_KEYS lists for each section', () 
       'verification: {}',
       'watch: {}',
       'retention: {}',
+      'evaluate: { stability_max_calls: 50 }',
       'outcomes: { approval_window_days: 14, approval_escape_warn: 0.05 }',
       'review:',
       '  human_review: { structure: {} }',
