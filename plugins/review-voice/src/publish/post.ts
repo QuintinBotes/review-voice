@@ -763,6 +763,8 @@ export function recordedCandidates(db: Database, runId: string): Candidate[] {
   }
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((entry, index) => {
+    // A held candidate was never posted, so it must not stand for a finding.
+    if ((entry as { held?: unknown } | null)?.held === true) return [];
     try {
       // Only the claim is compared here. A re-anchored candidate's patch no
       // longer ends at its line, which must not cost it the comparison.

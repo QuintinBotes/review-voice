@@ -1222,10 +1222,26 @@ async function edit(run: Run): Promise<void> {
   await must(run, validate, run.text, 1);
 }
 
+/**
+ * Every scored candidate with its context (#486): the challenged eligible ones
+ * as they stand, so a moved line is kept, then each held one marked `held: true`
+ * from the score input, since a held score carries no category or claim.
+ */
+function recordCandidates(run: Run, scores: Json): Json[] {
+  const eligible = list(scores['eligible']);
+  const eligibleIds = new Set(eligible.map(idOf));
+  const inputFile = at(run, 'score-input.json');
+  const input = existsSync(inputFile) ? list(parsed(readFileSync(inputFile, 'utf8'))['candidates']) : [];
+  return [
+    ...eligible.map((entry) => ({ ...entry, held: false })),
+    ...input.filter((entry) => !eligibleIds.has(idOf(entry))).map((entry) => ({ ...entry, held: true })),
+  ];
+}
+
 async function recordStage(run: Run): Promise<void> {
   const scores = at(run, 'scores.challenged.json');
   const scored = existsSync(scores);
-  if (scored) writeJson(at(run, 'record-candidates.json'), { candidates: list(parsed(readFileSync(scores, 'utf8'))['eligible']) });
+  if (scored) writeJson(at(run, 'record-candidates.json'), { candidates: recordCandidates(run, parsed(readFileSync(scores, 'utf8'))) });
   await record(run, [
     ...(scored ? ['--scores', scores, '--candidates', at(run, 'record-candidates.json')] : []),
     ...(run.secondPass ? ['--verdicts', at(run, 'second-pass.json')] : []),

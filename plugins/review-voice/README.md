@@ -102,6 +102,28 @@ pull requests nobody requested are listed as `SURFACE` when they match. A
 surfaced pull request is report-only: `watch` prints it and never reviews,
 posts or records it. See [ADR 0038](../../docs/adr/0038-the-queue-reviews-what-concerns-the-team.md).
 
+## Measure calibration against labels
+
+Two `evaluate` subcommands check whether verifier confidence means what the
+gates assume, using only the local store - no network, no model calls, no
+writes to the store:
+
+```
+node dist/review-voice.mjs evaluate label-sample --out sheet.json --n 40 --seed 1
+# fill each row's label: TRUE, TRUE-NOT-WORTH, PARTLY, FALSE or UNCHECKABLE
+node dist/review-voice.mjs evaluate calibration --labels sheet.json [--text]
+node dist/review-voice.mjs evaluate calibration --labels sheet.json --thresholds proposed.yaml
+```
+
+`label-sample` draws a seeded, stratified sample of stored candidates (band
+crossed with verified-or-rejected) and writes a blank labelling sheet. The
+sheet is the labels format plus the context needed to judge each claim, so a
+filled sheet goes straight back to `--labels`. `calibration` then reports
+precision by band and by category with Wilson 95% lower bounds, how much
+volume the recorded thresholds ship and what a proposed set would ship
+instead, and how often the verifier rejected a finding a human calls true.
+See [ADR 0040](../../docs/adr/0040-calibration-is-measured-against-labels.md).
+
 ## Requirements
 
 Node 22 or newer. `git`. `gh` only if you enable GitHub history ingestion.
