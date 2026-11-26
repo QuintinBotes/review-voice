@@ -14,6 +14,7 @@ import { lastSync } from '../sync/state.ts';
 import { namedRepositories } from './sync.ts';
 import { describeReviewScope } from './explain.ts';
 import { terminalSafeDeep } from '../terminal.ts';
+import { learnedPrecedentStats } from '../retrieval/retrieve.ts';
 
 function distinctReviewers(db: Database): number {
   return (db.prepare('SELECT COUNT(DISTINCT reviewer_login) AS n FROM review_events').get() as { n: number }).n;
@@ -27,10 +28,12 @@ export function statusCommand(): number {
     let allowlist: string[] = [];
     let maxRepositoryShare: number | undefined;
     let ownerReviewer: string | null = null;
+    let botPatterns: string[] | undefined;
     let escapeWarn = DEFAULT_OUTCOMES.approvalEscapeWarn;
     try {
       const config = loadConfig(repositoryRoot(process.cwd()));
       ownerReviewer = config.ownerReviewer;
+      botPatterns = config.queue.skip.authorPatterns;
       escapeWarn = config.outcomes.approvalEscapeWarn;
       allowlist = namedRepositories(config.allowlist, 'status');
       maxRepositoryShare = scaledRepositoryShare(allowlist.length);
@@ -116,6 +119,17 @@ export function statusCommand(): number {
       console.log(`  ${repository.padEnd(45)} ${n}`);
     }
     for (const warning of coverage.warnings) console.log(`  warning        ${warning}`);
+    // What the tool has learned from its own posted findings (#480), derived
+    // at retrieval time; deleting the outcome rows removes it.
+    const learned = terminalSafeDeep(learnedPrecedentStats(db, { ownerReviewer, botPatterns }));
+    console.log(
+      `learned precedents ${learned.total} from outcomes: ${learned.accepted} accepted, ${learned.dismissed} dismissed`,
+    );
+    for (const negative of learned.netNegative) {
+      console.log(
+        `learned negative   ${negative.category} (net ${negative.net.toFixed(2)} from ${negative.accepted} accepted, ${negative.dismissed} dismissed)`,
+      );
+    }
     for (const line of watchSummary(db)) console.log(line);
     return 0;
   } finally {

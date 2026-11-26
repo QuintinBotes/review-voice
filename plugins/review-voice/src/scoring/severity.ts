@@ -20,10 +20,10 @@ export type Severity = (typeof SEVERITIES)[number];
  * below 0.85, which measured as the whole remaining instability: on two runs of
  * an identical diff the category was the same both times and the tier differed
  * anyway, at 0.82 against 0.90 and 0.85 against 0.80. Everything that can ship
- * already sits in [0.8, 1.0] because the confidence gate says so, and run to
- * run variance is around 0.08, so any boundary drawn inside that band gets
- * crossed. One free judgement was removed from this path and a second was left
- * in with a hard edge in the middle of it.
+ * already sits above the confidence gate's floor, and run to run variance is
+ * around 0.08, so any boundary drawn inside that band gets crossed. One free
+ * judgement was removed from this path and a second was left in with a hard
+ * edge in the middle of it.
  *
  * The tiers are one step quieter than they were to compensate for dropping the
  * weakening, so removing the cliff does not make reviews louder.

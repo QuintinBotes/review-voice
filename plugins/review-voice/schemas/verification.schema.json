@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/QuintinBotes/review-voice/schemas/verification.schema.json",
   "title": "Verification entry",
-  "description": "One entry of the evidence-verifier agent's output. The CLI also accepts the camelCase spelling of every field name (candidateId, evidenceQuality, technicalConfidence, fixVerdict, fixConfidence, fixReason, fixDirection, impactTraced, impactClass, premisesVerified, requiredContextMissing, partlyAddressed, blockerConfirmed). `verdict` and `confidence` belong to the second-pass verifier and are refused here; use `verified` and `technical_confidence`. Keep the checks in `verificationProblem` in src/cli.ts in step with this file.",
+  "description": "One entry of the evidence-verifier agent's output. The CLI also accepts the camelCase spelling of every field name (candidateId, evidenceQuality, technicalConfidence, fixVerdict, fixConfidence, fixReason, fixDirection, impactTraced, impactClass, premisesVerified, requiredContextMissing, partlyAddressed, blockerConfirmed, materialReason, severityFit). `verdict` and `confidence` belong to the second-pass verifier and are refused here; use `verified` and `technical_confidence`. Keep the checks in `verificationProblem` in src/cli.ts in step with this file.",
   "type": "object",
   "required": [
     "candidate_id"
@@ -65,6 +65,22 @@
     },
     "impact_traced": {
       "type": "boolean"
+    },
+    "material": {
+      "type": "boolean",
+      "description": "Whether a reasonable author would change code for this, judged after `verified` and separately from truth: never lower `technical_confidence` for immateriality. On a verified claim, false holds a minor or nit below the gate (never a security, authorization, authentication, data_integrity or trust_boundary finding) and lowers an important or blocking one tier. Leave it out when unsure; absent means material."
+    },
+    "material_reason": {
+      "type": "string",
+      "maxLength": 300,
+      "description": "With `material`: what breaks, and for whom - or, when material is false, why nothing that matters does. Quoted in the held reason of a minor or nit judged not material."
+    },
+    "severity_fit": {
+      "enum": [
+        "right",
+        "too_high"
+      ],
+      "description": "Whether the tier the claim carries fits. too_high lowers a verified important or blocking one tier. Leave it out when unsure."
     },
     "narrowed_claim": {
       "type": "string",

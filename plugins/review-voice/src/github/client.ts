@@ -59,12 +59,22 @@ export function allowlistEntryProblem(entry: string): string | null {
 }
 
 /**
- * The searches the queue may run (docs/adr/0026), and the one the approval
- * check runs (docs/adr/0036): `reverts:<owner>/<repo>#<n>` is the merged pull
- * requests whose body reverts one allowlisted pull request. The client builds
- * each query itself; no caller text reaches `q`. A team is `team:<org>/<slug>`.
+ * The searches the queue may run (docs/adr/0026), the one the approval check
+ * runs (docs/adr/0036), and the relevance discovery search (docs/adr/0038):
+ * `reverts:<owner>/<repo>#<n>` is the merged pull requests whose body reverts
+ * one allowlisted pull request, and `discovered:<owner>/<repo>` (or
+ * `discovered:<owner>/*` for an owner glob, searched as an organisation) is
+ * the recently updated open pull requests of one allowlisted scope, bounded
+ * by the caller's `updatedSince`. The client builds each query itself; no
+ * caller text reaches `q`. A team is `team:<org>/<slug>`.
  */
-export type SearchSource = 'requested' | 'assigned' | 'reviewed' | `team:${string}` | `reverts:${string}`;
+export type SearchSource =
+  | 'requested'
+  | 'assigned'
+  | 'reviewed'
+  | `team:${string}`
+  | `reverts:${string}`
+  | `discovered:${string}`;
 
 export interface SearchedPullRequest {
   /** owner/name, from the result's `repository_url`; always inside the allowlist. */
@@ -84,7 +94,10 @@ const SEARCH_BASE = 'is:pr is:open draft:false';
 const SEARCH_PER_PAGE = 100;
 const SEARCH_MAX_PAGES = 5;
 
-function searchQuery(source: SearchSource, allows: (repository: string) => boolean): string {
+/** A UTC instant in the shape a search `updated:>=` bound is allowed to take, and no other caller text. */
+const UPDATED_SINCE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+
+function searchQuery(source: SearchSource, allows: (repository: string) => boolean, updatedSince?: string): string {
   if (source === 'requested') return `${SEARCH_BASE} user-review-requested:@me`;
   if (source === 'assigned') return `${SEARCH_BASE} assignee:@me`;
   if (source === 'reviewed') return `${SEARCH_BASE} reviewed-by:@me`;
@@ -100,6 +113,25 @@ function searchQuery(source: SearchSource, allows: (repository: string) => boole
       // Not the open base: a revert counts once it has merged. The repository
       // is checked here too, so the query never names one outside the allowlist.
       return `is:pr is:merged repo:${match[1]}/${match[2]} "Reverts ${match[1]}/${match[2]}#${match[3]}" in:body`;
+    }
+  }
+  if (typeof source === 'string' && source.startsWith('discovered:')) {
+    const scope = source.slice('discovered:'.length);
+    const since = updatedSince !== undefined && UPDATED_SINCE.test(updatedSince) ? ` updated:>=${updatedSince}` : null;
+    if (since !== null) {
+      const [owner, repo, ...rest] = scope.split('/');
+      // Scoped like `reverts:`: the query names only an allowlisted scope,
+      // and every result is still filtered against the allowlist below.
+      if (owner !== undefined && repo === '*' && rest.length === 0 && GITHUB_NAME.test(owner) && allows(`${owner}/discovery-scope-probe`)) {
+        // shortcut: `org:` misses a personal account, pick `user:` or `org:` from the owner type if one is ever allowlisted.
+        return `${SEARCH_BASE} org:${owner}${since}`;
+      }
+      if (
+        owner !== undefined && repo !== undefined && rest.length === 0 &&
+        GITHUB_NAME.test(owner) && REPOSITORY_NAME.test(repo) && allows(`${owner}/${repo}`)
+      ) {
+        return `${SEARCH_BASE} repo:${owner}/${repo}${since}`;
+      }
     }
   }
   throw new NotAllowlisted(`Refused a search source that is not one Review Voice builds: ${JSON.stringify(source)}.`);
@@ -181,6 +213,8 @@ export class GitHubClient {
   private readonly allowlist: Set<string>;
   /** Owners whose every repository is allowlisted, from `owner/*` entries. */
   private readonly allowedOwners: Set<string>;
+  /** The allowlist as configured, normalised: exact `owner/repo` entries and `owner/*` globs. */
+  private readonly entries: string[] = [];
   private readonly baseUrl: string;
   private readonly doFetch: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -198,8 +232,10 @@ export class GitHubClient {
           : `"${entry}" is a pattern, and this client reads only repositories named one by one.`;
         if (problem !== null) throw new NotAllowlisted(`Refused allowlist entry ${problem}`);
         this.allowedOwners.add(entry.slice(0, -2).toLowerCase());
+        this.entries.push(`${entry.slice(0, -2).toLowerCase()}/*`);
       } else {
         this.allowlist.add(entry.toLowerCase());
+        this.entries.push(entry.toLowerCase());
       }
     }
     this.baseUrl = options.baseUrl ?? 'https://api.github.com';
@@ -211,6 +247,15 @@ export class GitHubClient {
   private authorization(): string {
     this.token ??= githubToken();
     return `Bearer ${this.token}`;
+  }
+
+  /**
+   * The allowlist entries as configured, normalised to lower case, so a
+   * search scoped per entry (relevance discovery, docs/adr/0038) can name
+   * exactly the scopes this client may read and no other.
+   */
+  allowlistEntries(): string[] {
+    return [...this.entries];
   }
 
   /** Whether `owner/name` is inside the allowlist, by exact entry or `owner/*`. */
@@ -424,8 +469,11 @@ export class GitHubClient {
    * Pages are numbered here rather than followed from a Link header, and stop
    * at five.
    */
-  async searchPullRequests(source: SearchSource): Promise<SearchResult> {
-    const q = encodeURIComponent(searchQuery(source, (repository) => this.allows(repository)));
+  async searchPullRequests(source: SearchSource, options: { updatedSince?: string } = {}): Promise<SearchResult> {
+    const q = encodeURIComponent(searchQuery(source, (repository) => this.allows(repository), options.updatedSince));
+    // Discovery wants the most recently updated first, so its cap keeps the
+    // freshest; every other source keeps the queue's oldest-first order.
+    const order = typeof source === 'string' && source.startsWith('discovered:') ? 'sort=updated&order=desc' : 'sort=created&order=asc';
     const pullRequests: SearchedPullRequest[] = [];
     let outsideAllowlist = 0;
     let truncated = false;
@@ -433,7 +481,7 @@ export class GitHubClient {
 
     for (let page = 1; page <= SEARCH_MAX_PAGES; page += 1) {
       const { data } = await this.request<{ total_count?: unknown; incomplete_results?: unknown; items?: unknown }>(
-        `/search/issues?q=${q}&sort=created&order=asc&per_page=${SEARCH_PER_PAGE}&page=${page}`,
+        `/search/issues?q=${q}&${order}&per_page=${SEARCH_PER_PAGE}&page=${page}`,
         true,
       );
       const items = Array.isArray(data?.items) ? (data.items as Record<string, unknown>[]) : [];

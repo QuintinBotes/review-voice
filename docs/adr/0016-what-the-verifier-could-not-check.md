@@ -243,3 +243,11 @@ and the `threshold` of the `belowGate` entry is the floor that applied, so
 The hold for a finding under the confidence gate (the amendment of 2026-11-11)
 is unchanged: a minor held below 0.7 still keeps a review from approving. This
 changes a default. Some minors and nits that were held now post.
+
+## Amendment - 2026-11-25 (one floor)
+
+[ADR 0037](0037-confidence-is-a-floor-materiality-is-a-verdict.md) replaces
+the two defaults above. Both keys now default to 0.7, one floor at every tier,
+and a category no suppression may reach takes the higher of 0.8 and
+`review.confidence_threshold` rather than that key alone. The hold for a
+finding under the confidence gate is unchanged.

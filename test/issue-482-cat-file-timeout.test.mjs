@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { readBlobs } from '../plugins/review-voice/src/diff/structure.ts';
 import { gitTreeReader } from '../plugins/review-voice/src/conventions/tree.ts';
 import { discoverConventions } from '../plugins/review-voice/src/conventions/discover.ts';
-import { CAT_FILE_BATCH_TIMEOUT_MS, catFileBatchTimeoutMs, isPartialClone, resetCatFileTimeoutWarning } from '../plugins/review-voice/src/git-exec.ts';
+import { CAT_FILE_BATCH_TIMEOUT_MS, runGitCatFileSync, catFileBatchTimeoutMs, isPartialClone, resetCatFileTimeoutWarning } from '../plugins/review-voice/src/git-exec.ts';
 
 // Long enough for the fake git's shell to start its sleeper on a loaded machine (400 ms was not),
 // far below the 60 s sleeper the bounded call must not wait on.
@@ -212,4 +212,38 @@ test('an environment override can only shorten the bounds, never lift them', () 
     if (saved === undefined) delete process.env.REVIEW_VOICE_CAT_FILE_BATCH_TIMEOUT_MS;
     else process.env.REVIEW_VOICE_CAT_FILE_BATCH_TIMEOUT_MS = saved;
   }
+});
+
+test('a normal git exit, clean or non-zero, sends no group kill', (t) => {
+  const dir = scratchRepo(t);
+  const kills = [];
+  const options = { maxBuffer: 1 << 20, timeoutMs: TIMEOUT_MS, killTree: (pid) => kills.push(pid) };
+  const out = runGitCatFileSync(dir, ['cat-file', 'blob', 'HEAD:CLAUDE.md'], options);
+  assert.equal(out.toString('utf8'), 'Handlers validate before they persist.\n');
+  assert.throws(() => runGitCatFileSync(dir, ['cat-file', 'blob', 'HEAD:missing.md'], options), /failed/);
+  assert.deepEqual(kills, [], 'the group id may be reused once git is reaped, so nothing is killed');
+});
+
+test('a timeout sends exactly one group kill', posixOnly, (t) => {
+  const dir = scratchRepo(t);
+  const fake = fakeGit(t);
+  const kills = [];
+  const killTree = (pid) => {
+    kills.push(pid);
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      // Empty group: the fake git was killed before it started its sleeper.
+    }
+  };
+  const { value } = withHangingGit(fake, () => {
+    try {
+      runGitCatFileSync(dir, ['cat-file', 'blob', 'HEAD:CLAUDE.md'], { maxBuffer: 1 << 20, timeoutMs: 500, killTree });
+    } catch (error) {
+      return error;
+    }
+    return null;
+  });
+  assert.equal(value?.code, 'ETIMEDOUT');
+  assert.equal(kills.length, 1);
 });

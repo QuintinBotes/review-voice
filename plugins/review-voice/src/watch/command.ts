@@ -256,15 +256,28 @@ async function runPass(options: PassOptions, json: boolean): Promise<boolean> {
       me: viewer.login,
       now: deps.now(),
       maxAttemptsPerHead: config.watch.maxAttemptsPerHead,
+      allowlist: config.allowlist,
     });
     const rows: WatchHead[] = [];
     const lines: string[] = [];
     const held: string[] = [];
+    const surfaced: string[] = [];
     const counts = new Map<string, number>();
     for (const entry of queue.entries) {
+      const summary = `${entry.repository}#${entry.pull}: ${entry.action.kind}`;
+      // A surfaced pull request is report-only (docs/adr/0038): printed in
+      // the pass output and never reviewed, posted or recorded as handled,
+      // so it writes no row and a later pass may surface it again while it
+      // is still recently updated.
+      if (entry.action.kind === 'surface') {
+        const text = terminalSafeDeep(`${summary} (${entry.action.signals.map((signal) => signal.detail).join('; ')})`);
+        lines.push(text);
+        surfaced.push(text);
+        counts.set('surfaced', (counts.get('surfaced') ?? 0) + 1);
+        continue;
+      }
       // A detail quotes the review child's stderr or a check run's name, either of which the pull request can choose.
       const outcome = terminalSafeDeep(await handle(options, client, db, entry));
-      const summary = `${entry.repository}#${entry.pull}: ${entry.action.kind}`;
       if (outcome.row === null) {
         lines.push(`${summary} (no row: ${outcome.detail})`);
         counts.set('retried', (counts.get('retried') ?? 0) + 1);
@@ -286,6 +299,7 @@ async function runPass(options: PassOptions, json: boolean): Promise<boolean> {
     if (json) {
       deps.out(JSON.stringify(rows, null, 2));
       // Stdout stays one JSON document, so these lines go to the error stream.
+      if (surfaced.length > 0) deps.err(surfaced.join('\n'));
       if (held.length > 0) deps.err(held.join('\n'));
       if (swept !== null) deps.err(swept);
     } else {
@@ -325,8 +339,21 @@ async function handle(options: PassOptions, client: GitHubClient, db: Database, 
   if (entry.action.kind !== 'skip' && !client.allows(entry.repository)) return { row: { ...base, status: 'skipped', detail: NOT_ALLOWED } };
   try {
     switch (entry.action.kind) {
+      case 'surface':
+        // Unreachable: runPass prints a surface entry and handles nothing
+        // else for it. Kept so no other caller can record one as handled.
+        return { row: null, detail: 'report-only' };
       case 'skip':
-        return { row: { ...base, status: 'skipped', detail: entry.action.rule } };
+        return {
+          row: {
+            ...base,
+            status: 'skipped',
+            detail: (entry.action.reasons === undefined
+              ? entry.action.rule
+              : `${entry.action.rule}: ${entry.action.reasons.join('; ')}`
+            ).slice(0, 300),
+          },
+        };
       case 'review':
         return await review(options, entry);
       case 'verdict-only':

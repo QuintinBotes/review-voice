@@ -114,8 +114,20 @@ test('an unmatched withdrawal keeps the two-head change and reports its fallback
 
     const { scope, interdiffPatch } = plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
-    assertTwoHeadChanges(repository, interdiffPatch);
+    // The restored line was not added by the base between the merge bases,
+    // so it stays an addition: only a base-added line is demoted (#477).
+    for (const path of files) {
+      const section = interdiffPatch
+        .split(/(?=^diff --git )/m)
+        .find((part) => part.startsWith(`diff --git a/${path} b/${path}\n`));
+      assert.match(section, /^-previous handler$/m, path);
+      assert.match(section, /^\+line 60$/m, path);
+      assert.doesNotMatch(section, /^ line 60$/m, path);
+    }
+    assert.doesNotMatch(interdiffPatch, /^[-+].*(?:approved|Approved|base update|base conflict)/m);
+    assert.doesNotMatch(interdiffPatch, /<<<<<<<|>>>>>>>/);
     assert.match(scope.detail, /two-head diff.*could not be matched to hunks/);
+    assert.doesNotMatch(scope.detail, /shown as context where the base added lines after a conflicting replay:/);
   });
 });
 
@@ -150,8 +162,12 @@ test('a base edit on the line right above the author\'s forms one edit run with 
     const { scope, interdiffPatch } = plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.match(scope.detail, /kept whole hunks where the base's and the author's edits could not be separated after a conflicting replay: src\/client\.tsx/);
-    // The diff pairs the two removed lines with the two added ones as one run, so the base's line rides along.
-    assert.deepEqual(clientSection(interdiffPatch).split('\n').filter((text) => /^[-+][^-+]/.test(text)), ['-line 9', '-line 10', '+base update', '+new author work']);
+    // The diff pairs the two removed lines with the two added ones as one run,
+    // so the base's line rides along - as context, not an addition, because
+    // the pull request's own diff does not add it (#477).
+    assert.deepEqual(clientSection(interdiffPatch).split('\n').filter((text) => /^[-+][^-+]/.test(text)), ['-line 9', '-line 10', '+new author work']);
+    assert.match(clientSection(interdiffPatch), /^ base update$/m);
+    assert.match(scope.detail, /shown as context where the base added lines after a conflicting replay: src\/client\.tsx/);
     assert.doesNotMatch(interdiffPatch, /^[-+].*(?:approved|Approved)/m, 'reviewed hunks are still not re-emitted');
   });
 });

@@ -158,7 +158,7 @@ test('a candidate the verifier did not verify is verifier-rejected', async (t) =
 });
 
 test('a verified candidate held under the confidence gate is below-gate', async (t) => {
-  const { result, summary } = await one(t, { 'evidence-verifier.1.json': verification({ verified: true, technical_confidence: 0.5 }) });
+  const { result, summary } = await one(t, { 'evidence-verifier.1.json': verification({ verified: true, technical_confidence: 0.65 }) });
   assert.equal(result.hit, false);
   assert.equal(result.findings, 0);
   assert.equal(result.lostAt, 'below-gate');
@@ -224,7 +224,7 @@ test('a below-gate hold on the anchor is not hidden by a second candidate there 
     'diff-analyst.1.json': {
       candidates: [candidate('cand_001', 2, STARTS_AT_ONE), candidate('cand_002', 2, 'An empty cart no longer totals zero because the accumulator is seeded with one.'), candidate('cand_003', 8, EXTRA_UNIT)],
     },
-    'evidence-verifier.1.json': { verifications: [verified('cand_001', { technical_confidence: 0.5 }), verified('cand_002'), verified('cand_003')] },
+    'evidence-verifier.1.json': { verifications: [verified('cand_001', { technical_confidence: 0.65 }), verified('cand_002'), verified('cand_003')] },
     'challenger.1.json': confirmed('cand_002', 2),
     'challenger.2.json': confirmed('cand_003', 8),
   };

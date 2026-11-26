@@ -17,7 +17,16 @@ import { globToRegExp } from '../conventions/globs.ts';
 import { CHANGE_KINDS, MODEL_KEYS, MODES, type ChangeKind, type ModelOverrides, type RequestedMode, type Tier } from '../review/plan.ts';
 import { agentExists, DIFF_LANE, LANE_SIGNALS, LANE_TIERS, type Lane, type LaneSignal } from '../review/lanes.ts';
 import { allowlistEntryProblem } from '../github/client.ts';
-import { defaultQueueConfig, QUEUE_SOURCES, type QueueConfig, type QueueSource } from '../queue/config.ts';
+import {
+  DEFAULT_DISCOVER_MAX_PULLS,
+  DEFAULT_DISCOVER_UPDATED_WITHIN_HOURS,
+  DEFAULT_MIN_OWNED_SHARE,
+  defaultQueueConfig,
+  defaultRelevanceConfig,
+  QUEUE_SOURCES,
+  type QueueConfig,
+  type QueueSource,
+} from '../queue/config.ts';
 import { defaultWatchConfig, MAX_REVIEW_TIMEOUT_MS, parseDuration, type WatchConfig } from '../watch/config.ts';
 import { DEFAULT_RETENTION, type RetentionConfig } from '../store/retention.ts';
 import { defaultReproduction, type ReproductionConfig, type ReproductionRunner } from '../evidence/reproduce.ts';
@@ -206,9 +215,11 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
   'runners.gemini': ['command', 'timeout_seconds', 'label', 'env_passthrough'],
   'runners.use': ['challenge', 'agent_authored_challenge'],
   verification: ['enabled', 'command', 'runner', 'family', 'name', 'timeout_seconds', 'drop_threshold', 'env_passthrough'],
-  queue: ['sources', 'teams', 'max_per_pass', 'follow_up_days', 'skip'],
+  queue: ['sources', 'teams', 'max_per_pass', 'follow_up_days', 'skip', 'relevance'],
   'queue.skip': ['authors', 'assigned_to', 'author_patterns', 'allow_bots_when_requested', 'drafts', 'approved_at_head_by'],
   'queue.skip.approved_at_head_by': ['logins', 'sources'],
+  'queue.relevance': ['teams', 'min_owned_share', 'ignore_owned_paths', 'paths', 'added_line_patterns', 'authors', 'keywords', 'discover'],
+  'queue.relevance.discover': ['updated_within_hours', 'max_pulls'],
   watch: ['workspace', 'interval', 'post', 'lock_port', 'run_repository_commands', 'review_timeout', 'max_attempts_per_head'],
   retention: ['runs_days', 'audit_days'],
   outcomes: ['approval_window_days', 'approval_escape_warn'],
@@ -836,6 +847,8 @@ function readQueue(block: Record<string, unknown> | null, result: LoadedConfig):
   queue.maxPerPass = wholeAboveZero('max_per_pass') ?? queue.maxPerPass;
   queue.followUpDays = wholeAboveZero('follow_up_days') ?? queue.followUpDays;
 
+  readQueueRelevance(block['relevance'], queue, result);
+
   if (block['skip'] === undefined) return;
   const skip = section(block['skip'], 'queue.skip', result.warnings);
   if (skip === null) {
@@ -871,6 +884,114 @@ function readQueue(block: Record<string, unknown> | null, result: LoadedConfig):
       };
     }
   }
+}
+
+/**
+ * The `queue.relevance` block (docs/adr/0038). Absent means the check is off
+ * and `queue.relevance` stays unset. Like the neighbouring keys, a bad value
+ * is ignored with a warning naming the key, and a bad entry in a list is
+ * dropped and named.
+ */
+function readQueueRelevance(value: unknown, queue: QueueConfig, result: LoadedConfig): void {
+  if (value === undefined) return;
+  const block = section(value, 'queue.relevance', result.warnings);
+  if (block === null) {
+    result.warnings.push('queue.relevance must be a mapping; ignoring it.');
+    return;
+  }
+  const relevance = defaultRelevanceConfig(queue.teams);
+
+  const strings = (key: string, what: string): string[] | undefined => {
+    const entries = block[key];
+    if (entries === undefined) return undefined;
+    if (!Array.isArray(entries)) {
+      result.warnings.push(`queue.relevance.${key} must be a list; using the default.`);
+      return undefined;
+    }
+    const kept: string[] = [];
+    for (const entry of entries) {
+      if (typeof entry === 'string' && entry.length > 0) kept.push(entry);
+      else result.warnings.push(`queue.relevance.${key}: ${JSON.stringify(entry)} is not ${what}; skipping it.`);
+    }
+    return kept;
+  };
+  const globs = (key: 'ignore_owned_paths' | 'paths'): string[] | undefined => {
+    const kept: string[] = [];
+    for (const entry of strings(key, 'a glob') ?? []) {
+      try {
+        globToRegExp(entry);
+        kept.push(entry);
+      } catch {
+        result.warnings.push(`queue.relevance.${key}: ${JSON.stringify(entry)} is not a glob; skipping it.`);
+      }
+    }
+    return block[key] === undefined ? undefined : kept;
+  };
+
+  const teams = block['teams'];
+  if (teams !== undefined) {
+    if (!Array.isArray(teams)) {
+      result.warnings.push('queue.relevance.teams must be a list; using queue.teams.');
+    } else {
+      relevance.teams = [];
+      for (const entry of teams) {
+        if (typeof entry === 'string' && TEAM.test(entry)) relevance.teams.push(entry);
+        else result.warnings.push(`queue.relevance.teams: ${JSON.stringify(entry)} is not org/team-slug; skipping it.`);
+      }
+    }
+  }
+
+  const share = block['min_owned_share'];
+  if (share !== undefined) {
+    if (typeof share === 'number' && share >= 0 && share <= 1) relevance.minOwnedShare = share;
+    else result.warnings.push(`queue.relevance.min_owned_share must be a number from 0 to 1; using ${DEFAULT_MIN_OWNED_SHARE}.`);
+  }
+
+  relevance.ignoreOwnedPaths = globs('ignore_owned_paths') ?? relevance.ignoreOwnedPaths;
+  relevance.paths = globs('paths') ?? relevance.paths;
+
+  const patterns = block['added_line_patterns'];
+  if (patterns !== undefined) {
+    if (!Array.isArray(patterns)) {
+      result.warnings.push('queue.relevance.added_line_patterns must be a list; using the default.');
+    } else {
+      relevance.addedLinePatterns = [];
+      for (const entry of patterns) {
+        try {
+          if (typeof entry !== 'string' || entry.length === 0) throw new Error('not text');
+          new RegExp(entry, 'i');
+          relevance.addedLinePatterns.push(entry);
+        } catch {
+          result.warnings.push(`queue.relevance.added_line_patterns: ${JSON.stringify(entry)} is not a regular expression; skipping it.`);
+        }
+      }
+    }
+  }
+
+  relevance.authors = strings('authors', 'a login') ?? relevance.authors;
+  relevance.keywords = strings('keywords', 'a word') ?? relevance.keywords;
+
+  const discoverValue = block['discover'];
+  if (discoverValue !== undefined) {
+    const discover = section(discoverValue, 'queue.relevance.discover', result.warnings);
+    if (discover === null) {
+      result.warnings.push('queue.relevance.discover must be a mapping; ignoring it.');
+    } else {
+      const whole = (key: 'updated_within_hours' | 'max_pulls', fallback: number): number => {
+        const entry = discover[key];
+        if (entry === undefined) return fallback;
+        if (typeof entry === 'number' && Number.isInteger(entry) && entry > 0) return entry;
+        result.warnings.push(`queue.relevance.discover.${key} must be a whole number above zero; using ${fallback}.`);
+        return fallback;
+      };
+      relevance.discover = {
+        updatedWithinHours: whole('updated_within_hours', DEFAULT_DISCOVER_UPDATED_WITHIN_HOURS),
+        maxPulls: whole('max_pulls', DEFAULT_DISCOVER_MAX_PULLS),
+      };
+    }
+  }
+
+  queue.relevance = relevance;
 }
 
 /** A bad value warns and keeps the default, like every other block. */

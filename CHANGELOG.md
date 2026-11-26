@@ -5,7 +5,61 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [Unreleased]
+
+### Added
+
+- `queue.relevance` and a `relevance --pr <n>` command: a deterministic check
+  (CODEOWNERS share, paths, added-line patterns, authors, keywords) that skips
+  team-only requests that do not concern the team, and with `discover` lists
+  unrequested matches as report-only `SURFACE` entries that `watch` never
+  reviews or posts. Off by default (#483).
+- Outcomes of the tool's own posted findings become precedent at retrieval
+  time: a strong `dismissed` counts as a dismissal and a `fixed` as an
+  acceptance, weighted by who decided it, so owner and repository alignment
+  can fall below neutral and the owner-precedent gate can fire. No new rows
+  are written, so deleting the outcomes unlearns them. `explain` marks each
+  learned precedent `source: outcome`, and `status` prints the learned
+  accepted and dismissed counts and the categories with net negative learned
+  precedent. (closes #480, docs/adr/0039)
+- The evidence-verifier may return `material`, `material_reason` (at most
+  300 characters) and `severity_fit` (`right` or `too_high`): whether a
+  reasonable author would change code, what breaks and for whom, and whether
+  the tier fits, judged after `verified` and never by lowering
+  `technical_confidence`. Absent fields mean material. On a verified claim,
+  `material: false` at minor or nit holds the finding in `belowGate` with
+  `gate: materiality` and the verifier's reason, promotable with
+  `score --promote` as the other below-gate entries are; at important or
+  blocking, `material: false` or `severity_fit: too_high` reports it exactly
+  one tier lower, with the severity reason saying why. A security,
+  authorization, authentication, data integrity or trust boundary finding is
+  never held for materiality, only lowered that one tier. The verification
+  schema, `check-verification` and `score` refuse a non-boolean `material`,
+  an overlong `material_reason` or an unknown `severity_fit`. (#479,
+  docs/adr/0037)
+
+### Changed
+
+- Verifier confidence stops acting as a fine-grained truth gate.
+  `review.confidence_threshold` and `review.minor_confidence_threshold` now
+  default to 0.7 at every tier instead of 0.8 at blocking and important and
+  0.7 at minor and nit (a cross-family relabel found two false findings in the
+  0.50 to 0.70 band, so the floor is 0.7, not lower); both keys still override the
+  defaults, with the minor floor still clamped to at most the main one, so
+  setting 0.8 and 0.7 reproduces the old floors. A category no suppression
+  may reach keeps 0.8 at every tier, or the configured main floor when that
+  is higher. The analyst-only floor stays 0.7, and the verified suggested
+  fix still needs its own 0.8, or the configured main floor when that is
+  higher, so the lower finding floor does not loosen what repair text renders
+  as verified.
+- A non-question claim the verifier verified, gated on its own confidence,
+  no longer has to clear the numeric final score: it is held back only when
+  owner alignment is below neutral, the rule a question already used, and
+  is then listed in `belowGate` as `gate: owner-precedent`, promotable as the
+  score gate's entries were. The
+  final and anchored scores are still computed and reported, and the
+  anchored shadow is read through that owner gate. Analyst-only candidates
+  keep the numeric final-score gate. (#479, docs/adr/0037)
 
 ### Fixed
 
@@ -16,6 +70,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A timed-out batch reports its files unmeasured and a timed-out blob
   reads as unreadable; a timeout in a partial clone names it once on
   stderr. (#482)
+- After a conflicting replay, added lines a kept-whole interdiff hunk took
+  from the base are shown as context when the pull request's own diff does
+  not add them and the base added them between the two merge bases, with
+  the hunk recounted and the files still in the patch named in the scope
+  detail. Such a line could take an anchor that GitHub then refuses at
+  posting (422), because it is not in the pull request diff. A line the
+  reviewed head deleted and the head restores stays an addition, so the
+  withdrawn deletion still shows. (#477)
 - The remaining git calls in the diff and conventions path (commit
   checks, `check-attr`, `diff`, `merge-tree`, `ls-tree`, the prior-review
   fetch) run through the same bounded, group-killed runner: 10 s for a
@@ -23,6 +85,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call's failure already did. Ctrl-C while one blocks still cannot kill
   the detached group, because a synchronous call runs no signal handler
   (documented in `git-exec.ts`). (#487)
+
+## [1.29.2] - 2026-11-26
+
+### Fixed
+
+- A comment on another file rejects the candidate as a repeat only when it
+  names both the candidate's file (any case) and one of its symbols and shares
+  enough wording, the same bar as a comment on its own lines. A match on the
+  file or the symbol alone keeps the candidate. Every comment naming the file
+  or a symbol, at any distance and anchored or not (review bodies and
+  conversation comments too), is handed to the evidence verifier as
+  `possibleRepeatOf.alsoNaming`, best overlap first under a byte budget, with
+  `alsoNamingOmitted` counting any left out, so it can reject a root-cause
+  repeat and quote the comment. A file name only counts when it ends there:
+  `Child.tsx.bak` is not `Child.tsx` (#488).
+- The CI heads-up lines in a review body are checked against the thread: a
+  failing check is left out when a comment from another reviewer or a bot
+  contains every word of its name as a whole word, bar generic ones (check,
+  job, ci, status, workflow, run, build, test, tests) and short words such as
+  "pr" included, so "get under the PR size limit" hides "Check PR size" and
+  "size" alone does not. Only heads-up lines in comments by the tool's own
+  login are ignored; another author's count. A line left with no check is
+  dropped.
+  `--recheck-thread` applies both rules to comments added since the run, and
+  refuses with `thread-changed` (#488).
 
 ## [1.29.1] - 2026-11-23
 
