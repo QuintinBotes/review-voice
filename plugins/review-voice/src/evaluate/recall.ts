@@ -20,6 +20,7 @@ import {
   type RecallResults,
   type RunTrail,
 } from './recall-results.ts';
+import { GIT_READ_TIMEOUT_MS, boundedGit } from '../git-exec.ts';
 
 /**
  * `review-voice recall` (docs/EVALUATION.md, "Fixture recall"): every fixture
@@ -200,7 +201,7 @@ function shimFiles(repoDir: string, base: string, head: string, paths: readonly 
     const text = execFileSync('git', ['-c', 'core.quotepath=off', 'diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-color', base, head, '--', path], {
       cwd: repoDir,
       encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
+      ...boundedGit(GIT_READ_TIMEOUT_MS),
     });
     const at = text.indexOf('\n@@');
     const header = at === -1 ? text : text.slice(0, at);
@@ -324,7 +325,7 @@ function trailOf(report: ReviewReport): RunTrail {
 function checkoutBase(repoDir: string): void {
   // The clone a reviewer would have is on the base branch, with the head only
   // a commit in it. `feature` stays checked out after materialising.
-  execFileSync('git', ['-c', 'core.hooksPath=/dev/null', 'checkout', '-q', 'main'], { cwd: repoDir, stdio: ['ignore', 'ignore', 'pipe'] });
+  execFileSync('git', ['-c', 'core.hooksPath=/dev/null', 'checkout', '-q', 'main'], { cwd: repoDir, stdio: ['ignore', 'ignore', 'pipe'], ...boundedGit(GIT_READ_TIMEOUT_MS) });
 }
 
 interface Context {

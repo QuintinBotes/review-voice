@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { originRepository } from '../diff/pull-request.ts';
 import { environmentSource, type ConfigSourceKind } from '../policy/load.ts';
 import { SAFE_GIT } from './worktree.ts';
+import { GIT_READ_TIMEOUT_MS, boundedGit } from '../git-exec.ts';
 
 export const CONFIG_PATH = '.review-voice/config.yaml';
 
@@ -42,7 +43,7 @@ export interface PullRequestConfig {
 /** `git show` of one path at one ref, or null when git cannot read it (no such ref, no such file). */
 function showAt(ref: string, path: string): Buffer | null {
   try {
-    return execFileSync('git', [...SAFE_GIT, 'show', `${ref}:${path}`], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 16 * 1024 * 1024 });
+    return execFileSync('git', [...SAFE_GIT, 'show', `${ref}:${path}`], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'ignore'], ...boundedGit(GIT_READ_TIMEOUT_MS, 16 * 1024 * 1024) });
   } catch {
     return null;
   }

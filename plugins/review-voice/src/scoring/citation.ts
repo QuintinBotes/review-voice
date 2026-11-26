@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { GIT_CHECK_TIMEOUT_MS, boundedGit } from '../git-exec.ts';
 
 /**
  * Whether a finding's cited path actually exists.
@@ -26,7 +27,7 @@ function git(args: string[], cwd: string): string {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
-    timeout: 10_000,
+    ...boundedGit(GIT_CHECK_TIMEOUT_MS),
   });
 }
 

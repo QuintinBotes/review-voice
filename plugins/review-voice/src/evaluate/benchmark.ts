@@ -7,6 +7,7 @@ import { parseHunks, type FileHunks } from '../diff/hunks.ts';
 import { pluginVersion } from '../version.ts';
 import { materializeFixture } from './fixtures.ts';
 import { AGREEMENT_LINE_TOLERANCE } from './metrics.ts';
+import { GIT_READ_TIMEOUT_MS, boundedGit } from '../git-exec.ts';
 
 /**
  * `review-voice import-benchmark` (S18 part A): one public set, downloaded by
@@ -212,7 +213,7 @@ function probeBuild(scratch: string, slug: string, diff: Buffer): { hunks: Map<s
     mkdirSync(fixture, { recursive: true });
     writeFileSync(join(fixture, 'diff.patch'), diff);
     const { base, head, files } = materializeFixture(fixture, repo, { name: slug });
-    const git = (args: string[]): string => execFileSync('git', args, { cwd: repo, env: gitEnvironment(), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    const git = (args: string[]): string => execFileSync('git', args, { cwd: repo, env: gitEnvironment(), encoding: 'utf8', ...boundedGit(GIT_READ_TIMEOUT_MS) });
     // The arguments of `shimFiles` in recall.ts, which serves each file's patch to the review.
     const hunks = parseHunks(git(['-c', 'core.quotepath=off', 'diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-color', base, head, '--', ...files]));
     // The review keeps only source files and a generated file it judges hand edited, as acquirePullRequestDiff does, so an issue on any other file cannot be hit.

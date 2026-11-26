@@ -54,6 +54,7 @@ import { readSignals } from './check-candidates.ts';
 import { linkedIssuesOf } from '../intent.ts';
 import { repositoryRoot } from '../diff/acquire.ts';
 import { SAFE_GIT } from '../review/worktree.ts';
+import { GIT_READ_TIMEOUT_MS, boundedGit } from '../git-exec.ts';
 import type { EvidenceSignal } from '../evidence/types.ts';
 
 /** A path as the diff spells it. A held entry keeps the analyst's spelling, `./src/app.ts` included, so both sides of a comparison go through here. */
@@ -368,7 +369,7 @@ export async function recordCommand(argv: string[]): Promise<number> {
                 : execFileSync('git', [...SAFE_GIT, 'show', `${heldRevision}:${entry.path}`], {
                     encoding: 'utf8',
                     stdio: ['ignore', 'pipe', 'ignore'],
-                    maxBuffer: 64 * 1024 * 1024,
+                    ...boundedGit(GIT_READ_TIMEOUT_MS),
                   });
             const lines = content.split('\n').length - (content.endsWith('\n') ? 1 : 0);
             if (entry.line > lines) console.error(`Held entry ${entry.path}:${entry.line} is past the end of the file (${lines} lines).`);

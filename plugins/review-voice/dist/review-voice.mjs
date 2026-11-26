@@ -1061,6 +1061,9 @@ var GIT_READ_TIMEOUT_MS = 6e4;
 function gitTimeoutMs(fallback) {
   return timeoutFromEnv("REVIEW_VOICE_GIT_TIMEOUT_MS", fallback);
 }
+function boundedGit(timeoutMs, maxBuffer = 64 * 1024 * 1024) {
+  return { timeout: gitTimeoutMs(timeoutMs), killSignal: "SIGKILL", maxBuffer };
+}
 function runGit(root, args, options) {
   return runGitCatFile(root, args, { maxBuffer: 64 * 1024 * 1024, ...options });
 }
@@ -15118,7 +15121,7 @@ var SAFE_GIT = [
   "submodule.recurse=false"
 ];
 function safeGit(args, cwd) {
-  execFileSync4("git", [...SAFE_GIT, ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+  execFileSync4("git", [...SAFE_GIT, ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], ...boundedGit(CAT_FILE_BATCH_TIMEOUT_MS) });
 }
 function addHeadWorktree(headDir, head, cwd = process.cwd()) {
   const stale = lstatSync2(headDir, { throwIfNoEntry: false });
@@ -15138,7 +15141,7 @@ function addHeadWorktree(headDir, head, cwd = process.cwd()) {
 }
 function removeHeadWorktree(headDir, cwd = process.cwd()) {
   try {
-    execFileSync4("git", ["worktree", "remove", "--force", headDir], { cwd, stdio: "ignore" });
+    execFileSync4("git", ["worktree", "remove", "--force", headDir], { cwd, stdio: "ignore", ...boundedGit(GIT_READ_TIMEOUT_MS) });
     return true;
   } catch {
     return false;
@@ -15153,7 +15156,7 @@ var runGit2 = (args, cwd) => execFileSync5("git", [...SAFE_GIT, ...args], {
   cwd,
   encoding: "utf8",
   stdio: ["ignore", "pipe", "pipe"],
-  maxBuffer: 64 * 1024 * 1024,
+  ...boundedGit(GIT_READ_TIMEOUT_MS),
   env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }
 });
 var OUTPUT_CAP_BYTES = 8 * 1024;
@@ -24832,7 +24835,7 @@ var CONFIG_PATH = ".review-voice/config.yaml";
 var shortRef = (ref) => /^[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 7) : ref;
 function showAt(ref, path) {
   try {
-    return execFileSync7("git", [...SAFE_GIT, "show", `${ref}:${path}`], { cwd: process.cwd(), stdio: ["ignore", "pipe", "ignore"], maxBuffer: 16 * 1024 * 1024 });
+    return execFileSync7("git", [...SAFE_GIT, "show", `${ref}:${path}`], { cwd: process.cwd(), stdio: ["ignore", "pipe", "ignore"], ...boundedGit(GIT_READ_TIMEOUT_MS, 16 * 1024 * 1024) });
   } catch {
     return null;
   }
@@ -24919,7 +24922,7 @@ async function must(run, argv, stdin, code3 = 2) {
   return result;
 }
 function localGit(args) {
-  return execFileSync8("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  return execFileSync8("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...boundedGit(GIT_READ_TIMEOUT_MS) }).trim();
 }
 function localHead(ref) {
   let sha;
@@ -25120,7 +25123,7 @@ function authorshipOf(run) {
       const log = execFileSync8(
         "git",
         [...SAFE_GIT, "log", "--max-count=500", "--format=%(trailers:key=Co-authored-by,valueonly,unfold)", `${run.base}..${run.head}`],
-        { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024 }
+        { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...boundedGit(GIT_READ_TIMEOUT_MS, 16 * 1024 * 1024) }
       );
       trailers = log.split("\n").map((line3) => line3.trim()).filter((line3) => line3 !== "");
     } catch {
@@ -25174,7 +25177,7 @@ function prepareWorkspace(run) {
   if (!(isRecord5(refs["head"]) && refs["head"]["available"] === true)) {
     throw new Stop(2, `The head ${run.head} is not in this clone. Fetch it and run again.`);
   }
-  const git6 = (args) => execFileSync8("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+  const git6 = (args) => execFileSync8("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], ...boundedGit(GIT_READ_TIMEOUT_MS) });
   const headDir = at(run, "head");
   if (run.headDir === null) {
     addHeadWorktree(headDir, run.head);
@@ -29250,7 +29253,7 @@ var modelVerifier = async (candidate) => {
 };
 function gitHead() {
   try {
-    return execFileSync10("git", ["rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return execFileSync10("git", ["rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], ...boundedGit(GIT_CHECK_TIMEOUT_MS) }).trim();
   } catch {
     return null;
   }
@@ -30456,7 +30459,8 @@ function git3(cwd, label2, args) {
       cwd,
       env: gitEnvironment(),
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      ...boundedGit(GIT_READ_TIMEOUT_MS)
     });
   } catch (error) {
     const stderr = error.stderr;
@@ -30651,7 +30655,7 @@ function shimFiles(repoDir, base, head, paths) {
     const text5 = execFileSync12("git", ["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", path], {
       cwd: repoDir,
       encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024
+      ...boundedGit(GIT_READ_TIMEOUT_MS)
     });
     const at2 = text5.indexOf("\n@@");
     const header = at2 === -1 ? text5 : text5.slice(0, at2);
@@ -30745,7 +30749,7 @@ function trailOf(report) {
   };
 }
 function checkoutBase(repoDir) {
-  execFileSync12("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"] });
+  execFileSync12("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"], ...boundedGit(GIT_READ_TIMEOUT_MS) });
 }
 async function runFixture(fixture, index, context2) {
   const { expectation } = fixture;
@@ -31078,7 +31082,7 @@ function probeBuild(scratch, slug, diff) {
     mkdirSync12(fixture, { recursive: true });
     writeFileSync13(join28(fixture, "diff.patch"), diff);
     const { base, head, files: files2 } = materializeFixture(fixture, repo, { name: slug });
-    const git6 = (args) => execFileSync13("git", args, { cwd: repo, env: gitEnvironment2(), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    const git6 = (args) => execFileSync13("git", args, { cwd: repo, env: gitEnvironment2(), encoding: "utf8", ...boundedGit(GIT_READ_TIMEOUT_MS) });
     const hunks = parseHunks(git6(["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", ...files2]));
     const handEdited = findHandEdited([...hunks].filter(([, file2]) => file2.ranges.length > 0).map(([path]) => path), (path) => {
       try {
@@ -31251,7 +31255,7 @@ function insideGit(dir) {
     LC_ALL: "C"
   };
   try {
-    const answer2 = execFileSync14("git", ["rev-parse", "--is-inside-work-tree", "--is-inside-git-dir"], { cwd: dir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const answer2 = execFileSync14("git", ["rev-parse", "--is-inside-work-tree", "--is-inside-git-dir"], { cwd: dir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...boundedGit(GIT_CHECK_TIMEOUT_MS) });
     return answer2.split("\n").some((line3) => line3.trim() === "true");
   } catch (error) {
     const { status, stderr } = error;
@@ -35572,7 +35576,7 @@ function git5(args, cwd) {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
-    timeout: 1e4
+    ...boundedGit(GIT_CHECK_TIMEOUT_MS)
   });
 }
 function normalise2(path) {
@@ -35626,7 +35630,7 @@ function deletedFileCheck(argv) {
   const cwd = process.cwd();
   if (base === null || head === null || !refExistsSync(base, cwd) || !refExistsSync(head, cwd)) return () => false;
   const firstParty = firstPartyMatcher(repositoryConfig()?.firstPartyPaths ?? []);
-  const git6 = (args) => execFileSync19("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
+  const git6 = (args) => execFileSync19("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], ...boundedGit(GIT_READ_TIMEOUT_MS) });
   let deleted;
   const deletions = () => {
     if (deleted !== void 0) return deleted;
@@ -37037,7 +37041,7 @@ async function recordCommand(argv) {
             const content = heldRevision === null ? readFileSync40(join34(repositoryRoot(process.cwd()), entry.path), "utf8") : execFileSync20("git", [...SAFE_GIT, "show", `${heldRevision}:${entry.path}`], {
               encoding: "utf8",
               stdio: ["ignore", "pipe", "ignore"],
-              maxBuffer: 64 * 1024 * 1024
+              ...boundedGit(GIT_READ_TIMEOUT_MS)
             });
             const lines2 = content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
             if (entry.line > lines2) console.error(`Held entry ${entry.path}:${entry.line} is past the end of the file (${lines2} lines).`);

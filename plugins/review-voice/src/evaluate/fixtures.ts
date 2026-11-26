@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { unquoteGitPath } from '../diff/hunks.ts';
+import { GIT_READ_TIMEOUT_MS, boundedGit } from '../git-exec.ts';
 
 /**
  * Turns a fixture directory into a two-commit git repository, so the real
@@ -378,6 +379,7 @@ function git(cwd: string, label: string, args: string[]): string {
       env: gitEnvironment(),
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      ...boundedGit(GIT_READ_TIMEOUT_MS),
     });
   } catch (error) {
     const stderr = (error as { stderr?: unknown }).stderr;

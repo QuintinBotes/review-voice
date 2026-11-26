@@ -26,6 +26,7 @@ import { STAGES, type StageId } from './stages.ts';
 import { CONFIG_PATH, resolveTrustedConfig, shortRef, type ConfigSource } from './config.ts';
 import { SAFE_GIT, addHeadWorktree, removeHeadWorktree } from './worktree.ts';
 import { terminalSafeDeep } from '../terminal.ts';
+import { GIT_READ_TIMEOUT_MS, boundedGit } from '../git-exec.ts';
 
 /**
  * `review-voice review` (docs/adr/0022): walks the stage table, calling the
@@ -252,7 +253,7 @@ async function must(run: Run, argv: string[], stdin?: string, code = 2): Promise
 
 /** Git in the caller's checkout, with SAFE_GIT so its configuration runs nothing. */
 function localGit(args: string[]): string {
-  return execFileSync('git', [...SAFE_GIT, ...args], { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  return execFileSync('git', [...SAFE_GIT, ...args], { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...boundedGit(GIT_READ_TIMEOUT_MS) }).trim();
 }
 
 /** A branch review's head and base, from the checkout alone (#410). */
@@ -532,7 +533,7 @@ function authorshipOf(run: Run): Authorship {
       const log = execFileSync(
         'git',
         [...SAFE_GIT, 'log', '--max-count=500', '--format=%(trailers:key=Co-authored-by,valueonly,unfold)', `${run.base}..${run.head}`],
-        { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024 },
+        { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...boundedGit(GIT_READ_TIMEOUT_MS, 16 * 1024 * 1024) },
       );
       trailers = log.split('\n').map((line) => line.trim()).filter((line) => line !== '');
     } catch {
@@ -602,7 +603,7 @@ function prepareWorkspace(run: Run): string {
     throw new Stop(2, `The head ${run.head} is not in this clone. Fetch it and run again.`);
   }
   const git = (args: string[]): Buffer =>
-    execFileSync('git', [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+    execFileSync('git', [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], ...boundedGit(GIT_READ_TIMEOUT_MS) });
   const headDir = at(run, 'head');
   if (run.headDir === null) {
     // A stale worktree a killed run left at the path is replaced (worktree.ts).

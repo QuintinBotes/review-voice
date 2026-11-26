@@ -4,6 +4,7 @@ import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync,
 import { dirname, join, resolve } from 'node:path';
 import { BenchmarkShapeError, gitEnvironment, importBenchmark, isKnownLicence, readSet } from '../evaluate/benchmark.ts';
 import { flag } from './shared.ts';
+import { GIT_CHECK_TIMEOUT_MS, boundedGit } from '../git-exec.ts';
 
 /** `--set-version` names a directory under docs/benchmarks/, so it is a plain token. */
 const SET_VERSION = /^[A-Za-z0-9._-]{1,64}$/;
@@ -25,7 +26,7 @@ function insideGit(dir: string): boolean | string {
     LC_ALL: 'C',
   };
   try {
-    const answer = execFileSync('git', ['rev-parse', '--is-inside-work-tree', '--is-inside-git-dir'], { cwd: dir, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const answer = execFileSync('git', ['rev-parse', '--is-inside-work-tree', '--is-inside-git-dir'], { cwd: dir, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...boundedGit(GIT_CHECK_TIMEOUT_MS) });
     return answer.split('\n').some((line) => line.trim() === 'true');
   } catch (error) {
     const { status, stderr } = error as { status?: unknown; stderr?: unknown };
