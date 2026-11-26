@@ -11582,6 +11582,104 @@ function withoutBaseChanges(delta, base, baseDelta) {
   }
   return { text: kept.length === 0 ? "" : changes.header + kept.join(""), mixed };
 }
+function addedHeadLines(section2) {
+  const parsed2 = sectionHunks(section2);
+  if (parsed2 === null) return null;
+  const added = /* @__PURE__ */ new Set();
+  for (const hunk of parsed2.hunks) {
+    let line3 = hunk.first;
+    for (const text5 of hunk.text.split("\n").slice(1)) {
+      if (text5.startsWith("+")) {
+        added.add(line3);
+        line3++;
+      } else if (text5.startsWith(" ")) {
+        line3++;
+      }
+    }
+  }
+  return added;
+}
+function ownDiffLineMap(section2) {
+  const parsed2 = sectionHunks(section2);
+  if (parsed2 === null) return null;
+  const added = /* @__PURE__ */ new Set();
+  const context2 = /* @__PURE__ */ new Map();
+  const spans = [];
+  let net = 0;
+  for (const hunk of parsed2.hunks) {
+    const [header, ...body] = hunk.text.split("\n");
+    const numbers = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(header);
+    if (numbers === null) return null;
+    const newCount = numbers[4] === void 0 ? 1 : Number(numbers[4]);
+    let oldLine = Number(numbers[1]) + (numbers[2] === "0" ? 1 : 0);
+    let headLine = Number(numbers[3]) + (numbers[4] === "0" ? 1 : 0);
+    let hunkNet = 0;
+    for (const text5 of body) {
+      if (text5.startsWith("+")) {
+        added.add(headLine);
+        headLine++;
+        hunkNet++;
+      } else if (text5.startsWith("-")) {
+        oldLine++;
+        hunkNet--;
+      } else if (text5.startsWith(" ")) {
+        context2.set(headLine, oldLine);
+        headLine++;
+        oldLine++;
+      }
+    }
+    net += hunkNet;
+    spans.push({ endExclusive: newCount === 0 ? Number(numbers[3]) + 1 : Number(numbers[3]) + newCount, netAfter: net });
+  }
+  const mergeBaseLine = (headLine) => {
+    const mapped = context2.get(headLine);
+    if (mapped !== void 0) return mapped;
+    let shift = 0;
+    for (const span of spans) {
+      if (headLine < span.endExclusive) break;
+      shift = span.netAfter;
+    }
+    return headLine - shift;
+  };
+  return { added, mergeBaseLine };
+}
+function demoteBaseAdditions(section2, shouldDemote) {
+  const parsed2 = sectionHunks(section2);
+  if (parsed2 === null || parsed2.hunks.length === 0) return { text: section2, demoted: false };
+  let demoted = false;
+  let touched = false;
+  const kept = [];
+  for (const hunk of parsed2.hunks) {
+    const [header, ...body] = hunk.text.split("\n");
+    const numbers = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(header);
+    if (numbers === null) return { text: section2, demoted: false };
+    let line3 = hunk.first;
+    let changed = false;
+    const lines2 = body.map((text5) => {
+      if (!text5.startsWith("+")) {
+        if (text5.startsWith(" ")) line3++;
+        return text5;
+      }
+      const demote = shouldDemote(line3);
+      line3++;
+      if (!demote) return text5;
+      changed = true;
+      return ` ${text5.slice(1)}`;
+    });
+    if (!changed) {
+      kept.push(hunk.text);
+      continue;
+    }
+    touched = true;
+    if (!lines2.some((text5) => text5.startsWith("+") || text5.startsWith("-"))) continue;
+    demoted = true;
+    const oldCount = lines2.filter((text5) => text5.startsWith(" ") || text5.startsWith("-")).length;
+    const newCount = lines2.filter((text5) => text5.startsWith(" ") || text5.startsWith("+")).length;
+    kept.push([`@@ -${numbers[1]},${oldCount} +${numbers[2]},${newCount} @@${numbers[3]}`, ...lines2].join("\n"));
+  }
+  if (!touched) return { text: section2, demoted: false };
+  return { text: kept.length === 0 ? "" : parsed2.header + kept.join(""), demoted };
+}
 function hasReplayMarkers(section2) {
   return /^-<{7} /m.test(section2) && /^->{7} /m.test(section2);
 }
@@ -11598,6 +11696,7 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
   const narrowed = [];
   const whole = [];
   const mixed = [];
+  const demoted = [];
   const resolved = [];
   for (const [path, section2] of own) {
     const delta = sinceReview.get(path);
@@ -11610,10 +11709,19 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
       };
     }
     if (fresh.text.length === 0) continue;
+    const ownMap = ownDiffLineMap(section2);
+    const baseSection = baseDelta.get(path);
+    const baseAdded = baseSection === void 0 ? null : addedHeadLines(baseSection);
+    const shown = ownMap === null ? { text: fresh.text, demoted: false } : demoteBaseAdditions(
+      fresh.text,
+      (headLine) => !ownMap.added.has(headLine) && (baseAdded === null || baseAdded.has(ownMap.mergeBaseLine(headLine)))
+    );
+    if (shown.text.length === 0) continue;
+    if (shown.demoted) demoted.push(path);
     if (fresh.mixed) mixed.push(path);
     else if (narrowToResolution(section2, resolutions.get(path)) === null) whole.push(path);
     else narrowed.push(path);
-    resolved.push(fresh.text);
+    resolved.push(shown.text);
   }
   const rest = paths.filter((path) => !own.has(path));
   const leaked = [];
@@ -11634,6 +11742,7 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
     narrowed.length === 0 ? null : `narrowed to the merge resolution after a conflicting replay: ${narrowed.sort().join(", ")}`,
     whole.length === 0 ? null : `read as the two-head diff minus base changes after a conflicting replay, as its resolution could not be matched to hunks: ${whole.sort().join(", ")}`,
     mixed.length === 0 ? null : `kept whole hunks where the base's and the author's edits could not be separated after a conflicting replay: ${mixed.sort().join(", ")}`,
+    demoted.length === 0 ? null : `shown as context where the base added lines after a conflicting replay: ${demoted.sort().join(", ")}`,
     leaked.length === 0 ? null : `read as the pull request's own diff after a conflicting replay, so no conflict marker is shown: ${leaked.sort().join(", ")}`
   ].filter((note) => note !== null);
   const detail = notes.length === 0 ? {} : { detail: notes.join("; ") };
