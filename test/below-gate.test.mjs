@@ -131,7 +131,8 @@ test('score lists a verified candidate stopped only by the final score as below 
 test('a verified candidate rejected on confidence is below the gate, marked as the confidence gate', () =>
   withDir((dir) => {
     const verification = join(dir, 'verification.json');
-    writeFileSync(verification, JSON.stringify({ results: [{ candidate_id: 'cand_001', technical_confidence: 0.5 }] }));
+    // Below the 0.7 floor (#479), so the confidence gate is what stops it.
+    writeFileSync(verification, JSON.stringify({ results: [{ candidate_id: 'cand_001', technical_confidence: 0.65 }] }));
     const r = run(['score', '--verification', verification, '--min-score', '0.99'], JSON.stringify({ candidates: [candidate()] }), dir);
     assert.equal(r.code, 0, r.stderr);
     const out = JSON.parse(r.stdout);

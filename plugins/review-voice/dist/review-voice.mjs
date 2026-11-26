@@ -8716,6 +8716,10 @@ function isFixVerdict(value) {
   return typeof value === "string" && FIX_VERDICTS.includes(value);
 }
 var EVIDENCE_QUALITIES = ["high", "medium", "low"];
+var SEVERITY_FITS = ["right", "too_high"];
+function isSeverityFit(value) {
+  return typeof value === "string" && SEVERITY_FITS.includes(value);
+}
 var IMPACT_CLASSES = ["no-exposure", "data-exposure", "privilege-escalation"];
 function isImpactClass(value) {
   return typeof value === "string" && IMPACT_CLASSES.includes(value);
@@ -8754,6 +8758,8 @@ function isSuppressionExempt(category) {
   return SUPPRESSION_EXEMPT_CATEGORIES.has(canonicalCategory(category));
 }
 var POLICY_SUPPRESSED_PREFIX = "policy-suppressed:";
+var NOT_MATERIAL_PREFIX = "the verifier judged this not material:";
+var OWNER_PRECEDENT_PREFIX = "owner precedent is against raising this";
 function matchingSuppression(suppressions, candidate) {
   if (suppressions.length === 0 || isSuppressionExempt(candidate.category)) return null;
   const ruleId = ruleIdFor(candidate.category, candidate.lane, candidate.blockerClass);
@@ -8863,6 +8869,34 @@ function applyLaneSeverity(derived, candidate, lane, verification2) {
     reason: `${result.reason}, raised to ${escalate.to} by lane ${lane.name} because the verifier confirmed the blocker and traced its impact at confidence ${confidence.toFixed(2)}`
   };
 }
+var materialityHold = (reason2) => reason2 === "" ? NOT_MATERIAL_PREFIX : `${NOT_MATERIAL_PREFIX} ${reason2}`;
+function applyMaterialityVerdict(derived, candidate, verification2) {
+  const unchanged = { severity: derived, hold: null };
+  if (verification2?.verified !== true || derived.severity === "question") return unchanged;
+  const notMaterial = verification2.material === false;
+  const tooHigh = verification2.severityFit === "too_high";
+  if (!notMaterial && !tooHigh) return unchanged;
+  const at2 = TIER_ORDER.indexOf(derived.severity);
+  if (at2 === -1) return unchanged;
+  const reason2 = verification2.materialReason?.replace(/\s+/g, " ").replaceAll(" Also: ", " also: ").trim() ?? "";
+  if (notMaterial && at2 <= TIER_ORDER.indexOf("minor") && !isSuppressionExempt(candidate.category)) {
+    return { severity: derived, hold: materialityHold(reason2) };
+  }
+  if (at2 === 0 || !notMaterial && at2 <= TIER_ORDER.indexOf("minor")) return unchanged;
+  const lowered = TIER_ORDER[at2 - 1];
+  const why = [
+    ...notMaterial ? [`the verifier judged this not material${reason2 === "" ? "" : `: ${reason2}`}`] : [],
+    ...tooHigh ? [`the verifier judged the severity too high (severity_fit: too_high)${!notMaterial && reason2 !== "" ? `: ${reason2}` : ""}`] : []
+  ];
+  return {
+    severity: {
+      ...derived,
+      severity: lowered,
+      reason: `${derived.reason}, lowered from ${derived.severity} to ${lowered} because ${why.join(" and ")}`
+    },
+    hold: null
+  };
+}
 var UNVERIFIABLE_CONFIDENCE = 0.6;
 var DOCUMENT_NIT_HINT = "lower it with `--severity <id>=nit` to post it as a nit";
 var UNVERIFIABLE_REJECTION = "the claim could not be verified, so it cannot ship whatever it scores; `unverifiableBecause` names the trigger";
@@ -8876,8 +8910,10 @@ function admitsUnverifiable(candidate) {
   return candidate.evidence.some((item) => ADMITS_UNVERIFIABLE.some((pattern) => pattern.test(item)));
 }
 var QUESTION_GAP_FLOOR = 0.5;
+var EXEMPT_CONFIDENCE_FLOOR = 0.8;
+var FIX_CONFIDENCE_THRESHOLD = 0.8;
 var DEFAULT_THRESHOLDS = {
-  technicalConfidence: 0.8,
+  technicalConfidence: 0.7,
   minorConfidence: 0.7,
   analystOnlyConfidence: 0.7,
   finalScore: 0.68
@@ -9301,6 +9337,7 @@ function assertUniqueCandidateIds(candidates) {
   }
 }
 function renderFix(candidate, verification2, thresholds) {
+  const fixFloor = Math.max(FIX_CONFIDENCE_THRESHOLD, thresholds.technicalConfidence);
   const suggested = candidate.suggestedFix ?? null;
   const rawVerdict = verification2?.fixVerdict;
   const verdict2 = isFixVerdict(rawVerdict) ? rawVerdict : null;
@@ -9312,7 +9349,7 @@ function renderFix(candidate, verification2, thresholds) {
   const hasSuggested = suggested !== null && suggested.trim().length > 0;
   const analystConfidence = candidate.fixConfidence ?? null;
   const hasDirection = direction !== null && direction.trim().length > 0;
-  if (hasSuggested && verdict2 === "verified" && confidence !== null && confidence >= thresholds.technicalConfidence) {
+  if (hasSuggested && verdict2 === "verified" && confidence !== null && confidence >= fixFloor) {
     return {
       suggested,
       analystConfidence,
@@ -9320,7 +9357,7 @@ function renderFix(candidate, verification2, thresholds) {
       confidence,
       direction,
       render: "fix",
-      reason: verifierReason ?? `verified fix confidence ${confidence.toFixed(2)} meets the ${thresholds.technicalConfidence} threshold`
+      reason: verifierReason ?? `verified fix confidence ${confidence.toFixed(2)} meets the ${fixFloor} threshold`
     };
   }
   if (verdict2 === "partial" && hasSuggested && hasDirection && isBareDirection(direction)) {
@@ -9338,7 +9375,7 @@ function renderFix(candidate, verification2, thresholds) {
   if (!hasSuggested) {
     reason2 = "no fix was proposed";
   } else if (verdict2 === "verified" && confidence !== null) {
-    reason2 = `verified fix confidence ${confidence.toFixed(2)} is below the ${thresholds.technicalConfidence} threshold`;
+    reason2 = `verified fix confidence ${confidence.toFixed(2)} is below the ${fixFloor} threshold`;
   } else if (verdict2 === "partial" && hasDirection) {
     reason2 = "the direction is not one short sentence without code, so it is withheld";
   } else if (verdict2 === "partial") {
@@ -9380,7 +9417,10 @@ function withLegacyTierHint(severity, candidate, verification2, lane) {
 function verifiedFloor(category, tier, thresholds) {
   const main2 = thresholds.technicalConfidence;
   if (isSuppressionExempt(category ?? "")) {
-    return { floor: main2, names: `the floor for every tier in the ${canonicalCategory(category)} category` };
+    return {
+      floor: Math.max(EXEMPT_CONFIDENCE_FLOOR, main2),
+      names: `the floor for every tier in the ${canonicalCategory(category)} category`
+    };
   }
   if (tier !== "minor" && tier !== "nit") {
     return { floor: main2, names: `the floor for ${tier === "important" ? "an" : "a"} ${tier} finding` };
@@ -9403,12 +9443,19 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const unverifiableBecause = confidenceSource !== "unverifiable-cap" ? null : missingContext ? `the verifier listed required_context_missing the claim depends on: ${missing.join("; ")}` : "the analyst's evidence says the claim could not be checked, and the verifier gave no technical_confidence of its own";
   const derivedSeverity = deriveSeverity(candidate.category, candidate.severity, verification2?.reach);
   const isQuestion = derivedSeverity.severity === "question";
-  const severity = withLegacyTierHint(
+  const boundedSeverity = withLegacyTierHint(
     applyLaneSeverity(boundSeverityByEvidence(derivedSeverity, candidate, verification2), candidate, lane, verification2),
     candidate,
     verification2,
     lane
   );
+  const materiality = applyMaterialityVerdict(boundedSeverity, candidate, verification2);
+  if (materiality.hold === null && ownerTier !== void 0 && TIER_ORDER.indexOf(ownerTier) <= TIER_ORDER.indexOf("minor") && verification2?.verified === true && verification2.material === false && !isSuppressionExempt(candidate.category)) {
+    materiality.hold = materialityHold(
+      verification2.materialReason?.replace(/\s+/g, " ").replaceAll(" Also: ", " also: ").trim() ?? ""
+    );
+  }
+  const severity = materiality.severity;
   const verified = verifiedFloor(candidate.category, ownerTier ?? severity.severity, thresholds);
   const confidenceFloor = confidenceSource === "verifier" ? verified.floor : thresholds.analystOnlyConfidence;
   const alreadySaid = duplicatePrecedent(candidate, precedents);
@@ -9424,6 +9471,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const score2 = (owner, repository) => 0.35 * confidence + 0.25 * owner + 0.15 * repository + 0.15 * quality + 0.1 * novel;
   const finalScore = score2(ownerAlignment, repositoryAlignment);
   const anchoredFinalScore = score2(anchoredOwnerAlignment, anchoredRepositoryAlignment);
+  const verifiedVerifierClaim = !isQuestion && confidenceSource === "verifier" && verification2?.verified === true;
   let rejectedBecause = null;
   if (!Number.isFinite(finalScore) || !Number.isFinite(confidence)) {
     rejectedBecause = "score could not be computed from this candidate";
@@ -9451,8 +9499,16 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     rejectedBecause = "the verifier did not verify this claim (verified: false)";
   } else if (confidence < confidenceFloor) {
     rejectedBecause = `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` + (confidenceSource === "analyst" ? ". No verification was supplied, so this is the analyst's opinion of its own output." : `, ${verified.names}`);
+  } else if (verifiedVerifierClaim) {
+    if (ownerAlignment < NEUTRAL_ALIGNMENT) {
+      rejectedBecause = `${OWNER_PRECEDENT_PREFIX} (${ownerAlignment.toFixed(2)} alignment), and a finding the owner has dismissed the like of before is noise the second time`;
+    } else if (materiality.hold !== null) {
+      rejectedBecause = materiality.hold;
+    }
   } else if (finalScore < thresholds.finalScore) {
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
+  } else if (materiality.hold !== null) {
+    rejectedBecause = materiality.hold;
   }
   const staleConsumer = candidate.anchor === STALE_CONSUMER;
   const untracedDocumentNit = isDocumentationPath(candidate.path) && severity.severity === "nit" && confidenceSource === "verifier";
@@ -9465,6 +9521,9 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     else if (rejectedBecause.startsWith("score ")) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
     else rejectedBecause = `${rejectedBecause}. Also: ${untraced}`;
   }
+  const ownerGated = isQuestion || verifiedVerifierClaim;
+  const wouldChangeEligibility = ownerGated ? rejectedBecause === null ? anchoredOwnerAlignment < NEUTRAL_ALIGNMENT : rejectedBecause.startsWith("owner precedent is against") && !rejectedBecause.includes(" Also: ") && // Without the precedent a materiality hold would still stop it.
+  materiality.hold === null && anchoredOwnerAlignment >= NEUTRAL_ALIGNMENT : rejectedBecause === null ? anchoredFinalScore < thresholds.finalScore : rejectedBecause.startsWith("score ") && anchoredFinalScore >= thresholds.finalScore;
   const fix = renderFix(candidate, verification2, thresholds);
   return {
     candidateId: candidate.candidateId,
@@ -9488,9 +9547,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
       ownerAlignment: anchoredOwnerAlignment,
       repositoryAlignment: anchoredRepositoryAlignment,
       finalScore: anchoredFinalScore,
-      // Only the score gate can flip here: every other rejection reason is
-      // independent of alignment.
-      wouldChangeEligibility: rejectedBecause === null ? anchoredFinalScore < thresholds.finalScore : rejectedBecause.startsWith("score ") && anchoredFinalScore >= thresholds.finalScore
+      wouldChangeEligibility
     },
     eligible: rejectedBecause === null,
     rejectedBecause,
@@ -12454,7 +12511,7 @@ function normaliseHeld(entry) {
     mapped = {
       verdict: "below-gate",
       source: "score",
-      reason: typeof score2 === "number" && typeof e["threshold"] === "number" ? `below the ${e["gate"]} gate: ${label2} ${score2} under ${e["threshold"]}` : `below the ${e["gate"]} gate`
+      reason: (e["gate"] === "materiality" || e["gate"] === "owner-precedent") && typeof e["rejectedBecause"] === "string" ? e["rejectedBecause"] : typeof score2 === "number" && typeof e["threshold"] === "number" ? `below the ${e["gate"]} gate: ${label2} ${score2} under ${e["threshold"]}` : `below the ${e["gate"]} gate`
     };
   } else if (e["rejectedBecause"] !== void 0) {
     mapped = { verdict: "refuted", source: "score", reason: str2(e["rejectedBecause"]) };
@@ -20814,17 +20871,20 @@ var COMMAND_HELP = {
       "  --base <ref>              Reviewed tree for absence checks",
       "  --verification <path>     Verifier output for confidence and fix rendering",
       "  --exclude-pull <n>        Exclude precedents from this pull request",
-      "  --min-confidence <n>      Verifier confidence gate at blocking or important, and for a security,",
-      "                            authorization, authentication, data integrity or trust boundary",
-      "                            finding at every tier (default 0.8; review.confidence_threshold)",
-      "  --min-minor-confidence <n>  Verifier confidence gate at minor or nit, never above --min-confidence",
+      "  --min-confidence <n>      Verifier confidence floor at every tier (default 0.7;",
+      "                            review.confidence_threshold); a security, authorization,",
+      "                            authentication, data integrity or trust boundary finding takes",
+      "                            0.8, or this floor when it is higher, at every tier",
+      "  --min-minor-confidence <n>  Verifier confidence floor at minor or nit, never above --min-confidence",
       "                            (default 0.7; review.minor_confidence_threshold)",
       "  --min-analyst-confidence <n>  Analyst-only gate (default 0.7)",
       "  --thread <path>           Existing pull-request comments",
       "  --diff-file <path>        Diff for reach and anchor checks",
       "  --head <ref>              With --base: a finding on a file present at --base and absent at --head",
       "                            passes the anchor check at a line of its base copy and is marked deletedFile",
-      "  --min-score <n>           Final score gate (default 0.68)",
+      "  --min-score <n>           Final score gate for a candidate the verifier did not verify",
+      "                            (default 0.68); a verified verifier-sourced claim reports its",
+      "                            score without gating on it",
       "  --severity <id>=<tier>    Owner downgrade, or a raise up to the requested tier when reach is unknown (repeatable)",
       "  --promote <id>            Owner posts a belowGate or suppressed[] finding past its gate (repeatable)",
       "  --as-question <id>        Owner posts a verified minor or nit as a question, past its gate as --promote",
@@ -21675,9 +21735,10 @@ var COMMAND_HELP = {
       "  important or minor finding that the verifier confirmed under the confidence gate is held as",
       "  below-gate, keeps the review from approving and is kept the same way, until a full review, the",
       "  file leaving the pull request or `decline` ends it; a nit or a question held that way does",
-      "  neither (docs/adr/0016). The confidence gate is review.confidence_threshold (0.8) at blocking or",
-      "  important and for a security or trust finding, and review.minor_confidence_threshold (0.7) at",
-      "  minor or nit. A finding raised at the held path and line, or a claim held there as",
+      "  neither (docs/adr/0016). The confidence gate is one floor, review.confidence_threshold (0.7) at blocking or",
+      "  important and review.minor_confidence_threshold (0.7) at minor or nit; a security or trust",
+      "  finding takes 0.8, or review.confidence_threshold when that is higher, at every tier. A",
+      "  finding raised at the held path and line, or a claim held there as",
       "  unverified, refuted or partly, does not end either hold. In thorough mode, with a",
       "  reproduction block in the configuration, the verifier writes a reproduction for each blocking or",
       "  important finding and `reproduce` runs it (Linux only); one that does not fail holds its finding",
@@ -24788,7 +24849,14 @@ async function score(run) {
       ...typeof entry["claim"] === "string" && entry["claim"] !== "" ? { text: entry["claim"] } : {}
     });
   };
-  for (const entry of list2(scores["belowGate"])) hold(entry, "below-gate", "score", `below the ${String(entry["gate"])} gate`);
+  for (const entry of list2(scores["belowGate"])) {
+    hold(
+      entry,
+      "below-gate",
+      "score",
+      typeof entry["rejectedBecause"] === "string" ? entry["rejectedBecause"] : `below the ${String(entry["gate"])} gate`
+    );
+  }
   for (const entry of list2(scores["suppressed"])) {
     const version = entry["policyVersion"];
     hold(
@@ -25538,6 +25606,17 @@ function verificationProblem(list3) {
     const blocker = entry["blocker_confirmed"] ?? entry["blockerConfirmed"];
     if (blocker !== void 0 && typeof blocker !== "boolean") {
       return `${who}: blocker_confirmed must be true or false.`;
+    }
+    if (entry["material"] !== void 0 && typeof entry["material"] !== "boolean") {
+      return `${who}: material must be true or false.`;
+    }
+    const materialReason = entry["material_reason"] ?? entry["materialReason"];
+    if (materialReason !== void 0 && (typeof materialReason !== "string" || materialReason.length > 300)) {
+      return `${who}: material_reason must be a string of at most 300 characters.`;
+    }
+    const severityFit = entry["severity_fit"] ?? entry["severityFit"];
+    if (severityFit !== void 0 && !isSeverityFit(severityFit)) {
+      return `${who}: severity_fit must be one of ${SEVERITY_FITS.join(", ")}, not ${JSON.stringify(severityFit)}.`;
     }
     const impactClass = entry["impact_class"] ?? entry["impactClass"];
     if (impactClass !== void 0 && !isImpactClass(impactClass)) {
@@ -33626,8 +33705,8 @@ function applyOwnerPromotion(breakdown, ownerNote, option = "--promote") {
     breakdown.rejectedBecause = null;
     return null;
   }
-  if (breakdown.confidenceSource !== "verifier" || !Number.isFinite(breakdown.finalScore) || gate === null) {
-    return `${option} ${breakdown.candidateId}: only a verified finding held by the score or confidence gate alone can be promoted, and this one was rejected because ${breakdown.rejectedBecause}.`;
+  if (breakdown.confidenceSource !== "verifier" && gate !== "materiality" || !Number.isFinite(breakdown.finalScore) || gate === null) {
+    return `${option} ${breakdown.candidateId}: only a verified finding held by the score, confidence, materiality or owner-precedent gate alone can be promoted, and this one was rejected because ${breakdown.rejectedBecause}.`;
   }
   breakdown.ownerPromotion = { gate, heldBecause: breakdown.rejectedBecause };
   breakdown.eligible = true;
@@ -33730,6 +33809,9 @@ function scoreCommand(argv) {
         const verified = raw["verified"];
         const reason2 = raw["reason"];
         const blockerConfirmed = raw["blocker_confirmed"] ?? raw["blockerConfirmed"];
+        const material = raw["material"];
+        const materialReason = raw["material_reason"] ?? raw["materialReason"];
+        const severityFit = raw["severity_fit"] ?? raw["severityFit"];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: raw["evidence_quality"] ?? raw["evidenceQuality"],
@@ -33747,6 +33829,10 @@ function scoreCommand(argv) {
           premisesVerified: typeof premisesVerified === "boolean" ? premisesVerified : void 0,
           verified: typeof verified === "boolean" ? verified : void 0,
           blockerConfirmed: typeof blockerConfirmed === "boolean" ? blockerConfirmed : void 0,
+          // Already checked by `verificationProblem`; only the real shapes count.
+          material: typeof material === "boolean" ? material : void 0,
+          materialReason: typeof materialReason === "string" ? materialReason : void 0,
+          severityFit: isSeverityFit(severityFit) ? severityFit : void 0,
           reason: typeof reason2 === "string" ? reason2 : void 0,
           // Already checked by `verificationProblem`.
           alsoAt: raw["also_at"] ?? raw["alsoAt"],
@@ -34009,9 +34095,10 @@ function scoreCommand(argv) {
       });
     }
     applyQuestionCap(results);
-    const belowGate = results.filter(
-      (r) => r.confidenceSource === "verifier" && !r.eligible && Number.isFinite(r.finalScore) && gateOf(r.rejectedBecause) !== null && gateOf(r.rejectedBecause) !== "policy"
-    ).map((r) => {
+    const belowGate = results.filter((r) => {
+      const gate = gateOf(r.rejectedBecause);
+      return !r.eligible && Number.isFinite(r.finalScore) && gate !== null && gate !== "policy" && (r.confidenceSource === "verifier" || gate === "materiality");
+    }).map((r) => {
       const gate = gateOf(r.rejectedBecause);
       return boundLists({
         candidateId: r.candidateId,
@@ -34021,7 +34108,7 @@ function scoreCommand(argv) {
         claim: candidates.find((c) => c.candidateId === r.candidateId)?.claim ?? "",
         confidenceSource: r.confidenceSource,
         gate,
-        ...gate === "score" ? { finalScore: r.finalScore, threshold: thresholds.finalScore } : {
+        ...gate === "score" ? { finalScore: r.finalScore, threshold: thresholds.finalScore } : gate === "materiality" || gate === "owner-precedent" ? { rejectedBecause: r.rejectedBecause } : {
           technicalConfidence: r.technicalConfidence,
           threshold: r.confidenceFloor
         }
@@ -34200,6 +34287,8 @@ function locallyListable(rejectedBecause) {
 function gateOf(rejectedBecause) {
   if (rejectedBecause === null || rejectedBecause.includes(" Also: ")) return null;
   if (rejectedBecause.startsWith(POLICY_SUPPRESSED_PREFIX)) return "policy";
+  if (rejectedBecause.startsWith(NOT_MATERIAL_PREFIX)) return "materiality";
+  if (rejectedBecause.startsWith(OWNER_PRECEDENT_PREFIX)) return "owner-precedent";
   if (rejectedBecause.startsWith("score ")) return "score";
   if (rejectedBecause.startsWith("technical confidence ")) return "confidence";
   return null;

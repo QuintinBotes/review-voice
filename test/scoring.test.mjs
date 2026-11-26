@@ -121,7 +121,9 @@ test('a candidate with no evidence scores zero on evidence', () => {
 });
 
 test('thresholds are configurable, and the final-score gate has moved off the specification', () => {
-  assert.equal(DEFAULT_THRESHOLDS.technicalConfidence, 0.8);
+  // #479: one 0.7 floor for a verifier-established confidence.
+  assert.equal(DEFAULT_THRESHOLDS.technicalConfidence, 0.7);
+  assert.equal(DEFAULT_THRESHOLDS.minorConfidence, 0.7);
 
   // The specification says 0.78. That was calibrated when evidenceQuality
   // returned 1.000 for every candidate and handed each one a free 0.15.
@@ -1020,7 +1022,9 @@ test('a claim that says it could not be verified is rejected on its own terms', 
 });
 
 test('the default floors are the measured ones', () => {
-  assert.equal(DEFAULT_THRESHOLDS.technicalConfidence, 0.8);
+  // #479: verifier confidence is one low floor; the analyst-only floor stays.
+  assert.equal(DEFAULT_THRESHOLDS.technicalConfidence, 0.7);
+  assert.equal(DEFAULT_THRESHOLDS.minorConfidence, 0.7);
   assert.equal(DEFAULT_THRESHOLDS.analystOnlyConfidence, 0.7);
 });
 
