@@ -90,7 +90,9 @@ It learns through **retrieval plus policy compilation**, not model fine-tuning.
 Your historical reviews are ingested, redacted, weighted, and compiled into
 short, inspectable YAML rules that you approve before they take effect. Every
 rule can show the evidence that produced it. Every policy version can be rolled
-back.
+back. Precedents also include the outcomes of Review Voice's own posted
+findings, derived at retrieval time from their stored outcomes, so a finding
+the owner already dismissed the like of weighs against saying it again.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

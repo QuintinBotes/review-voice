@@ -56,7 +56,7 @@ export function explainCommand(argv: string[]): number {
       rejectedBecause?: string | null;
       duplicateOfPrecedent?: string | null;
       precedentIds?: string[];
-      precedents?: { eventId?: string }[];
+      precedents?: { eventId?: string; source?: string }[];
       fix?: {
         suggested?: string | null;
         verdict?: 'verified' | 'partial' | 'refuted' | 'absent' | null;
@@ -160,11 +160,19 @@ export function explainCommand(argv: string[]): number {
         console.log(`  novelty           ${score.novelty.toFixed(2)}`);
       }
       // Stored scores no longer carry `precedentIds`; the ids ride on `precedents`.
-      const precedentIds =
-        score?.precedentIds ??
-        (score?.precedents ?? []).flatMap((p) => (typeof p.eventId === 'string' ? [p.eventId] : []));
-      if (precedentIds.length > 0) {
-        console.log(`  precedents        ${precedentIds.join(', ')}`);
+      // A learned precedent names its source, so alignment from an outcome is
+      // told apart from corpus history (#480). Older stored scores have no
+      // source; an `outcome:` id still names it.
+      const precedentLabels =
+        score?.precedents !== undefined && score.precedents.length > 0
+          ? score.precedents.flatMap((p) =>
+              typeof p.eventId === 'string'
+                ? [`${p.eventId}${p.source === 'outcome' || p.eventId.startsWith('outcome:') ? ' (source: outcome)' : ''}`]
+                : [],
+            )
+          : (score?.precedentIds ?? []).map((id) => `${id}${id.startsWith('outcome:') ? ' (source: outcome)' : ''}`);
+      if (precedentLabels.length > 0) {
+        console.log(`  precedents        ${precedentLabels.join(', ')}`);
       }
       if (score?.duplicateOfPrecedent != null) {
         console.log(`  already stated in ${score.duplicateOfPrecedent}`);

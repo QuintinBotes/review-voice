@@ -5,6 +5,19 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Outcomes of the tool's own posted findings become precedent at retrieval
+  time: a strong `dismissed` counts as a dismissal and a `fixed` as an
+  acceptance, weighted by who decided it, so owner and repository alignment
+  can fall below neutral and the owner-precedent gate can fire. No new rows
+  are written, so deleting the outcomes unlearns them. `explain` marks each
+  learned precedent `source: outcome`, and `status` prints the learned
+  accepted and dismissed counts and the categories with net negative learned
+  precedent. (closes #480, docs/adr/0039)
+
 ## [1.29.1] - 2026-11-23
 
 ### Fixed
