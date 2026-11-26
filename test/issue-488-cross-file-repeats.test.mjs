@@ -97,6 +97,18 @@ function setup(thread) {
   return { dir, patch, threadFile, input };
 }
 
+test('a file name followed by another extension is not that file', () => {
+  assert.deepEqual(commentsNaming(candidate, [onParent('Remove the stray Child.tsx.bak from the commit.')]), []);
+  assert.equal(commentsNaming(candidate, [onParent('See Child.tsx:12 and child.tsx.')]).length, 1);
+});
+
+test('a review body or conversation comment naming the file or symbol is handed to the verifier', () => {
+  const body = { path: null, line: null, author: 'a-reviewer', body: 'The spaceIds defaults start empty, so a saved selection is lost.', kind: 'review-body' };
+  const talk = { path: null, line: null, author: 'b-reviewer', body: 'Also see Child.tsx.', kind: 'conversation' };
+  const out = commentsNaming(candidate, [talk, body]);
+  assert.deepEqual(out.map((c) => c.author), ['a-reviewer', 'b-reviewer']);
+});
+
 const check = (s) =>
   JSON.parse(
     execFileSync(process.execPath, [bundle, 'check-candidates', '--diff-file', s.patch, '--thread', s.threadFile], {
@@ -141,6 +153,40 @@ test('check-candidates hints a file-only match and a symbol-only match, and drop
   } finally {
     rmSync(fileOnly.dir, { recursive: true, force: true });
     rmSync(symbolOnly.dir, { recursive: true, force: true });
+  }
+});
+
+test('check-candidates keeps every naming comment, best overlap first, under a byte budget', () => {
+  const few = setup(Array.from({ length: 8 }, (_, i) => ({ ...onParent(`Remark ${i} on child.tsx.`), line: 10 + i })));
+  const many = setup(
+    Array.from({ length: 40 }, (_, i) => ({ ...onParent(`Remark ${i} on child.tsx ${'padding '.repeat(30)}`), line: 10 + i })),
+  );
+  const best = setup([
+    { ...onParent('Remark on child.tsx.'), author: 'weak' },
+    { ...onParent('child.tsx: the upload settles late so the spaceIds defaults start empty.'), author: 'strong', line: 70 },
+  ]);
+  try {
+    const hint = check(few).kept[0].possibleRepeatOf;
+    assert.equal(hint.alsoNaming.length, 7);
+    assert.equal('alsoNamingOmitted' in hint, false);
+    const big = check(many).kept[0].possibleRepeatOf;
+    assert.ok(big.alsoNaming.length < 39 && big.alsoNaming.length > 5);
+    assert.equal(big.alsoNaming.length + big.alsoNamingOmitted, 39);
+    const ordered = check(best).kept[0].possibleRepeatOf;
+    assert.equal(ordered.author === 'strong' || ordered.alsoNaming[0].author === 'strong', true);
+  } finally {
+    for (const s of [few, many, best]) rmSync(s.dir, { recursive: true, force: true });
+  }
+});
+
+test('check-candidates passes an unanchored review body naming the file and symbol to the verifier', () => {
+  const s = setup([{ path: null, line: null, author: 'a-reviewer', kind: 'review-body', body: 'Child.tsx needs the spaceIds handled.' }]);
+  try {
+    const out = check(s);
+    assert.equal(out.kept.length, 1);
+    assert.equal(out.kept[0].possibleRepeatOf?.author, 'a-reviewer');
+  } finally {
+    rmSync(s.dir, { recursive: true, force: true });
   }
 });
 
@@ -263,7 +309,30 @@ test('scenario 3: only the check the thread named is dropped from a line naming 
 test('threadRaisesCheck ignores the description and the tool\'s own earlier heads-up', () => {
   const own = { path: null, line: null, author: 'x', body: 'Heads up: `Check PR size` failing on this head.', kind: 'review-body' };
   const description = { path: null, line: null, author: 'x', body: 'This keeps the size small.', kind: 'description' };
-  assert.equal(threadRaisesCheck('Check PR size', [own, description]), null);
+  assert.equal(threadRaisesCheck('Check PR size', [own, description], (c) => c.author === 'x'), null);
+});
+
+test('threadRaisesCheck counts another author\'s heads-up line as a normal comment', () => {
+  const line = 'Heads up: `Check PR size` failing on this head.';
+  const other = { path: null, line: null, author: 'a-colleague', body: line, kind: 'review-body' };
+  const isOwn = (c) => c.author === OWNER;
+  assert.notEqual(threadRaisesCheck('Check PR size', [other], isOwn), null);
+  assert.equal(threadRaisesCheck('Check PR size', [{ ...other, author: OWNER }], isOwn), null);
+});
+
+test('post path: our own heads-up in the thread keeps the line, a colleague\'s hides it', async () => {
+  const line = 'Heads up: `Check PR size` failing on this head.';
+  const review = (login) => ({ ...SPLIT, user: { login }, body: line });
+  await withDb(async (db) => {
+    record(db, CLEAN);
+    const mine = await verdict(db, fakeGitHub({ checks: [failing('Check PR size')], reviews: [review(OWNER)] }));
+    assert.deepEqual(mine.output.annotations, [line]);
+  });
+  await withDb(async (db) => {
+    record(db, CLEAN);
+    const theirs = await verdict(db, fakeGitHub({ checks: [failing('Check PR size')], reviews: [review('a-colleague')] }));
+    assert.deepEqual(theirs.output.annotations, []);
+  });
 });
 
 const MINOR_PROSE = 'The cartTotal skips the discount. A discounted cart is overcharged.';

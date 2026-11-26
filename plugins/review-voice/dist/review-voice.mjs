@@ -8984,7 +8984,7 @@ function possiblyRaisedInFile(candidate, thread, accept = () => true) {
 function namesFile(body, path) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-])`, "i").test(body);
+  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-]|\\.\\w)`, "i").test(body);
 }
 var SYMBOL = /(?<![\w$])(?:[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*|[A-Za-z][a-z0-9]*(?:_[A-Za-z0-9]+)+)(?![\w$])/g;
 function candidateSymbols(candidate) {
@@ -9001,19 +9001,18 @@ function namesSymbol(body, candidate) {
   });
 }
 function commentsNaming(candidate, thread) {
-  return thread.filter(
-    (comment) => comment.kind !== "description" && comment.path !== null && comment.line !== null && namesCandidate(comment.body, candidate)
-  );
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  return thread.filter((comment) => comment.kind !== "description" && namesCandidate(comment.body, candidate)).map((comment, index) => ({ comment, index, share: overlap(mine, significantWords(comment.body)) })).sort((a, b) => b.share - a.share || a.index - b.index).map((entry) => entry.comment);
 }
 var GENERIC_CHECK_WORDS = /* @__PURE__ */ new Set(["check", "job", "ci", "status", "workflow", "run", "build", "test", "tests"]);
-function threadRaisesCheck(name, thread) {
+function threadRaisesCheck(name, thread, isOwn = () => false) {
   const all = name.toLowerCase().match(/[a-z0-9]+/g) ?? [];
   const distinctive = all.filter((word) => !GENERIC_CHECK_WORDS.has(word));
   const mine = new Set(distinctive.length > 0 ? distinctive : all);
   if (mine.size === 0) return null;
   for (const comment of thread) {
     if (comment.kind === "description") continue;
-    const body = comment.body.split("\n").filter((line3) => !/^\s*(?:>\s*)?Heads up:/.test(line3)).join("\n");
+    const body = isOwn(comment) ? comment.body.split("\n").filter((line3) => !/^\s*(?:>\s*)?Heads up:/.test(line3)).join("\n") : comment.body;
     const words = new Set(body.toLowerCase().match(/[a-z0-9]+/g) ?? []);
     if ([...mine].every((word) => words.has(word))) return comment;
   }
@@ -18919,12 +18918,17 @@ async function checkedSuggestions(options, run, planned, head) {
 async function ciNotOnThread(options, ci, policy) {
   if (ciAnnotations(ci, policy).length === 0) return ci;
   let comments;
+  let me;
   try {
+    const { data: viewer } = await options.client.get("/user");
+    if (typeof viewer?.login !== "string") return ci;
+    me = viewer.login.toLowerCase();
     comments = (await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client })).comments;
   } catch {
     return ci;
   }
-  const open = (entries) => entries.filter((entry) => threadRaisesCheck(entry.name, comments) === null);
+  const isOwn = (comment) => comment.author.toLowerCase() === me;
+  const open = (entries) => entries.filter((entry) => threadRaisesCheck(entry.name, comments, isOwn) === null);
   return { state: ci.state, failed: open(ci.failed), rerun: open(ci.rerun) };
 }
 async function computeVerdict(options) {
@@ -34085,7 +34089,18 @@ function readSignals(file2, root) {
     ];
   });
 }
-var MAX_NAMING = 5;
+var NAMING_BUDGET_BYTES = 4e3;
+function withinBudget(items, size) {
+  const fits = [];
+  let used = 0;
+  for (const item of items) {
+    const next = size(item);
+    if (used + next > NAMING_BUDGET_BYTES) break;
+    used += next;
+    fits.push(item);
+  }
+  return { fits, omitted: items.length - fits.length };
+}
 var TOOL_RESTATEMENT_OVERLAP = 0.6;
 function matchSignal(candidate, signals) {
   if (isSuppressionExempt(candidate.category)) return null;
@@ -34374,7 +34389,16 @@ function checkCandidatesCommand(argv) {
       const possible = possiblySaidOnThread(candidate, located, isOwn) ?? possiblyRaisedInFile(candidate, located, isOwn) ?? possiblyRaisedInFile(candidate, located);
       const naming = commentsNaming(candidate, located);
       const lead = possible ?? naming[0] ?? null;
-      const alsoNaming = naming.filter((comment) => comment !== lead).slice(0, MAX_NAMING);
+      const brief = (comment) => ({
+        author: comment.author,
+        path: comment.path,
+        line: comment.line,
+        excerpt: comment.body.slice(0, 200)
+      });
+      const { fits: alsoNaming, omitted } = withinBudget(
+        naming.filter((comment) => comment !== lead).map(brief),
+        (entry) => Buffer.byteLength(JSON.stringify(entry))
+      );
       if (lead !== null) {
         kept.push({
           ...original,
@@ -34388,14 +34412,8 @@ function checkCandidatesCommand(argv) {
             ...lead.resolved === true && typeof lead.resolvedBy === "string" ? { resolvedBy: lead.resolvedBy } : {},
             ...typeof lead.id === "number" ? { commentId: lead.id } : {},
             excerpt: lead.body.slice(0, 200),
-            ...alsoNaming.length === 0 ? {} : {
-              alsoNaming: alsoNaming.map((comment) => ({
-                author: comment.author,
-                path: comment.path,
-                line: comment.line,
-                excerpt: comment.body.slice(0, 200)
-              }))
-            }
+            ...alsoNaming.length === 0 ? {} : { alsoNaming },
+            ...omitted === 0 ? {} : { alsoNamingOmitted: omitted }
           }
         });
         return;

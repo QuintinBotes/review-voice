@@ -506,12 +506,19 @@ async function ciNotOnThread(
 ): Promise<Pick<CiState, 'state' | 'failed' | 'rerun'>> {
   if (ciAnnotations(ci, policy).length === 0) return ci;
   let comments: ThreadComment[];
+  let me: string;
   try {
+    const { data: viewer } = await options.client.get<{ login?: unknown }>('/user');
+    // Without our own login the tool's heads-up lines cannot be told from
+    // another author's, so the line is kept.
+    if (typeof viewer?.login !== 'string') return ci;
+    me = viewer.login.toLowerCase();
     comments = (await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client })).comments;
   } catch {
     return ci;
   }
-  const open = (entries: readonly CiEntry[]): CiEntry[] => entries.filter((entry) => threadRaisesCheck(entry.name, comments) === null);
+  const isOwn = (comment: ThreadComment): boolean => comment.author.toLowerCase() === me;
+  const open = (entries: readonly CiEntry[]): CiEntry[] => entries.filter((entry) => threadRaisesCheck(entry.name, comments, isOwn) === null);
   return { state: ci.state, failed: open(ci.failed), rerun: open(ci.rerun) };
 }
 

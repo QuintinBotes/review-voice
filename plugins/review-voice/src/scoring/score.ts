@@ -993,7 +993,9 @@ export function possiblyRaisedInFile(
 function namesFile(body: string, path: string): boolean {
   const name = path.slice(path.lastIndexOf('/') + 1);
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-])`, 'i').test(body);
+  // The name ends at a token end, whitespace, punctuation other than a dot, or
+  // a `:line`; `Child.tsx.bak` is another file. A sentence-ending dot is fine.
+  return new RegExp(`(?<![\\w.-])${escaped}(?![\\w-]|\\.\\w)`, 'i').test(body);
 }
 
 /** camelCase, PascalCase and snake_case names the candidate's prose uses, backticked or not. */
@@ -1017,18 +1019,19 @@ function namesSymbol(body: string, candidate: Candidate): boolean {
 }
 
 /**
- * Every anchored comment, on any file, that names the candidate's file or
- * symbol, for the verifier to read as a possible root-cause repeat (#488). The
- * description is left out, as it is everywhere else.
+ * Every comment, anchored or not and on any file, that names the candidate's
+ * file or symbol, best wording overlap first, for the verifier to read as a
+ * possible root-cause repeat (#488). A review body or a conversation comment
+ * can carry the point too. The description is left out, as it is everywhere
+ * else.
  */
 export function commentsNaming(candidate: Candidate, thread: ThreadComment[]): ThreadComment[] {
-  return thread.filter(
-    (comment) =>
-      comment.kind !== 'description' &&
-      comment.path !== null &&
-      comment.line !== null &&
-      namesCandidate(comment.body, candidate),
-  );
+  const mine = significantWords(`${candidate.claim} ${candidate.failureMode}`);
+  return thread
+    .filter((comment) => comment.kind !== 'description' && namesCandidate(comment.body, candidate))
+    .map((comment, index) => ({ comment, index, share: overlap(mine, significantWords(comment.body)) }))
+    .sort((a, b) => b.share - a.share || a.index - b.index)
+    .map((entry) => entry.comment);
 }
 
 /** Words in a check's name that say nothing about which check it is. */
@@ -1043,14 +1046,21 @@ const GENERIC_CHECK_WORDS = new Set(['check', 'job', 'ci', 'status', 'workflow',
  * or a bot saying it first makes it a repeat. The tool's own earlier heads-up
  * lines and the description do not count.
  */
-export function threadRaisesCheck(name: string, thread: ThreadComment[]): ThreadComment | null {
+export function threadRaisesCheck(
+  name: string,
+  thread: ThreadComment[],
+  isOwn: (comment: ThreadComment) => boolean = () => false,
+): ThreadComment | null {
   const all = name.toLowerCase().match(/[a-z0-9]+/g) ?? [];
   const distinctive = all.filter((word) => !GENERIC_CHECK_WORDS.has(word));
   const mine = new Set(distinctive.length > 0 ? distinctive : all);
   if (mine.size === 0) return null;
   for (const comment of thread) {
     if (comment.kind === 'description') continue;
-    const body = comment.body.split('\n').filter((line) => !/^\s*(?:>\s*)?Heads up:/.test(line)).join('\n');
+    // Only this tool's own heads-up lines are ignored; another author's count.
+    const body = isOwn(comment)
+      ? comment.body.split('\n').filter((line) => !/^\s*(?:>\s*)?Heads up:/.test(line)).join('\n')
+      : comment.body;
     const words = new Set(body.toLowerCase().match(/[a-z0-9]+/g) ?? []);
     if ([...mine].every((word) => words.has(word))) return comment;
   }

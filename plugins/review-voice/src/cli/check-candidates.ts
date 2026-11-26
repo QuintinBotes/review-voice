@@ -197,8 +197,21 @@ export function readSignals(file: string, root: string): EvidenceSignal[] {
  * "Property 'total' does not exist on type 'Order'") shares two words in five
  * with it. An analyst echoing the tool shares most of them.
  */
-/** Most comments naming a candidate's file or symbol handed to the verifier beyond the lead one. */
-const MAX_NAMING = 5;
+/** Bytes of excerpts naming a candidate's file or symbol handed to the verifier beyond the lead one. */
+const NAMING_BUDGET_BYTES = 4000;
+
+/** The comments that fit the budget, in the order given, and how many were left out. */
+function withinBudget<T>(items: T[], size: (item: T) => number): { fits: T[]; omitted: number } {
+  const fits: T[] = [];
+  let used = 0;
+  for (const item of items) {
+    const next = size(item);
+    if (used + next > NAMING_BUDGET_BYTES) break;
+    used += next;
+    fits.push(item);
+  }
+  return { fits, omitted: items.length - fits.length };
+}
 
 const TOOL_RESTATEMENT_OVERLAP = 0.6;
 
@@ -612,7 +625,16 @@ export function checkCandidatesCommand(argv: string[]): number {
       // goes to the verifier too, so it can reject a root-cause repeat (#488).
       const naming = commentsNaming(candidate, located);
       const lead = possible ?? naming[0] ?? null;
-      const alsoNaming = naming.filter((comment) => comment !== lead).slice(0, MAX_NAMING);
+      const brief = (comment: (typeof naming)[number]) => ({
+        author: comment.author,
+        path: comment.path,
+        line: comment.line,
+        excerpt: comment.body.slice(0, 200),
+      });
+      const { fits: alsoNaming, omitted } = withinBudget(
+        naming.filter((comment) => comment !== lead).map(brief),
+        (entry) => Buffer.byteLength(JSON.stringify(entry)),
+      );
       if (lead !== null) {
         kept.push({
           ...original,
@@ -626,16 +648,8 @@ export function checkCandidatesCommand(argv: string[]): number {
             ...(lead.resolved === true && typeof lead.resolvedBy === 'string' ? { resolvedBy: lead.resolvedBy } : {}),
             ...(typeof lead.id === 'number' ? { commentId: lead.id } : {}),
             excerpt: lead.body.slice(0, 200),
-            ...(alsoNaming.length === 0
-              ? {}
-              : {
-                  alsoNaming: alsoNaming.map((comment) => ({
-                    author: comment.author,
-                    path: comment.path,
-                    line: comment.line,
-                    excerpt: comment.body.slice(0, 200),
-                  })),
-                }),
+            ...(alsoNaming.length === 0 ? {} : { alsoNaming }),
+            ...(omitted === 0 ? {} : { alsoNamingOmitted: omitted }),
           },
         });
         return;

@@ -230,6 +230,9 @@ file that causes it, and then again on the file where it shows. Check each
 against the candidate's root cause. Reject the candidate as a repeat when a
 comment states the same failure, and quote that comment in the reason. A
 comment that only mentions the file or symbol in passing is not a repeat.
+They are ordered by wording overlap, best first, and held to a size budget;
+`alsoNamingOmitted`, when present, is how many further naming comments were
+left out, so read the code for the same defect they may have raised.
 
 **An own comment the author only partly addressed.** When `kind` is
 `own-comment` and that comment raised several points, check each against the
