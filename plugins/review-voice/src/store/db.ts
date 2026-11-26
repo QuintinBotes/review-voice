@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, chmodSync } from 'node:fs';
+import { mkdirSync, chmodSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { databasePath } from './paths.ts';
 
@@ -336,5 +336,35 @@ export function openDatabase(path: string = databasePath()): Database {
     // location is still the user's own profile.
   }
 
+  return db;
+}
+
+/** The store was written by an older plugin than this code and has not been upgraded. */
+export class StoreOutdatedError extends Error {}
+
+/**
+ * Opens an existing store for reading and nothing else: it never creates the
+ * directory or file, sets a pragma, migrates or changes a mode. Null when
+ * there is no database file; a store behind this code's schema throws
+ * `StoreOutdatedError` rather than failing later on a missing column.
+ */
+export function openDatabaseReadOnly(path: string = databasePath()): Database | null {
+  if (!existsSync(path)) return null;
+  // shortcut: Node before 22.12 ignores readOnly; only SELECTs run here and a missing file is never created, raise engines to >=22.12 if a write path is ever added.
+  const db = new DatabaseSync(path, { readOnly: true });
+  let version = 0;
+  try {
+    version = (db.prepare('SELECT version FROM schema_version').get() as { version: number } | undefined)?.version ?? 0;
+  } catch (error) {
+    // Only a missing schema_version table means a store older than any migration; any other failure is reported as itself.
+    if (!/no such table/i.test(error instanceof Error ? error.message : String(error))) {
+      db.close();
+      throw error;
+    }
+  }
+  if (version < MIGRATIONS.length) {
+    db.close();
+    throw new StoreOutdatedError('The review-voice store is older than this version; run any other review-voice command once to upgrade it.');
+  }
   return db;
 }
