@@ -69,8 +69,8 @@ function scenario() {
   return { top, work, base, reviewed, head };
 }
 
-const plan = (work, scenarioRefs, repository) =>
-  planScope({
+const plan = async (work, scenarioRefs, repository) =>
+  (await planScope({
     priorRun: { reviewRunId: null, headRef: scenarioRefs.reviewed, createdAt: null },
     head: scenarioRefs.head,
     headAvailable: true,
@@ -79,14 +79,14 @@ const plan = (work, scenarioRefs, repository) =>
     truncated: false,
     forceFull: false,
     base: scenarioRefs.base,
-    fetchPriorHead: (sha) => prior.fetchPriorHead(sha, repository, work),
-  }).scope;
+    fetchPriorHead: async (sha) => await prior.fetchPriorHead(sha, repository, work),
+  })).scope;
 
-test('a previous head missing from the clone is fetched from the reviewed repository', () => {
+test('a previous head missing from the clone is fetched from the reviewed repository', async () => {
   const refs = scenario();
   try {
     assert.throws(() => run(refs.work, 'cat-file', '-e', `${refs.reviewed}^{commit}`), 'the clone starts without the reviewed head');
-    const scope = plan(refs.work, refs, 'org/a');
+    const scope = await plan(refs.work, refs, 'org/a');
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.equal(scope.since, refs.reviewed);
     run(refs.work, 'cat-file', '-e', `${refs.reviewed}^{commit}`);
@@ -95,10 +95,10 @@ test('a previous head missing from the clone is fetched from the reviewed reposi
   }
 });
 
-test('an origin that is not the reviewed repository is never fetched from', () => {
+test('an origin that is not the reviewed repository is never fetched from', async () => {
   const refs = scenario();
   try {
-    const scope = plan(refs.work, refs, 'acme/web');
+    const scope = await plan(refs.work, refs, 'acme/web');
     assert.equal(scope.kind, 'full');
     assert.equal(scope.cause, 'compare-unavailable');
     assert.match(scope.detail, /previous head \w{7} is not in this clone; origin is org\/a, not acme\/web/);
@@ -108,7 +108,7 @@ test('an origin that is not the reviewed repository is never fetched from', () =
   }
 });
 
-test('anything but a full commit id is never handed to git fetch', () => {
-  assert.match(prior.fetchPriorHead('--upload-pack=touch x', 'org/a', process.cwd()), /not a full commit id/);
-  assert.match(prior.fetchPriorHead('abc1234', 'org/a', process.cwd()), /not a full commit id/);
+test('anything but a full commit id is never handed to git fetch', async () => {
+  assert.match(await prior.fetchPriorHead('--upload-pack=touch x', 'org/a', process.cwd()), /not a full commit id/);
+  assert.match(await prior.fetchPriorHead('abc1234', 'org/a', process.cwd()), /not a full commit id/);
 });

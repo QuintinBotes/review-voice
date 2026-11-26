@@ -30,33 +30,33 @@ function repo(files) {
 
 const edit = (dir, name) => writeFileSync(join(dir, 'sdk/generated', name), `${HEADER}export const v = 2;\n`);
 
-test('a lone hand edit to a generated file stays in the review', () => {
+test('a lone hand edit to a generated file stays in the review', async () => {
   const { dir } = repo(['a.ts', 'b.ts']);
   edit(dir, 'a.ts');
-  const result = acquireDiff({ cwd: dir, staged: false, base: null, includeGenerated: false });
+  const result = await acquireDiff({ cwd: dir, staged: false, base: null, includeGenerated: false });
   const file = result.files.find((f) => f.path === 'sdk/generated/a.ts');
   assert.equal(file.reviewed, true);
   assert.equal(file.handEditSuspected, true);
   assert.match(result.diff, /sdk\/generated\/a\.ts/);
 });
 
-test('a regeneration touching several files stays excluded', () => {
+test('a regeneration touching several files stays excluded', async () => {
   const { dir } = repo(['a.ts', 'b.ts']);
   edit(dir, 'a.ts');
   edit(dir, 'b.ts');
   // A lone edit in a different generated directory is still a hand edit.
   mkdirSync(join(dir, 'other/generated'), { recursive: true });
   writeFileSync(join(dir, 'other/generated/z.ts'), `${HEADER}export const z = 1;\n`);
-  const result = acquireDiff({ cwd: dir, staged: false, base: null, includeGenerated: false });
+  const result = await acquireDiff({ cwd: dir, staged: false, base: null, includeGenerated: false });
   const suspected = result.files.filter((f) => f.handEditSuspected).map((f) => f.path);
   assert.deepEqual(suspected, ['other/generated/z.ts']);
   assert.equal(result.reviewedFileCount, 1);
 });
 
-test('a generated file without a do-not-edit header stays excluded', () => {
+test('a generated file without a do-not-edit header stays excluded', async () => {
   const { dir } = repo([]);
   writeFileSync(join(dir, 'sdk/generated/plain.ts'), 'export const v = 1;\n');
-  const result = acquireDiff({ cwd: dir, staged: false, base: null, includeGenerated: false });
+  const result = await acquireDiff({ cwd: dir, staged: false, base: null, includeGenerated: false });
   assert.equal(result.reviewedFileCount, 0);
 });
 

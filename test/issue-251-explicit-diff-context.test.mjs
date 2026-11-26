@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { planScope } from '../plugins/review-voice/src/diff/incremental.ts';
 
 /** A repository whose owner turned context lines off, with a reviewed head A and a follow-up head B. */
-function withContextOff(fn) {
+async function withContextOff(fn) {
   const root = mkdtempSync(join(tmpdir(), 'rv-issue-251-'));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   const lines = (n) => Array.from({ length: n }, (_, index) => `line ${index + 1}\n`).join('');
@@ -34,14 +34,14 @@ function withContextOff(fn) {
     const reviewed = commit('reviewed head A');
     writeFileSync(join(root, 'a.ts'), lines(40).replace('line 10\n', 'line 10 by the author\n').replace('line 30\n', 'line 30 after the review\n'));
     const head = commit('follow-up head B');
-    return fn({ root, git, base, reviewed, head });
+    return await fn({ root, git, base, reviewed, head });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-test('diff --base writes a patch with three context lines when the repository sets diff.context to 0', () => {
-  withContextOff((repository) => {
+test('diff --base writes a patch with three context lines when the repository sets diff.context to 0', async () => {
+  await withContextOff((repository) => {
     const out = mkdtempSync(join(tmpdir(), 'rv-issue-251-out-'));
     const data = mkdtempSync(join(tmpdir(), 'rv-issue-251-data-'));
     try {
@@ -62,11 +62,11 @@ test('diff --base writes a patch with three context lines when the repository se
   });
 });
 
-test('the interdiff keeps three context lines when the repository sets diff.context to 0', () => {
-  withContextOff((repository) => {
+test('the interdiff keeps three context lines when the repository sets diff.context to 0', async () => {
+  await withContextOff(async (repository) => {
     // The setting is in force for git itself.
     assert.match(repository.git('diff', repository.reviewed, repository.head), /^@@ -30 \+30 @@/m);
-    const { scope, interdiffPatch } = planScope({
+    const { scope, interdiffPatch } = await planScope({
       priorRun: { reviewRunId: null, headRef: repository.reviewed, createdAt: null },
       head: repository.head,
       headAvailable: true,

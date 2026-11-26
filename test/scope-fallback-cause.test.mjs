@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { describeScope, parseReviewScope, planScope } from '../plugins/review-voice/src/diff/incremental.ts';
 import { applyReviewScope } from '../plugins/review-voice/src/diff/pull-request.ts';
 
-function withRepository(fn) {
+async function withRepository(fn) {
   const root = mkdtempSync(join(tmpdir(), 'rv-fallback-'));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const commit = (contents, message) => {
@@ -30,7 +30,7 @@ function withRepository(fn) {
     git('checkout', '-q', '-b', 'pr');
     const prior = commit('one();\ntwo();\nadded();\nthree();\n', 'reviewed');
     const head = commit('one();\ntwo();\nadded();\nthree();\nmore();\n', 'follow-up');
-    return fn({ root, git, commit, base, prior, head });
+    return await fn({ root, git, commit, base, prior, head });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -48,45 +48,45 @@ const options = (repository, overrides = {}) => ({
   ...overrides,
 });
 
-test('a head that is not in the clone is named', () => {
-  withRepository((repository) => {
-    const { scope } = planScope(options(repository, { headAvailable: false }));
+test('a head that is not in the clone is named', async () => {
+  await withRepository(async (repository) => {
+    const { scope } = await planScope(options(repository, { headAvailable: false }));
     assert.equal(scope.cause, 'compare-unavailable');
     assert.match(scope.detail, new RegExp(`head ${repository.head.slice(0, 7)} is not in this clone`));
   });
 });
 
-test('a previous head that is not in the clone is named', () => {
-  withRepository((repository) => {
+test('a previous head that is not in the clone is named', async () => {
+  await withRepository(async (repository) => {
     const missing = 'e'.repeat(40);
-    const { scope } = planScope(options(repository, { priorRun: { reviewRunId: null, headRef: missing, createdAt: null } }));
+    const { scope } = await planScope(options(repository, { priorRun: { reviewRunId: null, headRef: missing, createdAt: null } }));
     assert.equal(scope.cause, 'compare-unavailable');
     assert.match(scope.detail, /previous head eeeeeee is not in this clone/);
   });
 });
 
-test('a base that is not in the clone is named', () => {
-  withRepository((repository) => {
-    const { scope } = planScope(options(repository, { base: 'f'.repeat(40) }));
+test('a base that is not in the clone is named', async () => {
+  await withRepository(async (repository) => {
+    const { scope } = await planScope(options(repository, { base: 'f'.repeat(40) }));
     assert.equal(scope.cause, 'compare-unavailable');
     assert.match(scope.detail, /base fffffff is not in this clone/);
   });
 });
 
-test('a git command that fails names the command and what git said', () => {
-  withRepository((repository) => {
+test('a git command that fails names the command and what git said', async () => {
+  await withRepository(async (repository) => {
     // A base with no history in common: `merge-base` finds nothing and exits 1.
     repository.git('checkout', '-q', '--orphan', 'unrelated');
     const unrelated = repository.commit('other();\n', 'unrelated root');
     repository.git('checkout', '-q', 'pr');
-    const { scope } = planScope(options(repository, { base: unrelated }));
+    const { scope } = await planScope(options(repository, { base: unrelated }));
     assert.equal(scope.cause, 'compare-unavailable');
     assert.match(scope.detail, new RegExp(`^merge-base ${unrelated.slice(0, 7)} ${repository.head.slice(0, 7)} failed: `));
   });
 });
 
-test('an injected git failure keeps its message', () => {
-  withRepository((repository) => {
+test('an injected git failure keeps its message', async () => {
+  await withRepository(async (repository) => {
     const failing = {
       hasCommit: () => true,
       isAncestor: () => true,
@@ -98,21 +98,21 @@ test('an injected git failure keeps its message', () => {
       },
       diffText: () => '',
     };
-    const { scope } = planScope(options(repository, { git: failing }));
+    const { scope } = await planScope(options(repository, { git: failing }));
     assert.equal(scope.detail, 'merge-base abc1234 def5678 failed: fatal: Not a valid commit name');
   });
 });
 
-test('a withdrawn reviewed hunk is read as its removal', () => {
-  withRepository((repository) => {
+test('a withdrawn reviewed hunk is read as its removal', async () => {
+  await withRepository(async (repository) => {
     const reverted = repository.commit('one();\ntwo();\nthree();\nmore();\n', 'withdraw the reviewed line');
-    const { scope, interdiffPatch } = planScope(options(repository, { head: reverted }));
+    const { scope, interdiffPatch } = await planScope(options(repository, { head: reverted }));
     assert.equal(scope.kind, 'interdiff');
     assert.match(interdiffPatch, /^-added\(\);$/m);
   });
 });
 
-test('a narrowed scope that cannot be applied says which step failed', () => {
+test('a narrowed scope that cannot be applied says which step failed', async () => {
   const acquired = {
     repositoryRoot: 'acme/web',
     mode: 'pull-request',
@@ -133,12 +133,12 @@ test('a narrowed scope that cannot be applied says which step failed', () => {
   };
   const since = '1234567890abcdef';
   const interdiff = { kind: 'interdiff', since, priorRunId: null, priorReviewedAt: null, mergeBase: 'e'.repeat(40), files: ['src/a.ts'], hunks: 1 };
-  const noPatch = applyReviewScope(acquired, 7, interdiff, process.cwd());
+  const noPatch = await applyReviewScope(acquired, 7, interdiff, process.cwd());
   assert.equal(noPatch.scope.cause, 'compare-unavailable');
   assert.match(noPatch.scope.detail, /no interdiff patch/);
 
   const incremental = { kind: 'incremental', since, priorRunId: null, priorReviewedAt: null, commits: 1, files: ['src/a.ts'] };
-  const unreadable = applyReviewScope(acquired, 7, incremental, process.cwd(), () => {
+  const unreadable = await applyReviewScope(acquired, 7, incremental, process.cwd(), () => {
     throw new Error('diff 1234567 abcdef0 failed: fatal: bad object');
   });
   assert.equal(unreadable.scope.cause, 'compare-unavailable');

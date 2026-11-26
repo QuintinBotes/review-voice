@@ -99,7 +99,7 @@ test('an attribute already on the base branch is honoured', () => {
   }
 });
 
-test('attributeSource is the merge base, else the base, else null; HEAD for local changes', () => {
+test('attributeSource is the merge base, else the base, else null; HEAD for local changes', async () => {
   const scratch = scratchRepo();
   try {
     const main = scratch.git('rev-parse', 'HEAD');
@@ -109,13 +109,13 @@ test('attributeSource is the merge base, else the base, else null; HEAD for loca
     scratch.git('commit', '-q', '-m', 'b');
     const head = scratch.git('rev-parse', 'HEAD');
 
-    assert.equal(attributeSource(scratch.repo, { mode: 'base', base: 'main', head }), main);
-    assert.equal(attributeSource(scratch.repo, { mode: 'pull-request', base: main, head }), main);
+    assert.equal(await attributeSource(scratch.repo, { mode: 'base', base: 'main', head }), main);
+    assert.equal(await attributeSource(scratch.repo, { mode: 'pull-request', base: main, head }), main);
     // The head is not here: fall back to the base, never to the head.
-    assert.equal(attributeSource(scratch.repo, { mode: 'pull-request', base: main, head: 'e'.repeat(40) }), main);
-    assert.equal(attributeSource(scratch.repo, { mode: 'pull-request', base: 'd'.repeat(40), head }), null);
-    assert.equal(attributeSource(scratch.repo, { mode: 'pull-request', base: null, head }), null);
-    assert.equal(attributeSource(scratch.repo, { mode: 'worktree', base: null, head }), head);
+    assert.equal(await attributeSource(scratch.repo, { mode: 'pull-request', base: main, head: 'e'.repeat(40) }), main);
+    assert.equal(await attributeSource(scratch.repo, { mode: 'pull-request', base: 'd'.repeat(40), head }), null);
+    assert.equal(await attributeSource(scratch.repo, { mode: 'pull-request', base: null, head }), null);
+    assert.equal(await attributeSource(scratch.repo, { mode: 'worktree', base: null, head }), head);
   } finally {
     scratch.cleanup();
   }

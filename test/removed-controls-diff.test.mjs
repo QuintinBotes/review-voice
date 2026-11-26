@@ -71,7 +71,7 @@ for (const mode of ['worktree', 'staged', 'base']) {
   });
 }
 
-test('a deleted control is skipped when the base side is unavailable', (t) => {
+test('a deleted control is skipped when the base side is unavailable', async (t) => {
   const scratch = scratchRepo(t);
   rmSync(join(scratch.repo, controlPath));
   const change = {
@@ -80,8 +80,8 @@ test('a deleted control is skipped when the base side is unavailable', (t) => {
     files: [{ path: controlPath, status: 'deleted', class: 'source', language: 'typescript', additions: 0, deletions: 4, reviewed: false }],
   };
   // The head still contains the control, so falling back to it would invent evidence.
-  assert.deepEqual(collectStructure(scratch.repo, change, [], undefined, [controlPath]).removedControls, []);
-  assert.deepEqual(collectStructure(scratch.repo, { ...change, base: 'f'.repeat(40) }, [], undefined, [controlPath]).removedControls, []);
+  assert.deepEqual((await collectStructure(scratch.repo, change, [], undefined, [controlPath])).removedControls, []);
+  assert.deepEqual((await collectStructure(scratch.repo, { ...change, base: 'f'.repeat(40) }, [], undefined, [controlPath])).removedControls, []);
 });
 
 for (const [name, extraFiles] of [

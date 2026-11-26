@@ -1,6 +1,6 @@
-import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGitSync } from '../git-exec.ts';
+import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGit } from '../git-exec.ts';
 import { GitHubClient } from '../github/client.ts';
-import { classify, findHandEdited, firstPartyMatcher, isReviewable, languageOf } from './classify.ts';
+import { classify, handEditedCandidates, hasDoNotEditHeader, firstPartyMatcher, isReviewable, languageOf } from './classify.ts';
 import { COVERED_EARLIER, excludedReason, FILE_DELETED, NO_PATCH, SAME_AS_BASE_TIP, summariseExclusions } from './exclusions.ts';
 import type { ChangedFile, DiffResult } from './acquire.ts';
 import { gitFailure, topPathspecs, type ReviewScope } from './incremental.ts';
@@ -88,23 +88,23 @@ export interface RefAvailability {
   note: string | null;
 }
 
-function git(args: string[], cwd: string, timeout = GIT_READ_TIMEOUT_MS): string {
-  return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(timeout) }).toString('utf8');
+async function git(args: string[], cwd: string, timeout = GIT_READ_TIMEOUT_MS): Promise<string> {
+  return (await runGit(cwd, args, { timeoutMs: gitTimeoutMs(timeout) })).toString('utf8');
 }
 
 /** Whether a commit object is present, asked of git rather than assumed. */
-function hasCommit(sha: string, cwd: string): boolean {
+async function hasCommit(sha: string, cwd: string): Promise<boolean> {
   try {
-    git(['cat-file', '-e', `${sha}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS);
+    await git(['cat-file', '-e', `${sha}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS);
     return true;
   } catch {
     return false;
   }
 }
 
-function mergeBaseOf(base: string, head: string, cwd: string): string | null {
+async function mergeBaseOf(base: string, head: string, cwd: string): Promise<string | null> {
   try {
-    return git(['merge-base', base, head], cwd, 10_000).trim() || null;
+    return (await git(['merge-base', base, head], cwd, 10_000)).trim() || null;
   } catch {
     // No common ancestor, or a shallow clone too short to find it.
     return null;
@@ -112,9 +112,9 @@ function mergeBaseOf(base: string, head: string, cwd: string): string | null {
 }
 
 /** The owner/repo the `origin` remote points at, or null. */
-export function originRepository(cwd: string): string | null {
+export async function originRepository(cwd: string): Promise<string | null> {
   try {
-    const url = git(['remote', 'get-url', 'origin'], cwd, 10_000).trim();
+    const url = (await git(['remote', 'get-url', 'origin'], cwd, 10_000)).trim();
     return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
   } catch {
     return null;
@@ -132,35 +132,36 @@ export function originRepository(cwd: string): string | null {
  * read-only with respect to working state; writing loose objects and one ref
  * under `refs/review-voice/` is the most this may do.
  */
-function ensureRefs(options: {
+export async function ensureRefs(options: {
   repository: string;
   pullNumber: number;
   base: string;
   head: string;
   cwd: string;
-}): RefAvailability {
-  const check = (): { base: boolean; head: boolean } => ({
-    base: hasCommit(options.base, options.cwd),
-    head: hasCommit(options.head, options.cwd),
+}): Promise<RefAvailability> {
+  const check = async (): Promise<{ base: boolean; head: boolean }> => ({
+    base: await hasCommit(options.base, options.cwd),
+    head: await hasCommit(options.head, options.cwd),
   });
 
-  let present = check();
-  const result = (fetched: boolean, note: string | null): RefAvailability => ({
+  let present = await check();
+  // After any fetch has refreshed `present`, so refs that arrive by fetch get their merge base.
+  const result = async (fetched: boolean, note: string | null): Promise<RefAvailability> => ({
     base: { sha: options.base, available: present.base },
     head: { sha: options.head, available: present.head },
-    mergeBase: present.base && present.head ? mergeBaseOf(options.base, options.head, options.cwd) : null,
+    mergeBase: present.base && present.head ? await mergeBaseOf(options.base, options.head, options.cwd) : null,
     fetched,
     note,
   });
 
-  if (present.base && present.head) return result(false, null);
+  if (present.base && present.head) return await result(false, null);
 
-  const origin = originRepository(options.cwd);
+  const origin = await originRepository(options.cwd);
   if (origin === null) {
-    return result(false, 'No origin remote resolved, so the pull request commits were not fetched.');
+    return await result(false, 'No origin remote resolved, so the pull request commits were not fetched.');
   }
   if (origin.toLowerCase() !== options.repository.toLowerCase()) {
-    return result(
+    return await result(
       false,
       `origin is ${origin} but the review is of ${options.repository}, so nothing was fetched. ` +
         'Fetching a pull request from an unrelated clone would supply commits from the wrong project.',
@@ -168,7 +169,7 @@ function ensureRefs(options: {
   }
 
   try {
-    git(
+    await git(
       [
         'fetch',
         '--no-tags',
@@ -183,7 +184,7 @@ function ensureRefs(options: {
     // availability below simply reports what is actually in the object store.
   }
 
-  present = check();
+  present = await check();
 
   // `pull/<n>/head` brings the base only while it is still an ancestor of the
   // head. Once the base branch moves on, the sha GitHub reports is reachable
@@ -191,19 +192,19 @@ function ensureRefs(options: {
   // Ask for that one commit by sha; it is not fatal for the same reason.
   if (!present.base) {
     try {
-      git(['fetch', '--no-tags', '--quiet', 'origin', options.base], options.cwd);
+      await git(['fetch', '--no-tags', '--quiet', 'origin', options.base], options.cwd);
     } catch {
       // The server may refuse a fetch by sha. The note below says so.
     }
-    present = check();
+    present = await check();
   }
 
   if (present.base && present.head) {
-    return result(true, null);
+    return await result(true, null);
   }
 
   const missing = [!present.base ? 'base' : null, !present.head ? 'head' : null].filter(Boolean);
-  return result(
+  return await result(
     true,
     `The ${missing.join(' and ')} commit could not be made available locally. ` +
       'Reading code at that ref will fail, so evidence from it is unavailable rather than absent.',
@@ -238,12 +239,12 @@ export interface SquashedParentSuspected {
  * once a branch this one was stacked on lands as a squash commit that merge
  * base predates it, so the parent's changes are listed as this pull request's.
  */
-function differingFromBaseTip(base: string, head: string, cwd: string): Set<string> | null {
+async function differingFromBaseTip(base: string, head: string, cwd: string): Promise<Set<string> | null> {
   try {
     // Explicit flags so diff.relative or diff.ignoreSubmodules in the user's
     // config cannot hide a path and get a real change excluded.
     const args = ['diff', '--no-ext-diff', '--no-relative', '--ignore-submodules=none', '--no-renames', '--name-only', '-z', base, head];
-    return new Set(git(args, cwd).split('\0').filter(Boolean));
+    return new Set((await git(args, cwd)).split('\0').filter(Boolean));
   } catch {
     return null;
   }
@@ -315,16 +316,16 @@ function fullScopeResult(
  * proved that the local range is safe do we substitute a local patch; if that
  * final read fails, preserving the full patch is safer than returning nothing.
  */
-export function applyReviewScope(
+export async function applyReviewScope(
   result: PullRequestDiff,
   pullNumber: number,
   scope: ReviewScope,
   cwd: string,
-  readIncrementalDiff: (since: string, head: string, files: string[], cwd: string) => string =
-    (since, head, files, root) => {
+  readIncrementalDiff: (since: string, head: string, files: string[], cwd: string) => Promise<string> =
+    async (since, head, files, root) => {
       const args = ['diff', '--no-ext-diff', '--no-color', '--unified=3', '--src-prefix=a/', '--dst-prefix=b/', since, head, '--', ...topPathspecs(files)];
       try {
-        return runGitSync(root, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString('utf8');
+        return (await runGit(root, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) })).toString('utf8');
       } catch (error) {
         throw new Error(gitFailure(args, error));
       }
@@ -332,7 +333,7 @@ export function applyReviewScope(
   interdiffPatch: string | null = null,
   /** The files the full read leaves out that changed since the earlier review, as the planner found them. */
   leftOutChanged: readonly string[] = [],
-): ScopedPullRequestDiff {
+): Promise<ScopedPullRequestDiff> {
   if (scope.kind === 'full') return fullScopeResult(result, pullNumber, scope);
 
   const fallBack = (detail: string): ScopedPullRequestDiff =>
@@ -357,7 +358,7 @@ export function applyReviewScope(
     included = new Set(scope.files);
   } else {
     try {
-      diff = readIncrementalDiff(scope.since, result.head, scope.files, cwd);
+      diff = await readIncrementalDiff(scope.since, result.head, scope.files, cwd);
     } catch (error) {
       // The planner's probes passed, but the final range read can still lose a
       // race with local object cleanup. Do not present an incomplete patch as a
@@ -484,36 +485,41 @@ export async function acquirePullRequestDiff(options: {
   // locally, fall back to the patch's added lines and leave the file excluded
   // when those do not show the header.
   const cwd = options.cwd ?? process.cwd();
-  const headLocal = hasCommit(pull.head.sha, cwd);
+  const headLocal = await hasCommit(pull.head.sha, cwd);
   const byName = new Map(rawFiles.map((file) => [file.filename, file]));
   const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
-  const handEdited = findHandEdited(
-    rawFiles.filter((file) => file.status !== 'removed' && file.patch !== undefined).map((file) => file.filename),
-    (path) => {
-      if (headLocal) {
-        try {
-          return git(['show', `${pull.head.sha}:${path}`], cwd);
-        } catch {
-          return null;
-        }
+  const readHeader = async (path: string): Promise<string | null> => {
+    if (headLocal) {
+      try {
+        return await git(['show', `${pull.head.sha}:${path}`], cwd);
+      } catch {
+        return null;
       }
-      const added = (byName.get(path)?.patch ?? '')
-        .split('\n')
-        .filter((line) => line.startsWith('+'))
-        .map((line) => line.slice(1));
-      return added.join('\n');
-    },
+    }
+    const added = (byName.get(path)?.patch ?? '')
+      .split('\n')
+      .filter((line) => line.startsWith('+'))
+      .map((line) => line.slice(1));
+    return added.join('\n');
+  };
+  const handEdited = new Set<string>();
+  const candidates = handEditedCandidates(
+    rawFiles.filter((file) => file.status !== 'removed' && file.patch !== undefined).map((file) => file.filename),
     firstParty,
   );
+  for (const path of candidates) {
+    const header = await readHeader(path);
+    if (header !== null && hasDoNotEditHeader(header)) handEdited.add(path);
+  }
 
-  const refs = ensureRefs({
+  const refs = await ensureRefs({
     repository: options.repository,
     pullNumber: options.pullNumber,
     base: pull.base.sha,
     head: pull.head.sha,
     cwd,
   });
-  const differing = refs.base.available && refs.head.available ? differingFromBaseTip(pull.base.sha, pull.head.sha, cwd) : null;
+  const differing = refs.base.available && refs.head.available ? await differingFromBaseTip(pull.base.sha, pull.head.sha, cwd) : null;
   // A rename is only already merged when neither of its paths differs.
   const sameAsBaseTip = (file: RawFile): boolean =>
     differing !== null && !differing.has(file.filename) && (file.previous_filename === undefined || !differing.has(file.previous_filename));

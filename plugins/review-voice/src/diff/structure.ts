@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { catFileBatchTimeoutMs, runGitCatFileSync } from '../git-exec.ts';
+import { catFileBatchTimeoutMs, runGitCatFile } from '../git-exec.ts';
 import { attributeSource, repositoryRoot, type ChangedFile, type DiffResult } from './acquire.ts';
 import { parseHunks } from './hunks.ts';
 import { countHunks } from './complexity.ts';
@@ -123,14 +123,14 @@ export function countLines(content: Buffer): number {
  * what changed since the reviewed head, so a crossing an earlier push made is
  * not reported again; otherwise it is the commit `.gitattributes` is read at.
  */
-function startOf(root: string, diff: MeasuredChange): string | null {
+async function startOf(root: string, diff: MeasuredChange): Promise<string | null> {
   if (diff.scope?.kind === 'incremental' || diff.scope?.kind === 'interdiff') return diff.scope.since;
   return attributeSource(root, diff);
 }
 
 /** Where each side is read from: the start of the change, and what the patch was taken from. */
-export function changeSides(root: string, diff: MeasuredChange): ChangeSides {
-  const base = startOf(root, diff);
+export async function changeSides(root: string, diff: MeasuredChange): Promise<ChangeSides> {
+  const base = await startOf(root, diff);
   switch (diff.mode) {
     case 'worktree':
       return { base, head: { from: 'worktree' } };
@@ -150,12 +150,12 @@ export function changeSides(root: string, diff: MeasuredChange): ChangeSides {
  * partial clone the batch can wait on a lazy fetch, and a dead fetch
  * must degrade to unmeasured files, never hang (issue #482).
  */
-export function readBlobs(root: string, specs: readonly string[]): Map<string, Buffer | null> {
+export async function readBlobs(root: string, specs: readonly string[]): Promise<Map<string, Buffer | null>> {
   const blobs = new Map<string, Buffer | null>(specs.map((spec) => [spec, null]));
   if (specs.length === 0) return blobs;
   let out: Buffer;
   try {
-    out = runGitCatFileSync(root, ['cat-file', '--batch'], {
+    out = await runGitCatFile(root, ['cat-file', '--batch'], {
       input: `${specs.join('\n')}\n`,
       maxBuffer: 512 * 1024 * 1024,
       timeoutMs: catFileBatchTimeoutMs(),
@@ -184,12 +184,12 @@ export function readBlobs(root: string, specs: readonly string[]): Map<string, B
  * has no lines at the base. Paths containing a newline cannot be named to
  * `cat-file --batch` and are left unread.
  */
-export function measureLines(
+export async function measureLines(
   root: string,
   files: readonly ChangedFile[],
   paths: readonly string[],
   sides: ChangeSides,
-): Map<string, LineCounts> {
+): Promise<Map<string, LineCounts>> {
   const asked = new Set(paths);
   const wanted = files.filter((file) => asked.has(file.path) && !file.path.includes('\n'));
   const baseSpec = (file: ChangedFile): string | null =>
@@ -201,7 +201,7 @@ export function measureLines(
     return sides.head.from === 'index' ? `:${file.path}` : `${sides.head.commit}:${file.path}`;
   };
   const specs = wanted.flatMap((file) => [baseSpec(file), headSpec(file)]).filter((spec): spec is string => spec !== null);
-  const blobs = readBlobs(root, [...new Set(specs)]);
+  const blobs = await readBlobs(root, [...new Set(specs)]);
   const linesOf = (spec: string | null): number | null => {
     const blob = spec === null ? null : (blobs.get(spec) ?? null);
     return blob === null ? null : countLines(blob);
@@ -301,13 +301,13 @@ export function findStructureSignals(
  * asked about (one containing a newline), the file is skipped: unknown is not
  * a finding.
  */
-function readDeletedFiles(
+async function readDeletedFiles(
   root: string,
   files: readonly ChangedFile[],
   deletedProduction: readonly string[],
   sides: ChangeSides,
   mode: MeasuredChange['mode'],
-): DeletedFile[] {
+): Promise<DeletedFile[]> {
   if (sides.base === null) return [];
   const specs = new Map<string, string>();
   for (const path of deletedProduction) {
@@ -319,7 +319,7 @@ function readDeletedFiles(
     const side = mode === 'worktree' ? '' : sides.base;
     if (!source.includes('\n')) specs.set(path, `${side}:${source}`);
   }
-  const blobs = readBlobs(root, [...new Set(specs.values())]);
+  const blobs = await readBlobs(root, [...new Set(specs.values())]);
   const read: DeletedFile[] = [];
   for (const [path, spec] of specs) {
     const blob = blobs.get(spec) ?? null;
@@ -337,13 +337,13 @@ function readDeletedFiles(
  * controls, and skipped when the base is not available. Optional, so a caller
  * with no deleted files passes three arguments.
  */
-export function collectStructure(
+export async function collectStructure(
   cwd: string,
   change: MeasuredChange,
   production: readonly string[],
   limits: StructureConfig = DEFAULT_STRUCTURE,
   deletedProduction: readonly string[] = [],
-): StructureSignals {
+): Promise<StructureSignals> {
   const files = change.files ?? [];
   // A deleted file cannot cross, and a follow-up review marks deletions reviewed.
   const deleted = new Set(files.filter((file) => file.status === 'deleted').map((file) => file.path));
@@ -352,9 +352,9 @@ export function collectStructure(
   let deletedFiles: DeletedFile[] = [];
   try {
     const root = repositoryRoot(cwd);
-    const sides = changeSides(root, change);
-    counts = measureLines(root, files, paths, sides);
-    deletedFiles = readDeletedFiles(root, files, deletedProduction, sides, change.mode);
+    const sides = await changeSides(root, change);
+    counts = await measureLines(root, files, paths, sides);
+    deletedFiles = await readDeletedFiles(root, files, deletedProduction, sides, change.mode);
   } catch {
     // Nothing measured.
   }

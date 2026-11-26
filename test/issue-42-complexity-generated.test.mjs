@@ -121,7 +121,7 @@ function scratchRepo() {
   return { base, repo, git, dataDir, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
 
-test('linguistGeneratedPaths reads set and true at a commit, ignores unset, and never reads the working tree', () => {
+test('linguistGeneratedPaths reads set and true at a commit, ignores unset, and never reads the working tree', async () => {
   const scratch = scratchRepo();
   try {
     writeFileSync(
@@ -131,14 +131,14 @@ test('linguistGeneratedPaths reads set and true at a commit, ignores unset, and 
     const paths = ['pipelines/build.yml', 'pipelines/manual.yml', 'sdk/x/client.ts', 'src/a.ts'];
     const expected = new Set(['pipelines/build.yml', 'sdk/x/client.ts']);
     // Not committed yet: the working tree is never consulted.
-    assert.deepEqual(linguistGeneratedPaths(scratch.repo, paths, 'HEAD'), new Set());
-    assert.deepEqual(linguistGeneratedPaths(scratch.repo, paths, null), new Set());
+    assert.deepEqual(await linguistGeneratedPaths(scratch.repo, paths, 'HEAD'), new Set());
+    assert.deepEqual(await linguistGeneratedPaths(scratch.repo, paths, null), new Set());
     scratch.git('add', '-A');
     scratch.git('commit', '-q', '-m', 'attributes');
-    assert.deepEqual(linguistGeneratedPaths(scratch.repo, paths, 'HEAD'), expected);
+    assert.deepEqual(await linguistGeneratedPaths(scratch.repo, paths, 'HEAD'), expected);
     // A commit git does not have marks nothing.
-    assert.deepEqual(linguistGeneratedPaths(scratch.repo, paths, 'f'.repeat(40)), new Set());
-    assert.deepEqual(linguistGeneratedPaths(join(scratch.base, 'data'), paths, 'HEAD'), new Set());
+    assert.deepEqual(await linguistGeneratedPaths(scratch.repo, paths, 'f'.repeat(40)), new Set());
+    assert.deepEqual(await linguistGeneratedPaths(join(scratch.base, 'data'), paths, 'HEAD'), new Set());
   } finally {
     scratch.cleanup();
   }

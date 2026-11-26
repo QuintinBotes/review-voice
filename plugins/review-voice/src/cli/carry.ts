@@ -26,7 +26,7 @@ import { terminalSafe } from '../terminal.ts';
  * directory, which has to be a clone of the run's repository: the commits are
  * read from it, and another repository's clone cannot read them.
  */
-export function carryForRun(
+export async function carryForRun(
   db: ReturnType<typeof openDatabase>,
   runId: string,
   head: string,
@@ -61,7 +61,7 @@ export function carryForRun(
   }
 
   for (const ref of [detail.headRef, head]) {
-    if (!commitReadable(ref, root)) {
+    if (!(await commitReadable(ref, root))) {
       throw new CarryError(
         `Commit ${ref} is not readable in ${root}${actual === null ? '' : ` (a clone of ${actual})`}. ` +
           `Fetch it there, or run carry from a clone of ${expected ?? "the run's repository"}.`,
@@ -90,7 +90,7 @@ export function carryForRun(
       throw new CarryError(`Cannot read ${filesFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return carryFindings(detail.findings, detail.headRef, head, root, hold, noLongerChanged);
+  return await carryFindings(detail.findings, detail.headRef, head, root, hold, noLongerChanged);
 }
 
 /**
@@ -99,7 +99,7 @@ export function carryForRun(
  * Used when a pull request moved but its own diff did not, so those findings
  * can be repeated at their new lines instead of being re-derived.
  */
-export function carryCommand(argv: string[]): number {
+export async function carryCommand(argv: string[]): Promise<number> {
   const from = flag(argv, '--from');
   const head = flag(argv, '--head');
   if (from === null || head === null) {
@@ -120,7 +120,7 @@ export function carryCommand(argv: string[]): number {
   }
   const db = openDatabase();
   try {
-    const result = carryForRun(db, from, head, flag(argv, '--repository'), threadFile, filesFile);
+    const result = await carryForRun(db, from, head, flag(argv, '--repository'), threadFile, filesFile);
     if (threadFile === null && runDetail(db, from)?.pullNumber !== null) {
       console.error(
         'Findings the author resolved or dismissed on the pull request were not checked. ' +
@@ -318,7 +318,7 @@ function partialDiffReason(diffFile: string): string | null {
  * without it `carry.json` says so and a run recorded from it cannot approve.
  * Exit 1 means at least one candidate was refused.
  */
-export function carryCandidatesCommand(argv: string[]): number {
+export async function carryCandidatesCommand(argv: string[]): Promise<number> {
   const candidatesFile = flag(argv, '--candidates');
   const verificationFile = flag(argv, '--verification');
   const since = flag(argv, '--since');
@@ -386,11 +386,11 @@ export function carryCandidatesCommand(argv: string[]): number {
   // A candidate the verifier never saw has nothing to carry.
   const verificationById = new Map(verificationIn.list.map((v) => [idOfEntry(v), v]));
   const unverified = candidates.filter((c) => !verificationById.has(c.candidateId));
-  let result: ReturnType<typeof carryCandidates>;
+  let result: Awaited<ReturnType<typeof carryCandidates>>;
   const heldKept: Record<string, unknown>[] = [];
   const heldDropped: { path: string; line: number; reason: string }[] = [];
   try {
-    result = carryCandidates(
+    result = await carryCandidates(
       candidates
         .filter((c) => verificationById.has(c.candidateId))
         .map((c) => ({
@@ -407,7 +407,7 @@ export function carryCandidatesCommand(argv: string[]): number {
     for (const entry of heldIn?.list ?? []) {
       const path = entry['path'] as string;
       const line = entry['line'] as number;
-      const moved = followLine(since!, head!, path, line, process.cwd());
+      const moved = await followLine(since!, head!, path, line, process.cwd());
       if ('reason' in moved) heldDropped.push({ path, line, reason: moved.reason });
       else heldKept.push({ ...entry, line: moved.line });
     }

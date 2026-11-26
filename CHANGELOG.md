@@ -105,6 +105,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Git reads in the diff and conventions path now run through the async
+  runner `evidence/run.ts` uses. The timer ends git's process group (the whole
+  tree on Windows) while git is still unreaped, so a group id another process
+  has since reused is never signalled, and a fetch or ssh under a timed-out git
+  no longer outlives it on Windows. A normal exit sends no group kill, and the
+  same bounds, degrade-to-missing and partial-clone warning apply. The diff
+  structure, conventions, scope planning and carry chains, the `TreeReader`
+  interface, and their CLI entries are async to match (#493).
 - `git cat-file` reads are bounded (one 120 s bound for the structure
   step's `--batch`, 30 s per blob for trusted-tree convention reads),
   and git runs in its own process group so the bound holds when a lazy

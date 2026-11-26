@@ -1,4 +1,4 @@
-import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGitSync } from '../git-exec.ts';
+import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGit } from '../git-exec.ts';
 import type { GitHubClient } from '../github/client.ts';
 import { gitFailure, type PriorPullReview } from './incremental.ts';
 
@@ -40,21 +40,21 @@ interface RawReview {
   user?: { login?: string } | null;
 }
 
-function git(args: string[], cwd: string, fallbackMs = GIT_READ_TIMEOUT_MS): string {
-  return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(fallbackMs) }).toString('utf8');
+async function git(args: string[], cwd: string, fallbackMs = GIT_READ_TIMEOUT_MS): Promise<string> {
+  return (await runGit(cwd, args, { timeoutMs: gitTimeoutMs(fallbackMs) })).toString('utf8');
 }
 
-export function resolveCommit(ref: string, cwd: string): string | null {
+export async function resolveCommit(ref: string, cwd: string): Promise<string | null> {
   try {
-    return git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS).trim() || null;
+    return (await git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS)).trim() || null;
   } catch {
     return null;
   }
 }
 
-function originRepository(cwd: string): string | null {
+async function originRepository(cwd: string): Promise<string | null> {
   try {
-    const url = git(['remote', 'get-url', 'origin'], cwd).trim();
+    const url = (await git(['remote', 'get-url', 'origin'], cwd)).trim();
     return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
   } catch {
     return null;
@@ -68,17 +68,17 @@ function originRepository(cwd: string): string | null {
  * repository under review: fetching from an unrelated clone would supply a
  * commit from the wrong project, which is worse than its absence.
  */
-export function resolveSince(since: string, repository: string, cwd: string): string | null {
-  const present = resolveCommit(since, cwd);
+export async function resolveSince(since: string, repository: string, cwd: string): Promise<string | null> {
+  const present = await resolveCommit(since, cwd);
   if (present !== null) return present;
   if (!/^[0-9a-f]{7,64}$/i.test(since)) return null;
-  if (originRepository(cwd)?.toLowerCase() !== repository.toLowerCase()) return null;
+  if ((await originRepository(cwd))?.toLowerCase() !== repository.toLowerCase()) return null;
   try {
-    git(['fetch', '--no-tags', '--quiet', 'origin', since], cwd);
+    await git(['fetch', '--no-tags', '--quiet', 'origin', since], cwd);
   } catch {
     return null;
   }
-  return resolveCommit(since, cwd);
+  return await resolveCommit(since, cwd);
 }
 
 /**
@@ -90,17 +90,17 @@ export function resolveSince(since: string, repository: string, cwd: string): st
  * Never fatal. Returns why nothing was fetched, or null when a fetch ran; the
  * caller asks git whether the commit is now there.
  */
-export function fetchPriorHead(sha: string, repository: string, cwd: string): string | null {
+export async function fetchPriorHead(sha: string, repository: string, cwd: string): Promise<string | null> {
   // A full commit id only: anything else could be read by git as an option.
   if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha)) return 'it is not a full commit id, so it was not fetched';
-  const origin = originRepository(cwd);
+  const origin = await originRepository(cwd);
   if (origin === null) return 'no origin remote on GitHub resolved, so it was not fetched';
   if (origin.toLowerCase() !== repository.toLowerCase()) {
     return `origin is ${origin}, not ${repository}, so it was not fetched`;
   }
   const args = ['fetch', '--no-tags', '--quiet', 'origin', sha];
   try {
-    runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) });
+    await runGit(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) });
     return null;
   } catch (error) {
     return gitFailure(args, error);

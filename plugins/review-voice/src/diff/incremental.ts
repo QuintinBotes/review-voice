@@ -1,4 +1,4 @@
-import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGitSync } from '../git-exec.ts';
+import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGit } from '../git-exec.ts';
 import { firstPartyMatcher, isReviewable } from './classify.ts';
 import { patchRenames, unquoteGitPath } from './hunks.ts';
 
@@ -183,20 +183,20 @@ export interface ReviewedPullFile {
  * planner test depend on a checkout's current branch or remote.
  */
 export interface IncrementalGit {
-  hasCommit(sha: string, cwd: string): boolean;
-  isAncestor(ancestor: string, descendant: string, cwd: string): boolean;
-  mergeCommits(since: string, head: string, cwd: string): string[];
-  changedPaths(since: string, head: string, cwd: string): string[];
-  commitCount(since: string, head: string, cwd: string): number;
+  hasCommit(sha: string, cwd: string): Promise<boolean>;
+  isAncestor(ancestor: string, descendant: string, cwd: string): Promise<boolean>;
+  mergeCommits(since: string, head: string, cwd: string): Promise<string[]>;
+  changedPaths(since: string, head: string, cwd: string): Promise<string[]>;
+  commitCount(since: string, head: string, cwd: string): Promise<number>;
   /** Only needed when the pull request's base is known; see `ownDiffScope`. */
-  mergeBase?(left: string, right: string, cwd: string): string;
+  mergeBase?(left: string, right: string, cwd: string): Promise<string>;
   /** `from` may be a commit or a tree: a replayed head is only a tree. */
-  diffText?(from: string, to: string, paths: string[], cwd: string): string;
+  diffText?(from: string, to: string, paths: string[], cwd: string): Promise<string>;
   /**
    * The tree of `head` with its changes since `from` re-applied onto `onto`,
    * and the paths where they conflict. Only needed after a merge or a rebase.
    */
-  replay?(from: string, onto: string, head: string, cwd: string): Replay;
+  replay?(from: string, onto: string, head: string, cwd: string): Promise<Replay>;
 }
 
 /**
@@ -242,7 +242,7 @@ export interface PlanIncrementalScopeOptions {
    * when a fetch ran, and never throws. Whether the commit is now readable is
    * asked of git again afterwards, not taken from the answer.
    */
-  fetchPriorHead?: ((sha: string) => string | null) | undefined;
+  fetchPriorHead?: ((sha: string) => Promise<string | null>) | undefined;
   /**
    * Whether lock files, generated and vendored output count as reviewed, as
    * `--include-generated` makes them. Only `absorbedByBase` reads it: a file
@@ -298,9 +298,9 @@ function firstLine(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? '';
 }
 
-function runGit(args: string[], cwd: string, timeout = GIT_READ_TIMEOUT_MS): string {
+async function gitText(args: string[], cwd: string, timeout = GIT_READ_TIMEOUT_MS): Promise<string> {
   try {
-    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(timeout) }).toString('utf8');
+    return (await runGit(cwd, args, { timeoutMs: gitTimeoutMs(timeout) })).toString('utf8');
   } catch (error) {
     // Rethrown with the command named, so a full read can say which git step
     // failed; `status` is kept because `isAncestor` reads exit 1 as an answer.
@@ -309,17 +309,17 @@ function runGit(args: string[], cwd: string, timeout = GIT_READ_TIMEOUT_MS): str
 }
 
 const systemGit: IncrementalGit = {
-  hasCommit(sha, cwd) {
+  async hasCommit(sha, cwd) {
     try {
-      runGit(['cat-file', '-e', `${sha}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS);
+      await gitText(['cat-file', '-e', `${sha}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS);
       return true;
     } catch {
       return false;
     }
   },
-  isAncestor(ancestor, descendant, cwd) {
+  async isAncestor(ancestor, descendant, cwd) {
     try {
-      runGit(['merge-base', '--is-ancestor', ancestor, descendant], cwd);
+      await gitText(['merge-base', '--is-ancestor', ancestor, descendant], cwd);
       return true;
     } catch (error) {
       // Exit 1 is git's documented answer for "not an ancestor". Everything
@@ -328,37 +328,37 @@ const systemGit: IncrementalGit = {
       throw error;
     }
   },
-  mergeCommits(since, head, cwd) {
-    return runGit(['rev-list', '--merges', `${since}..${head}`], cwd)
+  async mergeCommits(since, head, cwd) {
+    return (await gitText(['rev-list', '--merges', `${since}..${head}`], cwd))
       .split('\n')
       .filter((sha) => sha.length > 0);
   },
-  changedPaths(since, head, cwd) {
+  async changedPaths(since, head, cwd) {
     // Without renames, so a renamed file lists both of its paths: a follow-up
     // that undoes a rename must show the old path coming back, not only the
     // new one going.
-    return runGit(['diff', '--name-only', '--no-renames', '-z', since, head], cwd)
+    return (await gitText(['diff', '--name-only', '--no-renames', '-z', since, head], cwd))
       .split('\0')
       .filter((path) => path.length > 0);
   },
-  commitCount(since, head, cwd) {
-    const count = Number(runGit(['rev-list', '--count', `${since}..${head}`], cwd).trim());
+  async commitCount(since, head, cwd) {
+    const count = Number((await gitText(['rev-list', '--count', `${since}..${head}`], cwd)).trim());
     if (!Number.isSafeInteger(count) || count < 0) throw new Error('git returned an invalid commit count');
     return count;
   },
-  mergeBase(left, right, cwd) {
-    const base = runGit(['merge-base', left, right], cwd).trim();
+  async mergeBase(left, right, cwd) {
+    const base = (await gitText(['merge-base', left, right], cwd)).trim();
     if (!/^[0-9a-f]{7,64}$/.test(base)) throw new Error('git returned no merge base');
     return base;
   },
   diffText(from, to, paths, cwd) {
-    return runGit(
+    return gitText(
       ['diff', '--no-ext-diff', '--no-color', '--unified=3', '--src-prefix=a/', '--dst-prefix=b/', from, to, '--', ...topPathspecs(paths)],
       cwd,
     );
   },
-  replay(from, onto, head, cwd) {
-    const version = /(\d+)\.(\d+)/.exec(runGit(['version'], cwd));
+  async replay(from, onto, head, cwd) {
+    const version = /(\d+)\.(\d+)/.exec(await gitText(['version'], cwd));
     const [major, minor] = [Number(version?.[1] ?? 0), Number(version?.[2] ?? 0)];
     if (major < REPLAY_GIT[0] || (major === REPLAY_GIT[0] && minor < REPLAY_GIT[1])) {
       throw new Error(
@@ -370,7 +370,7 @@ const systemGit: IncrementalGit = {
     let output: string;
     let conflicted = false;
     try {
-      output = runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString('utf8');
+      output = (await runGit(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) })).toString('utf8');
     } catch (error) {
       // Exit 1 is merge-tree's answer for "conflicts", with the tree and the
       // conflicted paths still on stdout. Anything else is a failed command.
@@ -521,13 +521,13 @@ export function ownDiffFiles(patch: string): Map<string, OwnFile> {
  * smaller range could omit author work, and a failed git command is never
  * treated as evidence that the range is safe.
  */
-export function planIncrementalScope(options: PlanIncrementalScopeOptions): ReviewScope {
-  return planScope(options).scope;
+export async function planIncrementalScope(options: PlanIncrementalScopeOptions): Promise<ReviewScope> {
+  return (await planScope(options)).scope;
 }
 
 /** `planIncrementalScope`, plus the patch an `interdiff` scope reviews. */
-export function planScope(options: PlanIncrementalScopeOptions): PlannedScope {
-  const planned = narrowestScope(options);
+export async function planScope(options: PlanIncrementalScopeOptions): Promise<PlannedScope> {
+  const planned = await narrowestScope(options);
   if (planned.scope.kind === 'full') return planned;
   // A narrowed scope calls every reviewed file outside it covered by the
   // earlier review, and shows a file inside it only as what changed since.
@@ -550,7 +550,7 @@ export function planScope(options: PlanIncrementalScopeOptions): PlannedScope {
   return { scope: full('not-read-before', options.priorRun, detail), interdiffPatch: null };
 }
 
-function narrowestScope(options: PlanIncrementalScopeOptions): PlannedScope {
+async function narrowestScope(options: PlanIncrementalScopeOptions): Promise<PlannedScope> {
   const prior = options.priorRun;
   const only = (scope: ReviewScope): PlannedScope => ({ scope, interdiffPatch: null });
 
@@ -564,37 +564,37 @@ function narrowestScope(options: PlanIncrementalScopeOptions): PlannedScope {
     if (!options.headAvailable) {
       return only(full('compare-unavailable', prior, `the head ${options.head.slice(0, 7)} is not in this clone`));
     }
-    if (!git.hasCommit(prior.headRef, options.cwd)) {
+    if (!(await git.hasCommit(prior.headRef, options.cwd))) {
       // A force-push leaves the reviewed head reachable from no ref this clone
       // fetched, though origin usually still has it. Ask for it by sha before
       // giving up on a narrower read.
-      const why = options.fetchPriorHead?.(prior.headRef) ?? null;
-      if (!git.hasCommit(prior.headRef, options.cwd)) {
+      const why = (await options.fetchPriorHead?.(prior.headRef)) ?? null;
+      if (!(await git.hasCommit(prior.headRef, options.cwd))) {
         const missing = `the previous head ${prior.headRef.slice(0, 7)} is not in this clone`;
         return only(full('compare-unavailable', prior, why === null ? missing : `${missing}; ${why}`));
       }
     }
 
-    const ancestor = git.isAncestor(prior.headRef, options.head, options.cwd);
-    const merged = ancestor && git.mergeCommits(prior.headRef, options.head, options.cwd).length > 0;
+    const ancestor = await git.isAncestor(prior.headRef, options.head, options.cwd);
+    const merged = ancestor && (await git.mergeCommits(prior.headRef, options.head, options.cwd)).length > 0;
 
     // With the base known, a plain follow-up is read as the commit range, and
     // a merged base or a rewritten history as the head against the reviewed
     // head replayed onto the new base, so base-branch work never reaches the
     // review.
     if (options.base !== undefined) {
-      return ownDiffScope(options, prior, git, ancestor, merged);
+      return await ownDiffScope(options, prior, git, ancestor, merged);
     }
 
     if (!ancestor) return only(full('history-rewritten', prior));
     if (merged) return only(full('base-merged', prior));
 
-    const changed = git.changedPaths(prior.headRef, options.head, options.cwd);
+    const changed = await git.changedPaths(prior.headRef, options.head, options.cwd);
     const files = changedReviewedFiles(options.reviewedFiles, changed);
     if (files.length === 0) return only(full('base-sync-only', prior));
 
     return {
-      scope: incremental(options, prior, git, files),
+      scope: await incremental(options, prior, git, files),
       interdiffPatch: null,
       leftOutChanged: changedReviewedFiles(options.leftOutFiles ?? [], changed),
     };
@@ -605,18 +605,18 @@ function narrowestScope(options: PlanIncrementalScopeOptions): PlannedScope {
   }
 }
 
-function incremental(
+async function incremental(
   options: PlanIncrementalScopeOptions,
   prior: PriorPullReview,
   git: IncrementalGit,
   files: string[],
-): ReviewScope {
+): Promise<ReviewScope> {
   return {
     kind: 'incremental',
     since: prior.headRef,
     priorRunId: prior.reviewRunId,
     priorReviewedAt: prior.createdAt,
-    commits: git.commitCount(prior.headRef, options.head, options.cwd),
+    commits: await git.commitCount(prior.headRef, options.head, options.cwd),
     files,
   };
 }
@@ -632,38 +632,38 @@ function incremental(
  * commits, and any rewrite of their own code while resolving the merge. The
  * base's own changes are on both sides and cancel out.
  */
-function ownDiffScope(
+async function ownDiffScope(
   options: PlanIncrementalScopeOptions,
   prior: PriorPullReview,
   git: IncrementalGit,
   ancestor: boolean,
   merged: boolean,
-): PlannedScope {
+): Promise<PlannedScope> {
   const base = options.base as string;
   if (git.mergeBase === undefined || git.diffText === undefined) {
     return { scope: full('compare-unavailable', prior, 'this git surface cannot read an own diff'), interdiffPatch: null };
   }
-  if (!git.hasCommit(base, options.cwd)) {
+  if (!(await git.hasCommit(base, options.cwd))) {
     return { scope: full('compare-unavailable', prior, `the base ${base.slice(0, 7)} is not in this clone`), interdiffPatch: null };
   }
 
-  const mergeBase = git.mergeBase(base, options.head, options.cwd);
-  const priorMergeBase = git.mergeBase(base, prior.headRef, options.cwd);
-  const paths = pullRequestPaths(options, prior, git, priorMergeBase, mergeBase);
+  const mergeBase = await git.mergeBase(base, options.head, options.cwd);
+  const priorMergeBase = await git.mergeBase(base, prior.headRef, options.cwd);
+  const paths = await pullRequestPaths(options, prior, git, priorMergeBase, mergeBase);
 
   // Commits on top of the reviewed head, against the same point on the base,
   // hold nothing but author work, so that range is the review. A rewrite that
   // kept the merge base needs no replay either: the reviewed head is already
   // the pull request on this base.
   if (priorMergeBase === mergeBase) {
-    return interdiffFrom(options, prior, git, prior.headRef, mergeBase, paths.all, ancestor ? 'base-sync-only' : 'history-rewritten');
+    return await interdiffFrom(options, prior, git, prior.headRef, mergeBase, paths.all, ancestor ? 'base-sync-only' : 'history-rewritten');
   }
 
   if (git.replay === undefined) {
     return { scope: full('compare-unavailable', prior, 'this git surface cannot replay the reviewed head'), interdiffPatch: null };
   }
-  const replayed = git.replay(priorMergeBase, mergeBase, prior.headRef, options.cwd);
-  return interdiffFrom(
+  const replayed = await git.replay(priorMergeBase, mergeBase, prior.headRef, options.cwd);
+  return await interdiffFrom(
     options,
     prior,
     git,
@@ -686,18 +686,18 @@ function ownDiffScope(
  * The last are also returned alone: after a replay, one whose replay matches
  * the head is a change the new base already makes.
  */
-function pullRequestPaths(
+async function pullRequestPaths(
   options: PlanIncrementalScopeOptions,
   prior: PriorPullReview,
   git: IncrementalGit,
   priorMergeBase: string,
   mergeBase: string,
-): { all: string[]; withdrawn: string[] } {
+): Promise<{ all: string[]; withdrawn: string[] }> {
   const reviewed = options.reviewedFiles.flatMap((file) =>
     file.previousPath === undefined ? [file.path] : [file.path, file.previousPath],
   );
-  const current = new Set(git.changedPaths(mergeBase, options.head, options.cwd));
-  const withdrawn = git.changedPaths(priorMergeBase, prior.headRef, options.cwd).filter((path) => !current.has(path));
+  const current = new Set(await git.changedPaths(mergeBase, options.head, options.cwd));
+  const withdrawn = (await git.changedPaths(priorMergeBase, prior.headRef, options.cwd)).filter((path) => !current.has(path));
   return { all: [...new Set([...reviewed, ...(options.deletedFiles ?? []), ...withdrawn])], withdrawn };
 }
 
@@ -1061,7 +1061,7 @@ function hasReplayMarkers(section: string): boolean {
  * is the only place the withdrawal would show; but it shows it through the replay's
  * conflict markers, so such a file is left out and listed instead (#73).
  */
-function interdiffFrom(
+async function interdiffFrom(
   options: PlanIncrementalScopeOptions,
   prior: PriorPullReview,
   git: IncrementalGit,
@@ -1072,23 +1072,23 @@ function interdiffFrom(
   conflicts: string[] = [],
   withdrawn: string[] = [],
   priorMergeBase: string = mergeBase,
-): PlannedScope {
+): Promise<PlannedScope> {
   const diffText = git.diffText as NonNullable<IncrementalGit['diffText']>;
   // No pathspec means the whole range to git: with no pull request files, the
   // change since the review is nothing, never every file in the repository.
-  const read = (left: string, list: string[]): string => (list.length === 0 ? '' : diffText(left, options.head, list, options.cwd));
+  const read = async (left: string, list: string[]): Promise<string> => (list.length === 0 ? '' : await diffText(left, options.head, list, options.cwd));
 
   // A conflicted path outside the pull request's files stays out, as it would
   // without the conflict.
   const wanted = new Set(paths);
   const conflicted = conflicts.filter((path) => wanted.has(path));
-  const own = patchSections(read(mergeBase, conflicted));
-  const resolutions = patchSections(read(from, [...own.keys()]));
+  const own = patchSections(await read(mergeBase, conflicted));
+  const resolutions = patchSections(await read(from, [...own.keys()]));
   // Both comparisons start at the reviewed head, so identical edit runs at
   // the same old lines are inherited from the base, even if context differs.
-  const sinceReview = patchSections(read(prior.headRef, [...own.keys()]));
-  const baseChanges = patchSections(own.size === 0 ? '' : diffText(prior.headRef, mergeBase, [...own.keys()], options.cwd));
-  const baseDelta = patchSections(own.size === 0 ? '' : diffText(priorMergeBase, mergeBase, [...own.keys()], options.cwd));
+  const sinceReview = patchSections(await read(prior.headRef, [...own.keys()]));
+  const baseChanges = patchSections(own.size === 0 ? '' : await diffText(prior.headRef, mergeBase, [...own.keys()], options.cwd));
+  const baseDelta = patchSections(own.size === 0 ? '' : await diffText(priorMergeBase, mergeBase, [...own.keys()], options.cwd));
   const narrowed: string[] = [];
   const whole: string[] = [];
   const mixed: string[] = [];
@@ -1134,16 +1134,21 @@ function interdiffFrom(
   // or the branch under it was rewritten - and it is left out and listed.
   const leaked: string[] = [];
   const dropped: string[] = [];
-  const outsideSections = [...patchSections(read(from, rest))].map(([path, section]) => {
-    if (!hasReplayMarkers(section)) return section;
-    const ownSection = patchSections(read(mergeBase, [path])).get(path);
+  const outsideSections: string[] = [];
+  for (const [path, section] of patchSections(await read(from, rest))) {
+    if (!hasReplayMarkers(section)) {
+      outsideSections.push(section);
+      continue;
+    }
+    const ownSection = patchSections(await read(mergeBase, [path])).get(path);
     if (ownSection === undefined) {
       dropped.push(path);
-      return '';
+      outsideSections.push('');
+      continue;
     }
     leaked.push(path);
-    return ownSection;
-  });
+    outsideSections.push(ownSection);
+  }
   const outside = outsideSections.join('');
   const patch = [outside, ...resolved].filter((part) => part.length > 0).join('');
 
@@ -1173,7 +1178,7 @@ function interdiffFrom(
   const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
   const candidates = withdrawn.filter((path) => !own.has(path) && isReviewable(path, options.includeGenerated === true, firstParty));
   if (from !== prior.headRef && candidates.length > 0) {
-    const differs = new Set(git.changedPaths(from, options.head, options.cwd));
+    const differs = new Set(await git.changedPaths(from, options.head, options.cwd));
     absorbedList = candidates.filter((path) => !differs.has(path)).sort();
   }
   const absorbed = {
@@ -1184,7 +1189,7 @@ function interdiffFrom(
   // Asked only when a file is left out, and of the side the patch was read
   // from, so a base change to a lock file is not the author's.
   const leftOut = options.leftOutFiles ?? [];
-  const leftOutChanged = leftOut.length === 0 ? [] : changedReviewedFiles(leftOut, git.changedPaths(from, options.head, options.cwd));
+  const leftOutChanged = leftOut.length === 0 ? [] : changedReviewedFiles(leftOut, await git.changedPaths(from, options.head, options.cwd));
 
   const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
   if (patch.trim().length === 0) {

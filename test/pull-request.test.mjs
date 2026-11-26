@@ -401,7 +401,7 @@ test('an incremental scope replaces the patch and makes excluded files visible',
     },
   };
 
-  const scoped = applyReviewScope(
+  const scoped = await applyReviewScope(
     result,
     42,
     {

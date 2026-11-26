@@ -230,10 +230,783 @@ function parseFinding(raw, startLine) {
   };
 }
 
+// plugins/review-voice/src/diff/acquire.ts
+import { execFileSync as execFileSync2 } from "node:child_process";
+
 // plugins/review-voice/src/git-exec.ts
-import { spawnSync } from "node:child_process";
 import { readFileSync as readFileSync2 } from "node:fs";
 import { join as join2 } from "node:path";
+
+// plugins/review-voice/src/evidence/run.ts
+import { spawn as spawnChild, spawnSync } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
+
+// plugins/review-voice/src/evidence/parsers.ts
+import { createHash as createHash2 } from "node:crypto";
+import { posix } from "node:path";
+
+// plugins/review-voice/src/redact/redact.ts
+import { createHash } from "node:crypto";
+
+// plugins/review-voice/src/redact/patterns.ts
+var SECRET_PATTERNS = [
+  // Key material is replaced whole: a PEM block's header is not the secret,
+  // but leaving it invites someone to reconstruct what was removed. When a
+  // header has no footer after it, no later header has one either, so the
+  // second branch takes the rest of the text with group 1 unset, which
+  // replaces nothing, instead of every later header searching it again.
+  {
+    label: "PRIVATE_KEY",
+    pattern: /(-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----)|-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*/gd,
+    group: 1
+  },
+  {
+    label: "PEM_BLOCK",
+    pattern: /(-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----)|-----BEGIN [A-Z ]+-----[\s\S]*/gd,
+    group: 1
+  },
+  { label: "GITHUB_TOKEN", pattern: /\b(gh[pousr]_[A-Za-z0-9]{16,255})\b/gd, group: 1 },
+  { label: "GITHUB_TOKEN", pattern: /\b(github_pat_[A-Za-z0-9_]{20}[A-Za-z0-9_]*)\b/gd, group: 1 },
+  { label: "AWS_ACCESS_KEY", pattern: /\b((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})\b/gd, group: 1 },
+  {
+    label: "AWS_SECRET_KEY",
+    pattern: /\b(?:aws_secret_access_key|aws_secret)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gid,
+    group: 1
+  },
+  { label: "GOOGLE_API_KEY", pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/gd, group: 1 },
+  { label: "SLACK_TOKEN", pattern: /\b(xox[abposr]-[0-9A-Za-z-]{10}[0-9A-Za-z-]*)\b/gd, group: 1 },
+  { label: "STRIPE_KEY", pattern: /\b((?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16}[0-9A-Za-z]*)\b/gd, group: 1 },
+  { label: "NPM_TOKEN", pattern: /\b(npm_[A-Za-z0-9]{36})\b/gd, group: 1 },
+  { label: "PYPI_TOKEN", pattern: /\b(pypi-[A-Za-z0-9_-]{16}[A-Za-z0-9_-]*)\b/gd, group: 1 },
+  { label: "OPENAI_KEY", pattern: /\b(sk-(?:proj-)?[A-Za-z0-9_-]{20}[A-Za-z0-9_-]*)\b/gd, group: 1 },
+  { label: "ANTHROPIC_KEY", pattern: /\b(sk-ant-[A-Za-z0-9_-]{20}[A-Za-z0-9_-]*)\b/gd, group: 1 },
+  // JWTs: three base64url segments. The payload is often the sensitive part.
+  // A segment cannot contain '.', so the first always ends where its run of
+  // base64url characters ends, and the leftmost eyJ that may start a token
+  // (at the run's start or after a '-') succeeds wherever a later one in the
+  // same run would. Each run is tried once, from that eyJ, with the first two
+  // segments taken whole: trying every '-eyJ' rescanned the run each time. The
+  // last segment can still give back a trailing '-' to meet the closing \b.
+  {
+    label: "JWT",
+    pattern: /(?<![A-Za-z0-9_-])(?=((?:[A-Za-z0-9_-]*?-)??)eyJ)\1(eyJ(?=([A-Za-z0-9_-]{8}[A-Za-z0-9_-]*))\3\.(?=([A-Za-z0-9_-]{8}[A-Za-z0-9_-]*))\4\.[A-Za-z0-9_-]{8}[A-Za-z0-9_-]*)\b/gd,
+    group: 2
+  },
+  // A connection string's credentials, keeping the scheme and host so the
+  // surrounding review comment still makes sense. A scheme cannot contain ':',
+  // so it always ends where its run of scheme characters ends, and where in the
+  // run it starts changes nothing that follows. Each run is therefore tried
+  // once, from its start, and taken whole by a lookahead and backreference, as
+  // JavaScript has no possessive quantifier. Trying every word boundary in the
+  // run rescanned it each time, and pull request text could stall a review for
+  // minutes. The run must still hold a scheme's start at a word boundary: a
+  // letter first with no '_' before it, or a letter after '+', '.' or '-'.
+  {
+    label: "DB_CREDENTIALS",
+    pattern: /(?<![a-z0-9+.-])(?=(?<!_)[a-z]|[a-z0-9+.-]*?[+.-][a-z])(?=([a-z0-9+.-]+))\1:\/\/([^\s:@/]+):([^\s@/]+)@/gid,
+    group: 3
+  },
+  {
+    label: "AUTHORIZATION_HEADER",
+    pattern: /\b(?:Authorization|Proxy-Authorization)\s*[:=]\s*["']?(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{12}[A-Za-z0-9._~+/=-]*)/gid,
+    group: 1
+  },
+  // Assignment-shaped secrets. Deliberately after the specific rules: it is the
+  // broadest one, and a more specific label above is more useful in an audit
+  // than "SECRET".
+  {
+    label: "SECRET_ASSIGNMENT",
+    pattern: /\b(?:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*["']([^"'\s]{8}[^"'\s]*)["']/gid,
+    group: 1
+  },
+  // A connection string with no user, as in `redis://:password@host`. It runs
+  // last because its password reaches the first '@': run earlier, it took the
+  // keyword or closing quote of an assignment, and the rest of that secret
+  // stayed in clear text. Nothing runs after it, so it has no assignment to
+  // protect and takes a scheme that follows '_' as well.
+  {
+    label: "DB_CREDENTIALS",
+    pattern: /(?<![a-z0-9+.-])(?=[a-z]|[a-z0-9+.-]*?[+.-][a-z])(?=([a-z0-9+.-]+))\1:\/\/:([^\s@/]+)@/gid,
+    group: 2
+  }
+];
+var PLACEHOLDERS = /* @__PURE__ */ new Set([
+  "xxxxxxxx",
+  "changeme",
+  "password",
+  "redacted",
+  "your_token_here",
+  "example",
+  "placeholder",
+  "dummy",
+  "notarealsecret",
+  "test",
+  "password123",
+  "<token>",
+  "secret",
+  "todo",
+  "fixme",
+  "null",
+  "undefined",
+  "none"
+]);
+
+// plugins/review-voice/src/redact/redact.ts
+var REDACTION_VERSION = "2";
+function hash(value) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 32);
+}
+function isPlaceholder(value) {
+  const normalised2 = value.toLowerCase().replace(/[<>{}[\]]/g, "");
+  if (PLACEHOLDERS.has(normalised2)) return true;
+  return value.length >= 4 && value === value.charAt(0).repeat(value.length);
+}
+function redact(input) {
+  const counts = {};
+  let text5 = input;
+  for (const { label: label2, pattern, group = 0 } of SECRET_PATTERNS) {
+    pattern.lastIndex = 0;
+    let redacted = "";
+    let copied = 0;
+    for (const match of text5.matchAll(pattern)) {
+      const captured = match[group];
+      if (captured === void 0 || captured.length === 0) continue;
+      if (isPlaceholder(captured)) continue;
+      const span = match.indices?.[group];
+      if (span === void 0) throw new Error(`the ${label2} pattern lacks the d flag`);
+      counts[label2] = (counts[label2] ?? 0) + 1;
+      redacted += `${text5.slice(copied, span[0])}[REDACTED:${label2}]`;
+      copied = span[1];
+    }
+    text5 = redacted + text5.slice(copied);
+  }
+  return {
+    text: text5,
+    counts,
+    sourceHash: hash(input),
+    redactedHash: hash(text5),
+    version: REDACTION_VERSION
+  };
+}
+
+// plugins/review-voice/src/evidence/parsers.ts
+function signal(tool, kind, path, line3, claim, raw, confidence = 0.95) {
+  return {
+    kind,
+    path,
+    line: line3,
+    claim,
+    evidence: [raw.trim()],
+    confidence,
+    tool
+  };
+}
+var SARIF_KINDS = [
+  [/gitleaks/, "secret"],
+  [/trivy/, "vulnerability"],
+  [/semgrep|opengrep|codeql/, "sast_finding"],
+  [/ruff|golangci-lint/, "lint_error"]
+];
+var str = (value) => typeof value === "string" ? value : void 0;
+var list = (value) => Array.isArray(value) ? value.filter((entry) => typeof entry === "object" && entry !== null) : [];
+function indexed(value, index) {
+  const entry = Array.isArray(value) && typeof index === "number" ? value[index] : void 0;
+  return typeof entry === "object" && entry !== null ? entry : void 0;
+}
+var PLACEHOLDERS2 = /(\{\{|\}\}|\{\d+\})/;
+var MAX_SARIF_MESSAGE_POINTS = 500;
+var MAX_SARIF_RULE_POINTS = 200;
+var MAX_COMPOSED_UNITS = 16 * 1024 * 1024;
+var COMPOSED_PER_UNIT = 8;
+function cut(text5, points) {
+  return [...text5.slice(0, 2 * points)].slice(0, points).join("");
+}
+function memo(fn) {
+  const done = /* @__PURE__ */ new Map();
+  return (text5) => {
+    if (!done.has(text5)) done.set(text5, fn(text5));
+    return done.get(text5);
+  };
+}
+var MARKER = /\[(?:REDACTED|redacted):\w*\]/g;
+var HOLDS_MARKER = new RegExp(MARKER.source);
+function found(text5, needle, from) {
+  if (needle === "") return from;
+  const borders = new Int32Array(needle.length + 1);
+  borders[0] = -1;
+  for (let index = 0, border = -1; index < needle.length; ) {
+    while (border >= 0 && needle.charCodeAt(index) !== needle.charCodeAt(border)) border = borders[border];
+    index += 1;
+    border += 1;
+    borders[index] = border;
+  }
+  for (let index = from, matched = 0; index < text5.length; index += 1) {
+    while (matched >= 0 && text5.charCodeAt(index) !== needle.charCodeAt(matched)) matched = borders[matched];
+    matched += 1;
+    if (matched === needle.length) return index + 1 - matched;
+  }
+  return -1;
+}
+function replaced(text5, version) {
+  if (version === text5) return [];
+  const spans = [];
+  let end = 0;
+  let read = 0;
+  let marker = "";
+  for (const next of [...version.matchAll(MARKER), void 0]) {
+    const kept = version.slice(read, next?.index);
+    const start = next === void 0 ? Math.max(end, text5.length - kept.length) : read === 0 ? 0 : found(text5, kept, end);
+    const fits = start !== -1 && (read > 0 || start === 0) && text5.startsWith(kept, start);
+    if (read > 0 || !fits) spans.push({ start: end, end: fits ? start : text5.length, marker });
+    if (!fits || next === void 0) break;
+    end = start + kept.length;
+    marker = next[0];
+    read = next.index + marker.length;
+  }
+  return spans;
+}
+function cleaner(mask = (text5) => text5) {
+  return (text5) => {
+    const masked = mask(text5);
+    const redacted = redact(text5).text;
+    if (masked === text5) return redacted;
+    if (redacted === text5) return masked;
+    let cleaned = "";
+    let copied = 0;
+    for (const part of [...replaced(text5, masked), ...replaced(text5, redacted)].sort((a, b) => a.start - b.start)) {
+      if (part.start >= copied) cleaned += text5.slice(copied, part.start) + part.marker;
+      copied = Math.max(copied, part.end);
+    }
+    return cleaned + text5.slice(copied);
+  };
+}
+function sarifDocument(output) {
+  const start = output.indexOf("{");
+  const end = output.lastIndexOf("}");
+  if (start === -1 || end < start) return void 0;
+  try {
+    return JSON.parse(output.slice(start, end + 1));
+  } catch {
+    return void 0;
+  }
+}
+function sarifRuns(output) {
+  const document = sarifDocument(output);
+  return document?.version === "2.1.0" && Array.isArray(document.runs) ? list(document.runs) : void 0;
+}
+var SARIF_SCHEMA = /"\$schema"\s*:\s*"[^"]*sarif/i;
+var SARIF_VERSION = /"version"\s*:\s*"2\.1\.0"/;
+var SARIF_RUNS = /"runs"\s*:/;
+function isSarif(output) {
+  const document = sarifDocument(output);
+  if (document !== void 0 && (document.version === "2.1.0" && "runs" in document || /sarif/i.test(str(document.$schema) ?? ""))) return true;
+  const text5 = output.replace(/\\u00([0-7][0-9a-f])/gi, (_escape, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
+  return SARIF_SCHEMA.test(text5) || SARIF_VERSION.test(text5) && SARIF_RUNS.test(text5);
+}
+function sarifPath(uri, root, changes) {
+  let path = uri;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(uri)) {
+    const url = URL.canParse(uri) ? new URL(uri) : void 0;
+    if (url?.protocol !== "file:" || url.host !== "") return null;
+    path = url.pathname;
+  }
+  const plain = decoded(path);
+  if ([...new Set(path === uri ? [uri, plain] : [uri, decoded(uri), path, plain])].some(changes)) return void 0;
+  path = normalised(plain);
+  if (root === void 0) return path;
+  const relative6 = posix.relative(root, posix.resolve(root, path));
+  return relative6 === "" || relative6 === ".." || relative6.startsWith("../") ? null : relative6;
+}
+function underBase(uri, base) {
+  const entry = typeof base === "object" && base !== null ? base : void 0;
+  const baseUri = str(entry?.uri);
+  if (baseUri === void 0 || entry?.uriBaseId !== void 0) return void 0;
+  if (baseUri === "" || /^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(uri)) return uri;
+  return `${baseUri}${baseUri.endsWith("/") ? "" : "/"}${uri}`;
+}
+function normalised(path) {
+  const absolute = path.startsWith("/");
+  const kept = [];
+  for (const segment of path.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment !== "..") kept.push(segment);
+    else if (kept.length > 0 && kept.at(-1) !== "..") kept.pop();
+    else if (!absolute) kept.push("..");
+  }
+  const joined2 = kept.join("/");
+  const slash = path.endsWith("/") ? "/" : "";
+  if (absolute) return joined2 === "" ? "/" : `/${joined2}${slash}`;
+  return `${joined2 === "" ? "." : joined2}${slash}`;
+}
+function decoded(text5) {
+  return text5.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+    const bytes = Buffer.from(run.replaceAll("%", ""), "hex");
+    const utf8 = bytes.toString("utf8");
+    return Buffer.from(utf8, "utf8").equals(bytes) ? utf8 : run.replace(/%[0-7][0-9a-f]/gi, (escape) => String.fromCharCode(Number.parseInt(escape.slice(1), 16)));
+  });
+}
+function sarifSignals(output, tool, root, cleaned = cleaner()) {
+  const signals = [];
+  const seen = /* @__PURE__ */ new Set();
+  const sanitisedId = memo((ruleId) => {
+    const tabbed = cleaned(ruleId).replace(/(?![\t\n\u001b\u0090\u0098\u009b\u009d-\u009f])[\p{Cc}\p{Cf}]/gu, "	$&");
+    return cut(cleaned(terminalSafe(tabbed).replace(/[\s\p{Cc}\p{Cf}]+/gu, " ").trim()), MAX_SARIF_RULE_POINTS).trimEnd();
+  });
+  const sanitisedMessage = (text5, first = cleaned(text5)) => {
+    const spaced = terminalSafe(first).replace(/\s+/g, " ").trim();
+    return cut(spaced === first ? first : cleaned(spaced), MAX_SARIF_MESSAGE_POINTS).trimEnd();
+  };
+  const digest = (text5) => createHash2("sha256").update(text5).digest("base64");
+  const told = (text5, first) => ({ message: sanitisedMessage(text5, first), digest: digest(text5) });
+  const described = memo((text5) => told(text5));
+  const idDigest = memo(digest);
+  const numbers = /* @__PURE__ */ new Map([[null, 0]]);
+  let dropped = 0;
+  const placeOf = memo((uri) => {
+    const path = sarifPath(uri, root, (text5) => cleaned(text5) !== text5 || terminalSafe(text5) !== text5);
+    if (path === void 0) return { path: null, place: dropped -= 1 };
+    if (!numbers.has(path)) numbers.set(path, numbers.size);
+    return { path, place: numbers.get(path) };
+  });
+  const unfollowed = memo((_location) => ({ path: null, place: dropped -= 1 }));
+  let room = Math.min(MAX_COMPOSED_UNITS, COMPOSED_PER_UNIT * output.length);
+  const composed = (parts, length, values) => {
+    if (length > room) return void 0;
+    room -= length;
+    let text5 = "";
+    for (const [index, part] of parts.entries()) {
+      if (index % 2 === 0) text5 += part;
+      else if (part === "{{" || part === "}}") text5 += part.charAt(0);
+      else {
+        const value = Array.isArray(values) ? values[Number(part.slice(1, -1))] : void 0;
+        text5 += typeof value === "string" ? value : part;
+      }
+      if (text5.length - length > room) return void 0;
+    }
+    const first = cleaned(text5);
+    room -= Math.max(0, text5.length - length) + Math.max(0, first.length - text5.length);
+    return told(text5, first);
+  };
+  const strings = /* @__PURE__ */ new Map();
+  const composedFrom = (entry, values) => {
+    const template = str(entry.text);
+    if (template === void 0) return void 0;
+    let known = strings.get(entry);
+    if (known === void 0) {
+      known = { parts: template.split(PLACEHOLDERS2), messages: /* @__PURE__ */ new Map() };
+      strings.set(entry, known);
+    }
+    const key2 = Array.isArray(values) ? JSON.stringify(values.map(str)) : "";
+    if (!known.messages.has(key2)) known.messages.set(key2, composed(known.parts, template.length, values));
+    return known.messages.get(key2);
+  };
+  for (const run of sarifRuns(output) ?? []) {
+    const driver = run.tool?.driver;
+    const driverName = (str(driver?.name) ?? "").toLowerCase();
+    const kind = SARIF_KINDS.find(([pattern]) => pattern.test(driverName))?.[1] ?? "static_finding";
+    const extensions = list(run.tool?.extensions);
+    const byGuid = /* @__PURE__ */ new Map();
+    const idsOf = /* @__PURE__ */ new Map();
+    const byId = /* @__PURE__ */ new Map();
+    for (const component of [driver, ...extensions]) {
+      if (!byGuid.has(component?.guid)) byGuid.set(component?.guid, component);
+      const ids = /* @__PURE__ */ new Map();
+      for (const rule of list(component?.rules)) {
+        if (!ids.has(rule.id)) ids.set(rule.id, rule);
+        if (!byId.has(rule.id)) byId.set(rule.id, rule);
+      }
+      idsOf.set(component, ids);
+    }
+    for (const result of list(run.results)) {
+      if (result.kind !== void 0 && result.kind !== "fail") continue;
+      if (list(result.suppressions).some((entry2) => entry2.status === void 0 || entry2.status === "accepted")) continue;
+      const reference = result.rule?.toolComponent;
+      const componentIndex = reference?.index;
+      const guid = str(reference?.guid);
+      const component = typeof componentIndex === "number" && Number.isInteger(componentIndex) && componentIndex >= 0 ? indexed(run.tool?.extensions, componentIndex) : guid === void 0 ? driver : byGuid.get(guid);
+      const referenced = indexed(component?.rules, typeof result.ruleIndex === "number" ? result.ruleIndex : result.rule?.index);
+      const ruleId = str(result.ruleId) ?? str(result.rule?.id) ?? str(referenced?.id);
+      if (ruleId === void 0) continue;
+      const id = sanitisedId(ruleId);
+      if (id === "") continue;
+      const rule = referenced ?? idsOf.get(component)?.get(ruleId) ?? byId.get(ruleId);
+      const level = str(result.level) ?? str(rule?.defaultConfiguration?.level) ?? "warning";
+      if (level !== "error" && level !== "warning") continue;
+      const messageId = result.message?.id;
+      const messageStrings = rule?.messageStrings;
+      const entry = typeof messageId === "string" && typeof messageStrings === "object" && messageStrings !== null && Object.hasOwn(messageStrings, messageId) ? messageStrings[messageId] : void 0;
+      const text5 = str(result.message?.text);
+      const values = result.message?.arguments;
+      const description = str(rule?.shortDescription?.text);
+      const said = text5 !== void 0 ? (Array.isArray(values) ? composed(text5.split(PLACEHOLDERS2), text5.length, values) : void 0) ?? told(text5) : (typeof entry === "object" && entry !== null ? composedFrom(entry, values) : void 0) ?? (description === void 0 ? void 0 : described(description));
+      const message = said?.message;
+      const location = list(result.locations)[0]?.physicalLocation;
+      const artifact = location?.artifactLocation;
+      const source = artifact?.uri === void 0 ? indexed(run.artifacts, artifact?.index)?.location : artifact;
+      const uri = str(source?.uri);
+      const baseId = str(source?.uriBaseId);
+      const bases = run.originalUriBaseIds;
+      const based = uri === void 0 || baseId === void 0 || typeof bases !== "object" || bases === null || !Object.hasOwn(bases, baseId) ? uri : underBase(uri, bases[baseId]);
+      const { path, place } = uri === void 0 ? { path: null, place: 0 } : based === void 0 ? unfollowed(`${baseId}\0${uri}`) : placeOf(based);
+      const startLine = location?.region?.startLine;
+      const given = typeof startLine === "number" && Number.isInteger(startLine) && startLine > 0 ? startLine : null;
+      const line3 = path === null ? null : given;
+      const claim = message === void 0 || message === "" ? id : `${id}: ${message}`;
+      const key2 = `${place}\0${given}\0${idDigest(ruleId)}\0${said?.digest ?? ""}`;
+      if (seen.has(key2)) continue;
+      seen.add(key2);
+      signals.push(signal(tool, kind, path, line3, claim, message === void 0 || message === "" ? id : message, level === "error" ? 0.95 : 0.8));
+    }
+  }
+  return signals;
+}
+var TSC = /^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.*)$/d;
+var PYTHON = /^(.+?):(\d+)(?::(\d+))?:\s+(error|warning|note|[A-Z]\d+)\s*:?\s*(.*)$/d;
+var DOTNET = /^\s*(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+([A-Z]+\d+):\s+(.*?)(?:\s+\[(?!REDACTED:|redacted:).*\])?$/d;
+var ESLINT = /^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$/d;
+function reads(pattern, claim, clean2 = cleaner()) {
+  return (match) => {
+    const cleaned = clean2(match[0]);
+    const again = cleaned === match[0] ? match : pattern.exec(cleaned);
+    return { claim: again === null ? cleaned.trim() : claim(again), holds: cleaned.startsWith(match[0].slice(0, match.indices?.[2]?.[1])) };
+  };
+}
+function positioned(tool, kind, read) {
+  return (match) => {
+    const { claim, holds } = read(match);
+    return signal(tool, kind, holds ? match[1] : null, holds ? Number(match[2]) : null, claim, match[0]);
+  };
+}
+var ADAPTERS = [
+  {
+    // First, because the per-tool adapters match on command text and a `ruff`
+    // or `eslint` command may print SARIF; the command plays no part here, so
+    // a wrapper script named anything is covered. Snippets, code flows, fixes,
+    // fingerprints and properties are never copied, because a snippet is
+    // repository content, and for a secrets scanner it is the secret itself.
+    name: "sarif",
+    matches: (_command, output) => isSarif(output),
+    parse: sarifSignals,
+    // shortcut: matches, parse and version each parse the document, slow only for output near the 16 MB cap.
+    version: (output) => {
+      const driver = sarifRuns(output)?.[0]?.tool?.driver;
+      const name = str(driver?.name);
+      const version = str(driver?.version) ?? str(driver?.semanticVersion);
+      return name === void 0 || version === void 0 ? void 0 : `${name} ${version}`;
+    }
+  },
+  {
+    name: "typescript",
+    matches: (command, output) => /tsc|typecheck|tsgo/i.test(command) || TSC.test(output.split("\n")[0] ?? ""),
+    parse: (output, tool, _root, clean2) => {
+      const toSignal = positioned(tool, "type_error", reads(TSC, (match) => `${match[5]}: ${match[6]}`, clean2));
+      return output.split("\n").map((line3) => TSC.exec(line3)).filter((match) => match !== null).filter((match) => match[4] === "error").map(toSignal);
+    }
+  },
+  {
+    name: "dotnet",
+    matches: (command) => /dotnet|msbuild|csc\b/i.test(command),
+    parse: (output, tool, _root, clean2) => {
+      const toSignal = positioned(tool, "compile_error", reads(DOTNET, (match) => `${match[5]}: ${match[6]}`, clean2));
+      return output.split("\n").map((line3) => DOTNET.exec(line3)).filter((match) => match !== null).filter((match) => match[4] === "error").map((match) => ({ match, kept: toSignal(match) })).filter((current, index, all) => all.findIndex((other) => other.kept.claim === current.kept.claim && other.match[1] === current.match[1] && other.match[2] === current.match[2]) === index).map(({ kept }) => kept);
+    }
+  },
+  {
+    name: "python",
+    matches: (command) => /mypy|ruff|flake8|pylint|pytest/i.test(command),
+    parse: (output, tool, _root, clean2) => {
+      const toSignal = positioned(tool, "lint_or_type_error", reads(PYTHON, (match) => `${match[4]}: ${match[5]}`, clean2));
+      return output.split("\n").map((line3) => PYTHON.exec(line3)).filter((match) => match !== null).filter((match) => match[4] !== "note").map(toSignal);
+    }
+  },
+  {
+    name: "eslint",
+    matches: (command) => /eslint|biome|oxlint/i.test(command),
+    parse: (output, tool, _root, clean2) => {
+      const read = reads(ESLINT, (match) => `${match[5]}: ${match[4]}`, clean2);
+      const signals = [];
+      let file2 = null;
+      for (const line3 of output.split("\n")) {
+        if (/^\S.*\.(ts|tsx|js|jsx|mjs|cjs)$/.test(line3.trim()) || /^\S/.test(line3) && HOLDS_MARKER.test(line3) && !ESLINT.test(line3)) {
+          file2 = line3.trim();
+          continue;
+        }
+        const match = ESLINT.exec(line3);
+        if (match !== null && match[3] === "error") {
+          const { claim, holds } = read(match);
+          signals.push(signal(tool, "lint_error", file2, holds ? Number(match[1]) : null, claim, line3));
+        }
+      }
+      return signals;
+    }
+  }
+];
+function parseOutput(name, command, output, root, clean2) {
+  const haystack = `${name} ${command}`;
+  const adapter = ADAPTERS.find((candidate) => candidate.matches(haystack, output));
+  if (adapter === void 0) return { signals: [] };
+  const version = adapter.version?.(output);
+  return { signals: adapter.parse(output, name, root, clean2), ...version === void 0 ? {} : { version } };
+}
+
+// plugins/review-voice/src/evidence/run.ts
+var DEFAULT_TIMEOUT_SECONDS = 120;
+var MAX_VERSION_POINTS = 80;
+var MAX_SIGNAL_TEXT_POINTS = 4096;
+var SHELL_UNAVAILABLE_EXIT_CODES = [126, 127];
+var BASE_ENVIRONMENT = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CI", "TERM"];
+var MIN_MASKED_LENGTH = 8;
+function maskPassthrough(text5, source, passthrough) {
+  const names = /* @__PURE__ */ new Map();
+  for (const name of passthrough) {
+    const value = source[name];
+    if (typeof value !== "string") continue;
+    for (const form of [value, ...value.split("\n").map((line3) => line3.trim())]) {
+      if (form.length >= MIN_MASKED_LENGTH && !names.has(form)) names.set(form, name);
+    }
+  }
+  let masked = text5;
+  for (const [value, name] of [...names].sort((a, b) => b[0].length - a[0].length)) masked = masked.split(value).join(`[redacted:${name}]`);
+  return masked;
+}
+function maskPassthroughDeep(value, source, passthrough) {
+  if (typeof value === "string") return maskPassthrough(value, source, passthrough);
+  if (Array.isArray(value)) return value.map((entry) => maskPassthroughDeep(entry, source, passthrough));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key2, entry]) => [key2, maskPassthroughDeep(entry, source, passthrough)]));
+  }
+  return value;
+}
+function commandEnvironment(source, passthrough) {
+  const env = {};
+  for (const name of [...BASE_ENVIRONMENT, ...passthrough]) {
+    const value = source[name];
+    if (typeof value === "string") env[name] = value;
+  }
+  return env;
+}
+function notRunReport(names, skipped) {
+  return {
+    enabled: false,
+    signals: [],
+    commands: [],
+    didNotRun: [...names],
+    ...skipped === void 0 ? {} : { skipped }
+  };
+}
+function sanitisedVersion(stdout, clean2) {
+  const printed = clean2(stdout);
+  const safe = terminalSafe(printed);
+  const whole = safe === printed ? printed : clean2(safe);
+  const end = whole.indexOf("\n");
+  const stripped = clean2((end === -1 ? whole : whole.slice(0, end)).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ""));
+  const spaced = `${stripped}${end === -1 ? "" : whole.slice(end)}`.replace(/\s+/g, " ");
+  const first = stripped.replace(/\s+/g, " ").length;
+  let line3 = "";
+  let copied = 0;
+  for (const part of replaced(spaced, clean2(spaced))) {
+    if (part.start >= first) break;
+    line3 += spaced.slice(copied, part.start) + part.marker;
+    copied = part.end;
+  }
+  line3 += spaced.slice(copied, first);
+  const capped = cut(line3.trim(), MAX_VERSION_POINTS).trim();
+  return capped === "" ? void 0 : capped;
+}
+async function collectEvidence(commands, options) {
+  if (!options.enabled || commands.length === 0) {
+    return notRunReport(commands.map((command) => command.name));
+  }
+  const spawn3 = options.spawn ?? spawnCommand;
+  const env = commandEnvironment(process.env, options.envPassthrough ?? []);
+  const outcomes = [];
+  const didNotRun = [];
+  for (const command of commands) {
+    const startedAt = Date.now();
+    const timeoutMs = (command.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1e3;
+    const result = await spawnInGroup(spawn3, command.run, options.cwd, timeoutMs, env);
+    const durationMs = Date.now() - startedAt;
+    if (result.error !== void 0) {
+      const reason2 = result.error.code === "ETIMEDOUT" ? `timed out after ${command.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS}s` : result.error.message;
+      outcomes.push({
+        name: command.name,
+        command: command.run,
+        exitCode: null,
+        durationMs,
+        unavailable: reason2,
+        signals: []
+      });
+      didNotRun.push(command.name);
+      continue;
+    }
+    if (result.status !== null && SHELL_UNAVAILABLE_EXIT_CODES.includes(result.status)) {
+      outcomes.push({
+        name: command.name,
+        command: command.run,
+        exitCode: result.status,
+        durationMs,
+        unavailable: `not found or not executable (exit ${result.status})`,
+        signals: []
+      });
+      didNotRun.push(command.name);
+      continue;
+    }
+    const mask = (text5) => maskPassthrough(text5, process.env, options.envPassthrough ?? []);
+    const clean2 = cleaner(mask);
+    const printed = `${result.stdout ?? ""}
+${result.stderr ?? ""}`;
+    const safe = terminalSafe(printed);
+    const output = isSarif(safe) ? safe : terminalSafe(clean2(printed));
+    const configuredVersion = command.version === void 0 ? void 0 : await readVersion(spawn3, command.version, options.cwd, timeoutMs, env, clean2);
+    const parsed2 = parseOutput(command.name, command.run, output, options.cwd, clean2);
+    const named = output === printed ? null : new Set(parseOutput(command.name, command.run, printed, options.cwd, clean2).signals.map((signal2) => signal2.path));
+    const keeps = memo((path) => clean2(path) === path && terminalSafe(path) === path && (named === null || named.has(path)));
+    const cleanCut = (text5) => cut(clean2(text5), MAX_SIGNAL_TEXT_POINTS);
+    const signals = parsed2.signals.map((signal2) => ({
+      ...signal2,
+      ...signal2.path !== null && !keeps(signal2.path) ? { path: null, line: null } : {},
+      claim: cleanCut(signal2.claim),
+      evidence: signal2.evidence.map(cleanCut)
+    }));
+    const version = configuredVersion ?? (parsed2.version === void 0 ? void 0 : sanitisedVersion(parsed2.version, clean2));
+    outcomes.push({
+      name: command.name,
+      command: command.run,
+      exitCode: result.status,
+      durationMs,
+      ...version === void 0 ? {} : { version },
+      signals
+    });
+  }
+  return {
+    enabled: true,
+    signals: outcomes.flatMap((outcome) => outcome.signals),
+    commands: outcomes,
+    didNotRun
+  };
+}
+async function readVersion(spawn3, run, cwd, timeout, env, clean2) {
+  const result = await spawnInGroup(spawn3, run, cwd, timeout, env);
+  if (result.error !== void 0 || result.status !== 0) return void 0;
+  return sanitisedVersion(String(result.stdout ?? ""), clean2);
+}
+function spawnInGroup(spawn3, run, cwd, timeout, env, args, watch = {}) {
+  return spawn3(run, {
+    cwd,
+    env,
+    shell: args === void 0,
+    ...args === void 0 ? {} : { args },
+    encoding: "utf8",
+    timeout,
+    killSignal: "SIGKILL",
+    maxBuffer: 16 * 1024 * 1024,
+    detached: true,
+    ...watch
+  });
+}
+var MAX_TIMER_MS = 2 ** 31 - 1;
+var runningGroups = /* @__PURE__ */ new Set();
+function killGroup(pid, signal2) {
+  try {
+    process.kill(-pid, signal2);
+  } catch {
+  }
+}
+function killTree(pid, signal2) {
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    return;
+  }
+  killGroup(pid, signal2);
+}
+var undoOnStop = /* @__PURE__ */ new Set();
+function onStop(undo) {
+  undoOnStop.add(undo);
+  return () => void undoOnStop.delete(undo);
+}
+function stopCommands() {
+  for (const pid of runningGroups) killGroup(pid, "SIGKILL");
+  for (const undo of [...undoOnStop].reverse()) {
+    undoOnStop.delete(undo);
+    try {
+      undo();
+    } catch {
+    }
+  }
+}
+function stopCommandsOnSignal() {
+  const onSignal2 = (signal2) => {
+    stopCommands();
+    process.exit(signal2 === "SIGINT" ? 130 : 143);
+  };
+  process.once("SIGINT", onSignal2);
+  process.once("SIGTERM", onSignal2);
+  return () => {
+    process.off("SIGINT", onSignal2);
+    process.off("SIGTERM", onSignal2);
+  };
+}
+function spawnCommand(command, options) {
+  return new Promise((resolve17) => {
+    if (options.signal?.aborted === true) {
+      resolve17({ status: null, stdout: "", stderr: "", error: Object.assign(new Error(`spawn ${command} ABORT_ERR`), { code: "ABORT_ERR" }) });
+      return;
+    }
+    const child = spawnChild(command, options.args ?? [], { cwd: options.cwd, env: options.env, shell: options.shell, detached: options.detached, windowsHide: true, stdio: "pipe" });
+    const pid = child.pid;
+    if (pid !== void 0) runningGroups.add(pid);
+    const chunks = { stdout: [], stderr: [] };
+    const sizes = { stdout: 0, stderr: 0 };
+    let failure;
+    let settled = false;
+    const stop = (code3) => {
+      failure ??= code3;
+      if (pid !== void 0) killTree(pid, options.killSignal);
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
+    const timer = options.timeout > 0 ? setTimeout(() => stop("ETIMEDOUT"), Math.min(options.timeout, MAX_TIMER_MS)) : void 0;
+    options.signal?.addEventListener("abort", () => {
+      if (!settled) stop("ABORT_ERR");
+    });
+    const decoder = new StringDecoder(options.encoding);
+    for (const stream of ["stdout", "stderr"]) {
+      child[stream].on("data", (chunk) => {
+        if (stream === "stdout") options.onStdout?.(decoder.write(chunk));
+        const room = options.maxBuffer - sizes[stream];
+        if (room > 0) chunks[stream].push(chunk.subarray(0, room));
+        sizes[stream] += chunk.length;
+        if (sizes[stream] > options.maxBuffer) stop("ENOBUFS");
+      });
+    }
+    const finish = (status, error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (pid !== void 0) {
+        if (options.killAfterClose !== false) killGroup(pid, "SIGKILL");
+        runningGroups.delete(pid);
+      }
+      const stdout = Buffer.concat(chunks.stdout);
+      resolve17({
+        status,
+        stdout: stdout.toString(options.encoding),
+        ...options.bytes === true ? { stdoutBytes: stdout } : {},
+        stderr: Buffer.concat(chunks.stderr).toString(options.encoding),
+        ...error === void 0 ? {} : { error }
+      });
+    };
+    child.on("error", (error) => finish(null, error));
+    child.on(
+      "close",
+      (status) => finish(status, failure === void 0 ? void 0 : Object.assign(new Error(`spawn ${child.spawnfile} ${failure}`), { code: failure }))
+    );
+    child.stdin.on("error", () => void 0);
+    child.stdin.end(options.input);
+  });
+}
+
+// plugins/review-voice/src/git-exec.ts
 var CAT_FILE_BATCH_TIMEOUT_MS = 12e4;
 var CAT_FILE_BLOB_TIMEOUT_MS = 3e4;
 function timeoutFromEnv(name, fallback) {
@@ -247,17 +1020,6 @@ function catFileBatchTimeoutMs() {
 }
 function catFileBlobTimeoutMs() {
   return timeoutFromEnv("REVIEW_VOICE_CAT_FILE_BLOB_TIMEOUT_MS", CAT_FILE_BLOB_TIMEOUT_MS);
-}
-function killGroup(pid) {
-  if (pid === void 0) return;
-  if (process.platform === "win32") {
-    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
-    return;
-  }
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
-  }
 }
 var warnedAboutPartialClone = false;
 function readGitConfig(root) {
@@ -299,44 +1061,40 @@ var GIT_READ_TIMEOUT_MS = 6e4;
 function gitTimeoutMs(fallback) {
   return timeoutFromEnv("REVIEW_VOICE_GIT_TIMEOUT_MS", fallback);
 }
-function runGitSync(root, args, options) {
-  return runGitCatFileSync(root, args, { maxBuffer: 64 * 1024 * 1024, ...options });
+function runGit(root, args, options) {
+  return runGitCatFile(root, args, { maxBuffer: 64 * 1024 * 1024, ...options });
 }
-function runGitCatFileSync(root, args, options) {
-  const spawnOptions = {
+async function runGitCatFile(root, args, options) {
+  const result = await spawnCommand("git", {
     cwd: root,
-    ...options.input === void 0 ? {} : { input: options.input },
-    maxBuffer: options.maxBuffer,
+    env: process.env,
+    shell: false,
+    args,
+    encoding: "utf8",
     timeout: options.timeoutMs,
     killSignal: "SIGKILL",
+    maxBuffer: options.maxBuffer,
     detached: process.platform !== "win32",
-    windowsHide: true,
-    stdio: ["pipe", "pipe", "pipe"]
-  };
-  const result = spawnSync("git", [...args], spawnOptions);
-  const timedOut = result.error?.code === "ETIMEDOUT";
-  if (timedOut || result.signal !== null) {
-    (options.killTree ?? killGroup)(result.pid);
+    bytes: true,
+    killAfterClose: false,
+    ...options.input === void 0 ? {} : { input: options.input }
+  });
+  const code3 = result.error?.code;
+  if (code3 === "ETIMEDOUT") {
+    warnPartialCloneOnce(root);
+    const bound = options.timeoutMs < 1e3 ? `${options.timeoutMs}ms` : `${options.timeoutMs / 1e3}s`;
+    throw Object.assign(new Error(`git ${args.join(" ")} timed out after ${bound}`), { code: "ETIMEDOUT" });
   }
-  if (timedOut) warnPartialCloneOnce(root);
-  if (result.error !== void 0) {
-    if (timedOut) {
-      const bound = options.timeoutMs < 1e3 ? `${options.timeoutMs}ms` : `${options.timeoutMs / 1e3}s`;
-      const error = new Error(`git ${args.join(" ")} timed out after ${bound}`);
-      error.code = "ETIMEDOUT";
-      throw error;
-    }
-    throw result.error;
-  }
+  if (result.error !== void 0) throw result.error;
   if (result.status !== 0) {
-    const stderr = result.stderr?.toString("utf8").trim() ?? "";
+    const stderr = result.stderr.trim();
     throw Object.assign(new Error(`git ${args.join(" ")} failed${stderr === "" ? "" : `: ${stderr}`}`), {
       status: result.status,
-      stdout: result.stdout?.toString("utf8") ?? "",
+      stdout: result.stdout,
       stderr
     });
   }
-  return result.stdout ?? Buffer.alloc(0);
+  return result.stdoutBytes ?? Buffer.alloc(0);
 }
 
 // plugins/review-voice/src/diff/acquire.ts
@@ -655,16 +1413,18 @@ function generatedRoot(path) {
   const slash = path.lastIndexOf("/");
   return slash < 0 ? "" : path.slice(0, slash + 1);
 }
-function findHandEdited(changedPaths, readHeader, firstParty) {
+function handEditedCandidates(changedPaths, firstParty) {
   const generated = changedPaths.filter((path) => classify(path, firstParty) === "generated");
   const perRoot = /* @__PURE__ */ new Map();
   for (const path of generated) {
     const root = generatedRoot(path);
     perRoot.set(root, (perRoot.get(root) ?? 0) + 1);
   }
+  return generated.filter((path) => perRoot.get(generatedRoot(path)) === 1);
+}
+function findHandEdited(changedPaths, readHeader, firstParty) {
   const suspected = /* @__PURE__ */ new Set();
-  for (const path of generated) {
-    if (perRoot.get(generatedRoot(path)) !== 1) continue;
+  for (const path of handEditedCandidates(changedPaths, firstParty)) {
     const header = readHeader(path);
     if (header !== null && hasDoNotEditHeader(header)) suspected.add(path);
   }
@@ -739,55 +1499,55 @@ function parseExclusions(raw) {
 // plugins/review-voice/src/diff/acquire.ts
 var GitError = class extends Error {
 };
-function git(args, cwd, timeout = GIT_READ_TIMEOUT_MS) {
+async function git(args, cwd, timeout = GIT_READ_TIMEOUT_MS) {
   try {
-    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(timeout) }).toString("utf8");
+    return (await runGit(cwd, args, { timeoutMs: gitTimeoutMs(timeout) })).toString("utf8");
   } catch (error) {
     const stderr = error.stderr ?? "";
     throw new GitError(`git ${args[0]} failed: ${stderr.trim() || String(error)}`);
   }
 }
-function gitAllowingDifference(args, cwd) {
+async function gitAllowingDifference(args, cwd) {
   try {
-    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString("utf8");
+    return (await runGit(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) })).toString("utf8");
   } catch (error) {
     const typed = error;
     if (typed.status === 1 && typeof typed.stdout === "string") return typed.stdout;
     throw new GitError(`git ${args[0]} failed: ${String(error)}`);
   }
 }
-function untrackedFiles(root) {
-  return git(["ls-files", "--others", "--exclude-standard", "-z"], root).split("\0").filter((path) => path.length > 0);
+async function untrackedFiles(root) {
+  return (await git(["ls-files", "--others", "--exclude-standard", "-z"], root)).split("\0").filter((path) => path.length > 0);
 }
-function hasCommitLocally(commit, root) {
+async function hasCommitLocally(commit, root) {
   try {
-    git(["cat-file", "-e", `${commit}^{commit}`], root, GIT_CHECK_TIMEOUT_MS);
+    await git(["cat-file", "-e", `${commit}^{commit}`], root, GIT_CHECK_TIMEOUT_MS);
     return true;
   } catch {
     return false;
   }
 }
-function attributeSource(root, diff) {
+async function attributeSource(root, diff) {
   if (diff.mode === "worktree" || diff.mode === "staged") {
-    return hasCommitLocally(diff.head, root) ? diff.head : null;
+    return await hasCommitLocally(diff.head, root) ? diff.head : null;
   }
   if (diff.base === null) return null;
   try {
-    const mergeBase = git(["merge-base", diff.base, diff.head], root).trim();
+    const mergeBase = (await git(["merge-base", diff.base, diff.head], root)).trim();
     if (mergeBase.length > 0) return mergeBase;
   } catch {
   }
-  return hasCommitLocally(diff.base, root) ? diff.base : null;
+  return await hasCommitLocally(diff.base, root) ? diff.base : null;
 }
-function linguistGeneratedPaths(root, paths, source) {
+async function linguistGeneratedPaths(root, paths, source) {
   const marked = /* @__PURE__ */ new Set();
-  if (paths.length === 0 || source === null || !hasCommitLocally(source, root)) return marked;
+  if (paths.length === 0 || source === null || !await hasCommitLocally(source, root)) return marked;
   let raw;
   try {
-    raw = runGitSync(root, ["check-attr", "--source", source, "-z", "--stdin", "linguist-generated"], {
+    raw = (await runGit(root, ["check-attr", "--source", source, "-z", "--stdin", "linguist-generated"], {
       input: `${paths.join("\0")}\0`,
       timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS)
-    }).toString("utf8");
+    })).toString("utf8");
   } catch {
     return marked;
   }
@@ -799,7 +1559,19 @@ function linguistGeneratedPaths(root, paths, source) {
   return marked;
 }
 function repositoryRoot(cwd) {
-  return git(["rev-parse", "--show-toplevel"], cwd).trim();
+  try {
+    return execFileSync2("git", ["rev-parse", "--show-toplevel"], {
+      cwd,
+      encoding: "utf8",
+      timeout: gitTimeoutMs(GIT_READ_TIMEOUT_MS),
+      killSignal: "SIGKILL",
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    }).trim();
+  } catch (error) {
+    const stderr = error.stderr ?? "";
+    throw new GitError(`git rev-parse failed: ${stderr.trim() || String(error)}`);
+  }
 }
 var STATUS = {
   A: "added",
@@ -825,14 +1597,14 @@ function parseNameStatus(raw) {
   }
   return out;
 }
-function acquireDiff(options) {
+async function acquireDiff(options) {
   const root = repositoryRoot(options.cwd);
   const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
   const range = options.base !== null ? [`${options.base}...HEAD`] : options.staged ? ["--cached"] : [];
   const mode = options.base !== null ? "base" : options.staged ? "staged" : "worktree";
-  const entries = parseNameStatus(git(["diff", "--name-status", "-z", ...range], root));
+  const entries = parseNameStatus(await git(["diff", "--name-status", "-z", ...range], root));
   const numstat = /* @__PURE__ */ new Map();
-  for (const line3 of git(["diff", "--numstat", ...range], root).split("\n")) {
+  for (const line3 of (await git(["diff", "--numstat", ...range], root)).split("\n")) {
     const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line3);
     if (match === null) continue;
     numstat.set(match[3], {
@@ -840,38 +1612,39 @@ function acquireDiff(options) {
       deletions: match[2] === "-" ? 0 : Number(match[2])
     });
   }
-  const untracked = new Set(mode === "worktree" ? untrackedFiles(root) : []);
+  const untracked = new Set(mode === "worktree" ? await untrackedFiles(root) : []);
   for (const path of untracked) entries.push({ status: "A", path });
   const binary2 = /* @__PURE__ */ new Set();
-  const stats = git(["diff", "--numstat", "-z", ...range], root).split("\0");
+  const stats = (await git(["diff", "--numstat", "-z", ...range], root)).split("\0");
   for (let i = 0; i < stats.length; i += 1) {
     const match = /^(-|\d+)\t(-|\d+)\t([^]*)$/.exec(stats[i]);
     if (match === null) continue;
     const path = match[3] !== "" ? match[3] : stats[i += 2];
     if (match[1] === "-" && path !== void 0) binary2.add(path);
   }
-  const isBinary = (path) => untracked.has(path) ? gitAllowingDifference(["diff", "--numstat", "--no-index", "--", "/dev/null", path], root).startsWith("-	-	") : binary2.has(path);
-  const readHead3 = (path) => {
+  const isBinary = async (path) => untracked.has(path) ? (await gitAllowingDifference(["diff", "--numstat", "--no-index", "--", "/dev/null", path], root)).startsWith("-	-	") : binary2.has(path);
+  const readHead3 = async (path) => {
     try {
       if (mode === "worktree") return readFileSync3(join3(root, path), "utf8");
-      return git(["show", mode === "staged" ? `:${path}` : `HEAD:${path}`], root);
+      return await git(["show", mode === "staged" ? `:${path}` : `HEAD:${path}`], root);
     } catch {
       return null;
     }
   };
-  const handEdited = findHandEdited(
-    entries.filter((entry) => entry.status !== "D").map((entry) => entry.path),
-    readHead3,
-    firstParty
-  );
-  const files2 = entries.map((entry) => {
+  const handEdited = /* @__PURE__ */ new Set();
+  for (const path of handEditedCandidates(entries.filter((entry) => entry.status !== "D").map((entry) => entry.path), firstParty)) {
+    const header = await readHead3(path);
+    if (header !== null && hasDoNotEditHeader(header)) handEdited.add(path);
+  }
+  const files2 = [];
+  for (const entry of entries) {
     const cls = classify(entry.path, firstParty);
     const deleted = entry.status === "D";
     const suspected = handEdited.has(entry.path);
     const wanted = !deleted && (suspected || isReviewable(entry.path, options.includeGenerated, firstParty));
-    const unreadable = wanted && isBinary(entry.path);
+    const unreadable = wanted && await isBinary(entry.path);
     const reviewed = wanted && !unreadable;
-    return {
+    files2.push({
       path: entry.path,
       ...entry.previousPath === void 0 ? {} : { previousPath: entry.previousPath },
       status: STATUS[entry.status] ?? "changed",
@@ -882,17 +1655,17 @@ function acquireDiff(options) {
       reviewed,
       ...suspected ? { handEditSuspected: true } : {},
       ...reviewed ? {} : { excludedBecause: deleted ? FILE_DELETED : excludedReason(unreadable ? "binary" : cls) }
-    };
-  });
+    });
+  }
   const reviewable = files2.filter((file2) => file2.reviewed).map((file2) => file2.path);
   const trackedReviewable = reviewable.filter((path) => !untracked.has(path));
   const untrackedReviewable = reviewable.filter((path) => untracked.has(path));
   const parts = [];
   if (trackedReviewable.length > 0) {
-    parts.push(git(["diff", ...PATCH_OPTIONS, ...range, "--", ...trackedReviewable], root));
+    parts.push(await git(["diff", ...PATCH_OPTIONS, ...range, "--", ...trackedReviewable], root));
   }
   for (const path of untrackedReviewable) {
-    parts.push(gitAllowingDifference(["diff", ...PATCH_OPTIONS, "--no-index", "--", "/dev/null", path], root));
+    parts.push(await gitAllowingDifference(["diff", ...PATCH_OPTIONS, "--no-index", "--", "/dev/null", path], root));
   }
   const diff = parts.join("").trim().length === 0 ? "" : parts.join("");
   const hunkPaths = /* @__PURE__ */ new Set();
@@ -900,13 +1673,13 @@ function acquireDiff(options) {
     const path = match[1];
     if (path !== void 0 && path !== "/dev/null") hunkPaths.add(path);
   }
-  const head = git(["rev-parse", "HEAD"], root).trim();
+  const head = (await git(["rev-parse", "HEAD"], root)).trim();
   let refs;
   if (options.base !== null) {
-    const baseSha = git(["rev-parse", `${options.base}^{commit}`], root).trim();
+    const baseSha = (await git(["rev-parse", `${options.base}^{commit}`], root)).trim();
     let mergeBase = null;
     try {
-      mergeBase = git(["merge-base", baseSha, head], root).trim() || null;
+      mergeBase = (await git(["merge-base", baseSha, head], root)).trim() || null;
     } catch {
     }
     refs = { base: { sha: baseSha, available: true }, head: { sha: head, available: true }, mergeBase };
@@ -8698,7 +9471,7 @@ function verifierConfidence(technicalConfidence, evidenceQuality2) {
 }
 
 // plugins/review-voice/src/scoring/score.ts
-import { posix } from "node:path";
+import { posix as posix2 } from "node:path";
 
 // plugins/review-voice/src/review/lanes.ts
 import { existsSync as existsSync2 } from "node:fs";
@@ -8879,7 +9652,7 @@ function matchingSuppression(suppressions, candidate) {
   if (suppressions.length === 0 || isSuppressionExempt(candidate.category)) return null;
   const ruleId = ruleIdFor(candidate.category, candidate.lane, candidate.blockerClass);
   if (ruleId === null) return null;
-  const path = posix.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
+  const path = posix2.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
   return suppressions.find(
     (suppression) => suppression.ruleId === ruleId && !isSuppressionExempt(categoryOfRuleId(suppression.ruleId)) && (suppression.glob === null || governsAny([suppression.glob], [path]))
   ) ?? null;
@@ -9763,7 +10536,7 @@ function reGateBreakdown(input, thresholds) {
 }
 
 // plugins/review-voice/src/policy/compile.ts
-import { posix as posix2 } from "node:path";
+import { posix as posix3 } from "node:path";
 var MIN_CORROBORATING = 3;
 function canActivate(evidence) {
   const supporting = evidence.dismissals + evidence.keeps + evidence.rewrites;
@@ -9808,7 +10581,7 @@ var GLOBAL_SCOPE = { type: "global", key: "owner" };
 function commonDirectory(paths) {
   let common = null;
   for (const path of paths) {
-    const normalised2 = posix2.normalize(path.split("\\").join("/"));
+    const normalised2 = posix3.normalize(path.split("\\").join("/"));
     const segments = normalised2.split("/").filter((part) => part.length > 0 && part !== ".");
     const directories = segments[0] === ".." ? [] : segments.slice(0, -1);
     if (common === null) {
@@ -10095,14 +10868,14 @@ function listPolicies(db, scope) {
 }
 
 // plugins/review-voice/src/github/auth.ts
-import { execFileSync as execFileSync2 } from "node:child_process";
+import { execFileSync as execFileSync3 } from "node:child_process";
 var AuthError = class extends Error {
 };
 function githubToken(env = process.env) {
   const fromEnv = env["GITHUB_TOKEN"] ?? env["GH_TOKEN"];
   if (fromEnv !== void 0 && fromEnv.length > 0) return fromEnv;
   try {
-    const token = execFileSync2("gh", ["auth", "token"], {
+    const token = execFileSync3("gh", ["auth", "token"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
     }).trim();
@@ -10737,7 +11510,7 @@ var CSHARP = {
     }
   ]
 };
-var PYTHON = {
+var PYTHON2 = {
   quotes: `'"`,
   lineComment: "#",
   blockComments: false,
@@ -10751,8 +11524,8 @@ var PYTHON = {
 var LANGUAGES2 = {
   ...Object.fromEntries([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => [ext, TYPESCRIPT])),
   ".cs": CSHARP,
-  ".py": PYTHON,
-  ".pyi": PYTHON
+  ".py": PYTHON2,
+  ".pyi": PYTHON2
 };
 function splitLine(text5, language3) {
   if (language3.blockComments && text5.trimStart().startsWith("*")) return { code: "", comment: text5, raw: "" };
@@ -11191,13 +11964,13 @@ var C_STYLE2 = language2(`'"`, "//", true);
 var GO2 = language2("'\"`", "//", true);
 var PHP2 = { ...C_STYLE2, altLineComment: "#" };
 var HASH2 = language2(`'"`, "#", false);
-var PYTHON2 = language2(`'"`, "#", false, false, true);
+var PYTHON3 = language2(`'"`, "#", false, false, true);
 var LANGUAGES4 = {
   ...Object.fromEntries([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => [ext, SCRIPT2])),
   ...Object.fromEntries([".cs", ".java", ".kt"].map((ext) => [ext, C_STYLE2])),
   ".php": PHP2,
   ".go": GO2,
-  ".py": PYTHON2,
+  ".py": PYTHON3,
   ".rb": HASH2
 };
 function kindsIn3(text5, lang, urls) {
@@ -11266,12 +12039,12 @@ function countLines(content) {
   }
   return content.length > 0 && content[content.length - 1] !== 10 ? lines2 + 1 : lines2;
 }
-function startOf(root, diff) {
+async function startOf(root, diff) {
   if (diff.scope?.kind === "incremental" || diff.scope?.kind === "interdiff") return diff.scope.since;
   return attributeSource(root, diff);
 }
-function changeSides(root, diff) {
-  const base = startOf(root, diff);
+async function changeSides(root, diff) {
+  const base = await startOf(root, diff);
   switch (diff.mode) {
     case "worktree":
       return { base, head: { from: "worktree" } };
@@ -11283,12 +12056,12 @@ function changeSides(root, diff) {
       return { base, head: diff.refs?.head.available === true ? { from: "commit", commit: diff.head } : null };
   }
 }
-function readBlobs(root, specs) {
+async function readBlobs(root, specs) {
   const blobs = new Map(specs.map((spec) => [spec, null]));
   if (specs.length === 0) return blobs;
   let out;
   try {
-    out = runGitCatFileSync(root, ["cat-file", "--batch"], {
+    out = await runGitCatFile(root, ["cat-file", "--batch"], {
       input: `${specs.join("\n")}
 `,
       maxBuffer: 512 * 1024 * 1024,
@@ -11311,7 +12084,7 @@ function readBlobs(root, specs) {
   }
   return blobs;
 }
-function measureLines(root, files2, paths, sides) {
+async function measureLines(root, files2, paths, sides) {
   const asked = new Set(paths);
   const wanted = files2.filter((file2) => asked.has(file2.path) && !file2.path.includes("\n"));
   const baseSpec = (file2) => sides.base === null || file2.status === "added" || (file2.previousPath ?? file2.path).includes("\n") ? null : `${sides.base}:${file2.previousPath ?? file2.path}`;
@@ -11320,7 +12093,7 @@ function measureLines(root, files2, paths, sides) {
     return sides.head.from === "index" ? `:${file2.path}` : `${sides.head.commit}:${file2.path}`;
   };
   const specs = wanted.flatMap((file2) => [baseSpec(file2), headSpec(file2)]).filter((spec) => spec !== null);
-  const blobs = readBlobs(root, [...new Set(specs)]);
+  const blobs = await readBlobs(root, [...new Set(specs)]);
   const linesOf = (spec) => {
     const blob = spec === null ? null : blobs.get(spec) ?? null;
     return blob === null ? null : countLines(blob);
@@ -11389,7 +12162,7 @@ function findStructureSignals(diff, paths, counts, limits = DEFAULT_STRUCTURE, d
     unmeasured: { count: unmeasured.length, paths: unmeasured.slice(0, MAX_UNMEASURED_LISTED) }
   };
 }
-function readDeletedFiles(root, files2, deletedProduction, sides, mode) {
+async function readDeletedFiles(root, files2, deletedProduction, sides, mode) {
   if (sides.base === null) return [];
   const specs = /* @__PURE__ */ new Map();
   for (const path of deletedProduction) {
@@ -11398,7 +12171,7 @@ function readDeletedFiles(root, files2, deletedProduction, sides, mode) {
     const side = mode === "worktree" ? "" : sides.base;
     if (!source.includes("\n")) specs.set(path, `${side}:${source}`);
   }
-  const blobs = readBlobs(root, [...new Set(specs.values())]);
+  const blobs = await readBlobs(root, [...new Set(specs.values())]);
   const read = [];
   for (const [path, spec] of specs) {
     const blob = blobs.get(spec) ?? null;
@@ -11407,7 +12180,7 @@ function readDeletedFiles(root, files2, deletedProduction, sides, mode) {
   }
   return read;
 }
-function collectStructure(cwd, change, production, limits = DEFAULT_STRUCTURE, deletedProduction = []) {
+async function collectStructure(cwd, change, production, limits = DEFAULT_STRUCTURE, deletedProduction = []) {
   const files2 = change.files ?? [];
   const deleted = new Set(files2.filter((file2) => file2.status === "deleted").map((file2) => file2.path));
   const paths = production.filter((path) => !deleted.has(path));
@@ -11415,20 +12188,20 @@ function collectStructure(cwd, change, production, limits = DEFAULT_STRUCTURE, d
   let deletedFiles = [];
   try {
     const root = repositoryRoot(cwd);
-    const sides = changeSides(root, change);
-    counts = measureLines(root, files2, paths, sides);
-    deletedFiles = readDeletedFiles(root, files2, deletedProduction, sides, change.mode);
+    const sides = await changeSides(root, change);
+    counts = await measureLines(root, files2, paths, sides);
+    deletedFiles = await readDeletedFiles(root, files2, deletedProduction, sides, change.mode);
   } catch {
   }
   return findStructureSignals(change.diff, paths, counts, limits, deletedFiles);
 }
 
 // plugins/review-voice/src/publish/verdict.ts
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 
 // plugins/review-voice/src/store/runs.ts
-import { randomUUID as randomUUID3, createHash as createHash2 } from "node:crypto";
-import { posix as posix3 } from "node:path";
+import { randomUUID as randomUUID3, createHash as createHash3 } from "node:crypto";
+import { posix as posix4 } from "node:path";
 
 // plugins/review-voice/src/diff/incremental.ts
 var nullableString = (value) => typeof value === "string" || value === null;
@@ -11480,55 +12253,55 @@ function gitFailure(args, error) {
 function firstLine(error) {
   return (error instanceof Error ? error.message : String(error)).split("\n")[0] ?? "";
 }
-function runGit(args, cwd, timeout = GIT_READ_TIMEOUT_MS) {
+async function gitText(args, cwd, timeout = GIT_READ_TIMEOUT_MS) {
   try {
-    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(timeout) }).toString("utf8");
+    return (await runGit(cwd, args, { timeoutMs: gitTimeoutMs(timeout) })).toString("utf8");
   } catch (error) {
     throw Object.assign(new Error(gitFailure(args, error)), { status: error.status });
   }
 }
 var systemGit = {
-  hasCommit(sha, cwd) {
+  async hasCommit(sha, cwd) {
     try {
-      runGit(["cat-file", "-e", `${sha}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS);
+      await gitText(["cat-file", "-e", `${sha}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS);
       return true;
     } catch {
       return false;
     }
   },
-  isAncestor(ancestor, descendant, cwd) {
+  async isAncestor(ancestor, descendant, cwd) {
     try {
-      runGit(["merge-base", "--is-ancestor", ancestor, descendant], cwd);
+      await gitText(["merge-base", "--is-ancestor", ancestor, descendant], cwd);
       return true;
     } catch (error) {
       if (error.status === 1) return false;
       throw error;
     }
   },
-  mergeCommits(since, head, cwd) {
-    return runGit(["rev-list", "--merges", `${since}..${head}`], cwd).split("\n").filter((sha) => sha.length > 0);
+  async mergeCommits(since, head, cwd) {
+    return (await gitText(["rev-list", "--merges", `${since}..${head}`], cwd)).split("\n").filter((sha) => sha.length > 0);
   },
-  changedPaths(since, head, cwd) {
-    return runGit(["diff", "--name-only", "--no-renames", "-z", since, head], cwd).split("\0").filter((path) => path.length > 0);
+  async changedPaths(since, head, cwd) {
+    return (await gitText(["diff", "--name-only", "--no-renames", "-z", since, head], cwd)).split("\0").filter((path) => path.length > 0);
   },
-  commitCount(since, head, cwd) {
-    const count4 = Number(runGit(["rev-list", "--count", `${since}..${head}`], cwd).trim());
+  async commitCount(since, head, cwd) {
+    const count4 = Number((await gitText(["rev-list", "--count", `${since}..${head}`], cwd)).trim());
     if (!Number.isSafeInteger(count4) || count4 < 0) throw new Error("git returned an invalid commit count");
     return count4;
   },
-  mergeBase(left, right, cwd) {
-    const base = runGit(["merge-base", left, right], cwd).trim();
+  async mergeBase(left, right, cwd) {
+    const base = (await gitText(["merge-base", left, right], cwd)).trim();
     if (!/^[0-9a-f]{7,64}$/.test(base)) throw new Error("git returned no merge base");
     return base;
   },
   diffText(from, to, paths, cwd) {
-    return runGit(
+    return gitText(
       ["diff", "--no-ext-diff", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/", from, to, "--", ...topPathspecs(paths)],
       cwd
     );
   },
-  replay(from, onto, head, cwd) {
-    const version = /(\d+)\.(\d+)/.exec(runGit(["version"], cwd));
+  async replay(from, onto, head, cwd) {
+    const version = /(\d+)\.(\d+)/.exec(await gitText(["version"], cwd));
     const [major, minor] = [Number(version?.[1] ?? 0), Number(version?.[2] ?? 0)];
     if (major < REPLAY_GIT[0] || major === REPLAY_GIT[0] && minor < REPLAY_GIT[1]) {
       throw new Error(
@@ -11539,7 +12312,7 @@ var systemGit = {
     let output;
     let conflicted = false;
     try {
-      output = runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString("utf8");
+      output = (await runGit(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) })).toString("utf8");
     } catch (error) {
       const failure = error;
       if (failure.status !== 1 || typeof failure.stdout !== "string") throw new Error(gitFailure(args, error));
@@ -11624,8 +12397,8 @@ function ownDiffFiles(patch) {
   closeHunk();
   return files2;
 }
-function planScope(options) {
-  const planned = narrowestScope(options);
+async function planScope(options) {
+  const planned = await narrowestScope(options);
   if (planned.scope.kind === "full") return planned;
   const leftOutBefore = new Set(options.priorLeftOut ?? []);
   const notRead = new Set(options.reviewedFiles.map((file2) => file2.path).filter((path) => leftOutBefore.has(path)));
@@ -11637,7 +12410,7 @@ function planScope(options) {
   const detail = `${unread} file${unread === 1 ? "" : "s"} the earlier review is not known to have read ${unread === 1 ? "is" : "are"} read now`;
   return { scope: full("not-read-before", options.priorRun, detail), interdiffPatch: null };
 }
-function narrowestScope(options) {
+async function narrowestScope(options) {
   const prior = options.priorRun;
   const only = (scope) => ({ scope, interdiffPatch: null });
   if (options.forceFull) return only(full("requested", prior));
@@ -11649,25 +12422,25 @@ function narrowestScope(options) {
     if (!options.headAvailable) {
       return only(full("compare-unavailable", prior, `the head ${options.head.slice(0, 7)} is not in this clone`));
     }
-    if (!git6.hasCommit(prior.headRef, options.cwd)) {
-      const why = options.fetchPriorHead?.(prior.headRef) ?? null;
-      if (!git6.hasCommit(prior.headRef, options.cwd)) {
+    if (!await git6.hasCommit(prior.headRef, options.cwd)) {
+      const why = await options.fetchPriorHead?.(prior.headRef) ?? null;
+      if (!await git6.hasCommit(prior.headRef, options.cwd)) {
         const missing = `the previous head ${prior.headRef.slice(0, 7)} is not in this clone`;
         return only(full("compare-unavailable", prior, why === null ? missing : `${missing}; ${why}`));
       }
     }
-    const ancestor = git6.isAncestor(prior.headRef, options.head, options.cwd);
-    const merged = ancestor && git6.mergeCommits(prior.headRef, options.head, options.cwd).length > 0;
+    const ancestor = await git6.isAncestor(prior.headRef, options.head, options.cwd);
+    const merged = ancestor && (await git6.mergeCommits(prior.headRef, options.head, options.cwd)).length > 0;
     if (options.base !== void 0) {
-      return ownDiffScope(options, prior, git6, ancestor, merged);
+      return await ownDiffScope(options, prior, git6, ancestor, merged);
     }
     if (!ancestor) return only(full("history-rewritten", prior));
     if (merged) return only(full("base-merged", prior));
-    const changed = git6.changedPaths(prior.headRef, options.head, options.cwd);
+    const changed = await git6.changedPaths(prior.headRef, options.head, options.cwd);
     const files2 = changedReviewedFiles(options.reviewedFiles, changed);
     if (files2.length === 0) return only(full("base-sync-only", prior));
     return {
-      scope: incremental(options, prior, git6, files2),
+      scope: await incremental(options, prior, git6, files2),
       interdiffPatch: null,
       leftOutChanged: changedReviewedFiles(options.leftOutFiles ?? [], changed)
     };
@@ -11675,35 +12448,35 @@ function narrowestScope(options) {
     return only(full("compare-unavailable", prior, firstLine(error)));
   }
 }
-function incremental(options, prior, git6, files2) {
+async function incremental(options, prior, git6, files2) {
   return {
     kind: "incremental",
     since: prior.headRef,
     priorRunId: prior.reviewRunId,
     priorReviewedAt: prior.createdAt,
-    commits: git6.commitCount(prior.headRef, options.head, options.cwd),
+    commits: await git6.commitCount(prior.headRef, options.head, options.cwd),
     files: files2
   };
 }
-function ownDiffScope(options, prior, git6, ancestor, merged) {
+async function ownDiffScope(options, prior, git6, ancestor, merged) {
   const base = options.base;
   if (git6.mergeBase === void 0 || git6.diffText === void 0) {
     return { scope: full("compare-unavailable", prior, "this git surface cannot read an own diff"), interdiffPatch: null };
   }
-  if (!git6.hasCommit(base, options.cwd)) {
+  if (!await git6.hasCommit(base, options.cwd)) {
     return { scope: full("compare-unavailable", prior, `the base ${base.slice(0, 7)} is not in this clone`), interdiffPatch: null };
   }
-  const mergeBase = git6.mergeBase(base, options.head, options.cwd);
-  const priorMergeBase = git6.mergeBase(base, prior.headRef, options.cwd);
-  const paths = pullRequestPaths(options, prior, git6, priorMergeBase, mergeBase);
+  const mergeBase = await git6.mergeBase(base, options.head, options.cwd);
+  const priorMergeBase = await git6.mergeBase(base, prior.headRef, options.cwd);
+  const paths = await pullRequestPaths(options, prior, git6, priorMergeBase, mergeBase);
   if (priorMergeBase === mergeBase) {
-    return interdiffFrom(options, prior, git6, prior.headRef, mergeBase, paths.all, ancestor ? "base-sync-only" : "history-rewritten");
+    return await interdiffFrom(options, prior, git6, prior.headRef, mergeBase, paths.all, ancestor ? "base-sync-only" : "history-rewritten");
   }
   if (git6.replay === void 0) {
     return { scope: full("compare-unavailable", prior, "this git surface cannot replay the reviewed head"), interdiffPatch: null };
   }
-  const replayed = git6.replay(priorMergeBase, mergeBase, prior.headRef, options.cwd);
-  return interdiffFrom(
+  const replayed = await git6.replay(priorMergeBase, mergeBase, prior.headRef, options.cwd);
+  return await interdiffFrom(
     options,
     prior,
     git6,
@@ -11716,12 +12489,12 @@ function ownDiffScope(options, prior, git6, ancestor, merged) {
     priorMergeBase
   );
 }
-function pullRequestPaths(options, prior, git6, priorMergeBase, mergeBase) {
+async function pullRequestPaths(options, prior, git6, priorMergeBase, mergeBase) {
   const reviewed = options.reviewedFiles.flatMap(
     (file2) => file2.previousPath === void 0 ? [file2.path] : [file2.path, file2.previousPath]
   );
-  const current = new Set(git6.changedPaths(mergeBase, options.head, options.cwd));
-  const withdrawn = git6.changedPaths(priorMergeBase, prior.headRef, options.cwd).filter((path) => !current.has(path));
+  const current = new Set(await git6.changedPaths(mergeBase, options.head, options.cwd));
+  const withdrawn = (await git6.changedPaths(priorMergeBase, prior.headRef, options.cwd)).filter((path) => !current.has(path));
   return { all: [.../* @__PURE__ */ new Set([...reviewed, ...options.deletedFiles ?? [], ...withdrawn])], withdrawn };
 }
 function patchSections(patch) {
@@ -11964,16 +12737,16 @@ function demoteBaseAdditions(section2, shouldDemote) {
 function hasReplayMarkers(section2) {
   return /^-<{7} /m.test(section2) && /^->{7} /m.test(section2);
 }
-function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedReason, conflicts = [], withdrawn = [], priorMergeBase = mergeBase) {
+async function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedReason, conflicts = [], withdrawn = [], priorMergeBase = mergeBase) {
   const diffText = git6.diffText;
-  const read = (left, list3) => list3.length === 0 ? "" : diffText(left, options.head, list3, options.cwd);
+  const read = async (left, list3) => list3.length === 0 ? "" : await diffText(left, options.head, list3, options.cwd);
   const wanted = new Set(paths);
   const conflicted = conflicts.filter((path) => wanted.has(path));
-  const own = patchSections(read(mergeBase, conflicted));
-  const resolutions = patchSections(read(from, [...own.keys()]));
-  const sinceReview = patchSections(read(prior.headRef, [...own.keys()]));
-  const baseChanges = patchSections(own.size === 0 ? "" : diffText(prior.headRef, mergeBase, [...own.keys()], options.cwd));
-  const baseDelta = patchSections(own.size === 0 ? "" : diffText(priorMergeBase, mergeBase, [...own.keys()], options.cwd));
+  const own = patchSections(await read(mergeBase, conflicted));
+  const resolutions = patchSections(await read(from, [...own.keys()]));
+  const sinceReview = patchSections(await read(prior.headRef, [...own.keys()]));
+  const baseChanges = patchSections(own.size === 0 ? "" : await diffText(prior.headRef, mergeBase, [...own.keys()], options.cwd));
+  const baseDelta = patchSections(own.size === 0 ? "" : await diffText(priorMergeBase, mergeBase, [...own.keys()], options.cwd));
   const narrowed = [];
   const whole = [];
   const mixed = [];
@@ -12007,16 +12780,21 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
   const rest = paths.filter((path) => !own.has(path));
   const leaked = [];
   const dropped = [];
-  const outsideSections = [...patchSections(read(from, rest))].map(([path, section2]) => {
-    if (!hasReplayMarkers(section2)) return section2;
-    const ownSection = patchSections(read(mergeBase, [path])).get(path);
+  const outsideSections = [];
+  for (const [path, section2] of patchSections(await read(from, rest))) {
+    if (!hasReplayMarkers(section2)) {
+      outsideSections.push(section2);
+      continue;
+    }
+    const ownSection = patchSections(await read(mergeBase, [path])).get(path);
     if (ownSection === void 0) {
       dropped.push(path);
-      return "";
+      outsideSections.push("");
+      continue;
     }
     leaked.push(path);
-    return ownSection;
-  });
+    outsideSections.push(ownSection);
+  }
   const outside = outsideSections.join("");
   const patch = [outside, ...resolved].filter((part) => part.length > 0).join("");
   const notes = [
@@ -12031,7 +12809,7 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
   const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
   const candidates = withdrawn.filter((path) => !own.has(path) && isReviewable(path, options.includeGenerated === true, firstParty));
   if (from !== prior.headRef && candidates.length > 0) {
-    const differs2 = new Set(git6.changedPaths(from, options.head, options.cwd));
+    const differs2 = new Set(await git6.changedPaths(from, options.head, options.cwd));
     absorbedList = candidates.filter((path) => !differs2.has(path)).sort();
   }
   const absorbed = {
@@ -12039,7 +12817,7 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
     ...dropped.length === 0 ? {} : { noLongerChanged: dropped.sort() }
   };
   const leftOut = options.leftOutFiles ?? [];
-  const leftOutChanged = leftOut.length === 0 ? [] : changedReviewedFiles(leftOut, git6.changedPaths(from, options.head, options.cwd));
+  const leftOutChanged = leftOut.length === 0 ? [] : changedReviewedFiles(leftOut, await git6.changedPaths(from, options.head, options.cwd));
   const common = { since: prior.headRef, priorRunId: prior.reviewRunId, priorReviewedAt: prior.createdAt, mergeBase };
   if (patch.trim().length === 0) {
     return { scope: { kind: "unchanged", ...common, reason: unchangedReason, ...absorbed }, interdiffPatch: null, leftOutChanged };
@@ -12130,9 +12908,9 @@ function seriousNotCarried(notCarried) {
   return notCarried.filter((f) => f.severity !== void 0 && SERIOUS_SEVERITIES.includes(f.severity.toLowerCase()));
 }
 var NEIGHBOURHOOD = 2;
-function commitReadable(ref, cwd) {
+async function commitReadable(ref, cwd) {
   try {
-    runGitSync(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { timeoutMs: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS) });
+    await runGit(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { timeoutMs: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS) });
     return true;
   } catch {
     return false;
@@ -12165,24 +12943,24 @@ function remapLine(hunks, line3) {
 }
 var CarryError = class extends Error {
 };
-function gitOut(args, cwd) {
+async function gitOut(args, cwd) {
   try {
-    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString("utf8");
+    return (await runGit(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) })).toString("utf8");
   } catch (error) {
     throw new CarryError(`git ${args.join(" ")} failed: ${error.message}`);
   }
 }
-function existsAt(ref, path, cwd) {
+async function existsAt(ref, path, cwd) {
   try {
-    runGitSync(cwd, ["cat-file", "-e", `${ref}:${path}`], { timeoutMs: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS) });
+    await runGit(cwd, ["cat-file", "-e", `${ref}:${path}`], { timeoutMs: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS) });
     return true;
   } catch {
     return false;
   }
 }
-function followLine(previousHead, head, path, line3, cwd) {
-  if (!existsAt(head, path, cwd)) return { reason: "file deleted or renamed" };
-  const patch = gitOut(
+async function followLine(previousHead, head, path, line3, cwd) {
+  if (!await existsAt(head, path, cwd)) return { reason: "file deleted or renamed" };
+  const patch = await gitOut(
     ["diff", "--unified=0", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", previousHead, head, "--", ...topPathspecs([path])],
     cwd
   );
@@ -12191,9 +12969,9 @@ function followLine(previousHead, head, path, line3, cwd) {
 function rewriteAnchor(text5, path, oldLine, line3) {
   return text5.replace(`\`${path}:${oldLine}\``, `\`${path}:${line3}\``);
 }
-function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */ new Map(), noLongerChanged = /* @__PURE__ */ new Set()) {
+async function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */ new Map(), noLongerChanged = /* @__PURE__ */ new Set()) {
   for (const ref of [previousHead, head]) {
-    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
+    if (!await commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
   }
   const carried = [];
   const notCarried = [];
@@ -12221,7 +12999,7 @@ function carryFindings(findings, previousHead, head, cwd, hold = /* @__PURE__ */
       });
       continue;
     }
-    const moved = followLine(previousHead, head, finding.path, finding.line, cwd);
+    const moved = await followLine(previousHead, head, finding.path, finding.line, cwd);
     if ("reason" in moved) {
       notCarried.push({
         findingId: finding.findingId,
@@ -12268,8 +13046,8 @@ function matchCarried(recorded2, carried) {
   }
   return { matches, mismatches };
 }
-function changedFiles(previousHead, head, cwd) {
-  const out = gitOut(["diff", "--name-only", "--no-renames", "-z", previousHead, head], cwd);
+async function changedFiles(previousHead, head, cwd) {
+  const out = await gitOut(["diff", "--name-only", "--no-renames", "-z", previousHead, head], cwd);
   return new Set(out.split("\0").filter((name) => name.length > 0));
 }
 function escapeRegExp(value) {
@@ -12280,11 +13058,11 @@ function namesFile2(text5, path) {
   const name = path.split("/").pop() ?? path;
   return new RegExp(`(^|[^\\w./-])${escapeRegExp(name)}($|[^\\w-])`).test(text5);
 }
-function carryCandidates(candidates, previousHead, head, hunks, cwd) {
+async function carryCandidates(candidates, previousHead, head, hunks, cwd) {
   for (const ref of [previousHead, head]) {
-    if (!commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
+    if (!await commitReadable(ref, cwd)) throw new CarryError(`Commit ${ref} is not readable in ${cwd}.`);
   }
-  const changed = changedFiles(previousHead, head, cwd);
+  const changed = await changedFiles(previousHead, head, cwd);
   const carried = [];
   const refused = [];
   for (const candidate of candidates) {
@@ -12305,7 +13083,7 @@ function carryCandidates(candidates, previousHead, head, hunks, cwd) {
       refuse(`its claim, evidence or verification names ${named}, which changed between the two heads`);
       continue;
     }
-    const moved = followLine(previousHead, head, candidate.path, candidate.line, cwd);
+    const moved = await followLine(previousHead, head, candidate.path, candidate.line, cwd);
     if ("reason" in moved) {
       refuse(`${candidate.path}:${candidate.line}: ${moved.reason}`);
       continue;
@@ -12317,7 +13095,7 @@ function carryCandidates(candidates, previousHead, head, hunks, cwd) {
         refuse("a stale consumer with no caused_by");
         continue;
       }
-      const followed = followLine(previousHead, head, from.path, from.line, cwd);
+      const followed = await followLine(previousHead, head, from.path, from.line, cwd);
       if ("reason" in followed) {
         refuse(`its cause ${from.path}:${from.line}: ${followed.reason}`);
         continue;
@@ -12343,150 +13121,6 @@ function carryCandidates(candidates, previousHead, head, hunks, cwd) {
     });
   }
   return { carried, refused };
-}
-
-// plugins/review-voice/src/redact/redact.ts
-import { createHash } from "node:crypto";
-
-// plugins/review-voice/src/redact/patterns.ts
-var SECRET_PATTERNS = [
-  // Key material is replaced whole: a PEM block's header is not the secret,
-  // but leaving it invites someone to reconstruct what was removed. When a
-  // header has no footer after it, no later header has one either, so the
-  // second branch takes the rest of the text with group 1 unset, which
-  // replaces nothing, instead of every later header searching it again.
-  {
-    label: "PRIVATE_KEY",
-    pattern: /(-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----)|-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*/gd,
-    group: 1
-  },
-  {
-    label: "PEM_BLOCK",
-    pattern: /(-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----)|-----BEGIN [A-Z ]+-----[\s\S]*/gd,
-    group: 1
-  },
-  { label: "GITHUB_TOKEN", pattern: /\b(gh[pousr]_[A-Za-z0-9]{16,255})\b/gd, group: 1 },
-  { label: "GITHUB_TOKEN", pattern: /\b(github_pat_[A-Za-z0-9_]{20}[A-Za-z0-9_]*)\b/gd, group: 1 },
-  { label: "AWS_ACCESS_KEY", pattern: /\b((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})\b/gd, group: 1 },
-  {
-    label: "AWS_SECRET_KEY",
-    pattern: /\b(?:aws_secret_access_key|aws_secret)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gid,
-    group: 1
-  },
-  { label: "GOOGLE_API_KEY", pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/gd, group: 1 },
-  { label: "SLACK_TOKEN", pattern: /\b(xox[abposr]-[0-9A-Za-z-]{10}[0-9A-Za-z-]*)\b/gd, group: 1 },
-  { label: "STRIPE_KEY", pattern: /\b((?:sk|rk|pk)_(?:live|test)_[0-9A-Za-z]{16}[0-9A-Za-z]*)\b/gd, group: 1 },
-  { label: "NPM_TOKEN", pattern: /\b(npm_[A-Za-z0-9]{36})\b/gd, group: 1 },
-  { label: "PYPI_TOKEN", pattern: /\b(pypi-[A-Za-z0-9_-]{16}[A-Za-z0-9_-]*)\b/gd, group: 1 },
-  { label: "OPENAI_KEY", pattern: /\b(sk-(?:proj-)?[A-Za-z0-9_-]{20}[A-Za-z0-9_-]*)\b/gd, group: 1 },
-  { label: "ANTHROPIC_KEY", pattern: /\b(sk-ant-[A-Za-z0-9_-]{20}[A-Za-z0-9_-]*)\b/gd, group: 1 },
-  // JWTs: three base64url segments. The payload is often the sensitive part.
-  // A segment cannot contain '.', so the first always ends where its run of
-  // base64url characters ends, and the leftmost eyJ that may start a token
-  // (at the run's start or after a '-') succeeds wherever a later one in the
-  // same run would. Each run is tried once, from that eyJ, with the first two
-  // segments taken whole: trying every '-eyJ' rescanned the run each time. The
-  // last segment can still give back a trailing '-' to meet the closing \b.
-  {
-    label: "JWT",
-    pattern: /(?<![A-Za-z0-9_-])(?=((?:[A-Za-z0-9_-]*?-)??)eyJ)\1(eyJ(?=([A-Za-z0-9_-]{8}[A-Za-z0-9_-]*))\3\.(?=([A-Za-z0-9_-]{8}[A-Za-z0-9_-]*))\4\.[A-Za-z0-9_-]{8}[A-Za-z0-9_-]*)\b/gd,
-    group: 2
-  },
-  // A connection string's credentials, keeping the scheme and host so the
-  // surrounding review comment still makes sense. A scheme cannot contain ':',
-  // so it always ends where its run of scheme characters ends, and where in the
-  // run it starts changes nothing that follows. Each run is therefore tried
-  // once, from its start, and taken whole by a lookahead and backreference, as
-  // JavaScript has no possessive quantifier. Trying every word boundary in the
-  // run rescanned it each time, and pull request text could stall a review for
-  // minutes. The run must still hold a scheme's start at a word boundary: a
-  // letter first with no '_' before it, or a letter after '+', '.' or '-'.
-  {
-    label: "DB_CREDENTIALS",
-    pattern: /(?<![a-z0-9+.-])(?=(?<!_)[a-z]|[a-z0-9+.-]*?[+.-][a-z])(?=([a-z0-9+.-]+))\1:\/\/([^\s:@/]+):([^\s@/]+)@/gid,
-    group: 3
-  },
-  {
-    label: "AUTHORIZATION_HEADER",
-    pattern: /\b(?:Authorization|Proxy-Authorization)\s*[:=]\s*["']?(?:Bearer|Basic|Token)\s+([A-Za-z0-9._~+/=-]{12}[A-Za-z0-9._~+/=-]*)/gid,
-    group: 1
-  },
-  // Assignment-shaped secrets. Deliberately after the specific rules: it is the
-  // broadest one, and a more specific label above is more useful in an audit
-  // than "SECRET".
-  {
-    label: "SECRET_ASSIGNMENT",
-    pattern: /\b(?:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*["']([^"'\s]{8}[^"'\s]*)["']/gid,
-    group: 1
-  },
-  // A connection string with no user, as in `redis://:password@host`. It runs
-  // last because its password reaches the first '@': run earlier, it took the
-  // keyword or closing quote of an assignment, and the rest of that secret
-  // stayed in clear text. Nothing runs after it, so it has no assignment to
-  // protect and takes a scheme that follows '_' as well.
-  {
-    label: "DB_CREDENTIALS",
-    pattern: /(?<![a-z0-9+.-])(?=[a-z]|[a-z0-9+.-]*?[+.-][a-z])(?=([a-z0-9+.-]+))\1:\/\/:([^\s@/]+)@/gid,
-    group: 2
-  }
-];
-var PLACEHOLDERS = /* @__PURE__ */ new Set([
-  "xxxxxxxx",
-  "changeme",
-  "password",
-  "redacted",
-  "your_token_here",
-  "example",
-  "placeholder",
-  "dummy",
-  "notarealsecret",
-  "test",
-  "password123",
-  "<token>",
-  "secret",
-  "todo",
-  "fixme",
-  "null",
-  "undefined",
-  "none"
-]);
-
-// plugins/review-voice/src/redact/redact.ts
-var REDACTION_VERSION = "2";
-function hash(value) {
-  return createHash("sha256").update(value).digest("hex").slice(0, 32);
-}
-function isPlaceholder(value) {
-  const normalised2 = value.toLowerCase().replace(/[<>{}[\]]/g, "");
-  if (PLACEHOLDERS.has(normalised2)) return true;
-  return value.length >= 4 && value === value.charAt(0).repeat(value.length);
-}
-function redact(input) {
-  const counts = {};
-  let text5 = input;
-  for (const { label: label2, pattern, group = 0 } of SECRET_PATTERNS) {
-    pattern.lastIndex = 0;
-    let redacted = "";
-    let copied = 0;
-    for (const match of text5.matchAll(pattern)) {
-      const captured = match[group];
-      if (captured === void 0 || captured.length === 0) continue;
-      if (isPlaceholder(captured)) continue;
-      const span = match.indices?.[group];
-      if (span === void 0) throw new Error(`the ${label2} pattern lacks the d flag`);
-      counts[label2] = (counts[label2] ?? 0) + 1;
-      redacted += `${text5.slice(copied, span[0])}[REDACTED:${label2}]`;
-      copied = span[1];
-    }
-    text5 = redacted + text5.slice(copied);
-  }
-  return {
-    text: text5,
-    counts,
-    sourceHash: hash(input),
-    redactedHash: hash(text5),
-    version: REDACTION_VERSION
-  };
 }
 
 // plugins/review-voice/src/publish/evidence-block.ts
@@ -13030,11 +13664,11 @@ function patchPath(hint) {
 }
 var TOOL_TEXT_CAP = 160;
 var MAX_CONVENTION_QUOTES = 2;
-function cut(text5, max) {
+function cut2(text5, max) {
   const points = [...text5];
   return points.length > max ? `${points.slice(0, max - 1).join("")}\u2026` : text5;
 }
-var plainPath = (path) => posix3.normalize(path.split("\\").join("/")).replace(/^\.\//, "");
+var plainPath = (path) => posix4.normalize(path.split("\\").join("/")).replace(/^\.\//, "");
 function toolSignalFor(finding, signals) {
   const path = plainPath(finding.path);
   const signal2 = signals.find((entry) => entry.path === path && entry.line === finding.line);
@@ -13044,7 +13678,7 @@ function toolSignalFor(finding, signals) {
     (text5) => text5 !== void 0 && !MACHINE_PATH.test(flatten(text5, Number.POSITIVE_INFINITY))
   );
   if (shown === void 0) return void 0;
-  return { tool: signal2.tool, line: finding.line, text: cut(redactedAsPosted(shown), TOOL_TEXT_CAP) };
+  return { tool: signal2.tool, line: finding.line, text: cut2(redactedAsPosted(shown), TOOL_TEXT_CAP) };
 }
 var redactedAsPosted = (text5) => redact(flatten(redact(text5).text, Number.POSITIVE_INFINITY)).text;
 var squashed = (text5) => text5.replace(/\s+/g, " ").trim();
@@ -13112,7 +13746,7 @@ function assignIds(output, hints, facts = {}) {
   });
 }
 function hashDiff(diff) {
-  return createHash2("sha256").update(diff).digest("hex").slice(0, 32);
+  return createHash3("sha256").update(diff).digest("hex").slice(0, 32);
 }
 function recordRun(db, input) {
   if ((input.bodyFindings?.length ?? 0) > 1) {
@@ -14301,10 +14935,10 @@ function commentSignature(comment) {
   const body = stripEvidenceBlock(comment.body);
   const block = body.lastIndexOf("\n\n```suggestion\n");
   const prose = block >= 0 && body.endsWith("```") ? body.slice(0, block) : body;
-  return `${comment.path}:${comment.line}:${createHash3("sha256").update(prose).digest("hex").slice(0, 32)}`;
+  return `${comment.path}:${comment.line}:${createHash4("sha256").update(prose).digest("hex").slice(0, 32)}`;
 }
 function idempotencyKey(repository, pullNumber, payload) {
-  const digest = createHash3("sha256").update(JSON.stringify(payload)).digest("hex");
+  const digest = createHash4("sha256").update(JSON.stringify(payload)).digest("hex");
   return `${repository.toLowerCase()}#${pullNumber}@${payload.commit_id}:${digest}`;
 }
 
@@ -14459,7 +15093,7 @@ function retentionLine(result) {
 }
 
 // plugins/review-voice/src/evidence/reproduce.ts
-import { execFileSync as execFileSync4 } from "node:child_process";
+import { execFileSync as execFileSync5 } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync as chmodSync2, constants, cpSync, existsSync as existsSync4, lstatSync as lstatSync3, mkdirSync as mkdirSync2, mkdtempSync, readdirSync as readdirSync2, readFileSync as readFileSync5, realpathSync, renameSync, rmSync as rmSync3, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -14467,7 +15101,7 @@ import { userInfo } from "node:os";
 import { basename as basename4, dirname as dirname5, join as join8, relative, resolve } from "node:path";
 
 // plugins/review-voice/src/review/worktree.ts
-import { execFileSync as execFileSync3 } from "node:child_process";
+import { execFileSync as execFileSync4 } from "node:child_process";
 import { lstatSync as lstatSync2, rmSync as rmSync2, unlinkSync } from "node:fs";
 var SAFE_GIT = [
   "-c",
@@ -14484,7 +15118,7 @@ var SAFE_GIT = [
   "submodule.recurse=false"
 ];
 function safeGit(args, cwd) {
-  execFileSync3("git", [...SAFE_GIT, ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+  execFileSync4("git", [...SAFE_GIT, ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
 }
 function addHeadWorktree(headDir, head, cwd = process.cwd()) {
   const stale = lstatSync2(headDir, { throwIfNoEntry: false });
@@ -14504,632 +15138,18 @@ function addHeadWorktree(headDir, head, cwd = process.cwd()) {
 }
 function removeHeadWorktree(headDir, cwd = process.cwd()) {
   try {
-    execFileSync3("git", ["worktree", "remove", "--force", headDir], { cwd, stdio: "ignore" });
+    execFileSync4("git", ["worktree", "remove", "--force", headDir], { cwd, stdio: "ignore" });
     return true;
   } catch {
     return false;
   }
 }
 
-// plugins/review-voice/src/evidence/run.ts
-import { spawn as spawnChild } from "node:child_process";
-import { StringDecoder } from "node:string_decoder";
-
-// plugins/review-voice/src/evidence/parsers.ts
-import { createHash as createHash4 } from "node:crypto";
-import { posix as posix4 } from "node:path";
-function signal(tool, kind, path, line3, claim, raw, confidence = 0.95) {
-  return {
-    kind,
-    path,
-    line: line3,
-    claim,
-    evidence: [raw.trim()],
-    confidence,
-    tool
-  };
-}
-var SARIF_KINDS = [
-  [/gitleaks/, "secret"],
-  [/trivy/, "vulnerability"],
-  [/semgrep|opengrep|codeql/, "sast_finding"],
-  [/ruff|golangci-lint/, "lint_error"]
-];
-var str = (value) => typeof value === "string" ? value : void 0;
-var list = (value) => Array.isArray(value) ? value.filter((entry) => typeof entry === "object" && entry !== null) : [];
-function indexed(value, index) {
-  const entry = Array.isArray(value) && typeof index === "number" ? value[index] : void 0;
-  return typeof entry === "object" && entry !== null ? entry : void 0;
-}
-var PLACEHOLDERS2 = /(\{\{|\}\}|\{\d+\})/;
-var MAX_SARIF_MESSAGE_POINTS = 500;
-var MAX_SARIF_RULE_POINTS = 200;
-var MAX_COMPOSED_UNITS = 16 * 1024 * 1024;
-var COMPOSED_PER_UNIT = 8;
-function cut2(text5, points) {
-  return [...text5.slice(0, 2 * points)].slice(0, points).join("");
-}
-function memo(fn) {
-  const done = /* @__PURE__ */ new Map();
-  return (text5) => {
-    if (!done.has(text5)) done.set(text5, fn(text5));
-    return done.get(text5);
-  };
-}
-var MARKER = /\[(?:REDACTED|redacted):\w*\]/g;
-var HOLDS_MARKER = new RegExp(MARKER.source);
-function found(text5, needle, from) {
-  if (needle === "") return from;
-  const borders = new Int32Array(needle.length + 1);
-  borders[0] = -1;
-  for (let index = 0, border = -1; index < needle.length; ) {
-    while (border >= 0 && needle.charCodeAt(index) !== needle.charCodeAt(border)) border = borders[border];
-    index += 1;
-    border += 1;
-    borders[index] = border;
-  }
-  for (let index = from, matched = 0; index < text5.length; index += 1) {
-    while (matched >= 0 && text5.charCodeAt(index) !== needle.charCodeAt(matched)) matched = borders[matched];
-    matched += 1;
-    if (matched === needle.length) return index + 1 - matched;
-  }
-  return -1;
-}
-function replaced(text5, version) {
-  if (version === text5) return [];
-  const spans = [];
-  let end = 0;
-  let read = 0;
-  let marker = "";
-  for (const next of [...version.matchAll(MARKER), void 0]) {
-    const kept = version.slice(read, next?.index);
-    const start = next === void 0 ? Math.max(end, text5.length - kept.length) : read === 0 ? 0 : found(text5, kept, end);
-    const fits = start !== -1 && (read > 0 || start === 0) && text5.startsWith(kept, start);
-    if (read > 0 || !fits) spans.push({ start: end, end: fits ? start : text5.length, marker });
-    if (!fits || next === void 0) break;
-    end = start + kept.length;
-    marker = next[0];
-    read = next.index + marker.length;
-  }
-  return spans;
-}
-function cleaner(mask = (text5) => text5) {
-  return (text5) => {
-    const masked = mask(text5);
-    const redacted = redact(text5).text;
-    if (masked === text5) return redacted;
-    if (redacted === text5) return masked;
-    let cleaned = "";
-    let copied = 0;
-    for (const part of [...replaced(text5, masked), ...replaced(text5, redacted)].sort((a, b) => a.start - b.start)) {
-      if (part.start >= copied) cleaned += text5.slice(copied, part.start) + part.marker;
-      copied = Math.max(copied, part.end);
-    }
-    return cleaned + text5.slice(copied);
-  };
-}
-function sarifDocument(output) {
-  const start = output.indexOf("{");
-  const end = output.lastIndexOf("}");
-  if (start === -1 || end < start) return void 0;
-  try {
-    return JSON.parse(output.slice(start, end + 1));
-  } catch {
-    return void 0;
-  }
-}
-function sarifRuns(output) {
-  const document = sarifDocument(output);
-  return document?.version === "2.1.0" && Array.isArray(document.runs) ? list(document.runs) : void 0;
-}
-var SARIF_SCHEMA = /"\$schema"\s*:\s*"[^"]*sarif/i;
-var SARIF_VERSION = /"version"\s*:\s*"2\.1\.0"/;
-var SARIF_RUNS = /"runs"\s*:/;
-function isSarif(output) {
-  const document = sarifDocument(output);
-  if (document !== void 0 && (document.version === "2.1.0" && "runs" in document || /sarif/i.test(str(document.$schema) ?? ""))) return true;
-  const text5 = output.replace(/\\u00([0-7][0-9a-f])/gi, (_escape, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
-  return SARIF_SCHEMA.test(text5) || SARIF_VERSION.test(text5) && SARIF_RUNS.test(text5);
-}
-function sarifPath(uri, root, changes) {
-  let path = uri;
-  if (/^[a-z][a-z0-9+.-]*:/i.test(uri)) {
-    const url = URL.canParse(uri) ? new URL(uri) : void 0;
-    if (url?.protocol !== "file:" || url.host !== "") return null;
-    path = url.pathname;
-  }
-  const plain = decoded(path);
-  if ([...new Set(path === uri ? [uri, plain] : [uri, decoded(uri), path, plain])].some(changes)) return void 0;
-  path = normalised(plain);
-  if (root === void 0) return path;
-  const relative6 = posix4.relative(root, posix4.resolve(root, path));
-  return relative6 === "" || relative6 === ".." || relative6.startsWith("../") ? null : relative6;
-}
-function underBase(uri, base) {
-  const entry = typeof base === "object" && base !== null ? base : void 0;
-  const baseUri = str(entry?.uri);
-  if (baseUri === void 0 || entry?.uriBaseId !== void 0) return void 0;
-  if (baseUri === "" || /^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(uri)) return uri;
-  return `${baseUri}${baseUri.endsWith("/") ? "" : "/"}${uri}`;
-}
-function normalised(path) {
-  const absolute = path.startsWith("/");
-  const kept = [];
-  for (const segment of path.split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment !== "..") kept.push(segment);
-    else if (kept.length > 0 && kept.at(-1) !== "..") kept.pop();
-    else if (!absolute) kept.push("..");
-  }
-  const joined2 = kept.join("/");
-  const slash = path.endsWith("/") ? "/" : "";
-  if (absolute) return joined2 === "" ? "/" : `/${joined2}${slash}`;
-  return `${joined2 === "" ? "." : joined2}${slash}`;
-}
-function decoded(text5) {
-  return text5.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
-    const bytes = Buffer.from(run.replaceAll("%", ""), "hex");
-    const utf8 = bytes.toString("utf8");
-    return Buffer.from(utf8, "utf8").equals(bytes) ? utf8 : run.replace(/%[0-7][0-9a-f]/gi, (escape) => String.fromCharCode(Number.parseInt(escape.slice(1), 16)));
-  });
-}
-function sarifSignals(output, tool, root, cleaned = cleaner()) {
-  const signals = [];
-  const seen = /* @__PURE__ */ new Set();
-  const sanitisedId = memo((ruleId) => {
-    const tabbed = cleaned(ruleId).replace(/(?![\t\n\u001b\u0090\u0098\u009b\u009d-\u009f])[\p{Cc}\p{Cf}]/gu, "	$&");
-    return cut2(cleaned(terminalSafe(tabbed).replace(/[\s\p{Cc}\p{Cf}]+/gu, " ").trim()), MAX_SARIF_RULE_POINTS).trimEnd();
-  });
-  const sanitisedMessage = (text5, first = cleaned(text5)) => {
-    const spaced = terminalSafe(first).replace(/\s+/g, " ").trim();
-    return cut2(spaced === first ? first : cleaned(spaced), MAX_SARIF_MESSAGE_POINTS).trimEnd();
-  };
-  const digest = (text5) => createHash4("sha256").update(text5).digest("base64");
-  const told = (text5, first) => ({ message: sanitisedMessage(text5, first), digest: digest(text5) });
-  const described = memo((text5) => told(text5));
-  const idDigest = memo(digest);
-  const numbers = /* @__PURE__ */ new Map([[null, 0]]);
-  let dropped = 0;
-  const placeOf = memo((uri) => {
-    const path = sarifPath(uri, root, (text5) => cleaned(text5) !== text5 || terminalSafe(text5) !== text5);
-    if (path === void 0) return { path: null, place: dropped -= 1 };
-    if (!numbers.has(path)) numbers.set(path, numbers.size);
-    return { path, place: numbers.get(path) };
-  });
-  const unfollowed = memo((_location) => ({ path: null, place: dropped -= 1 }));
-  let room = Math.min(MAX_COMPOSED_UNITS, COMPOSED_PER_UNIT * output.length);
-  const composed = (parts, length, values) => {
-    if (length > room) return void 0;
-    room -= length;
-    let text5 = "";
-    for (const [index, part] of parts.entries()) {
-      if (index % 2 === 0) text5 += part;
-      else if (part === "{{" || part === "}}") text5 += part.charAt(0);
-      else {
-        const value = Array.isArray(values) ? values[Number(part.slice(1, -1))] : void 0;
-        text5 += typeof value === "string" ? value : part;
-      }
-      if (text5.length - length > room) return void 0;
-    }
-    const first = cleaned(text5);
-    room -= Math.max(0, text5.length - length) + Math.max(0, first.length - text5.length);
-    return told(text5, first);
-  };
-  const strings = /* @__PURE__ */ new Map();
-  const composedFrom = (entry, values) => {
-    const template = str(entry.text);
-    if (template === void 0) return void 0;
-    let known = strings.get(entry);
-    if (known === void 0) {
-      known = { parts: template.split(PLACEHOLDERS2), messages: /* @__PURE__ */ new Map() };
-      strings.set(entry, known);
-    }
-    const key2 = Array.isArray(values) ? JSON.stringify(values.map(str)) : "";
-    if (!known.messages.has(key2)) known.messages.set(key2, composed(known.parts, template.length, values));
-    return known.messages.get(key2);
-  };
-  for (const run of sarifRuns(output) ?? []) {
-    const driver = run.tool?.driver;
-    const driverName = (str(driver?.name) ?? "").toLowerCase();
-    const kind = SARIF_KINDS.find(([pattern]) => pattern.test(driverName))?.[1] ?? "static_finding";
-    const extensions = list(run.tool?.extensions);
-    const byGuid = /* @__PURE__ */ new Map();
-    const idsOf = /* @__PURE__ */ new Map();
-    const byId = /* @__PURE__ */ new Map();
-    for (const component of [driver, ...extensions]) {
-      if (!byGuid.has(component?.guid)) byGuid.set(component?.guid, component);
-      const ids = /* @__PURE__ */ new Map();
-      for (const rule of list(component?.rules)) {
-        if (!ids.has(rule.id)) ids.set(rule.id, rule);
-        if (!byId.has(rule.id)) byId.set(rule.id, rule);
-      }
-      idsOf.set(component, ids);
-    }
-    for (const result of list(run.results)) {
-      if (result.kind !== void 0 && result.kind !== "fail") continue;
-      if (list(result.suppressions).some((entry2) => entry2.status === void 0 || entry2.status === "accepted")) continue;
-      const reference = result.rule?.toolComponent;
-      const componentIndex = reference?.index;
-      const guid = str(reference?.guid);
-      const component = typeof componentIndex === "number" && Number.isInteger(componentIndex) && componentIndex >= 0 ? indexed(run.tool?.extensions, componentIndex) : guid === void 0 ? driver : byGuid.get(guid);
-      const referenced = indexed(component?.rules, typeof result.ruleIndex === "number" ? result.ruleIndex : result.rule?.index);
-      const ruleId = str(result.ruleId) ?? str(result.rule?.id) ?? str(referenced?.id);
-      if (ruleId === void 0) continue;
-      const id = sanitisedId(ruleId);
-      if (id === "") continue;
-      const rule = referenced ?? idsOf.get(component)?.get(ruleId) ?? byId.get(ruleId);
-      const level = str(result.level) ?? str(rule?.defaultConfiguration?.level) ?? "warning";
-      if (level !== "error" && level !== "warning") continue;
-      const messageId = result.message?.id;
-      const messageStrings = rule?.messageStrings;
-      const entry = typeof messageId === "string" && typeof messageStrings === "object" && messageStrings !== null && Object.hasOwn(messageStrings, messageId) ? messageStrings[messageId] : void 0;
-      const text5 = str(result.message?.text);
-      const values = result.message?.arguments;
-      const description = str(rule?.shortDescription?.text);
-      const said = text5 !== void 0 ? (Array.isArray(values) ? composed(text5.split(PLACEHOLDERS2), text5.length, values) : void 0) ?? told(text5) : (typeof entry === "object" && entry !== null ? composedFrom(entry, values) : void 0) ?? (description === void 0 ? void 0 : described(description));
-      const message = said?.message;
-      const location = list(result.locations)[0]?.physicalLocation;
-      const artifact = location?.artifactLocation;
-      const source = artifact?.uri === void 0 ? indexed(run.artifacts, artifact?.index)?.location : artifact;
-      const uri = str(source?.uri);
-      const baseId = str(source?.uriBaseId);
-      const bases = run.originalUriBaseIds;
-      const based = uri === void 0 || baseId === void 0 || typeof bases !== "object" || bases === null || !Object.hasOwn(bases, baseId) ? uri : underBase(uri, bases[baseId]);
-      const { path, place } = uri === void 0 ? { path: null, place: 0 } : based === void 0 ? unfollowed(`${baseId}\0${uri}`) : placeOf(based);
-      const startLine = location?.region?.startLine;
-      const given = typeof startLine === "number" && Number.isInteger(startLine) && startLine > 0 ? startLine : null;
-      const line3 = path === null ? null : given;
-      const claim = message === void 0 || message === "" ? id : `${id}: ${message}`;
-      const key2 = `${place}\0${given}\0${idDigest(ruleId)}\0${said?.digest ?? ""}`;
-      if (seen.has(key2)) continue;
-      seen.add(key2);
-      signals.push(signal(tool, kind, path, line3, claim, message === void 0 || message === "" ? id : message, level === "error" ? 0.95 : 0.8));
-    }
-  }
-  return signals;
-}
-var TSC = /^(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.*)$/d;
-var PYTHON3 = /^(.+?):(\d+)(?::(\d+))?:\s+(error|warning|note|[A-Z]\d+)\s*:?\s*(.*)$/d;
-var DOTNET = /^\s*(.+?)\((\d+),(\d+)\):\s+(error|warning)\s+([A-Z]+\d+):\s+(.*?)(?:\s+\[(?!REDACTED:|redacted:).*\])?$/d;
-var ESLINT = /^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$/d;
-function reads(pattern, claim, clean2 = cleaner()) {
-  return (match) => {
-    const cleaned = clean2(match[0]);
-    const again = cleaned === match[0] ? match : pattern.exec(cleaned);
-    return { claim: again === null ? cleaned.trim() : claim(again), holds: cleaned.startsWith(match[0].slice(0, match.indices?.[2]?.[1])) };
-  };
-}
-function positioned(tool, kind, read) {
-  return (match) => {
-    const { claim, holds } = read(match);
-    return signal(tool, kind, holds ? match[1] : null, holds ? Number(match[2]) : null, claim, match[0]);
-  };
-}
-var ADAPTERS = [
-  {
-    // First, because the per-tool adapters match on command text and a `ruff`
-    // or `eslint` command may print SARIF; the command plays no part here, so
-    // a wrapper script named anything is covered. Snippets, code flows, fixes,
-    // fingerprints and properties are never copied, because a snippet is
-    // repository content, and for a secrets scanner it is the secret itself.
-    name: "sarif",
-    matches: (_command, output) => isSarif(output),
-    parse: sarifSignals,
-    // shortcut: matches, parse and version each parse the document, slow only for output near the 16 MB cap.
-    version: (output) => {
-      const driver = sarifRuns(output)?.[0]?.tool?.driver;
-      const name = str(driver?.name);
-      const version = str(driver?.version) ?? str(driver?.semanticVersion);
-      return name === void 0 || version === void 0 ? void 0 : `${name} ${version}`;
-    }
-  },
-  {
-    name: "typescript",
-    matches: (command, output) => /tsc|typecheck|tsgo/i.test(command) || TSC.test(output.split("\n")[0] ?? ""),
-    parse: (output, tool, _root, clean2) => {
-      const toSignal = positioned(tool, "type_error", reads(TSC, (match) => `${match[5]}: ${match[6]}`, clean2));
-      return output.split("\n").map((line3) => TSC.exec(line3)).filter((match) => match !== null).filter((match) => match[4] === "error").map(toSignal);
-    }
-  },
-  {
-    name: "dotnet",
-    matches: (command) => /dotnet|msbuild|csc\b/i.test(command),
-    parse: (output, tool, _root, clean2) => {
-      const toSignal = positioned(tool, "compile_error", reads(DOTNET, (match) => `${match[5]}: ${match[6]}`, clean2));
-      return output.split("\n").map((line3) => DOTNET.exec(line3)).filter((match) => match !== null).filter((match) => match[4] === "error").map((match) => ({ match, kept: toSignal(match) })).filter((current, index, all) => all.findIndex((other) => other.kept.claim === current.kept.claim && other.match[1] === current.match[1] && other.match[2] === current.match[2]) === index).map(({ kept }) => kept);
-    }
-  },
-  {
-    name: "python",
-    matches: (command) => /mypy|ruff|flake8|pylint|pytest/i.test(command),
-    parse: (output, tool, _root, clean2) => {
-      const toSignal = positioned(tool, "lint_or_type_error", reads(PYTHON3, (match) => `${match[4]}: ${match[5]}`, clean2));
-      return output.split("\n").map((line3) => PYTHON3.exec(line3)).filter((match) => match !== null).filter((match) => match[4] !== "note").map(toSignal);
-    }
-  },
-  {
-    name: "eslint",
-    matches: (command) => /eslint|biome|oxlint/i.test(command),
-    parse: (output, tool, _root, clean2) => {
-      const read = reads(ESLINT, (match) => `${match[5]}: ${match[4]}`, clean2);
-      const signals = [];
-      let file2 = null;
-      for (const line3 of output.split("\n")) {
-        if (/^\S.*\.(ts|tsx|js|jsx|mjs|cjs)$/.test(line3.trim()) || /^\S/.test(line3) && HOLDS_MARKER.test(line3) && !ESLINT.test(line3)) {
-          file2 = line3.trim();
-          continue;
-        }
-        const match = ESLINT.exec(line3);
-        if (match !== null && match[3] === "error") {
-          const { claim, holds } = read(match);
-          signals.push(signal(tool, "lint_error", file2, holds ? Number(match[1]) : null, claim, line3));
-        }
-      }
-      return signals;
-    }
-  }
-];
-function parseOutput(name, command, output, root, clean2) {
-  const haystack = `${name} ${command}`;
-  const adapter = ADAPTERS.find((candidate) => candidate.matches(haystack, output));
-  if (adapter === void 0) return { signals: [] };
-  const version = adapter.version?.(output);
-  return { signals: adapter.parse(output, name, root, clean2), ...version === void 0 ? {} : { version } };
-}
-
-// plugins/review-voice/src/evidence/run.ts
-var DEFAULT_TIMEOUT_SECONDS = 120;
-var MAX_VERSION_POINTS = 80;
-var MAX_SIGNAL_TEXT_POINTS = 4096;
-var SHELL_UNAVAILABLE_EXIT_CODES = [126, 127];
-var BASE_ENVIRONMENT = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CI", "TERM"];
-var MIN_MASKED_LENGTH = 8;
-function maskPassthrough(text5, source, passthrough) {
-  const names = /* @__PURE__ */ new Map();
-  for (const name of passthrough) {
-    const value = source[name];
-    if (typeof value !== "string") continue;
-    for (const form of [value, ...value.split("\n").map((line3) => line3.trim())]) {
-      if (form.length >= MIN_MASKED_LENGTH && !names.has(form)) names.set(form, name);
-    }
-  }
-  let masked = text5;
-  for (const [value, name] of [...names].sort((a, b) => b[0].length - a[0].length)) masked = masked.split(value).join(`[redacted:${name}]`);
-  return masked;
-}
-function maskPassthroughDeep(value, source, passthrough) {
-  if (typeof value === "string") return maskPassthrough(value, source, passthrough);
-  if (Array.isArray(value)) return value.map((entry) => maskPassthroughDeep(entry, source, passthrough));
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key2, entry]) => [key2, maskPassthroughDeep(entry, source, passthrough)]));
-  }
-  return value;
-}
-function commandEnvironment(source, passthrough) {
-  const env = {};
-  for (const name of [...BASE_ENVIRONMENT, ...passthrough]) {
-    const value = source[name];
-    if (typeof value === "string") env[name] = value;
-  }
-  return env;
-}
-function notRunReport(names, skipped) {
-  return {
-    enabled: false,
-    signals: [],
-    commands: [],
-    didNotRun: [...names],
-    ...skipped === void 0 ? {} : { skipped }
-  };
-}
-function sanitisedVersion(stdout, clean2) {
-  const printed = clean2(stdout);
-  const safe = terminalSafe(printed);
-  const whole = safe === printed ? printed : clean2(safe);
-  const end = whole.indexOf("\n");
-  const stripped = clean2((end === -1 ? whole : whole.slice(0, end)).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ""));
-  const spaced = `${stripped}${end === -1 ? "" : whole.slice(end)}`.replace(/\s+/g, " ");
-  const first = stripped.replace(/\s+/g, " ").length;
-  let line3 = "";
-  let copied = 0;
-  for (const part of replaced(spaced, clean2(spaced))) {
-    if (part.start >= first) break;
-    line3 += spaced.slice(copied, part.start) + part.marker;
-    copied = part.end;
-  }
-  line3 += spaced.slice(copied, first);
-  const capped = cut2(line3.trim(), MAX_VERSION_POINTS).trim();
-  return capped === "" ? void 0 : capped;
-}
-async function collectEvidence(commands, options) {
-  if (!options.enabled || commands.length === 0) {
-    return notRunReport(commands.map((command) => command.name));
-  }
-  const spawn3 = options.spawn ?? spawnCommand;
-  const env = commandEnvironment(process.env, options.envPassthrough ?? []);
-  const outcomes = [];
-  const didNotRun = [];
-  for (const command of commands) {
-    const startedAt = Date.now();
-    const timeoutMs = (command.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1e3;
-    const result = await spawnInGroup(spawn3, command.run, options.cwd, timeoutMs, env);
-    const durationMs = Date.now() - startedAt;
-    if (result.error !== void 0) {
-      const reason2 = result.error.code === "ETIMEDOUT" ? `timed out after ${command.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS}s` : result.error.message;
-      outcomes.push({
-        name: command.name,
-        command: command.run,
-        exitCode: null,
-        durationMs,
-        unavailable: reason2,
-        signals: []
-      });
-      didNotRun.push(command.name);
-      continue;
-    }
-    if (result.status !== null && SHELL_UNAVAILABLE_EXIT_CODES.includes(result.status)) {
-      outcomes.push({
-        name: command.name,
-        command: command.run,
-        exitCode: result.status,
-        durationMs,
-        unavailable: `not found or not executable (exit ${result.status})`,
-        signals: []
-      });
-      didNotRun.push(command.name);
-      continue;
-    }
-    const mask = (text5) => maskPassthrough(text5, process.env, options.envPassthrough ?? []);
-    const clean2 = cleaner(mask);
-    const printed = `${result.stdout ?? ""}
-${result.stderr ?? ""}`;
-    const safe = terminalSafe(printed);
-    const output = isSarif(safe) ? safe : terminalSafe(clean2(printed));
-    const configuredVersion = command.version === void 0 ? void 0 : await readVersion(spawn3, command.version, options.cwd, timeoutMs, env, clean2);
-    const parsed2 = parseOutput(command.name, command.run, output, options.cwd, clean2);
-    const named = output === printed ? null : new Set(parseOutput(command.name, command.run, printed, options.cwd, clean2).signals.map((signal2) => signal2.path));
-    const keeps = memo((path) => clean2(path) === path && terminalSafe(path) === path && (named === null || named.has(path)));
-    const cleanCut = (text5) => cut2(clean2(text5), MAX_SIGNAL_TEXT_POINTS);
-    const signals = parsed2.signals.map((signal2) => ({
-      ...signal2,
-      ...signal2.path !== null && !keeps(signal2.path) ? { path: null, line: null } : {},
-      claim: cleanCut(signal2.claim),
-      evidence: signal2.evidence.map(cleanCut)
-    }));
-    const version = configuredVersion ?? (parsed2.version === void 0 ? void 0 : sanitisedVersion(parsed2.version, clean2));
-    outcomes.push({
-      name: command.name,
-      command: command.run,
-      exitCode: result.status,
-      durationMs,
-      ...version === void 0 ? {} : { version },
-      signals
-    });
-  }
-  return {
-    enabled: true,
-    signals: outcomes.flatMap((outcome) => outcome.signals),
-    commands: outcomes,
-    didNotRun
-  };
-}
-async function readVersion(spawn3, run, cwd, timeout, env, clean2) {
-  const result = await spawnInGroup(spawn3, run, cwd, timeout, env);
-  if (result.error !== void 0 || result.status !== 0) return void 0;
-  return sanitisedVersion(String(result.stdout ?? ""), clean2);
-}
-function spawnInGroup(spawn3, run, cwd, timeout, env, args, watch = {}) {
-  return spawn3(run, {
-    cwd,
-    env,
-    shell: args === void 0,
-    ...args === void 0 ? {} : { args },
-    encoding: "utf8",
-    timeout,
-    killSignal: "SIGKILL",
-    maxBuffer: 16 * 1024 * 1024,
-    detached: true,
-    ...watch
-  });
-}
-var MAX_TIMER_MS = 2 ** 31 - 1;
-var runningGroups = /* @__PURE__ */ new Set();
-function killGroup2(pid, signal2) {
-  try {
-    process.kill(-pid, signal2);
-  } catch {
-  }
-}
-var undoOnStop = /* @__PURE__ */ new Set();
-function onStop(undo) {
-  undoOnStop.add(undo);
-  return () => void undoOnStop.delete(undo);
-}
-function stopCommands() {
-  for (const pid of runningGroups) killGroup2(pid, "SIGKILL");
-  for (const undo of [...undoOnStop].reverse()) {
-    undoOnStop.delete(undo);
-    try {
-      undo();
-    } catch {
-    }
-  }
-}
-function stopCommandsOnSignal() {
-  const onSignal2 = (signal2) => {
-    stopCommands();
-    process.exit(signal2 === "SIGINT" ? 130 : 143);
-  };
-  process.once("SIGINT", onSignal2);
-  process.once("SIGTERM", onSignal2);
-  return () => {
-    process.off("SIGINT", onSignal2);
-    process.off("SIGTERM", onSignal2);
-  };
-}
-function spawnCommand(command, options) {
-  return new Promise((resolve17) => {
-    if (options.signal?.aborted === true) {
-      resolve17({ status: null, stdout: "", stderr: "", error: Object.assign(new Error(`spawn ${command} ABORT_ERR`), { code: "ABORT_ERR" }) });
-      return;
-    }
-    const child = spawnChild(command, options.args ?? [], { cwd: options.cwd, env: options.env, shell: options.shell, detached: options.detached, stdio: "pipe" });
-    const pid = child.pid;
-    if (pid !== void 0) runningGroups.add(pid);
-    const chunks = { stdout: [], stderr: [] };
-    const sizes = { stdout: 0, stderr: 0 };
-    let failure;
-    let settled = false;
-    const stop = (code3) => {
-      failure ??= code3;
-      if (pid !== void 0) killGroup2(pid, options.killSignal);
-      child.stdout.destroy();
-      child.stderr.destroy();
-    };
-    const timer = options.timeout > 0 ? setTimeout(() => stop("ETIMEDOUT"), Math.min(options.timeout, MAX_TIMER_MS)) : void 0;
-    options.signal?.addEventListener("abort", () => {
-      if (!settled) stop("ABORT_ERR");
-    });
-    const decoder = new StringDecoder(options.encoding);
-    for (const stream of ["stdout", "stderr"]) {
-      child[stream].on("data", (chunk) => {
-        if (stream === "stdout") options.onStdout?.(decoder.write(chunk));
-        const room = options.maxBuffer - sizes[stream];
-        if (room > 0) chunks[stream].push(chunk.subarray(0, room));
-        sizes[stream] += chunk.length;
-        if (sizes[stream] > options.maxBuffer) stop("ENOBUFS");
-      });
-    }
-    const finish = (status, error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (pid !== void 0) {
-        killGroup2(pid, "SIGKILL");
-        runningGroups.delete(pid);
-      }
-      resolve17({
-        status,
-        stdout: Buffer.concat(chunks.stdout).toString(options.encoding),
-        stderr: Buffer.concat(chunks.stderr).toString(options.encoding),
-        ...error === void 0 ? {} : { error }
-      });
-    };
-    child.on("error", (error) => finish(null, error));
-    child.on(
-      "close",
-      (status) => finish(status, failure === void 0 ? void 0 : Object.assign(new Error(`spawn ${child.spawnfile} ${failure}`), { code: failure }))
-    );
-    child.stdin.on("error", () => void 0);
-    child.stdin.end(options.input);
-  });
-}
-
 // plugins/review-voice/src/evidence/reproduce.ts
 function defaultReproduction() {
   return { enabled: false, runners: [], linkPaths: [], memoryMb: 1024, cpuSeconds: 60 };
 }
-var runGit2 = (args, cwd) => execFileSync4("git", [...SAFE_GIT, ...args], {
+var runGit2 = (args, cwd) => execFileSync5("git", [...SAFE_GIT, ...args], {
   cwd,
   encoding: "utf8",
   stdio: ["ignore", "pipe", "pipe"],
@@ -20360,7 +20380,7 @@ async function acquireLock(dataDir, port = lockPort(dataDir), patience = DEFAULT
 }
 
 // plugins/review-voice/src/watch/workspace.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
+import { execFileSync as execFileSync6 } from "node:child_process";
 import { existsSync as existsSync6, mkdirSync as mkdirSync3, readdirSync as readdirSync3, statSync as statSync2, unlinkSync as unlinkSync3 } from "node:fs";
 import { dirname as dirname7, join as join11 } from "node:path";
 var NAME = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/;
@@ -20370,7 +20390,7 @@ function cloneDir(workspace, repository) {
   return join11(workspace, ...repository.split("/"));
 }
 var runQuietly = (command, args) => {
-  execFileSync5(command, args, { stdio: ["ignore", "ignore", "pipe"], timeout: 6e5 });
+  execFileSync6(command, args, { stdio: ["ignore", "ignore", "pipe"], timeout: 6e5 });
 };
 var STALE_LOCK_MS = 10 * 6e4;
 function removeStaleGitLocks(dir, now = Date.now()) {
@@ -20803,7 +20823,7 @@ function reviewResult(exitCode, stdout, stderr) {
   };
 }
 var DRAIN_MS = 1e3;
-function killGroup3(pid, signal2) {
+function killGroup2(pid, signal2) {
   if (pid === void 0) return;
   if (process.platform === "win32") {
     execFile("taskkill", ["/pid", String(pid), "/T", "/F"], () => {
@@ -20864,9 +20884,9 @@ function spawnReview(bundle, options) {
     const terminate = () => {
       if (terminating || settled) return;
       terminating = true;
-      killGroup3(pid, "SIGTERM");
+      killGroup2(pid, "SIGTERM");
       grace = setTimeout(() => {
-        killGroup3(pid, "SIGKILL");
+        killGroup2(pid, "SIGKILL");
         finish();
       }, graceMs);
     };
@@ -20880,7 +20900,7 @@ function spawnReview(bundle, options) {
       exitCode = code3;
       exitSignal = signal2;
       if (terminating) {
-        killGroup3(pid, "SIGKILL");
+        killGroup2(pid, "SIGKILL");
         clearTimeout(grace);
       }
       later2(DRAIN_MS, finish);
@@ -22516,7 +22536,7 @@ function topLevelHelp() {
 }
 
 // plugins/review-voice/src/review/driver.ts
-import { execFileSync as execFileSync7 } from "node:child_process";
+import { execFileSync as execFileSync8 } from "node:child_process";
 import { appendFileSync as appendFileSync2, copyFileSync, existsSync as existsSync12, mkdirSync as mkdirSync6, readFileSync as readFileSync14, rmSync as rmSync7, writeFileSync as writeFileSync7 } from "node:fs";
 import { dirname as dirname10, join as join19, resolve as resolve5, sep } from "node:path";
 
@@ -22594,7 +22614,7 @@ function agentTimeoutMs(spec) {
 var live = /* @__PURE__ */ new Set();
 var signalsOwned = false;
 function stopAll() {
-  for (const child of live) killTree(child);
+  for (const child of live) killTree2(child);
 }
 function ownSignals(owned) {
   signalsOwned = owned;
@@ -22716,7 +22736,7 @@ function spawnWatched(bin, args, input, options) {
     };
     const stop = (reason2) => {
       stopped ??= reason2;
-      killTree(child);
+      killTree2(child);
       child.stdout?.destroy();
       child.stderr?.destroy();
     };
@@ -22754,7 +22774,7 @@ async function runClaudeCli(spec, prompt, cwd, addDirs, env) {
   if (result.failed !== void 0) return { ok: false, output: null, costUsd: null, error: result.failed };
   return interpretEnvelope(result.stdout, result.stderr, result.code);
 }
-function killTree(child) {
+function killTree2(child) {
   if (child.pid === void 0) return;
   try {
     if (process.platform === "win32") child.kill("SIGKILL");
@@ -24485,7 +24505,7 @@ var STAGES = [
 ];
 
 // plugins/review-voice/src/review/config.ts
-import { execFileSync as execFileSync6 } from "node:child_process";
+import { execFileSync as execFileSync7 } from "node:child_process";
 import { existsSync as existsSync11, rmSync as rmSync6, writeFileSync as writeFileSync6 } from "node:fs";
 import { isAbsolute as isAbsolute5, join as join18, resolve as resolve4 } from "node:path";
 
@@ -24509,58 +24529,58 @@ function toUnifiedDiff(file2) {
   ].join("\n");
 }
 var GITHUB_MAX_FILES = 3e3;
-function git2(args, cwd, timeout = GIT_READ_TIMEOUT_MS) {
-  return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(timeout) }).toString("utf8");
+async function git2(args, cwd, timeout = GIT_READ_TIMEOUT_MS) {
+  return (await runGit(cwd, args, { timeoutMs: gitTimeoutMs(timeout) })).toString("utf8");
 }
-function hasCommit(sha, cwd) {
+async function hasCommit(sha, cwd) {
   try {
-    git2(["cat-file", "-e", `${sha}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS);
+    await git2(["cat-file", "-e", `${sha}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS);
     return true;
   } catch {
     return false;
   }
 }
-function mergeBaseOf(base, head, cwd) {
+async function mergeBaseOf(base, head, cwd) {
   try {
-    return git2(["merge-base", base, head], cwd, 1e4).trim() || null;
+    return (await git2(["merge-base", base, head], cwd, 1e4)).trim() || null;
   } catch {
     return null;
   }
 }
-function originRepository(cwd) {
+async function originRepository(cwd) {
   try {
-    const url = git2(["remote", "get-url", "origin"], cwd, 1e4).trim();
+    const url = (await git2(["remote", "get-url", "origin"], cwd, 1e4)).trim();
     return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
   } catch {
     return null;
   }
 }
-function ensureRefs(options) {
-  const check = () => ({
-    base: hasCommit(options.base, options.cwd),
-    head: hasCommit(options.head, options.cwd)
+async function ensureRefs(options) {
+  const check = async () => ({
+    base: await hasCommit(options.base, options.cwd),
+    head: await hasCommit(options.head, options.cwd)
   });
-  let present = check();
-  const result = (fetched, note) => ({
+  let present = await check();
+  const result = async (fetched, note) => ({
     base: { sha: options.base, available: present.base },
     head: { sha: options.head, available: present.head },
-    mergeBase: present.base && present.head ? mergeBaseOf(options.base, options.head, options.cwd) : null,
+    mergeBase: present.base && present.head ? await mergeBaseOf(options.base, options.head, options.cwd) : null,
     fetched,
     note
   });
-  if (present.base && present.head) return result(false, null);
-  const origin = originRepository(options.cwd);
+  if (present.base && present.head) return await result(false, null);
+  const origin = await originRepository(options.cwd);
   if (origin === null) {
-    return result(false, "No origin remote resolved, so the pull request commits were not fetched.");
+    return await result(false, "No origin remote resolved, so the pull request commits were not fetched.");
   }
   if (origin.toLowerCase() !== options.repository.toLowerCase()) {
-    return result(
+    return await result(
       false,
       `origin is ${origin} but the review is of ${options.repository}, so nothing was fetched. Fetching a pull request from an unrelated clone would supply commits from the wrong project.`
     );
   }
   try {
-    git2(
+    await git2(
       [
         "fetch",
         "--no-tags",
@@ -24572,27 +24592,27 @@ function ensureRefs(options) {
     );
   } catch {
   }
-  present = check();
+  present = await check();
   if (!present.base) {
     try {
-      git2(["fetch", "--no-tags", "--quiet", "origin", options.base], options.cwd);
+      await git2(["fetch", "--no-tags", "--quiet", "origin", options.base], options.cwd);
     } catch {
     }
-    present = check();
+    present = await check();
   }
   if (present.base && present.head) {
-    return result(true, null);
+    return await result(true, null);
   }
   const missing = [!present.base ? "base" : null, !present.head ? "head" : null].filter(Boolean);
-  return result(
+  return await result(
     true,
     `The ${missing.join(" and ")} commit could not be made available locally. Reading code at that ref will fail, so evidence from it is unavailable rather than absent.`
   );
 }
-function differingFromBaseTip(base, head, cwd) {
+async function differingFromBaseTip(base, head, cwd) {
   try {
     const args = ["diff", "--no-ext-diff", "--no-relative", "--ignore-submodules=none", "--no-renames", "--name-only", "-z", base, head];
-    return new Set(git2(args, cwd).split("\0").filter(Boolean));
+    return new Set((await git2(args, cwd)).split("\0").filter(Boolean));
   } catch {
     return null;
   }
@@ -24616,10 +24636,10 @@ function pathsWithHunks(diff) {
 function fullScopeResult(result, pullNumber, scope) {
   return { ...result, pullNumber, scope, scopeNote: null };
 }
-function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = (since, head, files2, root) => {
+async function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = async (since, head, files2, root) => {
   const args = ["diff", "--no-ext-diff", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/", since, head, "--", ...topPathspecs(files2)];
   try {
-    return runGitSync(root, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString("utf8");
+    return (await runGit(root, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) })).toString("utf8");
   } catch (error) {
     throw new Error(gitFailure(args, error));
   }
@@ -24643,7 +24663,7 @@ function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = 
     included = new Set(scope.files);
   } else {
     try {
-      diff = readIncrementalDiff(scope.since, result.head, scope.files, cwd);
+      diff = await readIncrementalDiff(scope.since, result.head, scope.files, cwd);
     } catch (error) {
       return fallBack(`reading the incremental diff failed: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);
     }
@@ -24720,32 +24740,37 @@ async function acquirePullRequestDiff(options) {
   );
   const truncated = rawFiles.length < pull.changed_files;
   const cwd = options.cwd ?? process.cwd();
-  const headLocal = hasCommit(pull.head.sha, cwd);
+  const headLocal = await hasCommit(pull.head.sha, cwd);
   const byName = new Map(rawFiles.map((file2) => [file2.filename, file2]));
   const firstParty = firstPartyMatcher(options.firstPartyPaths ?? []);
-  const handEdited = findHandEdited(
-    rawFiles.filter((file2) => file2.status !== "removed" && file2.patch !== void 0).map((file2) => file2.filename),
-    (path) => {
-      if (headLocal) {
-        try {
-          return git2(["show", `${pull.head.sha}:${path}`], cwd);
-        } catch {
-          return null;
-        }
+  const readHeader = async (path) => {
+    if (headLocal) {
+      try {
+        return await git2(["show", `${pull.head.sha}:${path}`], cwd);
+      } catch {
+        return null;
       }
-      const added = (byName.get(path)?.patch ?? "").split("\n").filter((line3) => line3.startsWith("+")).map((line3) => line3.slice(1));
-      return added.join("\n");
-    },
+    }
+    const added = (byName.get(path)?.patch ?? "").split("\n").filter((line3) => line3.startsWith("+")).map((line3) => line3.slice(1));
+    return added.join("\n");
+  };
+  const handEdited = /* @__PURE__ */ new Set();
+  const candidates = handEditedCandidates(
+    rawFiles.filter((file2) => file2.status !== "removed" && file2.patch !== void 0).map((file2) => file2.filename),
     firstParty
   );
-  const refs = ensureRefs({
+  for (const path of candidates) {
+    const header = await readHeader(path);
+    if (header !== null && hasDoNotEditHeader(header)) handEdited.add(path);
+  }
+  const refs = await ensureRefs({
     repository: options.repository,
     pullNumber: options.pullNumber,
     base: pull.base.sha,
     head: pull.head.sha,
     cwd
   });
-  const differing = refs.base.available && refs.head.available ? differingFromBaseTip(pull.base.sha, pull.head.sha, cwd) : null;
+  const differing = refs.base.available && refs.head.available ? await differingFromBaseTip(pull.base.sha, pull.head.sha, cwd) : null;
   const sameAsBaseTip = (file2) => differing !== null && !differing.has(file2.filename) && (file2.previous_filename === void 0 || !differing.has(file2.previous_filename));
   const files2 = rawFiles.map((file2) => {
     const cls = classify(file2.filename, firstParty);
@@ -24807,12 +24832,12 @@ var CONFIG_PATH = ".review-voice/config.yaml";
 var shortRef = (ref) => /^[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 7) : ref;
 function showAt(ref, path) {
   try {
-    return execFileSync6("git", [...SAFE_GIT, "show", `${ref}:${path}`], { cwd: process.cwd(), stdio: ["ignore", "pipe", "ignore"], maxBuffer: 16 * 1024 * 1024 });
+    return execFileSync7("git", [...SAFE_GIT, "show", `${ref}:${path}`], { cwd: process.cwd(), stdio: ["ignore", "pipe", "ignore"], maxBuffer: 16 * 1024 * 1024 });
   } catch {
     return null;
   }
 }
-function resolveTrustedConfig(pull, notes) {
+async function resolveTrustedConfig(pull, notes) {
   const flagged = pull.flagged;
   if (flagged != null && flagged !== "") {
     const path2 = resolve4(flagged);
@@ -24832,7 +24857,7 @@ function resolveTrustedConfig(pull, notes) {
   rmSync6(path, { force: true });
   let from = sha;
   let content = showAt(sha, CONFIG_PATH);
-  if (content === null && ref !== null && showAt(sha, "") === null && originRepository(process.cwd())?.toLowerCase() === pull.repository.toLowerCase()) {
+  if (content === null && ref !== null && showAt(sha, "") === null && (await originRepository(process.cwd()))?.toLowerCase() === pull.repository.toLowerCase()) {
     from = `refs/remotes/origin/${ref}`;
     content = showAt(from, CONFIG_PATH);
   }
@@ -24894,7 +24919,7 @@ async function must(run, argv, stdin, code3 = 2) {
   return result;
 }
 function localGit(args) {
-  return execFileSync7("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  return execFileSync8("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 function localHead(ref) {
   let sha;
@@ -24925,7 +24950,7 @@ async function headOf(run) {
   const author = typeof login === "string" ? { login, type: typeof data.user?.type === "string" ? data.user.type : "" } : null;
   return { sha, base, author };
 }
-function resolveConfig(run) {
+async function resolveConfig(run) {
   const previous = process.env["REVIEW_VOICE_CONFIG"];
   const previousSource = process.env["REVIEW_VOICE_CONFIG_SOURCE"];
   run.cleanup.push(() => {
@@ -24935,7 +24960,7 @@ function resolveConfig(run) {
     else process.env["REVIEW_VOICE_CONFIG_SOURCE"] = previousSource;
   });
   const { repository, pullNumber, config: config2 } = run.options;
-  const chosen = resolveTrustedConfig({ repository, pullNumber, base: run.pullBase, dir: run.dir, flagged: config2 }, run.notes);
+  const chosen = await resolveTrustedConfig({ repository, pullNumber, base: run.pullBase, dir: run.dir, flagged: config2 }, run.notes);
   if (typeof chosen === "string") throw new Stop(2, chosen);
   run.configSource = chosen.source;
   process.env["REVIEW_VOICE_CONFIG"] = chosen.source.path;
@@ -25092,7 +25117,7 @@ function authorshipOf(run) {
   if (run.base === null) unread = "base not readable, trailers not read";
   else {
     try {
-      const log = execFileSync7(
+      const log = execFileSync8(
         "git",
         [...SAFE_GIT, "log", "--max-count=500", "--format=%(trailers:key=Co-authored-by,valueonly,unfold)", `${run.base}..${run.head}`],
         { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024 }
@@ -25149,7 +25174,7 @@ function prepareWorkspace(run) {
   if (!(isRecord5(refs["head"]) && refs["head"]["available"] === true)) {
     throw new Stop(2, `The head ${run.head} is not in this clone. Fetch it and run again.`);
   }
-  const git6 = (args) => execFileSync7("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+  const git6 = (args) => execFileSync8("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
   const headDir = at(run, "head");
   if (run.headDir === null) {
     addHeadWorktree(headDir, run.head);
@@ -25702,7 +25727,7 @@ function claudeVersionOf(run) {
   if (run.claudeVersion !== void 0) return run.claudeVersion;
   const env = run.deps.env ?? process.env;
   try {
-    const out = execFileSync7(claudeBin(env), ["--version"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15e3 });
+    const out = execFileSync8(claudeBin(env), ["--version"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15e3 });
     run.claudeVersion = out.split("\n")[0].trim() || null;
   } catch {
     run.claudeVersion = null;
@@ -25985,7 +26010,7 @@ async function runReview(options, deps) {
     }
     run.dir = resolve5(options.out === null ? runDirectory(options, run.head) : options.out);
     mkdirSync6(run.dir, { recursive: true });
-    resolveConfig(run);
+    await resolveConfig(run);
     for (const stage of STAGES) {
       if (run.done) break;
       run.stage = stage.name;
@@ -26077,7 +26102,7 @@ function reportText(report) {
 // plugins/review-voice/src/cli/shared.ts
 import { readSync, mkdirSync as mkdirSync7, statSync as statSync3, existsSync as existsSync13, realpathSync as realpathSync3 } from "node:fs";
 import { basename as basename5, dirname as dirname11, join as join20 } from "node:path";
-import { execFileSync as execFileSync8 } from "node:child_process";
+import { execFileSync as execFileSync9 } from "node:child_process";
 var STDIN_INPUT = {
   "check-candidates": "candidates JSON",
   "check-verification": "the evidence-verifier output",
@@ -26146,10 +26171,12 @@ function numericFlag(argv, name, fallback) {
 }
 function inferRepository(cwd) {
   try {
-    const url = execFileSync8("git", ["remote", "get-url", "origin"], {
+    const url = execFileSync9("git", ["remote", "get-url", "origin"], {
       cwd,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS),
+      killSignal: "SIGKILL"
     }).trim();
     const match = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url);
     return match?.[1] ?? null;
@@ -26160,10 +26187,12 @@ function inferRepository(cwd) {
 function remoteRepositories(cwd) {
   let out;
   try {
-    out = execFileSync8("git", ["config", "--get-regexp", "^remote\\..*\\.url$"], {
+    out = execFileSync9("git", ["config", "--get-regexp", "^remote\\..*\\.url$"], {
       cwd,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS),
+      killSignal: "SIGKILL"
     });
   } catch {
     return [];
@@ -26253,9 +26282,17 @@ function containsCut(before, after) {
   }
   return false;
 }
-function refExists(ref, cwd) {
+async function refExists(ref, cwd) {
   try {
-    execFileSync8("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
+    await runGit(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { timeoutMs: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function refExistsSync(ref, cwd) {
+  try {
+    execFileSync9("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore", timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS), killSignal: "SIGKILL" });
     return true;
   } catch {
     return false;
@@ -28010,7 +28047,7 @@ function policyCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/evaluate.ts
-import { execFileSync as execFileSync9 } from "node:child_process";
+import { execFileSync as execFileSync10 } from "node:child_process";
 import { mkdirSync as mkdirSync8, mkdtempSync as mkdtempSync4, readFileSync as readFileSync20, rmSync as rmSync8, writeFileSync as writeFileSync9 } from "node:fs";
 import { tmpdir as tmpdir3 } from "node:os";
 import { dirname as dirname14, join as join23 } from "node:path";
@@ -29213,7 +29250,7 @@ var modelVerifier = async (candidate) => {
 };
 function gitHead() {
   try {
-    return execFileSync9("git", ["rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return execFileSync10("git", ["rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     return null;
   }
@@ -29499,13 +29536,14 @@ function evaluateCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/conventions.ts
-import { readFileSync as readFileSync22 } from "node:fs";
+import { readFileSync as readFileSync21 } from "node:fs";
 
 // plugins/review-voice/src/conventions/discover.ts
 import { dirname as dirname15, join as join25, sep as sep3 } from "node:path";
 
 // plugins/review-voice/src/conventions/tree.ts
-import { existsSync as existsSync16, readFileSync as readFileSync21, readdirSync as readdirSync4, statSync as statSync6 } from "node:fs";
+import { existsSync as existsSync16, readdirSync as readdirSync4, statSync as statSync6 } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join as join24, sep as sep2 } from "node:path";
 function filesystemReader(root) {
   return {
@@ -29519,12 +29557,12 @@ function filesystemReader(root) {
     },
     size: (path) => statSync6(join24(root, path)).size,
     list: (path) => readdirSync4(join24(root, path)),
-    read: (path) => readFileSync21(join24(root, path))
+    read: (path) => readFile(join24(root, path))
   };
 }
 var GIT_BUFFER = 512 * 1024 * 1024;
-function gitTreeReader(root, ref) {
-  const listing = runGitSync(root, ["ls-tree", "-r", "-l", "--full-tree", "-z", ref], {
+async function gitTreeReader(root, ref) {
+  const listing = await runGit(root, ["ls-tree", "-r", "-l", "--full-tree", "-z", ref], {
     maxBuffer: GIT_BUFFER,
     timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS)
   });
@@ -29564,11 +29602,11 @@ function gitTreeReader(root, ref) {
       if (names === void 0) throw new Error(`${path} is not a directory at ${ref}.`);
       return [...names];
     },
-    read: (path) => {
+    read: async (path) => {
       const { object } = file2(path);
       let blob = blobs.get(object);
       if (blob === void 0) {
-        blob = runGitCatFileSync(root, ["cat-file", "blob", object], {
+        blob = await runGitCatFile(root, ["cat-file", "blob", object], {
           maxBuffer: GIT_BUFFER,
           timeoutMs: catFileBlobTimeoutMs()
         });
@@ -29683,14 +29721,14 @@ ${entry.part.body}`.trim()).join("\n\n");
 [Review Voice kept the ${keep.size} of ${parts.length} sections that match the paths under review. ${dropped} other section${dropped === 1 ? "" : "s"} of this document were not read.]
 `;
 }
-function readHead2(tree, path, limit) {
-  const raw = tree.read(path);
+async function readHead2(tree, path, limit) {
+  const raw = await tree.read(path);
   if (raw.length <= limit) return raw.toString("utf8");
   const decoder = new TextDecoder("utf8", { fatal: false });
   return decoder.decode(raw.subarray(0, limit));
 }
-function readBounded(tree, path, changedPaths = []) {
-  const raw = tree.read(path).toString("utf8");
+async function readBounded(tree, path, changedPaths = []) {
+  const raw = (await tree.read(path)).toString("utf8");
   const bytes = Buffer.byteLength(raw, "utf8");
   if (bytes <= PER_DOCUMENT_BYTES) {
     return { content: raw, bytes, includedBytes: bytes, truncated: false, scoped: false };
@@ -29783,7 +29821,7 @@ function matchesChange(path, changedPaths) {
   const tokens = nameTokens(path);
   return tokens.length > 0 && tokens.some((token) => haystack.includes(token));
 }
-function discoverConventions(root, changedPaths = [], tree = filesystemReader(root)) {
+async function discoverConventions(root, changedPaths = [], tree = filesystemReader(root)) {
   const documents = [];
   const skipped = [];
   const warnings = [];
@@ -29852,14 +29890,15 @@ function discoverConventions(root, changedPaths = [], tree = filesystemReader(ro
       governsPaths: 0
     }))
   ];
-  const sized = ordered.flatMap((entry) => {
+  const sized = [];
+  for (const entry of ordered) {
     let bytes = Number.POSITIVE_INFINITY;
     let governs = [];
     let followed = [];
     try {
       bytes = tree.size(entry.path);
       {
-        const head = readHead2(tree, entry.path, CHEAP_BYTES);
+        const head = await readHead2(tree, entry.path, CHEAP_BYTES);
         governs = frontmatterPaths(head);
         const targets = pointerTargets(head);
         for (const target of targets) {
@@ -29881,17 +29920,20 @@ function discoverConventions(root, changedPaths = [], tree = filesystemReader(ro
       const base = { ...entry, path, governs, governsPaths: covers };
       return governsAny(governs, changedPaths) && entry.reason !== "directory scope" ? { ...base, reason: "governs the changed paths" } : base;
     };
-    if (followed.length === 0) return [{ entry: withPath(entry.path), bytes }];
-    return followed.map((path) => {
+    if (followed.length === 0) {
+      sized.push({ entry: withPath(entry.path), bytes });
+      continue;
+    }
+    for (const path of followed) {
       let targetBytes = Number.POSITIVE_INFINITY;
       try {
         targetBytes = tree.size(path);
       } catch {
         targetBytes = Number.POSITIVE_INFINITY;
       }
-      return { entry: withPath(path), bytes: targetBytes };
-    });
-  });
+      sized.push({ entry: withPath(path), bytes: targetBytes });
+    }
+  }
   const fitsWhole = (entry) => {
     try {
       return tree.size(entry.path) <= PER_DOCUMENT_BYTES;
@@ -29942,7 +29984,7 @@ function discoverConventions(root, changedPaths = [], tree = filesystemReader(ro
     }
     let read;
     try {
-      read = readBounded(tree, entry.path, changedPaths);
+      read = await readBounded(tree, entry.path, changedPaths);
     } catch (error) {
       skipped.push({ path: entry.path, reason: error instanceof Error ? error.message : String(error) });
       continue;
@@ -29986,7 +30028,7 @@ function changedPathsFrom(filesJson) {
 }
 
 // plugins/review-voice/src/cli/conventions.ts
-function conventionsCommand(argv) {
+async function conventionsCommand(argv) {
   let root;
   try {
     root = repositoryRoot(process.cwd());
@@ -29998,7 +30040,7 @@ function conventionsCommand(argv) {
   const changed = [];
   if (filesFlag !== null) {
     try {
-      changed.push(...changedPathsFrom(JSON.parse(readFileSync22(filesFlag, "utf8"))));
+      changed.push(...changedPathsFrom(JSON.parse(readFileSync21(filesFlag, "utf8"))));
     } catch (error) {
       console.error(`Cannot read ${filesFlag}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -30012,11 +30054,11 @@ function conventionsCommand(argv) {
     console.error("--ref needs a git ref, for example: --ref origin/main");
     return 2;
   }
-  if (ref !== null && !refExists(ref, root)) {
+  if (ref !== null && !await refExists(ref, root)) {
     console.error(`--ref ${ref} does not resolve in this repository. Fetch it before collecting conventions.`);
     return 2;
   }
-  const report = discoverConventions(root, changed, ref === null ? void 0 : gitTreeReader(root, ref));
+  const report = await discoverConventions(root, changed, ref === null ? void 0 : await gitTreeReader(root, ref));
   if (report.documents.length === 0 && report.skipped.length === 0) {
     console.error(`No convention documents found${ref === null ? "" : ` at ${ref}`}. Looked for: ${SEARCHED_PLACES.join(", ")}.`);
   }
@@ -30038,7 +30080,7 @@ function conventionsCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/check-intent.ts
-import { readFileSync as readFileSync23, writeFileSync as writeFileSync10 } from "node:fs";
+import { readFileSync as readFileSync22, writeFileSync as writeFileSync10 } from "node:fs";
 
 // plugins/review-voice/src/agents/reply-json.ts
 function jsonInReply(text5) {
@@ -30096,7 +30138,7 @@ function checkIntentCommand(argv) {
   let bodies;
   let issues;
   try {
-    const thread = JSON.parse(readFileSync23(threadFile, "utf8"));
+    const thread = JSON.parse(readFileSync22(threadFile, "utf8"));
     description = descriptionOf(thread);
     bodies = descriptionBodies(thread);
     issues = linkedIssuesOf(thread);
@@ -30154,20 +30196,20 @@ import { writeFileSync as writeFileSync12, mkdirSync as mkdirSync11, statSync as
 import { dirname as dirname17, isAbsolute as isAbsolute6, relative as relative4, resolve as resolve10, sep as sep5 } from "node:path";
 
 // plugins/review-voice/src/evaluate/recall.ts
-import { execFileSync as execFileSync11 } from "node:child_process";
-import { copyFileSync as copyFileSync2, existsSync as existsSync18, mkdirSync as mkdirSync10, mkdtempSync as mkdtempSync6, readdirSync as readdirSync6, readFileSync as readFileSync25, rmSync as rmSync10, statSync as statSync7 } from "node:fs";
+import { execFileSync as execFileSync12 } from "node:child_process";
+import { copyFileSync as copyFileSync2, existsSync as existsSync18, mkdirSync as mkdirSync10, mkdtempSync as mkdtempSync6, readdirSync as readdirSync6, readFileSync as readFileSync24, rmSync as rmSync10, statSync as statSync7 } from "node:fs";
 import { tmpdir as tmpdir5 } from "node:os";
 import { join as join27, resolve as resolve9 } from "node:path";
 
 // plugins/review-voice/src/evaluate/fixtures.ts
-import { execFileSync as execFileSync10 } from "node:child_process";
+import { execFileSync as execFileSync11 } from "node:child_process";
 import {
   existsSync as existsSync17,
   lstatSync as lstatSync4,
   mkdirSync as mkdirSync9,
   mkdtempSync as mkdtempSync5,
   readdirSync as readdirSync5,
-  readFileSync as readFileSync24,
+  readFileSync as readFileSync23,
   rmSync as rmSync9,
   writeFileSync as writeFileSync11
 } from "node:fs";
@@ -30410,7 +30452,7 @@ function gitEnvironment() {
 }
 function git3(cwd, label2, args) {
   try {
-    return execFileSync10("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", "-c", "maintenance.auto=false", "-c", "core.precomposeunicode=false", ...args], {
+    return execFileSync11("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", "-c", "maintenance.auto=false", "-c", "core.precomposeunicode=false", ...args], {
       cwd,
       env: gitEnvironment(),
       encoding: "utf8",
@@ -30432,7 +30474,7 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
   let normalised2;
   let files2;
   try {
-    normalised2 = normalisePatch(readFileSync24(patchPath2, "utf8"));
+    normalised2 = normalisePatch(readFileSync23(patchPath2, "utf8"));
     files2 = parsePatchFiles(normalised2);
   } catch (error) {
     throw new Error(`${label2}: ${error.message}`);
@@ -30449,7 +30491,7 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
   const contextDir = join26(fixtureDir, "context");
   const supplied = /* @__PURE__ */ new Map();
   if (existsSync17(contextDir)) {
-    for (const path of contextFiles(contextDir, label2)) supplied.set(path, readFileSync24(join26(contextDir, path), "utf8"));
+    for (const path of contextFiles(contextDir, label2)) supplied.set(path, readFileSync23(join26(contextDir, path), "utf8"));
   }
   mkdirSync9(targetDir, { recursive: true });
   git3(targetDir, label2, ["init", "-q", "-b", "main", "--template="]);
@@ -30482,7 +30524,7 @@ function materializeFixture(fixtureDir, targetDir, options = {}) {
   let config2 = DEFAULT_CONFIG;
   if (existsSync17(configPath)) {
     if (!lstatSync4(configPath).isFile()) throw new Error(`${label2}: config.yaml is not a regular file`);
-    config2 = readFileSync24(configPath, "utf8");
+    config2 = readFileSync23(configPath, "utf8");
   }
   writeInside(targetDir, ".review-voice/config.yaml", config2, label2);
   git3(targetDir, label2, ["add", "-A"]);
@@ -30588,7 +30630,7 @@ function selectFixtures(options) {
       if (!statSync7(dir).isDirectory()) continue;
       const casePath = join27(dir, "case.yaml");
       if (!existsSync18(casePath)) throw new RecallUsageError(`${cls}/${name}: fixture has no case.yaml`);
-      chosen.push({ dir, expectation: readExpectation(cls, name, readFileSync25(casePath, "utf8")) });
+      chosen.push({ dir, expectation: readExpectation(cls, name, readFileSync24(casePath, "utf8")) });
     }
   }
   const named = options.only === null ? chosen : chosen.filter(({ expectation }) => options.only === expectation.name || options.only === `${expectation.class}/${expectation.name}`);
@@ -30606,7 +30648,7 @@ function selectFixtures(options) {
 var json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 function shimFiles(repoDir, base, head, paths) {
   return paths.map((path) => {
-    const text5 = execFileSync11("git", ["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", path], {
+    const text5 = execFileSync12("git", ["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", path], {
       cwd: repoDir,
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024
@@ -30665,7 +30707,7 @@ function pullRequestShim(repoDir, commits, pull, onRequest) {
 function lanesRun(report) {
   if (report.runDir === null || report.plan === null) return [];
   try {
-    const eligibility = JSON.parse(readFileSync25(join27(report.runDir, "lanes.json"), "utf8"));
+    const eligibility = JSON.parse(readFileSync24(join27(report.runDir, "lanes.json"), "utf8"));
     return eligibility.filter((entry) => entry.eligible === true && typeof entry.lane?.name === "string").map((entry) => entry.lane.name).filter((name) => name === "diff" || report.plan.laneModels.others !== null);
   } catch {
     return [];
@@ -30674,7 +30716,7 @@ function lanesRun(report) {
 function reviewIsSilent(report) {
   if (report.runDir === null) return false;
   try {
-    return readFileSync25(join27(report.runDir, "review.txt"), "utf8").trim() === NO_FINDINGS;
+    return readFileSync24(join27(report.runDir, "review.txt"), "utf8").trim() === NO_FINDINGS;
   } catch {
     return false;
   }
@@ -30683,7 +30725,7 @@ function trailOf(report) {
   const entries = (file2, key2) => {
     if (report.runDir === null) return [];
     try {
-      const list3 = JSON.parse(readFileSync25(join27(report.runDir, file2), "utf8"))[key2];
+      const list3 = JSON.parse(readFileSync24(join27(report.runDir, file2), "utf8"))[key2];
       return Array.isArray(list3) ? list3.filter((entry) => typeof entry === "object" && entry !== null) : [];
     } catch {
       return [];
@@ -30703,7 +30745,7 @@ function trailOf(report) {
   };
 }
 function checkoutBase(repoDir) {
-  execFileSync11("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"] });
+  execFileSync12("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"] });
 }
 async function runFixture(fixture, index, context2) {
   const { expectation } = fixture;
@@ -30743,7 +30785,7 @@ async function runFixture(fixture, index, context2) {
     delete env["REVIEW_VOICE_AGENT_RUNNER"];
   }
   const bodyPath = join27(fixture.dir, "pr-body.md");
-  const shim = pullRequestShim(repoDir, commits, { title: expectation.name, body: existsSync18(bodyPath) ? readFileSync25(bodyPath, "utf8") : "" }, context2.deps.onRequest);
+  const shim = pullRequestShim(repoDir, commits, { title: expectation.name, body: existsSync18(bodyPath) ? readFileSync24(bodyPath, "utf8") : "" }, context2.deps.onRequest);
   const saved = process.cwd();
   let report;
   process.chdir(repoDir);
@@ -30953,14 +30995,14 @@ async function recallCommand(argv, runInProcess2) {
 }
 
 // plugins/review-voice/src/cli/import-benchmark.ts
-import { execFileSync as execFileSync13 } from "node:child_process";
+import { execFileSync as execFileSync14 } from "node:child_process";
 import { createHash as createHash7, randomBytes as randomBytes2 } from "node:crypto";
-import { constants as constants3, copyFileSync as copyFileSync3, existsSync as existsSync20, lstatSync as lstatSync7, mkdirSync as mkdirSync13, readdirSync as readdirSync7, readFileSync as readFileSync27, renameSync as renameSync4, rmdirSync, rmSync as rmSync13, statSync as statSync9 } from "node:fs";
+import { constants as constants3, copyFileSync as copyFileSync3, existsSync as existsSync20, lstatSync as lstatSync7, mkdirSync as mkdirSync13, readdirSync as readdirSync7, readFileSync as readFileSync26, renameSync as renameSync4, rmdirSync, rmSync as rmSync13, statSync as statSync9 } from "node:fs";
 import { dirname as dirname18, join as join29, resolve as resolve11 } from "node:path";
 
 // plugins/review-voice/src/evaluate/benchmark.ts
-import { execFileSync as execFileSync12 } from "node:child_process";
-import { lstatSync as lstatSync6, mkdirSync as mkdirSync12, mkdtempSync as mkdtempSync7, readFileSync as readFileSync26, rmSync as rmSync12, writeFileSync as writeFileSync13 } from "node:fs";
+import { execFileSync as execFileSync13 } from "node:child_process";
+import { lstatSync as lstatSync6, mkdirSync as mkdirSync12, mkdtempSync as mkdtempSync7, readFileSync as readFileSync25, rmSync as rmSync12, writeFileSync as writeFileSync13 } from "node:fs";
 import { tmpdir as tmpdir6 } from "node:os";
 import { join as join28 } from "node:path";
 var BENCHMARK_SET = "qodo-pr-review-bench";
@@ -31036,7 +31078,7 @@ function probeBuild(scratch, slug, diff) {
     mkdirSync12(fixture, { recursive: true });
     writeFileSync13(join28(fixture, "diff.patch"), diff);
     const { base, head, files: files2 } = materializeFixture(fixture, repo, { name: slug });
-    const git6 = (args) => execFileSync12("git", args, { cwd: repo, env: gitEnvironment2(), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    const git6 = (args) => execFileSync13("git", args, { cwd: repo, env: gitEnvironment2(), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
     const hunks = parseHunks(git6(["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", ...files2]));
     const handEdited = findHandEdited([...hunks].filter(([, file2]) => file2.ranges.length > 0).map(([path]) => path), (path) => {
       try {
@@ -31129,12 +31171,12 @@ function importBenchmark(options) {
           continue;
         }
         try {
-          diff = readFileSync26(patchPath2);
+          diff = readFileSync25(patchPath2);
           const bodyPath = join28(options.diffs, `${slug}.md`);
           const body = description === null ? lstatSync6(bodyPath, { throwIfNoEntry: false }) : void 0;
           if (body !== void 0) {
             if (!body.isFile()) throw new Error(`${bodyPath} is not a regular file`);
-            description = readFileSync26(bodyPath, "utf8");
+            description = readFileSync25(bodyPath, "utf8");
           }
         } catch (error) {
           refuse(null, "no-diff", `the set has no diff and --diffs could not be read: ${error instanceof Error ? error.message : String(error)}`);
@@ -31209,7 +31251,7 @@ function insideGit(dir) {
     LC_ALL: "C"
   };
   try {
-    const answer2 = execFileSync13("git", ["rev-parse", "--is-inside-work-tree", "--is-inside-git-dir"], { cwd: dir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const answer2 = execFileSync14("git", ["rev-parse", "--is-inside-work-tree", "--is-inside-git-dir"], { cwd: dir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     return answer2.split("\n").some((line3) => line3.trim() === "true");
   } catch (error) {
     const { status, stderr } = error;
@@ -31310,7 +31352,7 @@ function importBenchmarkCommand(argv) {
   }
   let bytes;
   try {
-    bytes = readFileSync27(from);
+    bytes = readFileSync26(from);
   } catch (error) {
     console.error(`--from ${from}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -31328,7 +31370,7 @@ function importBenchmarkCommand(argv) {
   if (licencesPath !== null) {
     let parsed2;
     try {
-      parsed2 = JSON.parse(readFileSync27(licencesPath, "utf8"));
+      parsed2 = JSON.parse(readFileSync26(licencesPath, "utf8"));
     } catch (error) {
       console.error(`--licences ${licencesPath}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -31392,7 +31434,7 @@ function importBenchmarkCommand(argv) {
 // plugins/review-voice/src/cli/worktree.ts
 import { statSync as statSync10, lstatSync as lstatSync8, rmSync as rmSync14 } from "node:fs";
 import { join as join30, resolve as resolve12 } from "node:path";
-import { execFileSync as execFileSync14 } from "node:child_process";
+import { execFileSync as execFileSync15 } from "node:child_process";
 function worktreeCommand(argv) {
   const action = argv[0];
   const dir = flag2(argv, "--dir");
@@ -31436,7 +31478,7 @@ function worktreeCommand(argv) {
   }
   let sha;
   try {
-    sha = execFileSync14("git", ["rev-parse", "--verify", "--quiet", `${head}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    sha = execFileSync15("git", ["rev-parse", "--verify", "--quiet", `${head}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS), killSignal: "SIGKILL" }).trim();
   } catch {
     console.error(`--head ${head} is not a commit in this clone. Fetch it and run again.`);
     return 2;
@@ -31453,7 +31495,7 @@ function worktreeCommand(argv) {
 
 // plugins/review-voice/src/cli/config.ts
 import { createHash as createHash8 } from "node:crypto";
-import { existsSync as existsSync21, lstatSync as lstatSync9, mkdirSync as mkdirSync14, readFileSync as readFileSync28, realpathSync as realpathSync4, rmSync as rmSync15, statSync as statSync11, writeFileSync as writeFileSync14 } from "node:fs";
+import { existsSync as existsSync21, lstatSync as lstatSync9, mkdirSync as mkdirSync14, readFileSync as readFileSync27, realpathSync as realpathSync4, rmSync as rmSync15, statSync as statSync11, writeFileSync as writeFileSync14 } from "node:fs";
 import { dirname as dirname19, isAbsolute as isAbsolute7, join as join31, resolve as resolve13 } from "node:path";
 async function configCommand(argv) {
   const dir = flag2(argv, "--dir");
@@ -31486,7 +31528,7 @@ async function configCommand(argv) {
   const { data } = await githubClient([repository]).get(`/repos/${repository}/pulls/${pullNumber}`);
   const base = { sha: typeof data.base?.sha === "string" ? data.base.sha : null, ref: typeof data.base?.ref === "string" ? data.base.ref : null };
   const notes = [];
-  const chosen = resolveTrustedConfig({ repository, pullNumber, base, dir: realpathSync4(dir), flagged }, notes);
+  const chosen = await resolveTrustedConfig({ repository, pullNumber, base, dir: realpathSync4(dir), flagged }, notes);
   if (typeof chosen === "string") {
     console.error(chosen);
     return 2;
@@ -31502,7 +31544,7 @@ async function configCommand(argv) {
   return 0;
 }
 var TRUSTED_CONFIG = "trusted-config.json";
-var sha256Of = (path) => createHash8("sha256").update(readFileSync28(path)).digest("hex");
+var sha256Of = (path) => createHash8("sha256").update(readFileSync27(path)).digest("hex");
 function realDirectory(path) {
   try {
     return realpathSync4(path);
@@ -31518,7 +31560,7 @@ function withTrustedConfig(argv) {
   const file2 = join31(resolve13(dir), TRUSTED_CONFIG);
   let text5;
   try {
-    text5 = readFileSync28(file2, "utf8");
+    text5 = readFileSync27(file2, "utf8");
   } catch (error) {
     return error.code === "ENOENT" ? `--trusted-config: ${file2} does not exist. Run review-voice config resolve --dir ${dir} first.` : `--trusted-config: ${file2} cannot be read (${error.message}).`;
   }
@@ -31561,50 +31603,50 @@ function withTrustedConfig(argv) {
 }
 
 // plugins/review-voice/src/cli/diff.ts
-import { readFileSync as readFileSync29, writeFileSync as writeFileSync15, mkdirSync as mkdirSync15 } from "node:fs";
+import { readFileSync as readFileSync28, writeFileSync as writeFileSync15, mkdirSync as mkdirSync15 } from "node:fs";
 import { join as join32 } from "node:path";
 
 // plugins/review-voice/src/diff/prior.ts
-function git4(args, cwd, fallbackMs = GIT_READ_TIMEOUT_MS) {
-  return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(fallbackMs) }).toString("utf8");
+async function git4(args, cwd, fallbackMs = GIT_READ_TIMEOUT_MS) {
+  return (await runGit(cwd, args, { timeoutMs: gitTimeoutMs(fallbackMs) })).toString("utf8");
 }
-function resolveCommit(ref, cwd) {
+async function resolveCommit(ref, cwd) {
   try {
-    return git4(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS).trim() || null;
+    return (await git4(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS)).trim() || null;
   } catch {
     return null;
   }
 }
-function originRepository2(cwd) {
+async function originRepository2(cwd) {
   try {
-    const url = git4(["remote", "get-url", "origin"], cwd).trim();
+    const url = (await git4(["remote", "get-url", "origin"], cwd)).trim();
     return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
   } catch {
     return null;
   }
 }
-function resolveSince(since, repository, cwd) {
-  const present = resolveCommit(since, cwd);
+async function resolveSince(since, repository, cwd) {
+  const present = await resolveCommit(since, cwd);
   if (present !== null) return present;
   if (!/^[0-9a-f]{7,64}$/i.test(since)) return null;
-  if (originRepository2(cwd)?.toLowerCase() !== repository.toLowerCase()) return null;
+  if ((await originRepository2(cwd))?.toLowerCase() !== repository.toLowerCase()) return null;
   try {
-    git4(["fetch", "--no-tags", "--quiet", "origin", since], cwd);
+    await git4(["fetch", "--no-tags", "--quiet", "origin", since], cwd);
   } catch {
     return null;
   }
-  return resolveCommit(since, cwd);
+  return await resolveCommit(since, cwd);
 }
-function fetchPriorHead(sha, repository, cwd) {
+async function fetchPriorHead(sha, repository, cwd) {
   if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha)) return "it is not a full commit id, so it was not fetched";
-  const origin = originRepository2(cwd);
+  const origin = await originRepository2(cwd);
   if (origin === null) return "no origin remote on GitHub resolved, so it was not fetched";
   if (origin.toLowerCase() !== repository.toLowerCase()) {
     return `origin is ${origin}, not ${repository}, so it was not fetched`;
   }
   const args = ["fetch", "--no-tags", "--quiet", "origin", sha];
   try {
-    runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) });
+    await runGit(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) });
     return null;
   } catch (error) {
     return gitFailure(args, error);
@@ -31686,7 +31728,7 @@ async function pullRequestDiffCommand(argv) {
   let since = null;
   if (argv.includes("--since")) {
     const wanted = flag2(argv, "--since");
-    since = wanted === null ? null : resolveSince(wanted, repository, process.cwd());
+    since = wanted === null ? null : await resolveSince(wanted, repository, process.cwd());
     if (since === null) {
       console.error(
         wanted === null ? "--since needs a commit." : `--since ${wanted} is not a commit in this clone.`
@@ -31731,7 +31773,7 @@ async function pullRequestDiffCommand(argv) {
   const priorLeftOut = prior === null ? [] : (prior.reviewRunId === null ? null : leftOutBy(prior.reviewRunId)) ?? result.files.filter((file2) => !isReviewable(file2.path, false)).map((file2) => file2.path);
   let planned;
   try {
-    planned = planScope({
+    planned = await planScope({
       priorRun: prior,
       head: result.head,
       headAvailable: result.refs.head.available,
@@ -31761,8 +31803,8 @@ async function pullRequestDiffCommand(argv) {
       interdiffPatch: null
     };
   }
-  const scoped = applyReviewScope(result, pullNumber, planned.scope, process.cwd(), void 0, planned.interdiffPatch, planned.leftOutChanged);
-  return emitDiff({ ...scoped, repository, prior: resolution }, flag2(argv, "--out"));
+  const scoped = await applyReviewScope(result, pullNumber, planned.scope, process.cwd(), void 0, planned.interdiffPatch, planned.leftOutChanged);
+  return await emitDiff({ ...scoped, repository, prior: resolution }, flag2(argv, "--out"));
 }
 function leftOutBy(runId) {
   try {
@@ -31815,27 +31857,27 @@ function diffSummary(result) {
     }
   };
 }
-function markedGenerated(acquired) {
+async function markedGenerated(acquired) {
   const asked = (acquired.files ?? []).filter((file2) => file2.reviewed || file2.status === "deleted").map((file2) => file2.path);
   try {
     const root = repositoryRoot(process.cwd());
-    return linguistGeneratedPaths(root, asked, attributeSource(root, acquired));
+    return await linguistGeneratedPaths(root, asked, await attributeSource(root, acquired));
   } catch {
     return /* @__PURE__ */ new Set();
   }
 }
-function emitDiff(acquired, outDir) {
+async function emitDiff(acquired, outDir) {
   const config2 = repositoryConfig();
   for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
   if (acquired.exclusions != null) console.error(acquired.exclusions.note);
-  const generated = markedGenerated(acquired);
+  const generated = await markedGenerated(acquired);
   const scope = acquired.scope;
   const narrowed = scope !== void 0 && (scope.kind === "interdiff" || scope.kind === "incremental") ? scope.files : null;
   const scopedFiles = (acquired.files ?? []).filter((file2) => narrowed === null || narrowed.includes(file2.path));
   const assessed = assessComplexity(acquired.diff, scopedFiles, config2?.humanReview, generated);
   const production = productionPaths(scopedFiles, config2?.humanReview, generated);
   const deletedProduction = deletedProductionPaths(scopedFiles, config2?.humanReview, generated);
-  const structure = collectStructure(process.cwd(), acquired, production, config2?.structure, deletedProduction);
+  const structure = await collectStructure(process.cwd(), acquired, production, config2?.structure, deletedProduction);
   const complexity = applyStructureHumanReviewCap(assessed, structure, config2?.humanReview);
   const result = {
     ...acquired,
@@ -31866,7 +31908,7 @@ function emitDiff(acquired, outDir) {
     return 2;
   }
 }
-function diffCommand(argv) {
+async function diffCommand(argv) {
   const baseIndex = argv.indexOf("--base");
   const base = baseIndex === -1 ? null : argv[baseIndex + 1] ?? null;
   if (baseIndex !== -1 && (base === null || base.startsWith("--"))) {
@@ -31874,14 +31916,14 @@ function diffCommand(argv) {
     return 2;
   }
   try {
-    const result = acquireDiff({
+    const result = await acquireDiff({
       cwd: process.cwd(),
       staged: argv.includes("--staged"),
       base,
       includeGenerated: argv.includes("--include-generated"),
       firstPartyPaths: repositoryConfig()?.firstPartyPaths ?? []
     });
-    return emitDiff(result, flag2(argv, "--out"));
+    return await emitDiff(result, flag2(argv, "--out"));
   } catch (error) {
     if (error instanceof GitError) {
       console.error(error.message);
@@ -31891,14 +31933,14 @@ function diffCommand(argv) {
     throw error;
   }
 }
-function readFilesAndDiff(filesPath, diffPath) {
+async function readFilesAndDiff(filesPath, diffPath) {
   let manifest;
   let diffText;
   try {
-    const parsed2 = JSON.parse(readFileSync29(filesPath, "utf8"));
+    const parsed2 = JSON.parse(readFileSync28(filesPath, "utf8"));
     if (typeof parsed2 !== "object" || parsed2 === null || Array.isArray(parsed2)) throw new Error("not a JSON object");
     manifest = parsed2;
-    diffText = readFileSync29(diffPath, "utf8");
+    diffText = readFileSync28(diffPath, "utf8");
   } catch (error) {
     console.error(`Cannot read the diff: ${error instanceof Error ? error.message : String(error)}`);
     return null;
@@ -31908,7 +31950,7 @@ function readFilesAndDiff(filesPath, diffPath) {
     console.error(`${filesPath} is not a files.json from \`diff --out\`: it has no files list.`);
     return null;
   }
-  const generated = markedGenerated({ ...manifest, diff: diffText });
+  const generated = await markedGenerated({ ...manifest, diff: diffText });
   return { manifest, changed: files2, diffText, generated };
 }
 
@@ -31959,10 +32001,10 @@ async function threadCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/symbols.ts
-import { readFileSync as readFileSync30, writeFileSync as writeFileSync17 } from "node:fs";
+import { readFileSync as readFileSync29, writeFileSync as writeFileSync17 } from "node:fs";
 
 // plugins/review-voice/src/scoring/existence.ts
-import { execFileSync as execFileSync15 } from "node:child_process";
+import { execFileSync as execFileSync16 } from "node:child_process";
 var ASSERTS_ABSENCE = [
   /\b(?:does|do)\s+not\s+exist\b/i,
   /\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)\b/i,
@@ -32033,10 +32075,10 @@ var gitGrep = (symbol, cwd, ref, exclude) => {
   const at2 = ref === null ? [] : [ref];
   try {
     if (exclude === void 0) {
-      execFileSync15("git", [...base, "--quiet", "-e", pattern, ...at2], { cwd, stdio: "ignore", timeout: 1e4 });
+      execFileSync16("git", [...base, "--quiet", "-e", pattern, ...at2], { cwd, stdio: "ignore", timeout: 1e4 });
       return true;
     }
-    const output = execFileSync15("git", [...base, "-n", "-z", "-e", pattern, ...at2], {
+    const output = execFileSync16("git", [...base, "-n", "-z", "-e", pattern, ...at2], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -32071,7 +32113,7 @@ function grepPaths(wholeIdentifier, ...[symbol, cwd, ref, timeoutMs]) {
     ...ref === null ? [] : [ref]
   ];
   try {
-    const output = execFileSync15("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
+    const output = execFileSync16("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
     const prefix = ref === null ? "" : `${ref}:`;
     return output.split("\0").filter((path) => path.length > 0).map((path) => prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path);
   } catch (error) {
@@ -32083,7 +32125,7 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
   const [first, second] = patterns;
   const args = ref === null ? ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second] : ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second, ref];
   try {
-    const output = execFileSync15("git", args, {
+    const output = execFileSync16("git", args, {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -32111,7 +32153,7 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
 };
 var gitTrackedPaths = (cwd, ref) => {
   const args = ref === null ? ["ls-files", "-z", "--full-name", "--", ":/"] : ["ls-tree", "-r", "-z", "--name-only", "--full-tree", ref];
-  const output = execFileSync15("git", args, {
+  const output = execFileSync16("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -32132,7 +32174,7 @@ var RESOURCE_PATHSPECS = [
 ];
 var gitResourceSources = (cwd) => {
   try {
-    const output = execFileSync15("git", ["ls-files", "-z", "--", ...RESOURCE_PATHSPECS], {
+    const output = execFileSync16("git", ["ls-files", "-z", "--", ...RESOURCE_PATHSPECS], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -32893,7 +32935,7 @@ function collectSymbolContext(options) {
 }
 
 // plugins/review-voice/src/cli/symbols.ts
-function symbolsCommand(argv) {
+async function symbolsCommand(argv) {
   const diffFile = flag2(argv, "--diff-file");
   if (diffFile === null) {
     console.error("--diff-file needs a unified diff path.");
@@ -32901,7 +32943,7 @@ function symbolsCommand(argv) {
   }
   let diff;
   try {
-    diff = readFileSync30(diffFile, "utf8");
+    diff = readFileSync29(diffFile, "utf8");
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -32912,7 +32954,7 @@ function symbolsCommand(argv) {
     console.error("--base needs a git ref, for example: --base origin/main");
     return 2;
   }
-  if (base !== null && !refExists(base, process.cwd())) {
+  if (base !== null && !await refExists(base, process.cwd())) {
     console.error(`--base ${base} does not resolve in this repository. Fetch it before collecting symbol context.`);
     return 2;
   }
@@ -32922,7 +32964,7 @@ function symbolsCommand(argv) {
     console.error("--head needs a git ref, for example: --head HEAD");
     return 2;
   }
-  if (head !== null && !refExists(head, process.cwd())) {
+  if (head !== null && !await refExists(head, process.cwd())) {
     console.error(`--head ${head} does not resolve in this repository. Fetch it before collecting symbol context.`);
     return 2;
   }
@@ -32969,8 +33011,8 @@ function symbolsCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/plan.ts
-import { readFileSync as readFileSync31 } from "node:fs";
-function planCommand(argv) {
+import { readFileSync as readFileSync30 } from "node:fs";
+async function planCommand(argv) {
   const filesPath = flag2(argv, "--files");
   const diffPath = flag2(argv, "--diff-file");
   const modeFlag = flag2(argv, "--mode");
@@ -32983,7 +33025,7 @@ function planCommand(argv) {
   let authorship;
   if (authorshipPath !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync31(authorshipPath, "utf8"));
+      const parsed2 = JSON.parse(readFileSync30(authorshipPath, "utf8"));
       if (typeof parsed2 !== "object" || parsed2 === null || Array.isArray(parsed2)) throw new Error("not a JSON object");
       authorship = parsed2;
     } catch (error) {
@@ -32991,7 +33033,7 @@ function planCommand(argv) {
       return 2;
     }
   }
-  const input = readFilesAndDiff(filesPath, diffPath);
+  const input = await readFilesAndDiff(filesPath, diffPath);
   if (input === null) return 2;
   const { manifest, changed, diffText, generated } = input;
   const config2 = repositoryConfig();
@@ -33012,14 +33054,14 @@ function planCommand(argv) {
   console.log(JSON.stringify(plan, null, 2));
   return 0;
 }
-function lanesCommand(argv) {
+async function lanesCommand(argv) {
   const filesPath = flag2(argv, "--files");
   const diffPath = flag2(argv, "--diff-file");
   if (filesPath === null || diffPath === null) {
     console.error("Usage: lanes --files <files.json> --diff-file <diff.patch>");
     return 2;
   }
-  const input = readFilesAndDiff(filesPath, diffPath);
+  const input = await readFilesAndDiff(filesPath, diffPath);
   if (input === null) return 2;
   const config2 = repositoryConfig();
   for (const warning of config2?.warnings ?? []) console.error(`Warning: ${warning}`);
@@ -34029,7 +34071,7 @@ async function replyCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/check-verification.ts
-import { readFileSync as readFileSync32, writeFileSync as writeFileSync18 } from "node:fs";
+import { readFileSync as readFileSync31, writeFileSync as writeFileSync18 } from "node:fs";
 function keptCandidates(value) {
   const record3 = value;
   const list3 = Array.isArray(value) ? value : Array.isArray(record3?.kept) ? record3.kept : Array.isArray(record3?.candidates) ? record3.candidates : [];
@@ -34056,7 +34098,7 @@ function checkVerificationCommand(argv) {
   let kept = null;
   if (candidatesFile !== null) {
     try {
-      kept = keptCandidates(JSON.parse(readFileSync32(candidatesFile, "utf8")));
+      kept = keptCandidates(JSON.parse(readFileSync31(candidatesFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read ${candidatesFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -34132,7 +34174,7 @@ function checkVerificationCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/check-simplification.ts
-import { readFileSync as readFileSync33 } from "node:fs";
+import { readFileSync as readFileSync32 } from "node:fs";
 function checkSimplificationCommand(argv) {
   const diffFile = flag2(argv, "--diff-file");
   if (diffFile === null) {
@@ -34146,7 +34188,7 @@ function checkSimplificationCommand(argv) {
   }
   let hunks;
   try {
-    hunks = parseHunks(readFileSync33(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync32(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -34180,7 +34222,7 @@ function checkSimplificationCommand(argv) {
   }
   let candidateDocument;
   try {
-    candidateDocument = JSON.parse(readFileSync33(candidateFile, "utf8"));
+    candidateDocument = JSON.parse(readFileSync32(candidateFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${candidateFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -34226,7 +34268,7 @@ function checkSimplificationCommand(argv) {
 // plugins/review-voice/src/cli/verify.ts
 import { statSync as statSync12 } from "node:fs";
 import { resolve as resolve14 } from "node:path";
-import { execFileSync as execFileSync16 } from "node:child_process";
+import { execFileSync as execFileSync17 } from "node:child_process";
 async function verifyCommand(argv) {
   const cwdFlag = flag2(argv, "--cwd");
   if (argv.includes("--cwd") && cwdFlag === null) {
@@ -34269,7 +34311,7 @@ async function verifyCommand(argv) {
     const commitOf = (ref) => {
       if (ref === null) return null;
       try {
-        return execFileSync16("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        return execFileSync17("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS), killSignal: "SIGKILL" }).trim();
       } catch {
         console.error(`${ref} does not resolve to a commit here, so the verification command is not told about it.`);
         return null;
@@ -34303,7 +34345,7 @@ async function verifyCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/reconcile.ts
-import { readFileSync as readFileSync34 } from "node:fs";
+import { readFileSync as readFileSync33 } from "node:fs";
 function reconcileCommand(argv) {
   let candidates;
   try {
@@ -34323,7 +34365,7 @@ function reconcileCommand(argv) {
   }
   let verifications;
   try {
-    verifications = verdictList(JSON.parse(readFileSync34(verificationFile, "utf8")));
+    verifications = verdictList(JSON.parse(readFileSync33(verificationFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read ${verificationFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -34339,7 +34381,7 @@ function reconcileCommand(argv) {
   }
   let secondPass2;
   try {
-    secondPass2 = parseSecondPass(JSON.parse(readFileSync34(secondPassFile, "utf8")));
+    secondPass2 = parseSecondPass(JSON.parse(readFileSync33(secondPassFile, "utf8")));
   } catch (error) {
     console.error(`Cannot read the second pass from ${secondPassFile}: ${error.message}`);
     return 2;
@@ -34348,7 +34390,7 @@ function reconcileCommand(argv) {
   const tieBreaksFile = flag2(argv, "--tie-breaks");
   if (tieBreaksFile !== null) {
     try {
-      const replies = gatherReplies(readFileSync34(tieBreaksFile, "utf8"), "tie_breaks");
+      const replies = gatherReplies(readFileSync33(tieBreaksFile, "utf8"), "tie_breaks");
       if (replies === void 0) throw new Error("no tie-break JSON in it");
       tieBreaks = parseTieBreaks(replies.value);
     } catch (error) {
@@ -34377,7 +34419,7 @@ function reconcileCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/challenge.ts
-import { readFileSync as readFileSync35, writeFileSync as writeFileSync19 } from "node:fs";
+import { readFileSync as readFileSync34, writeFileSync as writeFileSync19 } from "node:fs";
 import { resolve as resolve15, sep as sep6 } from "node:path";
 function challengeCommand(argv) {
   const scoresFile = flag2(argv, "--scores");
@@ -34399,7 +34441,7 @@ function challengeCommand(argv) {
       return 2;
     }
   }
-  const readJson2 = (path) => JSON.parse(readFileSync35(path, "utf8"));
+  const readJson2 = (path) => JSON.parse(readFileSync34(path, "utf8"));
   let scores;
   let candidates;
   try {
@@ -34441,7 +34483,7 @@ function challengeCommand(argv) {
   let verdicts;
   let hunks;
   try {
-    hunks = parseHunks(readFileSync35(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync34(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -34458,7 +34500,7 @@ function challengeCommand(argv) {
     const file2 = resolve15(root, path);
     if (!file2.startsWith(root + sep6)) return null;
     try {
-      return readFileSync35(file2, "utf8").split("\n");
+      return readFileSync34(file2, "utf8").split("\n");
     } catch {
       return null;
     }
@@ -34487,7 +34529,7 @@ function challengeCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/reanchor.ts
-import { readFileSync as readFileSync36, writeFileSync as writeFileSync20, renameSync as renameSync5, rmSync as rmSync16 } from "node:fs";
+import { readFileSync as readFileSync35, writeFileSync as writeFileSync20, renameSync as renameSync5, rmSync as rmSync16 } from "node:fs";
 function reanchorCommand(argv) {
   const candidateId = flag2(argv, "--candidate");
   const line3 = Number(flag2(argv, "--line"));
@@ -34501,12 +34543,12 @@ function reanchorCommand(argv) {
     console.error("--path needs the file the finding belongs in.");
     return 2;
   }
-  const readJson2 = (path) => JSON.parse(readFileSync36(path, "utf8"));
+  const readJson2 = (path) => JSON.parse(readFileSync35(path, "utf8"));
   let scores;
   let hunks;
   try {
     scores = readJson2(scoresFile);
-    hunks = parseHunks(readFileSync36(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync35(diffFile, "utf8"));
   } catch (error) {
     console.error(`Cannot read input: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -34551,7 +34593,7 @@ function reanchorCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/agent.ts
-import { readFileSync as readFileSync37, statSync as statSync13 } from "node:fs";
+import { readFileSync as readFileSync36, statSync as statSync13 } from "node:fs";
 import { dirname as dirname20, resolve as resolve16 } from "node:path";
 async function agentCommand(argv) {
   const name = flag2(argv, "--name");
@@ -34574,7 +34616,7 @@ async function agentCommand(argv) {
   }
   let schema4;
   try {
-    schema4 = JSON.parse(readFileSync37(schemaPath, "utf8"));
+    schema4 = JSON.parse(readFileSync36(schemaPath, "utf8"));
   } catch (error) {
     console.error(`Cannot read the schema ${schemaPath}: ${error instanceof Error ? error.message : String(error)}`);
     return 2;
@@ -35021,7 +35063,7 @@ function statusCommand() {
 }
 
 // plugins/review-voice/src/cli/carry.ts
-import { readFileSync as readFileSync38, writeFileSync as writeFileSync21, mkdirSync as mkdirSync16 } from "node:fs";
+import { readFileSync as readFileSync37, writeFileSync as writeFileSync21, mkdirSync as mkdirSync16 } from "node:fs";
 import { dirname as dirname21, join as join33 } from "node:path";
 
 // plugins/review-voice/src/diff/held.ts
@@ -35124,7 +35166,7 @@ function heldBackFindings(findings, thread, run, reviewIds) {
 }
 
 // plugins/review-voice/src/cli/carry.ts
-function carryForRun(db, runId, head, repository, threadFile = null, filesFile = null) {
+async function carryForRun(db, runId, head, repository, threadFile = null, filesFile = null) {
   const detail = runDetail(db, runId);
   if (detail === null) throw new CarryError(`No recorded run ${runId}.`);
   if (detail.headRef === null) throw new CarryError(`Run ${runId} did not record a head, so nothing can be carried from it.`);
@@ -35147,7 +35189,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
     );
   }
   for (const ref of [detail.headRef, head]) {
-    if (!commitReadable(ref, root)) {
+    if (!await commitReadable(ref, root)) {
       throw new CarryError(
         `Commit ${ref} is not readable in ${root}${actual === null ? "" : ` (a clone of ${actual})`}. Fetch it there, or run carry from a clone of ${expected ?? "the run's repository"}.`
       );
@@ -35157,7 +35199,7 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   if (threadFile !== null) {
     let text5;
     try {
-      text5 = readFileSync38(threadFile, "utf8");
+      text5 = readFileSync37(threadFile, "utf8");
     } catch (error) {
       throw new CarryError(`Cannot read ${threadFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -35167,16 +35209,16 @@ function carryForRun(db, runId, head, repository, threadFile = null, filesFile =
   let noLongerChanged = /* @__PURE__ */ new Set();
   if (filesFile !== null) {
     try {
-      const files2 = JSON.parse(readFileSync38(filesFile, "utf8"));
+      const files2 = JSON.parse(readFileSync37(filesFile, "utf8"));
       const listed = files2.scope?.noLongerChanged;
       noLongerChanged = new Set(Array.isArray(listed) ? listed.filter((path) => typeof path === "string") : []);
     } catch (error) {
       throw new CarryError(`Cannot read ${filesFile}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return carryFindings(detail.findings, detail.headRef, head, root, hold, noLongerChanged);
+  return await carryFindings(detail.findings, detail.headRef, head, root, hold, noLongerChanged);
 }
-function carryCommand(argv) {
+async function carryCommand(argv) {
   const from = flag2(argv, "--from");
   const head = flag2(argv, "--head");
   if (from === null || head === null) {
@@ -35195,7 +35237,7 @@ function carryCommand(argv) {
   }
   const db = openDatabase();
   try {
-    const result = carryForRun(db, from, head, flag2(argv, "--repository"), threadFile, filesFile);
+    const result = await carryForRun(db, from, head, flag2(argv, "--repository"), threadFile, filesFile);
     if (threadFile === null && runDetail(db, from)?.pullNumber !== null) {
       console.error(
         "Findings the author resolved or dismissed on the pull request were not checked. Pass --thread <thread.json> from `RV thread` to hold them back."
@@ -35273,8 +35315,8 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let manifest;
   let hunks;
   try {
-    manifest = JSON.parse(readFileSync38(join33(dir, "files.json"), "utf8"));
-    hunks = parseHunks(readFileSync38(join33(dir, "diff.patch"), "utf8"));
+    manifest = JSON.parse(readFileSync37(join33(dir, "files.json"), "utf8"));
+    hunks = parseHunks(readFileSync37(join33(dir, "diff.patch"), "utf8"));
   } catch (error) {
     return `Cannot read the interdiff in ${dir}: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -35289,7 +35331,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
   let candidates;
   let verification2;
   try {
-    const parsed2 = listIn(JSON.parse(readFileSync38(candidatesFile, "utf8")), ["candidates"]);
+    const parsed2 = listIn(JSON.parse(readFileSync37(candidatesFile, "utf8")), ["candidates"]);
     if (parsed2 === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidates = parsed2.list;
     const normalised2 = candidates.map((raw, index) => normaliseCandidate(raw, index));
@@ -35301,7 +35343,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
       );
     }
     candidates = candidates.map((raw, index) => withId(raw, normalised2[index].candidateId));
-    const parsedVerification = listIn(JSON.parse(readFileSync38(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync37(verificationFile, "utf8")), VERDICT_KEYS);
     verification2 = parsedVerification?.list ?? [];
     if (parsedVerification === null && candidates.length > 0) throw new Error(`${verificationFile} contains no verifications`);
     const problem = verificationProblem(verification2);
@@ -35314,7 +35356,7 @@ function readInterdiffReview(dir, candidatesFile, verificationFile, since, head)
 function partialDiffReason(diffFile) {
   let manifest;
   try {
-    manifest = JSON.parse(readFileSync38(join33(dirname21(diffFile), "files.json"), "utf8"));
+    manifest = JSON.parse(readFileSync37(join33(dirname21(diffFile), "files.json"), "utf8"));
   } catch {
     return null;
   }
@@ -35322,7 +35364,7 @@ function partialDiffReason(diffFile) {
   if (scope === null || scope.kind === "full") return null;
   return `${diffFile} is the ${scope.kind} patch \`diff --pr\` wrote, not the whole pull request's diff. carry-candidates checks each anchor against the whole pull request: run \`diff --pr <number> --full --out <dir>\` and pass its diff.patch.`;
 }
-function carryCandidatesCommand(argv) {
+async function carryCandidatesCommand(argv) {
   const candidatesFile = flag2(argv, "--candidates");
   const verificationFile = flag2(argv, "--verification");
   const since = flag2(argv, "--since");
@@ -35346,24 +35388,24 @@ function carryCandidatesCommand(argv) {
   let hunks;
   let heldIn = null;
   try {
-    const parsedCandidates = listIn(JSON.parse(readFileSync38(candidatesFile, "utf8")), ["candidates"]);
+    const parsedCandidates = listIn(JSON.parse(readFileSync37(candidatesFile, "utf8")), ["candidates"]);
     if (parsedCandidates === null) throw new Error(`${candidatesFile} is not {"candidates": [...]}`);
     candidatesIn = parsedCandidates;
     candidates = candidatesIn.list.map((raw, index) => normaliseCandidate(raw, index));
     assertUniqueCandidateIds(candidates);
-    const parsedVerification = listIn(JSON.parse(readFileSync38(verificationFile, "utf8")), VERDICT_KEYS);
+    const parsedVerification = listIn(JSON.parse(readFileSync37(verificationFile, "utf8")), VERDICT_KEYS);
     if (parsedVerification === null || parsedVerification.list.length === 0) {
       throw new Error(`${verificationFile} contains no verifications`);
     }
     verificationIn = parsedVerification;
     const problem = verificationProblem(verificationIn.list);
     if (problem !== null) throw new Error(`malformed verification - ${problem}`);
-    hunks = parseHunks(readFileSync38(diffFile, "utf8"));
+    hunks = parseHunks(readFileSync37(diffFile, "utf8"));
     const partial = partialDiffReason(diffFile);
     if (partial !== null) throw new Error(partial);
     const heldFile = flag2(argv, "--held");
     if (heldFile !== null) {
-      heldIn = listIn(JSON.parse(readFileSync38(heldFile, "utf8")), ["held"]);
+      heldIn = listIn(JSON.parse(readFileSync37(heldFile, "utf8")), ["held"]);
       if (heldIn === null) throw new Error(`${heldFile} is not an array or {"held": [...]}`);
       heldIn.list = heldIn.list.map((entry) => normaliseHeld(entry));
       heldIn.list.forEach((entry, index) => {
@@ -35386,7 +35428,7 @@ function carryCandidatesCommand(argv) {
   const heldKept = [];
   const heldDropped = [];
   try {
-    result = carryCandidates(
+    result = await carryCandidates(
       candidates.filter((c) => verificationById.has(c.candidateId)).map((c) => ({
         ...c,
         texts: [...stringsIn(candidatesIn.list[candidates.indexOf(c)]), ...stringsIn(verificationById.get(c.candidateId))]
@@ -35399,7 +35441,7 @@ function carryCandidatesCommand(argv) {
     for (const entry of heldIn?.list ?? []) {
       const path = entry["path"];
       const line3 = entry["line"];
-      const moved = followLine(since, head, path, line3, process.cwd());
+      const moved = await followLine(since, head, path, line3, process.cwd());
       if ("reason" in moved) heldDropped.push({ path, line: line3, reason: moved.reason });
       else heldKept.push({ ...entry, line: moved.line });
     }
@@ -35511,22 +35553,22 @@ function carryCandidatesCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/record.ts
-import { execFileSync as execFileSync19 } from "node:child_process";
-import { readFileSync as readFileSync41 } from "node:fs";
+import { execFileSync as execFileSync20 } from "node:child_process";
+import { readFileSync as readFileSync40 } from "node:fs";
 import { join as join34, posix as posix7 } from "node:path";
 
 // plugins/review-voice/src/cli/check-candidates.ts
-import { readFileSync as readFileSync40 } from "node:fs";
+import { readFileSync as readFileSync39 } from "node:fs";
 import { isAbsolute as isAbsolute8, posix as posix6, relative as relative5 } from "node:path";
 
 // plugins/review-voice/src/cli/score.ts
-import { readFileSync as readFileSync39 } from "node:fs";
-import { execFileSync as execFileSync18 } from "node:child_process";
+import { readFileSync as readFileSync38 } from "node:fs";
+import { execFileSync as execFileSync19 } from "node:child_process";
 
 // plugins/review-voice/src/scoring/citation.ts
-import { execFileSync as execFileSync17 } from "node:child_process";
+import { execFileSync as execFileSync18 } from "node:child_process";
 function git5(args, cwd) {
-  return execFileSync17("git", args, {
+  return execFileSync18("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -35582,9 +35624,9 @@ function deletedFileCheck(argv) {
   const base = flag2(argv, "--base");
   const head = flag2(argv, "--head");
   const cwd = process.cwd();
-  if (base === null || head === null || !refExists(base, cwd) || !refExists(head, cwd)) return () => false;
+  if (base === null || head === null || !refExistsSync(base, cwd) || !refExistsSync(head, cwd)) return () => false;
   const firstParty = firstPartyMatcher(repositoryConfig()?.firstPartyPaths ?? []);
-  const git6 = (args) => execFileSync18("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
+  const git6 = (args) => execFileSync19("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
   let deleted;
   const deletions = () => {
     if (deleted !== void 0) return deleted;
@@ -35783,7 +35825,7 @@ function scoreCommand(argv) {
   const verificationFlag = flag2(argv, "--verification");
   if (verificationFlag !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync39(verificationFlag, "utf8"));
+      const parsed2 = JSON.parse(readFileSync38(verificationFlag, "utf8"));
       const list3 = verdictList(parsed2);
       const problem = verificationProblem(list3);
       if (problem !== null) {
@@ -35886,7 +35928,7 @@ function scoreCommand(argv) {
     searchRoot = null;
   }
   const baseRef = flag2(argv, "--base");
-  if (baseRef !== null && searchRoot !== null && !refExists(baseRef, searchRoot)) {
+  if (baseRef !== null && searchRoot !== null && !refExistsSync(baseRef, searchRoot)) {
     console.error(
       `--base ${baseRef} does not resolve in this repository. Fetch it, or omit the flag to search the working tree. Absence claims would otherwise be checked against nothing.`
     );
@@ -35901,7 +35943,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      reachDiff = readFileSync39(path, "utf8");
+      reachDiff = readFileSync38(path, "utf8");
       anchorHunks = parseHunks(reachDiff);
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -35917,7 +35959,7 @@ function scoreCommand(argv) {
       return 2;
     }
     try {
-      const parsed2 = JSON.parse(readFileSync39(path, "utf8"));
+      const parsed2 = JSON.parse(readFileSync38(path, "utf8"));
       thread = Array.isArray(parsed2) ? parsed2 : parsed2.comments ?? [];
     } catch (error) {
       console.error(`Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`);
@@ -36321,7 +36363,7 @@ function configuredOwner() {
 }
 
 // plugins/review-voice/src/cli/check-candidates.ts
-function carriedHeldFindings(runId, head) {
+async function carriedHeldFindings(runId, head) {
   const db = openDatabase();
   try {
     const detail = runDetail(db, runId);
@@ -36331,7 +36373,7 @@ function carriedHeldFindings(runId, head) {
       (h) => !challengeNotRun(h) && (h.verdict === "refuted" || h.verdict === "partly" || h.verdict === "repeat" || h.verdict === "below-gate" || h.verdict === "owner-declined" || h.verdict === "challenge-refuted" || h.verdict === "challenge-partly")
     );
     const inputs = entries.map((h, i) => ({ findingId: String(i), path: h.path, line: h.line, text: "" }));
-    const result = carryFindings(inputs, detail.headRef, head, process.cwd());
+    const result = await carryFindings(inputs, detail.headRef, head, process.cwd());
     return result.carried.map((c) => {
       const entry = entries[Number(c.findingId)];
       return { path: c.path, line: c.line, verdict: entry.verdict, reason: entry.reason, text: entry.text, runId };
@@ -36374,7 +36416,7 @@ function matchHeld(candidate, held) {
   return best === null ? null : { entry: best.entry, drop: false };
 }
 function readSignals(file2, root) {
-  const document = JSON.parse(readFileSync40(file2, "utf8"));
+  const document = JSON.parse(readFileSync39(file2, "utf8"));
   if (typeof document !== "object" || document === null || Array.isArray(document)) throw new Error("not a JSON object");
   const signals = document.signals;
   if (signals === void 0) return [];
@@ -36448,7 +36490,7 @@ function markSiblings(kept) {
     }
   });
 }
-function checkCandidatesCommand(argv) {
+async function checkCandidatesCommand(argv) {
   let raw;
   try {
     const reply = jsonInReply(readStdin());
@@ -36506,7 +36548,7 @@ function checkCandidatesCommand(argv) {
       }
       let ids;
       try {
-        const statements = JSON.parse(readFileSync40(intentFile, "utf8")).statements;
+        const statements = JSON.parse(readFileSync39(intentFile, "utf8")).statements;
         if (!Array.isArray(statements)) throw new Error("statements is not a list");
         ids = new Set(statements.map((statement) => statement?.id).filter((id) => typeof id === "string"));
       } catch (error) {
@@ -36537,7 +36579,7 @@ function checkCandidatesCommand(argv) {
     }
     let hunks;
     try {
-      hunks = parseHunks(readFileSync40(diffFile, "utf8"));
+      hunks = parseHunks(readFileSync39(diffFile, "utf8"));
     } catch (error) {
       console.error(`Cannot read ${diffFile}: ${error instanceof Error ? error.message : String(error)}`);
       return 2;
@@ -36612,7 +36654,7 @@ function checkCandidatesCommand(argv) {
         return 2;
       }
       try {
-        const parsed2 = JSON.parse(readFileSync40(threadFile, "utf8"));
+        const parsed2 = JSON.parse(readFileSync39(threadFile, "utf8"));
         thread = Array.isArray(parsed2) ? parsed2 : parsed2.comments ?? [];
         if (!Array.isArray(thread)) throw new Error("comments is not a list");
       } catch (error) {
@@ -36640,7 +36682,8 @@ function checkCandidatesCommand(argv) {
       }
     }
     const heldRuns = heldFrom === null ? [] : [...new Set(heldFrom.split(",").map((id) => id.trim()).filter((id) => id !== ""))];
-    const held = headSha === null ? [] : heldRuns.flatMap((runId) => carriedHeldFindings(runId, headSha));
+    const held = [];
+    if (headSha !== null) for (const runId of heldRuns) held.push(...await carriedHeldFindings(runId, headSha));
     const owner = argv.includes("--thread") ? (flag2(argv, "--owner") ?? configuredOwner())?.toLowerCase() ?? null : null;
     const isOwn = (comment) => owner !== null && comment.author.toLowerCase() === owner;
     const located = citedLocations(thread);
@@ -36774,7 +36817,7 @@ function policyVersionRefs(value) {
   }
   return refs;
 }
-function recordCommand(argv) {
+async function recordCommand(argv) {
   for (const name of ["--base", "--head"]) {
     if (argv.includes(name) && (flag2(argv, name) ?? "") === "") {
       console.error(`${name} needs a git ref or sha; it was empty. Leave the flag out to record none.`);
@@ -36820,7 +36863,7 @@ function recordCommand(argv) {
   let diff = "";
   if (diffFile !== null) {
     try {
-      diff = readFileSync41(diffFile, "utf8");
+      diff = readFileSync40(diffFile, "utf8");
     } catch {
       console.error(`Cannot read ${diffFile}.`);
       return 2;
@@ -36842,7 +36885,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed2 = JSON.parse(readFileSync41(bodyFindingsFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync40(bodyFindingsFile, "utf8"));
       const list3 = Array.isArray(parsed2) ? parsed2 : typeof parsed2 === "object" && parsed2 !== null && Array.isArray(parsed2.bodyFindings) ? parsed2.bodyFindings : null;
       if (list3 === null) throw new Error('expected an array or {"bodyFindings": [...]}');
       if (list3.length > 1) throw new Error("at most one body-only simplification is allowed per review");
@@ -36875,7 +36918,7 @@ function recordCommand(argv) {
   let pullFilesListed = false;
   if (filesFile !== null) {
     try {
-      const manifest = JSON.parse(readFileSync41(filesFile, "utf8"));
+      const manifest = JSON.parse(readFileSync40(filesFile, "utf8"));
       if (Array.isArray(manifest.files)) {
         pullFilesListed = manifest.files.every((file2) => typeof file2?.path === "string");
         for (const file2 of manifest.files) {
@@ -36914,7 +36957,7 @@ function recordCommand(argv) {
   let candidates = [];
   if (candidatesFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync41(candidatesFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync40(candidatesFile, "utf8"));
       candidates = Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? [];
     } catch {
       console.error(`Cannot read candidates from ${candidatesFile}.`);
@@ -36926,7 +36969,7 @@ function recordCommand(argv) {
   let scoredPolicyVersions = null;
   if (scoresFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync41(scoresFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync40(scoresFile, "utf8"));
       scores = boundLists(Array.isArray(parsed2) ? parsed2 : parsed2.scores ?? []);
       scoredPolicyVersions = Array.isArray(parsed2) ? null : policyVersionRefs(parsed2.policyVersions);
     } catch {
@@ -36938,7 +36981,7 @@ function recordCommand(argv) {
   let verdicts = [];
   if (verdictsFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync41(verdictsFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync40(verdictsFile, "utf8"));
       verdicts = Array.isArray(parsed2) ? parsed2 : parsed2.verdicts ?? [];
       const list3 = Array.isArray(verdicts) ? verdicts : [];
       const isVerification = (entry) => typeof entry === "object" && entry !== null && "verified" in entry && !("verdict" in entry);
@@ -36957,7 +37000,7 @@ function recordCommand(argv) {
   let tieBreaks = [];
   if (tieBreaksFile !== null) {
     try {
-      tieBreaks = parseTieBreaks(JSON.parse(readFileSync41(tieBreaksFile, "utf8")));
+      tieBreaks = parseTieBreaks(JSON.parse(readFileSync40(tieBreaksFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read tie-breaks from ${tieBreaksFile}: ${error.message}`);
       return 2;
@@ -36967,7 +37010,7 @@ function recordCommand(argv) {
   let held = [];
   if (heldFile !== null) {
     try {
-      const parsed2 = JSON.parse(readFileSync41(heldFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync40(heldFile, "utf8"));
       const list3 = Array.isArray(parsed2) ? parsed2 : parsed2?.held;
       if (!Array.isArray(list3)) throw new Error('expected an array or {"held": [...]}');
       const normalised2 = list3.map(normaliseHeld);
@@ -36979,7 +37022,7 @@ function recordCommand(argv) {
       for (const candidate of candidates) knownPaths.add(candidate.path);
       const heldHead = flag2(argv, "--head");
       const atHead = manifestMode !== "worktree" && manifestMode !== "staged" && heldHead !== null;
-      const heldRevision = manifestMode === "staged" ? "" : atHead && !heldHead.startsWith("-") ? resolveCommit(heldHead, process.cwd()) : null;
+      const heldRevision = manifestMode === "staged" ? "" : atHead && !heldHead.startsWith("-") ? await resolveCommit(heldHead, process.cwd()) : null;
       if (knownPaths.size > 0 && held.length > 0 && atHead && heldRevision === null) {
         console.error(`--head ${heldHead} is not a commit in this clone, so held lines were not checked against the file at it.`);
       }
@@ -36991,7 +37034,7 @@ function recordCommand(argv) {
           }
           if (atHead && heldRevision === null) continue;
           try {
-            const content = heldRevision === null ? readFileSync41(join34(repositoryRoot(process.cwd()), entry.path), "utf8") : execFileSync19("git", [...SAFE_GIT, "show", `${heldRevision}:${entry.path}`], {
+            const content = heldRevision === null ? readFileSync40(join34(repositoryRoot(process.cwd()), entry.path), "utf8") : execFileSync20("git", [...SAFE_GIT, "show", `${heldRevision}:${entry.path}`], {
               encoding: "utf8",
               stdio: ["ignore", "pipe", "ignore"],
               maxBuffer: 64 * 1024 * 1024
@@ -37012,7 +37055,7 @@ function recordCommand(argv) {
   if (stagesFile !== null) {
     try {
       stages = cleanStages(
-        parseStagesFile(JSON.parse(readFileSync41(stagesFile, "utf8")), (message) => console.error(`Stages in ${stagesFile}: ${message}.`)),
+        parseStagesFile(JSON.parse(readFileSync40(stagesFile, "utf8")), (message) => console.error(`Stages in ${stagesFile}: ${message}.`)),
         diff === "" ? null : diff
       );
     } catch (error) {
@@ -37031,8 +37074,8 @@ function recordCommand(argv) {
     }
     try {
       checks = recordedChecks(
-        JSON.parse(readFileSync41(evidenceFile, "utf8")),
-        JSON.parse(readFileSync41(symbolsFile, "utf8"))
+        JSON.parse(readFileSync40(evidenceFile, "utf8")),
+        JSON.parse(readFileSync40(symbolsFile, "utf8"))
       );
       let root = process.cwd();
       try {
@@ -37055,7 +37098,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const report = JSON.parse(readFileSync41(conventionsFile, "utf8"));
+      const report = JSON.parse(readFileSync40(conventionsFile, "utf8"));
       const documents = report?.documents;
       if (!Array.isArray(documents)) throw new Error("it has no documents list");
       conventions = documents.flatMap((doc) => {
@@ -37075,7 +37118,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      reproductions = recordedReproductions(JSON.parse(readFileSync41(reproductionsFile, "utf8")));
+      reproductions = recordedReproductions(JSON.parse(readFileSync40(reproductionsFile, "utf8")));
     } catch (error) {
       console.error(`Cannot read reproductions from ${reproductionsFile}: ${error instanceof Error ? error.message : String(error)}.`);
       return 2;
@@ -37090,7 +37133,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      const parsed2 = JSON.parse(readFileSync41(followUpThreadFile, "utf8"));
+      const parsed2 = JSON.parse(readFileSync40(followUpThreadFile, "utf8"));
       const list3 = Array.isArray(parsed2) ? parsed2 : parsed2.comments;
       if (!Array.isArray(list3)) throw new Error("comments is not a list");
       followUpThread = list3;
@@ -37109,7 +37152,7 @@ function recordCommand(argv) {
       return 2;
     }
     try {
-      rulings = parseFollowUpRulings(JSON.parse(readFileSync41(rulingsFile, "utf8")));
+      rulings = parseFollowUpRulings(JSON.parse(readFileSync40(rulingsFile, "utf8")));
     } catch (error) {
       const why = error instanceof FollowUpRulingError ? error.message : `cannot read it (${error.message})`;
       console.error(`Cannot read follow-up rulings from ${rulingsFile}: ${why}.`);
@@ -37139,7 +37182,7 @@ function recordCommand(argv) {
         return 2;
       }
       try {
-        const result = carryForRun(db, carriedFrom, head, flag2(argv, "--repository"), followUpThreadFile, filesFile);
+        const result = await carryForRun(db, carriedFrom, head, flag2(argv, "--repository"), followUpThreadFile, filesFile);
         const serious = seriousNotCarried(result.notCarried);
         if (serious.length > 0) {
           console.error(
@@ -37169,7 +37212,7 @@ function recordCommand(argv) {
       const head = flag2(argv, "--head");
       let marker = null;
       try {
-        const parsed2 = JSON.parse(readFileSync41(carryFile, "utf8"));
+        const parsed2 = JSON.parse(readFileSync40(carryFile, "utf8"));
         const refused = Array.isArray(parsed2["refused"]) ? parsed2["refused"].map((r) => String(r?.candidateId)) : null;
         const interdiff = parsed2["interdiff"];
         if (refused !== null && typeof parsed2["since"] === "string" && typeof parsed2["head"] === "string") {
@@ -37197,7 +37240,7 @@ function recordCommand(argv) {
     }
     const repository = flag2(argv, "--repository") ?? manifestRepository ?? inferRepository(process.cwd());
     const headFlag = flag2(argv, "--head");
-    const headRef = headFlag === null || !/^[0-9a-f]{4,64}$/i.test(headFlag) ? headFlag : resolveCommit(headFlag, process.cwd()) ?? headFlag;
+    const headRef = headFlag === null || !/^[0-9a-f]{4,64}$/i.test(headFlag) ? headFlag : await resolveCommit(headFlag, process.cwd()) ?? headFlag;
     if (followUpThreadFor !== null) {
       const sameRepository = typeof followUpThreadFor.repository === "string" && repository !== null && followUpThreadFor.repository.toLowerCase() === repository.toLowerCase();
       if (!sameRepository || pullNumber === void 0 || followUpThreadFor.pullNumber !== pullNumber) {
@@ -37355,7 +37398,7 @@ ${topLevelHelp()}`);
       console.log(pluginVersion());
       return 0;
     case "diff":
-      return argv.includes("--pr") ? await pullRequestDiffCommand(argv.slice(1)) : diffCommand(argv.slice(1));
+      return argv.includes("--pr") ? await pullRequestDiffCommand(argv.slice(1)) : await diffCommand(argv.slice(1));
     case "symbols":
       return symbolsCommand(argv.slice(1));
     case "anchors":
@@ -37453,7 +37496,7 @@ ${topLevelHelp()}`);
     case "policy":
       return policyCommand(argv.slice(1));
     case "check-candidates":
-      return checkCandidatesCommand(argv.slice(1));
+      return await checkCandidatesCommand(argv.slice(1));
     case "check-verification":
       return checkVerificationCommand(argv.slice(1));
     case "check-simplification":
@@ -37461,7 +37504,7 @@ ${topLevelHelp()}`);
     case "check-intent":
       return checkIntentCommand(argv.slice(1));
     case "conventions":
-      return conventionsCommand(argv.slice(1));
+      return await conventionsCommand(argv.slice(1));
     case "evidence":
       return await whileStoppable(() => evidenceCommand(argv.slice(1)));
     case "reproduce":
@@ -37475,19 +37518,19 @@ ${topLevelHelp()}`);
     case "verify":
       return await whileStoppable(() => verifyCommand(argv));
     case "record":
-      return recordCommand(argv.slice(1));
+      return await recordCommand(argv.slice(1));
     case "carry":
-      return carryCommand(argv.slice(1));
+      return await carryCommand(argv.slice(1));
     case "plan":
-      return planCommand(argv.slice(1));
+      return await planCommand(argv.slice(1));
     case "lanes":
-      return lanesCommand(argv.slice(1));
+      return await lanesCommand(argv.slice(1));
     case "reanchor":
       return reanchorCommand(argv.slice(1));
     case "challenge":
       return challengeCommand(argv.slice(1));
     case "carry-candidates":
-      return carryCandidatesCommand(argv.slice(1));
+      return await carryCandidatesCommand(argv.slice(1));
     case "feedback":
       return feedbackCommand(argv.slice(1));
     case "decline":

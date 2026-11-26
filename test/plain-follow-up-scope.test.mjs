@@ -21,7 +21,7 @@ const lines = (count, prefix) => Array.from({ length: count }, (_, index) => `${
  * `main` plus a pull-request branch `pr` whose reviewed head adds a helper
  * block to src/a.ts. src/other.ts is outside the pull request.
  */
-function withPullRequest(fn) {
+async function withPullRequest(fn) {
   const root = mkdtempSync(join(tmpdir(), 'rv-plain-follow-up-'));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const write = (path, contents) => {
@@ -52,14 +52,14 @@ function withPullRequest(fn) {
   const reviewed = commit('author work');
 
   try {
-    return fn({ root, git, write, edit, commit, reviewed, head: () => git('rev-parse', 'HEAD').trim() });
+    return await fn({ root, git, write, edit, commit, reviewed, head: () => git('rev-parse', 'HEAD').trim() });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-function plan(repository, reviewedFiles, overrides = {}) {
-  return planScope({
+async function plan(repository, reviewedFiles, overrides = {}) {
+  return await planScope({
     priorRun: { reviewRunId: 'run_001', headRef: repository.reviewed, createdAt: '2026-09-30T12:00:00.000Z' },
     head: repository.head(),
     headAvailable: true,
@@ -86,11 +86,11 @@ function assertPlain(repository, planned, files) {
   assert.doesNotMatch(interdiffPatch, /^\+helperOne\(\);$/m);
 }
 
-test('a follow-up that adds a new file is read as that file', () => {
-  withPullRequest((repository) => {
+test('a follow-up that adds a new file is read as that file', async () => {
+  await withPullRequest(async (repository) => {
     repository.write('src/new.ts', 'export const fresh = 1;\n');
     repository.commit('add a file');
-    const planned = plan(repository, [{ path: 'src/a.ts' }, { path: 'src/new.ts' }]);
+    const planned = await plan(repository, [{ path: 'src/a.ts' }, { path: 'src/new.ts' }]);
     assertPlain(repository, planned, ['src/new.ts']);
     assert.match(planned.interdiffPatch, /^new file mode/m);
     assert.match(planned.interdiffPatch, /^\+export const fresh = 1;$/m);
@@ -98,22 +98,22 @@ test('a follow-up that adds a new file is read as that file', () => {
   });
 });
 
-test('a follow-up that edits a line inside a reviewed hunk is read as that edit', () => {
-  withPullRequest((repository) => {
+test('a follow-up that edits a line inside a reviewed hunk is read as that edit', async () => {
+  await withPullRequest(async (repository) => {
     repository.edit('src/a.ts', 'helperTwo();\n', 'helperTwo(withArgument);\n');
     repository.commit('edit inside the reviewed hunk');
-    const planned = plan(repository, [{ path: 'src/a.ts' }]);
+    const planned = await plan(repository, [{ path: 'src/a.ts' }]);
     assertPlain(repository, planned, ['src/a.ts']);
     assert.match(planned.interdiffPatch, /^-helperTwo\(\);$/m);
     assert.match(planned.interdiffPatch, /^\+helperTwo\(withArgument\);$/m);
   });
 });
 
-test('a follow-up that removes lines the pull request added shows them as removed', () => {
-  withPullRequest((repository) => {
+test('a follow-up that removes lines the pull request added shows them as removed', async () => {
+  await withPullRequest(async (repository) => {
     repository.edit('src/a.ts', 'helperOne();\nhelperTwo();\n', '');
     repository.commit('withdraw two helpers');
-    const planned = plan(repository, [{ path: 'src/a.ts' }]);
+    const planned = await plan(repository, [{ path: 'src/a.ts' }]);
     assertPlain(repository, planned, ['src/a.ts']);
     assert.match(planned.interdiffPatch, /^-helperOne\(\);$/m);
     assert.match(planned.interdiffPatch, /^-helperTwo\(\);$/m);
@@ -121,24 +121,24 @@ test('a follow-up that removes lines the pull request added shows them as remove
   });
 });
 
-test('a follow-up that withdraws every change to a file still shows the withdrawn lines', () => {
-  withPullRequest((repository) => {
+test('a follow-up that withdraws every change to a file still shows the withdrawn lines', async () => {
+  await withPullRequest(async (repository) => {
     repository.edit('src/a.ts', 'helperOne();\nhelperTwo();\nhelperThree();\n', '');
     repository.write('src/kept.ts', 'export const kept = 1;\n');
     repository.commit('withdraw the whole change to a.ts');
     // src/a.ts is no longer part of the pull request, so the full read would not list it.
-    const planned = plan(repository, [{ path: 'src/kept.ts' }]);
+    const planned = await plan(repository, [{ path: 'src/kept.ts' }]);
     assertPlain(repository, planned, ['src/a.ts', 'src/kept.ts']);
     assert.match(planned.interdiffPatch, /^-helperThree\(\);$/m);
   });
 });
 
-test('a refactor that moves reviewed code into a new file shows it in both places', () => {
-  withPullRequest((repository) => {
+test('a refactor that moves reviewed code into a new file shows it in both places', async () => {
+  await withPullRequest(async (repository) => {
     repository.edit('src/a.ts', 'helperOne();\nhelperTwo();\nhelperThree();\n', 'helpers();\n');
     repository.write('src/helpers.ts', 'export function helpers() {\n  helperOne();\n  helperTwo();\n  helperThree();\n}\n');
     repository.commit('move the helpers out');
-    const planned = plan(repository, [{ path: 'src/a.ts' }, { path: 'src/helpers.ts' }]);
+    const planned = await plan(repository, [{ path: 'src/a.ts' }, { path: 'src/helpers.ts' }]);
     assertPlain(repository, planned, ['src/a.ts', 'src/helpers.ts']);
     for (const name of ['helperOne', 'helperTwo', 'helperThree']) {
       assert.match(planned.interdiffPatch, new RegExp(`^-${name}\\(\\);$`, 'm'), `${name} leaves src/a.ts`);
@@ -148,8 +148,8 @@ test('a refactor that moves reviewed code into a new file shows it in both place
   });
 });
 
-test('a follow-up that combines these is read as all of them, over several commits', () => {
-  withPullRequest((repository) => {
+test('a follow-up that combines these is read as all of them, over several commits', async () => {
+  await withPullRequest(async (repository) => {
     repository.edit('src/a.ts', 'helperTwo();\n', 'helperTwo(changed);\n');
     repository.commit('edit inside');
     repository.edit('src/a.ts', 'helperThree();\n', '');
@@ -157,7 +157,7 @@ test('a follow-up that combines these is read as all of them, over several commi
     repository.commit('withdraw one helper and add a file');
     repository.edit('src/a.ts', 'a 30\n', 'a 30 edited later\n');
     repository.commit('edit elsewhere');
-    const planned = plan(repository, [{ path: 'src/a.ts' }, { path: 'src/extra.ts' }]);
+    const planned = await plan(repository, [{ path: 'src/a.ts' }, { path: 'src/extra.ts' }]);
     assertPlain(repository, planned, ['src/a.ts', 'src/extra.ts']);
     assert.match(planned.interdiffPatch, /^\+helperTwo\(changed\);$/m);
     assert.match(planned.interdiffPatch, /^-helperThree\(\);$/m);
@@ -167,8 +167,8 @@ test('a follow-up that combines these is read as all of them, over several commi
   });
 });
 
-test('a follow-up whose merge base moved is not read as the commit range', () => {
-  withPullRequest((repository) => {
+test('a follow-up whose merge base moved is not read as the commit range', async () => {
+  await withPullRequest(async (repository) => {
     repository.git('checkout', '-q', 'main');
     repository.edit('src/other.ts', 'other 1\n', 'other 1 moved on main\n');
     repository.commit('base moves on');
@@ -180,19 +180,19 @@ test('a follow-up whose merge base moved is not read as the commit range', () =>
     // The reviewed head is still an ancestor, but the merge base moved: the
     // reviewed head is replayed onto the new base, so the new file is read and
     // the base's change, which the commit range would hold, is not.
-    const { scope, interdiffPatch } = plan(repository, [{ path: 'src/a.ts' }, { path: 'src/new.ts' }]);
+    const { scope, interdiffPatch } = await plan(repository, [{ path: 'src/a.ts' }, { path: 'src/new.ts' }]);
     assert.equal(scope.kind, 'interdiff');
     assert.match(interdiffPatch, /^\+\+\+ b\/src\/new\.ts$/m);
     assert.doesNotMatch(interdiffPatch, /moved on main/);
   });
 });
 
-test('a previous head that cannot be read is a full read with its cause', () => {
-  withPullRequest((repository) => {
+test('a previous head that cannot be read is a full read with its cause', async () => {
+  await withPullRequest(async (repository) => {
     repository.write('src/new.ts', 'export const fresh = 1;\n');
     repository.commit('add a file');
     const missing = 'e'.repeat(40);
-    const { scope, interdiffPatch } = plan(repository, [{ path: 'src/a.ts' }, { path: 'src/new.ts' }], {
+    const { scope, interdiffPatch } = await plan(repository, [{ path: 'src/a.ts' }, { path: 'src/new.ts' }], {
       priorRun: { reviewRunId: 'run_001', headRef: missing, createdAt: '2026-09-30T12:00:00.000Z' },
     });
     assert.equal(scope.kind, 'full');

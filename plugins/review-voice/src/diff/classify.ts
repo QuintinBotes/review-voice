@@ -193,27 +193,32 @@ export function generatedRoot(path: string): string {
   return slash < 0 ? '' : path.slice(0, slash + 1);
 }
 
-/**
- * Picks the generated files that look hand edited.
- *
- * `readHeader` returns the text to inspect for a path (head content, or the
- * added lines of its patch) or null when none is available, in which case the
- * file stays excluded.
- */
-export function findHandEdited(
-  changedPaths: string[],
-  readHeader: (path: string) => string | null,
-  firstParty?: FirstParty,
-): Set<string> {
+/** The generated files whose header is worth reading: one per generated root, as a lone file in a root may be hand edited. */
+export function handEditedCandidates(changedPaths: string[], firstParty?: FirstParty): string[] {
   const generated = changedPaths.filter((path) => classify(path, firstParty) === 'generated');
   const perRoot = new Map<string, number>();
   for (const path of generated) {
     const root = generatedRoot(path);
     perRoot.set(root, (perRoot.get(root) ?? 0) + 1);
   }
+  return generated.filter((path) => perRoot.get(generatedRoot(path)) === 1);
+}
+
+/**
+ * Picks the generated files that look hand edited.
+ *
+ * `readHeader` returns the text to inspect for a path (head content, or the
+ * added lines of its patch) or null when none is available, in which case the
+ * file stays excluded. A caller whose reader is async reads the
+ * `handEditedCandidates` itself.
+ */
+export function findHandEdited(
+  changedPaths: string[],
+  readHeader: (path: string) => string | null,
+  firstParty?: FirstParty,
+): Set<string> {
   const suspected = new Set<string>();
-  for (const path of generated) {
-    if (perRoot.get(generatedRoot(path)) !== 1) continue;
+  for (const path of handEditedCandidates(changedPaths, firstParty)) {
     const header = readHeader(path);
     if (header !== null && hasDoNotEditHeader(header)) suspected.add(path);
   }

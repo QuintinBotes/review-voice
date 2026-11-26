@@ -19,7 +19,7 @@ const numbered = (count) => Array.from({ length: count }, (_, index) => `line ${
 const text = (lines) => `${lines.join('\n')}\n`;
 
 /** Base, reviewed head and follow-up head of one file, planned against the base. */
-function scenario(base, reviewed, next) {
+async function scenario(base, reviewed, next) {
   const root = mkdtempSync(join(tmpdir(), 'rv-adjacent-'));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const commit = (contents, message) => {
@@ -34,7 +34,7 @@ function scenario(base, reviewed, next) {
     git('checkout', '-q', '-b', 'pr');
     const priorHead = commit(text(reviewed), 'reviewed');
     const head = commit(text(next), 'address review feedback');
-    return planScope({
+    return await planScope({
       priorRun: { reviewRunId: 'run_001', headRef: priorHead, createdAt: '2026-09-30T12:00:00.000Z' },
       head,
       headAvailable: true,
@@ -56,9 +56,9 @@ const replace = (lines, number, value) => lines.map((line, index) => (index === 
 const base = numbered(20);
 const reviewed = insertAfter(base, 10, 'added by the author');
 
-test('a follow-up that edits the line after a reviewed addition reads only the new hunk', () => {
+test('a follow-up that edits the line after a reviewed addition reads only the new hunk', async () => {
   const next = replace(reviewed, 12, 'line 11 edited after review');
-  const { scope, interdiffPatch } = scenario(base, reviewed, next);
+  const { scope, interdiffPatch } = await scenario(base, reviewed, next);
   assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
   assert.deepEqual(scope.files, ['src.ts']);
   assert.equal(scope.hunks, 1);
@@ -66,25 +66,25 @@ test('a follow-up that edits the line after a reviewed addition reads only the n
   assert.match(interdiffPatch, /^-line 11$/m);
 });
 
-test('a follow-up that edits the line before a reviewed addition reads only the new hunk', () => {
+test('a follow-up that edits the line before a reviewed addition reads only the new hunk', async () => {
   const next = replace(reviewed, 10, 'line 10 edited after review');
-  const { scope, interdiffPatch } = scenario(base, reviewed, next);
+  const { scope, interdiffPatch } = await scenario(base, reviewed, next);
   assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
   assert.match(interdiffPatch, /^\+line 10 edited after review$/m);
 });
 
-test('a follow-up that edits the line after a reviewed replacement reads only the new hunk', () => {
+test('a follow-up that edits the line after a reviewed replacement reads only the new hunk', async () => {
   const replaced = replace(base, 5, 'line 5 changed by the author');
   const next = replace(replaced, 6, 'line 6 changed after review');
-  const { scope, interdiffPatch } = scenario(base, replaced, next);
+  const { scope, interdiffPatch } = await scenario(base, replaced, next);
   assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
   assert.match(interdiffPatch, /^\+line 6 changed after review$/m);
 });
 
-test('a follow-up that edits the line next to a reviewed removal reads only the new hunk', () => {
+test('a follow-up that edits the line next to a reviewed removal reads only the new hunk', async () => {
   const removed = base.filter((line) => line !== 'line 8');
   const next = replace(removed, 8, 'line 9 edited after review');
-  const { scope } = scenario(base, removed, next);
+  const { scope } = await scenario(base, removed, next);
   assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
 });
 
@@ -92,42 +92,42 @@ test('a follow-up that edits the line next to a reviewed removal reads only the 
 // new hunk still sits on the reviewed hunk's lines. The reviewed edit is gone,
 // so the follow-up must be read in full.
 
-test('a reverted addition next to an edited neighbour is read as its removal', () => {
+test('a reverted addition next to an edited neighbour is read as its removal', async () => {
   const next = replace(base, 11, 'line 11 edited after review');
-  const { scope, interdiffPatch } = scenario(base, reviewed, next);
+  const { scope, interdiffPatch } = await scenario(base, reviewed, next);
   assert.equal(scope.kind, 'interdiff');
   assert.match(interdiffPatch, /^-added by the author$/m);
   assert.match(interdiffPatch, /^\+line 11 edited after review$/m);
 });
 
-test('a reverted addition next to an edited line before it is read as its removal', () => {
+test('a reverted addition next to an edited line before it is read as its removal', async () => {
   const next = replace(base, 10, 'line 10 edited after review');
-  const { scope, interdiffPatch } = scenario(base, reviewed, next);
+  const { scope, interdiffPatch } = await scenario(base, reviewed, next);
   assert.equal(scope.kind, 'interdiff');
   assert.match(interdiffPatch, /^-added by the author$/m);
 });
 
-test('a reverted replacement next to an edited neighbour is read as its removal', () => {
+test('a reverted replacement next to an edited neighbour is read as its removal', async () => {
   const replaced = replace(base, 5, 'line 5 changed by the author');
   const next = replace(base, 6, 'line 6 changed after review');
-  const { scope, interdiffPatch } = scenario(base, replaced, next);
+  const { scope, interdiffPatch } = await scenario(base, replaced, next);
   assert.equal(scope.kind, 'interdiff');
   assert.match(interdiffPatch, /^-line 5 changed by the author$/m);
 });
 
-test('a restored removal next to an edited neighbour is read as the restored line', () => {
+test('a restored removal next to an edited neighbour is read as the restored line', async () => {
   const removed = base.filter((line) => line !== 'line 8');
   const next = replace(base, 9, 'line 9 edited after review');
-  const { scope, interdiffPatch } = scenario(base, removed, next);
+  const { scope, interdiffPatch } = await scenario(base, removed, next);
   assert.equal(scope.kind, 'interdiff');
   assert.match(interdiffPatch, /^\+line 8$/m);
 });
 
-test('one of two reviewed additions reverted beside an edit is read as its removal', () => {
+test('one of two reviewed additions reverted beside an edit is read as its removal', async () => {
   const twice = insertAfter(insertAfter(base, 10, 'first addition'), 12, 'second addition');
   // The second addition is withdrawn and the line between them edited.
   const next = replace(insertAfter(base, 10, 'first addition'), 12, 'line 11 edited after review');
-  const { scope, interdiffPatch } = scenario(base, twice, next);
+  const { scope, interdiffPatch } = await scenario(base, twice, next);
   assert.equal(scope.kind, 'interdiff');
   assert.match(interdiffPatch, /^-second addition$/m);
 });

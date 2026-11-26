@@ -18,7 +18,7 @@ import { planScope } from '../plugins/review-voice/src/diff/incremental.ts';
 
 const lines = (count, prefix) => Array.from({ length: count }, (_, index) => `${prefix} ${index + 1}`).join('\n') + '\n';
 
-function withRepository(fn) {
+async function withRepository(fn) {
   const root = mkdtempSync(join(tmpdir(), 'rv-issue-scenarios-'));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const write = (path, contents) => {
@@ -41,14 +41,14 @@ function withRepository(fn) {
   git('config', 'commit.gpgsign', 'false');
   git('config', 'core.autocrlf', 'false');
   try {
-    return fn({ root, git, write, edit, commit, head: () => git('rev-parse', 'HEAD').trim() });
+    return await fn({ root, git, write, edit, commit, head: () => git('rev-parse', 'HEAD').trim() });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-function plan(repository, reviewed, reviewedFiles) {
-  return planScope({
+async function plan(repository, reviewed, reviewedFiles) {
+  return await planScope({
     priorRun: { reviewRunId: 'run_001', headRef: reviewed, createdAt: '2026-09-30T12:00:00.000Z' },
     head: repository.head(),
     headAvailable: true,
@@ -60,8 +60,8 @@ function plan(repository, reviewed, reviewedFiles) {
   });
 }
 
-test('#1: merging a different feature branch and adding a commit reads only what is new', () => {
-  withRepository((repository) => {
+test('#1: merging a different feature branch and adding a commit reads only what is new', async () => {
+  await withRepository(async (repository) => {
     repository.write('src/a.ts', lines(60, 'a'));
     repository.write('src/b.ts', lines(20, 'b'));
     repository.commit('initial');
@@ -83,7 +83,7 @@ test('#1: merging a different feature branch and adding a commit reads only what
     repository.edit('src/a.ts', 'a 30\n', 'a 30 after the review\n');
     repository.commit('one author commit');
 
-    const { scope, interdiffPatch } = plan(repository, reviewed, ['src/a.ts', 'src/b.ts', 'src/feature.ts']);
+    const { scope, interdiffPatch } = await plan(repository, reviewed, ['src/a.ts', 'src/b.ts', 'src/feature.ts']);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.deepEqual(scope.files, ['src/a.ts', 'src/b.ts', 'src/feature.ts']);
     assert.match(interdiffPatch, /^\+b 7 from the feature branch$/m);
@@ -95,8 +95,8 @@ test('#1: merging a different feature branch and adding a commit reads only what
   });
 });
 
-test('#1: a base merge and two author commits read the commits and no base change', () => {
-  withRepository((repository) => {
+test('#1: a base merge and two author commits read the commits and no base change', async () => {
+  await withRepository(async (repository) => {
     repository.write('src/a.ts', lines(40, 'a'));
     repository.write('src/b.ts', lines(10, 'b'));
     repository.write('src/base-only.ts', lines(5, 'base'));
@@ -118,7 +118,7 @@ test('#1: a base merge and two author commits read the commits and no base chang
     repository.edit('src/b.ts', 'b 8\n', 'b 8 after the review\n');
     repository.commit('second follow-up');
 
-    const { scope, interdiffPatch } = plan(repository, reviewed, ['src/a.ts', 'src/b.ts']);
+    const { scope, interdiffPatch } = await plan(repository, reviewed, ['src/a.ts', 'src/b.ts']);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.deepEqual(scope.files, ['src/b.ts']);
     assert.match(interdiffPatch, /^\+b 3 after the review$/m);
@@ -127,8 +127,8 @@ test('#1: a base merge and two author commits read the commits and no base chang
   });
 });
 
-test('#26: a conflict resolution that rewrites the pull request\'s own code reads those files, not the rest', () => {
-  withRepository((repository) => {
+test('#26: a conflict resolution that rewrites the pull request\'s own code reads those files, not the rest', async () => {
+  await withRepository(async (repository) => {
     const card = ['import { Card } from "./card";', 'export function Panel() {', '  return <Card title="old" />;', '}', ''].join('\n');
     repository.write('src/panel.tsx', card);
     repository.write('src/props.ts', lines(30, 'prop'));
@@ -159,7 +159,7 @@ test('#26: a conflict resolution that rewrites the pull request\'s own code read
     repository.edit('src/props.ts', 'prop 4 swapped by the author\n', 'prop 4 swapped again in the merge\n');
     repository.commit('merge main');
 
-    const { scope, interdiffPatch } = plan(repository, reviewed, ['src/panel.tsx', 'src/props.ts', 'src/large.ts']);
+    const { scope, interdiffPatch } = await plan(repository, reviewed, ['src/panel.tsx', 'src/props.ts', 'src/large.ts']);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
     assert.deepEqual(scope.files, ['src/panel.tsx', 'src/props.ts']);
     assert.match(interdiffPatch, /^\+  return <Tile dense \/>;$/m);
