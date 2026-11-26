@@ -130,8 +130,9 @@ evidence-verifier, never from a cache, and reports per candidate the
 confidence min, max and population standard deviation, plus the share of
 candidates whose gate decision flips across runs under the current thresholds
 and, with `--thresholds`, the proposed set. The decision is the scorer's own
-gate logic with the stored final score held fixed. Run it in a checkout of the
-head the candidates were found at:
+gate logic with the stored final score held fixed. The candidates must share one
+repository and head, and the working directory must be a checkout of that head;
+otherwise it refuses before any call:
 
 ```
 node dist/review-voice.mjs evaluate calibration --labels sheet.json --stability 5 [--thresholds proposed.yaml] [--text]

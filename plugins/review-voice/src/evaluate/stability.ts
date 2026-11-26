@@ -8,7 +8,9 @@
  * it is not recomputed from the new confidence, so the flip rate isolates the
  * confidence floor and the stored score gate.
  */
-import { reGateBreakdown, type Thresholds } from '../scoring/score.ts';
+import { inParallel } from '../agents/runner.ts';
+import { DEFAULT_AGENT_PARALLELISM } from '../agents/types.ts';
+import { holdReasonOf, reGateBreakdown, type Thresholds } from '../scoring/score.ts';
 import type { StoredCandidate } from './calibration.ts';
 
 export interface StabilityVerdict {
@@ -67,10 +69,20 @@ function tierOf(candidate: StoredCandidate): unknown {
 /** `post`, `hold`, or the reason the breakdown cannot be re-gated. */
 function decide(candidate: StoredCandidate, verdict: StabilityVerdict, thresholds: Thresholds): 'post' | 'hold' | string {
   if (!verdict.verified) return 'hold';
+  // Only the verifier-dependent part varies: no recorded hold, a confidence or score gate held
+  // alone, or the verifier's own rejection. Any other stored hold (policy, materiality, owner
+  // precedent, unverifiable, an anchor failure, a compound reason) stands, as in reGateBreakdown.
+  const rejected = candidate.breakdown['rejectedBecause'];
+  const reason = typeof rejected === 'string' && rejected.length > 0 ? rejected : null;
+  const hold = holdReasonOf(reason, candidate.breakdown['gate']);
+  const alone = reason === null || !reason.includes(' Also: ');
+  const varies =
+    hold === null || (alone && (hold === 'confidenceFloor' || hold === 'score' || (hold === 'other' && candidate.verified === false)));
   const result = reGateBreakdown(
     {
-      eligible: true,
-      rejectedBecause: null,
+      eligible: varies ? true : candidate.breakdown['eligible'],
+      rejectedBecause: varies ? null : candidate.breakdown['rejectedBecause'],
+      gate: varies ? undefined : candidate.breakdown['gate'],
       technicalConfidence: verdict.technicalConfidence,
       confidenceSource: 'verifier',
       finalScore: candidate.breakdown['finalScore'],
@@ -91,18 +103,21 @@ const flipRate = (flips: readonly (boolean | null)[]): FlipRate => {
 
 export async function runStability(
   candidates: readonly StoredCandidate[],
-  options: { k: number; verify: StabilityVerifier; current: Thresholds; proposed?: Thresholds | null },
+  options: { k: number; verify: StabilityVerifier; current: Thresholds; proposed?: Thresholds | null; concurrency?: number },
 ): Promise<StabilityReport> {
-  const { k, verify, current, proposed } = options;
+  const { k, verify, current, proposed, concurrency = DEFAULT_AGENT_PARALLELISM } = options;
   const rows: StabilityRow[] = [];
   const excluded: StabilityReport['excluded'] = [];
   let calls = 0;
   let failedCalls = 0;
-  for (const candidate of candidates) {
+  // All k x n calls go through the driver's bounded pool; results stay in input order, so a
+  // candidate's verdicts are in attempt order whatever order the calls finish in.
+  const jobs = candidates.flatMap((candidate) => Array.from({ length: k }, (_, attempt) => ({ candidate, attempt })));
+  const results = await inParallel(jobs, ({ candidate, attempt }) => verify(candidate, attempt, { useCache: false }), concurrency);
+  for (const [index, candidate] of candidates.entries()) {
     const verdicts: StabilityVerdict[] = [];
-    for (let attempt = 0; attempt < k; attempt += 1) {
+    for (const verdict of results.slice(index * k, (index + 1) * k)) {
       calls += 1;
-      const verdict = await verify(candidate, attempt, { useCache: false });
       if (verdict === null) failedCalls += 1;
       else verdicts.push(verdict);
     }

@@ -17432,7 +17432,11 @@ function readOutcomes(block, result) {
 }
 var DEFAULT_STABILITY_MAX_CALLS = 200;
 function readEvaluate(block, result) {
-  const cap = block?.["stability_max_calls"];
+  if (block === null) {
+    result.warnings.push("evaluate must be a mapping; using the defaults.");
+    return;
+  }
+  const cap = block["stability_max_calls"];
   if (cap === void 0) return;
   if (typeof cap === "number" && Number.isInteger(cap) && cap > 0) result.evaluate.stabilityMaxCalls = cap;
   else result.warnings.push(`evaluate.stability_max_calls must be a whole number above zero; using ${DEFAULT_STABILITY_MAX_CALLS}.`);
@@ -21610,8 +21614,9 @@ var COMMAND_HELP = {
       "                         evidence-verifier, never from a cache, and report per candidate the confidence min,",
       "                         max and population standard deviation, and the share of candidates whose gate",
       "                         decision flips across runs under the current thresholds and, with --thresholds,",
-      "                         the proposed set. The stored final score is held fixed. Run it in a checkout of the",
-      "                         head the candidates were found at. It calls a model: before starting it prints",
+      "                         the proposed set. The stored final score is held fixed. The candidates must share",
+      "                         one repository and head, and the working directory must be at it, or it refuses",
+      "                         (exit 2) before any call. It calls a model: before starting it prints",
       "                         k x candidates, the calls it will make, and above evaluate.stability_max_calls",
       "                         (default 200) it refuses with exit 2 unless --confirm is given",
       "  --confirm              With --stability, run above the call cap",
@@ -23230,6 +23235,19 @@ ${prompt}`;
       error: error instanceof Error ? error.message : String(error)
     };
   }
+}
+async function inParallel(items, work, limit = DEFAULT_AGENT_PARALLELISM) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await work(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return results;
 }
 
 // plugins/review-voice/src/intent.ts
@@ -24968,19 +24986,6 @@ async function agent(run, stage, name, model, schema4, prompt, check, runner) {
     current = retryPrompt(prompt, refusal2);
   }
   return { ok: false, error: refusal2 };
-}
-async function inParallel(items, work, limit = DEFAULT_AGENT_PARALLELISM) {
-  const results = new Array(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const index = next;
-      next += 1;
-      results[index] = await work(items[index]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
-  return results;
 }
 var files = (run) => ({ dir: run.dir, intent: run.intent, followUps: run.followUps, reproductionRunners: null });
 function reproductionRunners(run) {
@@ -28005,6 +28010,7 @@ function policyCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/evaluate.ts
+import { execFileSync as execFileSync9 } from "node:child_process";
 import { mkdirSync as mkdirSync8, mkdtempSync as mkdtempSync4, readFileSync as readFileSync20, rmSync as rmSync8, writeFileSync as writeFileSync9 } from "node:fs";
 import { tmpdir as tmpdir3 } from "node:os";
 import { dirname as dirname14, join as join23 } from "node:path";
@@ -29054,10 +29060,16 @@ function tierOf(candidate) {
 }
 function decide3(candidate, verdict2, thresholds) {
   if (!verdict2.verified) return "hold";
+  const rejected = candidate.breakdown["rejectedBecause"];
+  const reason2 = typeof rejected === "string" && rejected.length > 0 ? rejected : null;
+  const hold = holdReasonOf(reason2, candidate.breakdown["gate"]);
+  const alone = reason2 === null || !reason2.includes(" Also: ");
+  const varies = hold === null || alone && (hold === "confidenceFloor" || hold === "score" || hold === "other" && candidate.verified === false);
   const result = reGateBreakdown(
     {
-      eligible: true,
-      rejectedBecause: null,
+      eligible: varies ? true : candidate.breakdown["eligible"],
+      rejectedBecause: varies ? null : candidate.breakdown["rejectedBecause"],
+      gate: varies ? void 0 : candidate.breakdown["gate"],
       technicalConfidence: verdict2.technicalConfidence,
       confidenceSource: "verifier",
       finalScore: candidate.breakdown["finalScore"],
@@ -29075,16 +29087,17 @@ var flipRate = (flips) => {
   return { flipped, of: gated.length, rate: gated.length === 0 ? null : round6(flipped / gated.length) };
 };
 async function runStability(candidates, options) {
-  const { k, verify: verify2, current, proposed } = options;
+  const { k, verify: verify2, current, proposed, concurrency = DEFAULT_AGENT_PARALLELISM } = options;
   const rows = [];
   const excluded = [];
   let calls = 0;
   let failedCalls = 0;
-  for (const candidate of candidates) {
+  const jobs = candidates.flatMap((candidate) => Array.from({ length: k }, (_, attempt) => ({ candidate, attempt })));
+  const results = await inParallel(jobs, ({ candidate, attempt }) => verify2(candidate, attempt, { useCache: false }), concurrency);
+  for (const [index, candidate] of candidates.entries()) {
     const verdicts = [];
-    for (let attempt = 0; attempt < k; attempt += 1) {
+    for (const verdict2 of results.slice(index * k, (index + 1) * k)) {
       calls += 1;
-      const verdict2 = await verify2(candidate, attempt, { useCache: false });
       if (verdict2 === null) failedCalls += 1;
       else verdicts.push(verdict2);
     }
@@ -29189,7 +29202,7 @@ var modelVerifier = async (candidate) => {
     const result = await runAgent(spec, prompt, process.cwd(), [dir]);
     const entries = result.output?.verifications;
     const entry = (Array.isArray(entries) ? entries : []).find(
-      (item) => typeof item === "object" && item !== null
+      (item) => typeof item === "object" && item !== null && (item["candidate_id"] ?? item["candidateId"]) === candidate.candidateId
     );
     const confidence = entry?.["technical_confidence"] ?? entry?.["technicalConfidence"];
     if (!result.ok || typeof entry?.["verified"] !== "boolean" || typeof confidence !== "number") return null;
@@ -29198,25 +29211,46 @@ var modelVerifier = async (candidate) => {
     rmSync8(dir, { recursive: true, force: true });
   }
 };
-async function stabilityCommand(argv, labels, thresholds, repository, verify2) {
+function gitHead() {
+  try {
+    return execFileSync9("git", ["rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return null;
+  }
+}
+async function stabilityCommand(argv, labels, thresholds, repository, deps) {
   const wanted = flag2(argv, "--stability");
   if (wanted === null || !/^\d+$/.test(wanted) || Number(wanted) < 2 || !Number.isSafeInteger(Number(wanted))) {
     console.error("--stability needs a whole number of runs, 2 or more, such as 5.");
     return 2;
   }
   const k = Number(wanted);
+  const seen = /* @__PURE__ */ new Set();
+  for (const entry of labels) {
+    const key2 = `${entry.run}\0${entry.candidate_id}`;
+    if (seen.has(key2)) {
+      console.error(`evaluate calibration --stability: candidate_id ${entry.candidate_id} of run ${entry.run} is listed more than once in the labels.`);
+      return 2;
+    }
+    seen.add(key2);
+  }
   const db = readStore();
   if (db === void 0) return 2;
   let candidates;
+  const unmatched = [];
   try {
     const stored = new Map(
       loadStoredRuns(db, { repository }).flatMap((run) => run.candidates).map((candidate) => [`${candidate.run}\0${candidate.candidateId}`, candidate])
     );
-    candidates = labels.flatMap((entry) => stored.get(`${entry.run}\0${entry.candidate_id}`) ?? []);
+    candidates = labels.flatMap((entry) => {
+      const found2 = stored.get(`${entry.run}\0${entry.candidate_id}`);
+      if (found2 === void 0) unmatched.push({ run: entry.run, candidate_id: entry.candidate_id, reason: "not in the store" });
+      return found2 === void 0 ? [] : [found2];
+    });
   } finally {
     db?.close();
   }
-  const config2 = repositoryConfig();
+  const config2 = deps.config === void 0 ? repositoryConfig() : deps.config;
   const cap = config2?.evaluate.stabilityMaxCalls ?? DEFAULT_STABILITY_MAX_CALLS;
   const expected = k * candidates.length;
   console.error(`Stability: ${k} runs x ${candidates.length} candidates = ${expected} model calls (cap ${cap} without --confirm).`);
@@ -29224,14 +29258,31 @@ async function stabilityCommand(argv, labels, thresholds, repository, verify2) {
     console.error(`Refusing: ${expected} calls is above evaluate.stability_max_calls (${cap}). Pass --confirm to run them.`);
     return 2;
   }
-  const report = terminalSafeDeep(
-    await runStability(candidates, {
+  for (const entry of unmatched) console.error(`Unmatched label ${entry.run} ${entry.candidate_id}: ${entry.reason}; it is not verified.`);
+  const heads = new Set(candidates.map((candidate) => `${candidate.repository ?? ""}\0${candidate.headRef ?? ""}`));
+  const wantedHead = candidates[0]?.headRef ?? null;
+  if (candidates.length > 0 && (heads.size !== 1 || wantedHead === null)) {
+    console.error(
+      "Refusing: the candidates do not share one repository and recorded head, so one checkout cannot serve them all. Narrow the labels (or use --repository) to the candidates of one head."
+    );
+    return 2;
+  }
+  const checkedOut = (deps.headOf ?? gitHead)();
+  if (wantedHead !== null && (checkedOut === null || !checkedOut.startsWith(wantedHead))) {
+    console.error(
+      `Refusing: the working directory is at ${checkedOut ?? "no git head"}, but the candidates were found at ${wantedHead}. Check out ${wantedHead} and run again.`
+    );
+    return 2;
+  }
+  const report = terminalSafeDeep({
+    ...await runStability(candidates, {
       k,
-      verify: verify2,
+      verify: deps.verify,
       current: { ...DEFAULT_THRESHOLDS, ...config2?.thresholds },
       proposed: thresholds
-    })
-  );
+    }),
+    unmatched
+  });
   if (argv.includes("--text")) process.stdout.write(terminalSafe(formatStabilityText(report)));
   else console.log(JSON.stringify(report, null, 2));
   return 0;
@@ -29282,7 +29333,7 @@ function calibrationCommand(argv) {
       return 2;
     }
   }
-  if (argv.includes("--stability")) return stabilityCommand(argv, labels, thresholds, repository, modelVerifier);
+  if (argv.includes("--stability")) return stabilityCommand(argv, labels, thresholds, repository, { verify: modelVerifier });
   const db = readStore();
   if (db === void 0) return 2;
   try {
@@ -30099,13 +30150,13 @@ import { writeFileSync as writeFileSync12, mkdirSync as mkdirSync11, statSync as
 import { dirname as dirname17, isAbsolute as isAbsolute6, relative as relative4, resolve as resolve10, sep as sep5 } from "node:path";
 
 // plugins/review-voice/src/evaluate/recall.ts
-import { execFileSync as execFileSync10 } from "node:child_process";
+import { execFileSync as execFileSync11 } from "node:child_process";
 import { copyFileSync as copyFileSync2, existsSync as existsSync18, mkdirSync as mkdirSync10, mkdtempSync as mkdtempSync6, readdirSync as readdirSync6, readFileSync as readFileSync25, rmSync as rmSync10, statSync as statSync7 } from "node:fs";
 import { tmpdir as tmpdir5 } from "node:os";
 import { join as join27, resolve as resolve9 } from "node:path";
 
 // plugins/review-voice/src/evaluate/fixtures.ts
-import { execFileSync as execFileSync9 } from "node:child_process";
+import { execFileSync as execFileSync10 } from "node:child_process";
 import {
   existsSync as existsSync17,
   lstatSync as lstatSync4,
@@ -30355,7 +30406,7 @@ function gitEnvironment() {
 }
 function git3(cwd, label2, args) {
   try {
-    return execFileSync9("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", "-c", "maintenance.auto=false", "-c", "core.precomposeunicode=false", ...args], {
+    return execFileSync10("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", "-c", "maintenance.auto=false", "-c", "core.precomposeunicode=false", ...args], {
       cwd,
       env: gitEnvironment(),
       encoding: "utf8",
@@ -30551,7 +30602,7 @@ function selectFixtures(options) {
 var json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 function shimFiles(repoDir, base, head, paths) {
   return paths.map((path) => {
-    const text5 = execFileSync10("git", ["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", path], {
+    const text5 = execFileSync11("git", ["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", path], {
       cwd: repoDir,
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024
@@ -30648,7 +30699,7 @@ function trailOf(report) {
   };
 }
 function checkoutBase(repoDir) {
-  execFileSync10("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"] });
+  execFileSync11("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"] });
 }
 async function runFixture(fixture, index, context2) {
   const { expectation } = fixture;
@@ -30898,13 +30949,13 @@ async function recallCommand(argv, runInProcess2) {
 }
 
 // plugins/review-voice/src/cli/import-benchmark.ts
-import { execFileSync as execFileSync12 } from "node:child_process";
+import { execFileSync as execFileSync13 } from "node:child_process";
 import { createHash as createHash7, randomBytes as randomBytes2 } from "node:crypto";
 import { constants as constants3, copyFileSync as copyFileSync3, existsSync as existsSync20, lstatSync as lstatSync7, mkdirSync as mkdirSync13, readdirSync as readdirSync7, readFileSync as readFileSync27, renameSync as renameSync4, rmdirSync, rmSync as rmSync13, statSync as statSync9 } from "node:fs";
 import { dirname as dirname18, join as join29, resolve as resolve11 } from "node:path";
 
 // plugins/review-voice/src/evaluate/benchmark.ts
-import { execFileSync as execFileSync11 } from "node:child_process";
+import { execFileSync as execFileSync12 } from "node:child_process";
 import { lstatSync as lstatSync6, mkdirSync as mkdirSync12, mkdtempSync as mkdtempSync7, readFileSync as readFileSync26, rmSync as rmSync12, writeFileSync as writeFileSync13 } from "node:fs";
 import { tmpdir as tmpdir6 } from "node:os";
 import { join as join28 } from "node:path";
@@ -30981,7 +31032,7 @@ function probeBuild(scratch, slug, diff) {
     mkdirSync12(fixture, { recursive: true });
     writeFileSync13(join28(fixture, "diff.patch"), diff);
     const { base, head, files: files2 } = materializeFixture(fixture, repo, { name: slug });
-    const git6 = (args) => execFileSync11("git", args, { cwd: repo, env: gitEnvironment2(), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    const git6 = (args) => execFileSync12("git", args, { cwd: repo, env: gitEnvironment2(), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
     const hunks = parseHunks(git6(["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", ...files2]));
     const handEdited = findHandEdited([...hunks].filter(([, file2]) => file2.ranges.length > 0).map(([path]) => path), (path) => {
       try {
@@ -31154,7 +31205,7 @@ function insideGit(dir) {
     LC_ALL: "C"
   };
   try {
-    const answer2 = execFileSync12("git", ["rev-parse", "--is-inside-work-tree", "--is-inside-git-dir"], { cwd: dir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const answer2 = execFileSync13("git", ["rev-parse", "--is-inside-work-tree", "--is-inside-git-dir"], { cwd: dir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     return answer2.split("\n").some((line3) => line3.trim() === "true");
   } catch (error) {
     const { status, stderr } = error;
@@ -31337,7 +31388,7 @@ function importBenchmarkCommand(argv) {
 // plugins/review-voice/src/cli/worktree.ts
 import { statSync as statSync10, lstatSync as lstatSync8, rmSync as rmSync14 } from "node:fs";
 import { join as join30, resolve as resolve12 } from "node:path";
-import { execFileSync as execFileSync13 } from "node:child_process";
+import { execFileSync as execFileSync14 } from "node:child_process";
 function worktreeCommand(argv) {
   const action = argv[0];
   const dir = flag2(argv, "--dir");
@@ -31381,7 +31432,7 @@ function worktreeCommand(argv) {
   }
   let sha;
   try {
-    sha = execFileSync13("git", ["rev-parse", "--verify", "--quiet", `${head}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    sha = execFileSync14("git", ["rev-parse", "--verify", "--quiet", `${head}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     console.error(`--head ${head} is not a commit in this clone. Fetch it and run again.`);
     return 2;
@@ -31907,7 +31958,7 @@ async function threadCommand(argv) {
 import { readFileSync as readFileSync30, writeFileSync as writeFileSync17 } from "node:fs";
 
 // plugins/review-voice/src/scoring/existence.ts
-import { execFileSync as execFileSync14 } from "node:child_process";
+import { execFileSync as execFileSync15 } from "node:child_process";
 var ASSERTS_ABSENCE = [
   /\b(?:does|do)\s+not\s+exist\b/i,
   /\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)\b/i,
@@ -31978,10 +32029,10 @@ var gitGrep = (symbol, cwd, ref, exclude) => {
   const at2 = ref === null ? [] : [ref];
   try {
     if (exclude === void 0) {
-      execFileSync14("git", [...base, "--quiet", "-e", pattern, ...at2], { cwd, stdio: "ignore", timeout: 1e4 });
+      execFileSync15("git", [...base, "--quiet", "-e", pattern, ...at2], { cwd, stdio: "ignore", timeout: 1e4 });
       return true;
     }
-    const output = execFileSync14("git", [...base, "-n", "-z", "-e", pattern, ...at2], {
+    const output = execFileSync15("git", [...base, "-n", "-z", "-e", pattern, ...at2], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -32016,7 +32067,7 @@ function grepPaths(wholeIdentifier, ...[symbol, cwd, ref, timeoutMs]) {
     ...ref === null ? [] : [ref]
   ];
   try {
-    const output = execFileSync14("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
+    const output = execFileSync15("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
     const prefix = ref === null ? "" : `${ref}:`;
     return output.split("\0").filter((path) => path.length > 0).map((path) => prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path);
   } catch (error) {
@@ -32028,7 +32079,7 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
   const [first, second] = patterns;
   const args = ref === null ? ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second] : ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second, ref];
   try {
-    const output = execFileSync14("git", args, {
+    const output = execFileSync15("git", args, {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -32056,7 +32107,7 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
 };
 var gitTrackedPaths = (cwd, ref) => {
   const args = ref === null ? ["ls-files", "-z", "--full-name", "--", ":/"] : ["ls-tree", "-r", "-z", "--name-only", "--full-tree", ref];
-  const output = execFileSync14("git", args, {
+  const output = execFileSync15("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -32077,7 +32128,7 @@ var RESOURCE_PATHSPECS = [
 ];
 var gitResourceSources = (cwd) => {
   try {
-    const output = execFileSync14("git", ["ls-files", "-z", "--", ...RESOURCE_PATHSPECS], {
+    const output = execFileSync15("git", ["ls-files", "-z", "--", ...RESOURCE_PATHSPECS], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -34171,7 +34222,7 @@ function checkSimplificationCommand(argv) {
 // plugins/review-voice/src/cli/verify.ts
 import { statSync as statSync12 } from "node:fs";
 import { resolve as resolve14 } from "node:path";
-import { execFileSync as execFileSync15 } from "node:child_process";
+import { execFileSync as execFileSync16 } from "node:child_process";
 async function verifyCommand(argv) {
   const cwdFlag = flag2(argv, "--cwd");
   if (argv.includes("--cwd") && cwdFlag === null) {
@@ -34214,7 +34265,7 @@ async function verifyCommand(argv) {
     const commitOf = (ref) => {
       if (ref === null) return null;
       try {
-        return execFileSync15("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        return execFileSync16("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
       } catch {
         console.error(`${ref} does not resolve to a commit here, so the verification command is not told about it.`);
         return null;
@@ -35456,7 +35507,7 @@ function carryCandidatesCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/record.ts
-import { execFileSync as execFileSync18 } from "node:child_process";
+import { execFileSync as execFileSync19 } from "node:child_process";
 import { readFileSync as readFileSync41 } from "node:fs";
 import { join as join34, posix as posix7 } from "node:path";
 
@@ -35466,12 +35517,12 @@ import { isAbsolute as isAbsolute8, posix as posix6, relative as relative5 } fro
 
 // plugins/review-voice/src/cli/score.ts
 import { readFileSync as readFileSync39 } from "node:fs";
-import { execFileSync as execFileSync17 } from "node:child_process";
+import { execFileSync as execFileSync18 } from "node:child_process";
 
 // plugins/review-voice/src/scoring/citation.ts
-import { execFileSync as execFileSync16 } from "node:child_process";
+import { execFileSync as execFileSync17 } from "node:child_process";
 function git5(args, cwd) {
-  return execFileSync16("git", args, {
+  return execFileSync17("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -35529,7 +35580,7 @@ function deletedFileCheck(argv) {
   const cwd = process.cwd();
   if (base === null || head === null || !refExists(base, cwd) || !refExists(head, cwd)) return () => false;
   const firstParty = firstPartyMatcher(repositoryConfig()?.firstPartyPaths ?? []);
-  const git6 = (args) => execFileSync17("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
+  const git6 = (args) => execFileSync18("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
   let deleted;
   const deletions = () => {
     if (deleted !== void 0) return deleted;
@@ -36936,7 +36987,7 @@ function recordCommand(argv) {
           }
           if (atHead && heldRevision === null) continue;
           try {
-            const content = heldRevision === null ? readFileSync41(join34(repositoryRoot(process.cwd()), entry.path), "utf8") : execFileSync18("git", [...SAFE_GIT, "show", `${heldRevision}:${entry.path}`], {
+            const content = heldRevision === null ? readFileSync41(join34(repositoryRoot(process.cwd()), entry.path), "utf8") : execFileSync19("git", [...SAFE_GIT, "show", `${heldRevision}:${entry.path}`], {
               encoding: "utf8",
               stdio: ["ignore", "pipe", "ignore"],
               maxBuffer: 64 * 1024 * 1024

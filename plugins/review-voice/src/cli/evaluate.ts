@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -79,8 +80,10 @@ const modelVerifier: StabilityVerifier = async (candidate) => {
     const prompt = verifierPrompt({ dir, intent: false, followUps: false, reproductionRunners: null });
     const result = await runAgent(spec, prompt, process.cwd(), [dir]);
     const entries = (result.output as { verifications?: unknown } | null)?.verifications;
+    // Exactly this candidate's entry; another id's verdict is a failed call, never a stand-in.
     const entry = (Array.isArray(entries) ? entries : []).find(
-      (item): item is Record<string, unknown> => typeof item === 'object' && item !== null,
+      (item): item is Record<string, unknown> =>
+        typeof item === 'object' && item !== null && (item['candidate_id'] ?? item['candidateId']) === candidate.candidateId,
     );
     const confidence = entry?.['technical_confidence'] ?? entry?.['technicalConfidence'];
     if (!result.ok || typeof entry?.['verified'] !== 'boolean' || typeof confidence !== 'number') return null;
@@ -90,13 +93,21 @@ const modelVerifier: StabilityVerifier = async (candidate) => {
   }
 };
 
+function gitHead(): string | null {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return null;
+  }
+}
+
 /** `evaluate calibration --labels <file> --stability <k> [--confirm]` (#484): see `runStability`. */
-async function stabilityCommand(
+export async function stabilityCommand(
   argv: string[],
   labels: LabelEntry[],
   thresholds: Thresholds | null,
   repository: string | null,
-  verify: StabilityVerifier,
+  deps: { verify: StabilityVerifier; headOf?: () => string | null; config?: ReturnType<typeof repositoryConfig> },
 ): Promise<number> {
   const wanted = flag(argv, '--stability');
   if (wanted === null || !/^\d+$/.test(wanted) || Number(wanted) < 2 || !Number.isSafeInteger(Number(wanted))) {
@@ -104,9 +115,20 @@ async function stabilityCommand(
     return 2;
   }
   const k = Number(wanted);
+  // A blank sheet row passes parseLabels twice; two rows for one candidate would be verified twice.
+  const seen = new Set<string>();
+  for (const entry of labels) {
+    const key = `${entry.run}\0${entry.candidate_id}`;
+    if (seen.has(key)) {
+      console.error(`evaluate calibration --stability: candidate_id ${entry.candidate_id} of run ${entry.run} is listed more than once in the labels.`);
+      return 2;
+    }
+    seen.add(key);
+  }
   const db = readStore();
   if (db === undefined) return 2;
   let candidates;
+  const unmatched: { run: string; candidate_id: string; reason: string }[] = [];
   try {
     const stored = new Map(
       loadStoredRuns(db, { repository })
@@ -114,11 +136,15 @@ async function stabilityCommand(
         .map((candidate) => [`${candidate.run}\0${candidate.candidateId}`, candidate]),
     );
     // The labelled set is the fixed set; a blank sheet row names a candidate just the same.
-    candidates = labels.flatMap((entry) => stored.get(`${entry.run}\0${entry.candidate_id}`) ?? []);
+    candidates = labels.flatMap((entry) => {
+      const found = stored.get(`${entry.run}\0${entry.candidate_id}`);
+      if (found === undefined) unmatched.push({ run: entry.run, candidate_id: entry.candidate_id, reason: 'not in the store' });
+      return found === undefined ? [] : [found];
+    });
   } finally {
     db?.close();
   }
-  const config = repositoryConfig();
+  const config = deps.config === undefined ? repositoryConfig() : deps.config;
   const cap = config?.evaluate.stabilityMaxCalls ?? DEFAULT_STABILITY_MAX_CALLS;
   const expected = k * candidates.length;
   console.error(`Stability: ${k} runs x ${candidates.length} candidates = ${expected} model calls (cap ${cap} without --confirm).`);
@@ -126,14 +152,34 @@ async function stabilityCommand(
     console.error(`Refusing: ${expected} calls is above evaluate.stability_max_calls (${cap}). Pass --confirm to run them.`);
     return 2;
   }
-  const report = terminalSafeDeep(
-    await runStability(candidates, {
+  for (const entry of unmatched) console.error(`Unmatched label ${entry.run} ${entry.candidate_id}: ${entry.reason}; it is not verified.`);
+  // The verifier reads files from the working directory, so every call must see one head.
+  const heads = new Set(candidates.map((candidate) => `${candidate.repository ?? ''}\0${candidate.headRef ?? ''}`));
+  const wantedHead = candidates[0]?.headRef ?? null;
+  if (candidates.length > 0 && (heads.size !== 1 || wantedHead === null)) {
+    console.error(
+      'Refusing: the candidates do not share one repository and recorded head, so one checkout cannot serve them all. ' +
+        'Narrow the labels (or use --repository) to the candidates of one head.',
+    );
+    return 2;
+  }
+  const checkedOut = (deps.headOf ?? gitHead)();
+  if (wantedHead !== null && (checkedOut === null || !checkedOut.startsWith(wantedHead))) {
+    console.error(
+      `Refusing: the working directory is at ${checkedOut ?? 'no git head'}, but the candidates were found at ${wantedHead}. ` +
+        `Check out ${wantedHead} and run again.`,
+    );
+    return 2;
+  }
+  const report = terminalSafeDeep({
+    ...(await runStability(candidates, {
       k,
-      verify,
+      verify: deps.verify,
       current: { ...DEFAULT_THRESHOLDS, ...config?.thresholds },
       proposed: thresholds,
-    }),
-  );
+    })),
+    unmatched,
+  });
   if (argv.includes('--text')) process.stdout.write(terminalSafe(formatStabilityText(report)));
   else console.log(JSON.stringify(report, null, 2));
   return 0;
@@ -192,7 +238,7 @@ function calibrationCommand(argv: string[]): number | Promise<number> {
       return 2;
     }
   }
-  if (argv.includes('--stability')) return stabilityCommand(argv, labels, thresholds, repository, modelVerifier);
+  if (argv.includes('--stability')) return stabilityCommand(argv, labels, thresholds, repository, { verify: modelVerifier });
   const db = readStore();
   if (db === undefined) return 2;
   try {

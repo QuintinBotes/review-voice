@@ -1082,7 +1082,11 @@ export const DEFAULT_STABILITY_MAX_CALLS = 200;
 
 /** `evaluate:` (#484). A bad value warns and keeps the default. */
 function readEvaluate(block: Record<string, unknown> | null, result: LoadedConfig): void {
-  const cap = block?.['stability_max_calls'];
+  if (block === null) {
+    result.warnings.push('evaluate must be a mapping; using the defaults.');
+    return;
+  }
+  const cap = block['stability_max_calls'];
   if (cap === undefined) return;
   if (typeof cap === 'number' && Number.isInteger(cap) && cap > 0) result.evaluate.stabilityMaxCalls = cap;
   else result.warnings.push(`evaluate.stability_max_calls must be a whole number above zero; using ${DEFAULT_STABILITY_MAX_CALLS}.`);

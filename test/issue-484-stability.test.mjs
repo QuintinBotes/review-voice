@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase } from '../plugins/review-voice/src/store/db.ts';
 import { recordRun } from '../plugins/review-voice/src/store/runs.ts';
 import { loadStoredRuns } from '../plugins/review-voice/src/evaluate/calibration.ts';
+import { stabilityCommand } from '../plugins/review-voice/src/cli/evaluate.ts';
 import { runStability } from '../plugins/review-voice/src/evaluate/stability.ts';
 import { DEFAULT_THRESHOLDS } from '../plugins/review-voice/src/scoring/score.ts';
 import { loadConfig } from '../plugins/review-voice/src/policy/load.ts';
@@ -24,9 +25,10 @@ const NO_BASELINE = join(tmpdir(), 'rv-no-such-baseline.yaml');
 delete process.env.REVIEW_VOICE_CONFIG;
 
 const IDS = ['A', 'B', 'C', 'D'];
+const COMMIT = ['-c', 'user.name=t', '-c', 'user.email=t@t'];
 
 /** Four stored candidates, each correctness/minor with a stored final score of 0.75. */
-function seed(db) {
+function seed(db, headRef) {
   const candidates = IDS.map((id, index) => ({
     candidate_id: id, candidateId: id, path: `src/${id}.ts`, line: index + 1, category: 'correctness', claim: `Claim ${id}.`, severity: 'minor', lane: 'diff',
   }));
@@ -35,25 +37,41 @@ function seed(db) {
     confidenceSource: 'verifier', severity: { severity: 'minor', reason: 'fixture' }, finalScore: 0.75, eligible: true,
     rejectedBecause: null, verified: true, category: 'correctness', claim: `Claim ${id}.`,
   }));
-  const { reviewRunId } = recordRun(db, { repository: 'org/a', baseRef: null, headRef: 'aaa111', pullNumber: 1, diff: 'd', output: 'No actionable findings.', candidates, scores });
+  const { reviewRunId } = recordRun(db, { repository: 'org/a', baseRef: null, headRef, pullNumber: 1, diff: 'd', output: 'No actionable findings.', candidates, scores });
   return reviewRunId;
+}
+
+/** A checkout in `dir/repo` with one commit; returns its HEAD sha. */
+function makeCheckout(dir) {
+  const repo = join(dir, 'repo');
+  mkdirSync(repo);
+  const git = (...args) => execFileSync('git', [...COMMIT, ...args], { cwd: repo, encoding: 'utf8' }).trim();
+  git('init', '-q');
+  git('commit', '-q', '--allow-empty', '-m', 'x');
+  return git('rev-parse', 'HEAD');
 }
 
 function withStore(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'rv-484-'));
   try {
+    const head = makeCheckout(dir);
     const db = openDatabase(join(dir, 'review-voice.db'));
     let run;
     let stored;
     try {
-      run = seed(db);
+      run = seed(db, head);
       stored = loadStoredRuns(db).flatMap((r) => r.candidates);
     } finally {
       db.close();
     }
-    return fn(dir, run, stored);
-  } finally {
+    const result = fn(dir, run, stored);
+    // An async body must finish before the directory goes.
+    if (typeof result?.then === 'function') return result.finally(() => rmSync(dir, { recursive: true, force: true }));
     rmSync(dir, { recursive: true, force: true });
+    return result;
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
   }
 }
 
@@ -134,11 +152,55 @@ test('a failed verification is counted and a candidate with none is excluded, no
   });
 });
 
+test('a stored non-threshold hold is never a post or a flip, however the confidence moves', async () => {
+  await withStore(async (_dir, _run, stored) => {
+    const held = (id, rejectedBecause, gate) => ({
+      ...stored[0],
+      candidateId: id,
+      breakdown: { ...stored[0].breakdown, eligible: false, rejectedBecause, gate },
+    });
+    const candidates = [
+      held('E', 'not material: the change is cosmetic', 'materiality'),
+      held('F', 'owner precedent is against asking this (0.30 alignment)', 'owner-precedent'),
+    ];
+    let attempt = 0;
+    const verify = async () => ({ technicalConfidence: [0.5, 0.95][attempt++ % 2], verified: true });
+    const report = await runStability(candidates, {
+      k: 2,
+      verify,
+      current: DEFAULT_THRESHOLDS,
+      proposed: { ...DEFAULT_THRESHOLDS, technicalConfidence: 0.9 },
+      concurrency: 1,
+    });
+    assert.deepEqual(report.rows.map((row) => row.flips), [{ current: false, proposed: false }, { current: false, proposed: false }]);
+    assert.deepEqual(report.flipRate.current, { flipped: 0, of: 2, rate: 0 });
+  });
+});
+
+test('calls are dispatched concurrently, bounded, with results kept in attempt order', async () => {
+  await withStore(async (_dir, _run, stored) => {
+    let inFlight = 0;
+    let peak = 0;
+    const verify = async (_candidate, attempt) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      inFlight -= 1;
+      return { technicalConfidence: 0.7 + attempt / 100, verified: true };
+    };
+    const report = await runStability(stored, { k: 4, verify, current: DEFAULT_THRESHOLDS, concurrency: 3 });
+    assert.ok(peak > 1, `peak ${peak}`);
+    assert.ok(peak <= 3, `peak ${peak}`);
+    assert.deepEqual(report.rows[0].confidences, [0.7, 0.71, 0.72, 0.73]);
+  });
+});
+
 /** Runs the bundle with the fake agent runner; returns its result and the verifier calls made. */
 function cli(dir, args, fakeAgents) {
   const result = spawnSync(process.execPath, [bundle, ...args], {
     encoding: 'utf8',
-    cwd: dir,
+    cwd: join(dir, 'repo'),
     env: { ...process.env, REVIEW_VOICE_DATA_DIR: dir, REVIEW_VOICE_FAKE_AGENTS: fakeAgents },
   });
   const counter = join(fakeAgents, '.calls', 'evidence-verifier.count');
@@ -153,7 +215,7 @@ function withLabelsAndFakes(fn) {
     mkdirSync(fakes);
     writeFileSync(
       join(fakes, 'evidence-verifier.json'),
-      JSON.stringify({ output: { verifications: [{ candidate_id: 'A', verified: true, technical_confidence: 0.8 }] } }),
+      JSON.stringify({ output: { verifications: IDS.map((id) => ({ candidate_id: id, verified: true, technical_confidence: 0.8 })) } }),
     );
     return fn(dir, labels, fakes);
   });
@@ -189,6 +251,102 @@ test('under the cap it runs with no --confirm, and the flags are validated', () 
   });
 });
 
+test('a verifier answering with another candidate id is a failed call, not a stand-in', () => {
+  withLabelsAndFakes((dir, labels, fakes) => {
+    writeFileSync(
+      join(fakes, 'evidence-verifier.json'),
+      JSON.stringify({ output: { verifications: [{ candidate_id: 'ZZ', verified: true, technical_confidence: 0.9 }] } }),
+    );
+    const result = cli(dir, ['evaluate', 'calibration', '--labels', labels, '--stability', '2'], fakes);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.failedCalls, 8);
+    assert.equal(report.rows.length, 0);
+    assert.equal(report.excluded.length, 4);
+  });
+});
+
+test('a working directory at another head, or candidates from two heads, are refused with no call', () => {
+  withLabelsAndFakes((dir, labels, fakes) => {
+    execFileSync('git', [...COMMIT, 'commit', '-q', '--allow-empty', '-m', 'y'], { cwd: join(dir, 'repo') });
+    const moved = cli(dir, ['evaluate', 'calibration', '--labels', labels, '--stability', '2'], fakes);
+    assert.equal(moved.code, 2);
+    assert.match(moved.stderr, /Refusing: the working directory is at [0-9a-f]{40}, but the candidates were found at [0-9a-f]{40}\. Check out [0-9a-f]{40} and run again/);
+    assert.equal(moved.calls, 0);
+  });
+  withLabelsAndFakes((dir, labels, fakes) => {
+    const db = openDatabase(join(dir, 'review-voice.db'));
+    let second;
+    try {
+      second = seed(db, 'bbb222');
+    } finally {
+      db.close();
+    }
+    const entries = JSON.parse(readFileSync(labels, 'utf8'));
+    writeFileSync(labels, JSON.stringify([entries[0], { run: second, candidate_id: 'A', label: '' }]));
+    const result = cli(dir, ['evaluate', 'calibration', '--labels', labels, '--stability', '2'], fakes);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /do not share one repository and recorded head/);
+    assert.equal(result.calls, 0);
+  });
+});
+
+test('duplicate blank rows are refused before any call, and unmatched labels are listed', () => {
+  withLabelsAndFakes((dir, labels, fakes) => {
+    const entries = JSON.parse(readFileSync(labels, 'utf8'));
+    const dup = join(dir, 'dup.json');
+    writeFileSync(dup, JSON.stringify([...entries, entries[0]]));
+    const refused = cli(dir, ['evaluate', 'calibration', '--labels', dup, '--stability', '2'], fakes);
+    assert.equal(refused.code, 2);
+    assert.match(refused.stderr, /candidate_id A of run .* is listed more than once/);
+    assert.equal(refused.calls, 0);
+
+    const extra = join(dir, 'extra.json');
+    writeFileSync(extra, JSON.stringify([...entries, { run: entries[0].run, candidate_id: 'NOPE', label: '' }]));
+    const listed = cli(dir, ['evaluate', 'calibration', '--labels', extra, '--stability', '2'], fakes);
+    assert.equal(listed.code, 0);
+    assert.match(listed.stderr, /Unmatched label .* NOPE: not in the store/);
+    const report = JSON.parse(listed.stdout);
+    assert.deepEqual(report.unmatched.map((u) => u.candidate_id), ['NOPE']);
+    assert.equal(report.candidates, 4);
+    assert.equal(listed.calls, 8);
+  });
+});
+
+test('a configured cap of 5 refuses above it and runs at it, through stabilityCommand', async () => {
+  await withStore(async (dir, run, stored) => {
+    const repo = join(dir, 'repo');
+    mkdirSync(join(repo, '.review-voice'));
+    writeFileSync(join(repo, '.review-voice', 'config.yaml'), 'evaluate:\n  stability_max_calls: 5\n');
+    const config = loadConfig(repo, NO_BASELINE);
+    assert.equal(config.evaluate.stabilityMaxCalls, 5);
+    const labels = [{ run, candidate_id: 'A', label: '' }, { run, candidate_id: 'B', label: '' }];
+    const { verify, seen } = fakeVerifier(SEQUENCES);
+    const head = stored[0].headRef;
+    const errors = [];
+    const realError = console.error;
+    const realLog = console.log;
+    const previousDir = process.env.REVIEW_VOICE_DATA_DIR;
+    process.env.REVIEW_VOICE_DATA_DIR = dir;
+    console.error = (line) => errors.push(String(line));
+    console.log = () => {};
+    try {
+      const refused = await stabilityCommand(['--stability', '3'], labels, null, null, { verify, config, headOf: () => head });
+      assert.equal(refused, 2);
+      assert.equal(seen.calls, 0);
+      assert.match(errors.join('\n'), /3 runs x 2 candidates = 6 model calls \(cap 5 without --confirm\)/);
+      assert.match(errors.join('\n'), /above evaluate\.stability_max_calls \(5\)/);
+      const at = await stabilityCommand(['--stability', '2'], labels, null, null, { verify, config, headOf: () => head });
+      assert.equal(at, 0);
+      assert.equal(seen.calls, 4);
+    } finally {
+      console.error = realError;
+      console.log = realLog;
+      if (previousDir === undefined) delete process.env.REVIEW_VOICE_DATA_DIR;
+      else process.env.REVIEW_VOICE_DATA_DIR = previousDir;
+    }
+  });
+});
+
 test('the cap is a config setting with a default, and a bad value warns and keeps the default', () => {
   const load = (text) => {
     const dir = mkdtempSync(join(tmpdir(), 'rv-484-config-'));
@@ -206,6 +364,7 @@ test('the cap is a config setting with a default, and a bad value warns and keep
   const bad = load('evaluate:\n  stability_max_calls: 0\n');
   assert.equal(bad.evaluate.stabilityMaxCalls, 200);
   assert.ok(bad.warnings.some((w) => w.includes('evaluate.stability_max_calls')));
+  assert.ok(load('evaluate: 5\n').warnings.includes('evaluate must be a mapping; using the defaults.'));
 });
 
 test('the help documents --stability, --confirm and the cap', () => {

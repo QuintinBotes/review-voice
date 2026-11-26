@@ -97,6 +97,21 @@ export async function runAgent(
   }
 }
 
+/** Runs `work` over the items, at most `limit` at a time, results in input order. */
+export async function inParallel<T, R>(items: readonly T[], work: (item: T) => Promise<R>, limit = DEFAULT_AGENT_PARALLELISM): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await work(items[index]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return results;
+}
+
 /** Runs calls at most `limit` at a time; results come back in input order. */
 export async function runAgents(calls: AgentCall[], limit = DEFAULT_AGENT_PARALLELISM): Promise<AgentResult[]> {
   const results: AgentResult[] = new Array<AgentResult>(calls.length);

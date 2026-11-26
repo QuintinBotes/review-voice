@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { claudeBin } from '../agents/claude-cli.ts';
-import { ownSignals, readAgentTools, runAgent, stopAll, type AgentResult } from '../agents/runner.ts';
+import { inParallel, ownSignals, readAgentTools, runAgent, stopAll, type AgentResult } from '../agents/runner.ts';
 import { DEFAULT_AGENT_PARALLELISM, type Family, type RunnerSpec } from '../agents/types.ts';
 import { seriousNotCarried, type NotCarriedFinding } from '../diff/carry.ts';
 import type { ComplexityAssessment } from '../diff/complexity.ts';
@@ -377,21 +377,6 @@ async function agent(
     current = prompts.retryPrompt(prompt, refusal);
   }
   return { ok: false, error: refusal };
-}
-
-/** Runs `work` over the items, at most `limit` at a time, results in input order. */
-async function inParallel<T, R>(items: readonly T[], work: (item: T) => Promise<R>, limit = DEFAULT_AGENT_PARALLELISM): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    while (next < items.length) {
-      const index = next;
-      next += 1;
-      results[index] = await work(items[index]!);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
-  return results;
 }
 
 const files = (run: Run): prompts.RunFiles => ({ dir: run.dir, intent: run.intent, followUps: run.followUps, reproductionRunners: null });
