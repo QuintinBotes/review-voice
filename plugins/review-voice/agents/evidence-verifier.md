@@ -223,6 +223,17 @@ addressed. Keep the candidate only when
 the code at the head shows an instance the resolution did not cover - another
 query, another call site - and say which; otherwise reject it as a repeat.
 
+`possibleRepeatOf` may also carry `alsoNaming`: other comments on the pull
+request, on any file, that name the candidate's file or one of its symbols,
+each with author, location and excerpt. The same defect is often raised on the
+file that causes it, and then again on the file where it shows. Check each
+against the candidate's root cause. Reject the candidate as a repeat when a
+comment states the same failure, and quote that comment in the reason. A
+comment that only mentions the file or symbol in passing is not a repeat.
+They are ordered by wording overlap, best first, and held to a size budget;
+`alsoNamingOmitted`, when present, is how many further naming comments were
+left out, so read the code for the same defect they may have raised.
+
 **An own comment the author only partly addressed.** When `kind` is
 `own-comment` and that comment raised several points, check each against the
 code at the head. If the author fixed some and the candidate states one or more
