@@ -1,7 +1,10 @@
 /**
  * Two confidence floors for a finding the verifier scored (#343): the main
  * floor at blocking and important, a lower one at minor and nit, and the main
- * floor at every tier for a category no suppression may reach.
+ * floor at every tier for a category no suppression may reach. Since #479
+ * both keys default to one low floor (test/issue-479-floor-materiality);
+ * this file passes the old 0.8 / 0.7 pair explicitly, because what it tests
+ * is that the tiered mechanism still works when an owner configures it.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,7 +22,8 @@ const NO_BASELINE = join(tmpdir(), 'rv-no-such-baseline.yaml');
 delete process.env.REVIEW_VOICE_CONFIG;
 
 // The final score is set aside so each case is decided by the confidence floor alone.
-const ONLY_CONFIDENCE = { ...DEFAULT_THRESHOLDS, finalScore: 0 };
+// The pre-#479 defaults, set explicitly to exercise the tiered floors.
+const ONLY_CONFIDENCE = { technicalConfidence: 0.8, minorConfidence: 0.7, analystOnlyConfidence: 0.7, finalScore: 0 };
 
 const candidate = (over = {}) => ({
   candidateId: 'cand_001',
@@ -127,11 +131,11 @@ function withRepo(config, fn) {
 const loaded = (review) => withRepo(`review:\n${review}`, (dir) => loadConfig(dir, NO_BASELINE));
 
 test('the config key moves the minor floor and a value above the main threshold is clamped with a warning', () => {
-  const lowered = loaded('  minor_confidence_threshold: 0.6\n');
+  const lowered = loaded('  confidence_threshold: 0.8\n  minor_confidence_threshold: 0.6\n');
   assert.equal(lowered.thresholds.minorConfidence, 0.6);
   assert.deepEqual(lowered.warnings.filter((w) => w.includes('minor_confidence_threshold')), []);
 
-  const above = loaded('  minor_confidence_threshold: 0.9\n');
+  const above = loaded('  confidence_threshold: 0.8\n  minor_confidence_threshold: 0.9\n');
   assert.equal(above.thresholds.minorConfidence, 0.8);
   assert.ok(
     above.warnings.includes(
@@ -151,7 +155,7 @@ test('the config key moves the minor floor and a value above the main threshold 
   assert.equal(r.confidenceFloor, 0.8);
 });
 
-test('a malformed minor threshold warns and keeps 0.7', () => {
+test('a malformed minor threshold warns and keeps the 0.7 default', () => {
   for (const value of ['high', '0', '1.5', '-0.2']) {
     const config = loaded(`  minor_confidence_threshold: ${value}\n`);
     assert.equal(config.thresholds.minorConfidence, undefined, value);
@@ -211,7 +215,8 @@ const VERIFICATIONS = [
 
 test('the built bundle holds each tier to its floor and the below-gate entry names it', () =>
   withRepo('review:\n  minor_confidence_threshold: high\n', (dir) => {
-    const out = runScore(dir, CANDIDATES, VERIFICATIONS, ['--severity', 'cand_004=minor']);
+    // The old floors are passed as flags: since #479 the built-in defaults are one 0.7 floor.
+    const out = runScore(dir, CANDIDATES, VERIFICATIONS, ['--min-confidence', '0.8', '--min-minor-confidence', '0.7', '--severity', 'cand_004=minor']);
     const byId = new Map(out.scores.map((s) => [s.candidate_id, s]));
     assert.equal(byId.get('cand_001').eligible, true, byId.get('cand_001').rejectedBecause);
     assert.equal(byId.get('cand_002').rejectedBecause, 'technical confidence 0.65 (verifier) is below 0.7, the floor for a minor finding');
@@ -238,7 +243,7 @@ test('the built bundle holds each tier to its floor and the below-gate entry nam
 
 test('the minor floor flag moves the floor and is clamped to the main one', () =>
   withRepo('review: {}\n', (dir) => {
-    const lowered = runScore(dir, CANDIDATES.slice(1, 2), VERIFICATIONS.slice(1, 2), ['--min-minor-confidence', '0.6']);
+    const lowered = runScore(dir, CANDIDATES.slice(1, 2), VERIFICATIONS.slice(1, 2), ['--min-confidence', '0.8', '--min-minor-confidence', '0.6']);
     assert.equal(lowered.scores[0].eligible, true, lowered.scores[0].rejectedBecause);
 
     const clamped = runScore(

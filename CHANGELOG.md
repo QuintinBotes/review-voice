@@ -17,8 +17,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   learned precedent `source: outcome`, and `status` prints the learned
   accepted and dismissed counts and the categories with net negative learned
   precedent. (closes #480, docs/adr/0039)
+- The evidence-verifier may return `material`, `material_reason` (at most
+  300 characters) and `severity_fit` (`right` or `too_high`): whether a
+  reasonable author would change code, what breaks and for whom, and whether
+  the tier fits, judged after `verified` and never by lowering
+  `technical_confidence`. Absent fields mean material. On a verified claim,
+  `material: false` at minor or nit holds the finding in `belowGate` with
+  `gate: materiality` and the verifier's reason, promotable with
+  `score --promote` as the other below-gate entries are; at important or
+  blocking, `material: false` or `severity_fit: too_high` reports it exactly
+  one tier lower, with the severity reason saying why. A security,
+  authorization, authentication, data integrity or trust boundary finding is
+  never held for materiality, only lowered that one tier. The verification
+  schema, `check-verification` and `score` refuse a non-boolean `material`,
+  an overlong `material_reason` or an unknown `severity_fit`. (#479,
+  docs/adr/0037)
+
+### Changed
+
+- Verifier confidence stops acting as a fine-grained truth gate.
+  `review.confidence_threshold` and `review.minor_confidence_threshold` now
+  default to 0.7 at every tier instead of 0.8 at blocking and important and
+  0.7 at minor and nit (a cross-family relabel found two false findings in the
+  0.50 to 0.70 band, so the floor is 0.7, not lower); both keys still override the
+  defaults, with the minor floor still clamped to at most the main one, so
+  setting 0.8 and 0.7 reproduces the old floors. A category no suppression
+  may reach keeps 0.8 at every tier, or the configured main floor when that
+  is higher. The analyst-only floor stays 0.7, and the verified suggested
+  fix still needs its own 0.8, or the configured main floor when that is
+  higher, so the lower finding floor does not loosen what repair text renders
+  as verified.
+- A non-question claim the verifier verified, gated on its own confidence,
+  no longer has to clear the numeric final score: it is held back only when
+  owner alignment is below neutral, the rule a question already used, and
+  is then listed in `belowGate` as `gate: owner-precedent`, promotable as the
+  score gate's entries were. The
+  final and anchored scores are still computed and reported, and the
+  anchored shadow is read through that owner gate. Analyst-only candidates
+  keep the numeric final-score gate. (#479, docs/adr/0037)
 ### Fixed
 
+- `git cat-file` reads are bounded (one 120 s bound for the structure
+  step's `--batch`, 30 s per blob for trusted-tree convention reads),
+  and git runs in its own process group so the bound holds when a lazy
+  fetch over ssh in a partial clone is the process holding the pipes.
+  A timed-out batch reports its files unmeasured and a timed-out blob
+  reads as unreadable; a timeout in a partial clone names it once on
+  stderr. (#482)
 - After a conflicting replay, added lines a kept-whole interdiff hunk took
   from the base are shown as context when the pull request's own diff does
   not add them and the base added them between the two merge bases, with

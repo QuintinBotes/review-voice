@@ -919,7 +919,7 @@ Confidence deliberately plays no part. A first version weakened one tier below
 0.85, and that turned out to be the whole remaining instability: on two runs of
 an identical diff the category matched both times and the tier differed anyway,
 at 0.82 against 0.90 and at 0.85 against 0.80. Everything that can ship already
-sits in `[0.8, 1.0]` because the confidence gate says so, and run to run
+sits above the confidence gate's floor, and run to run
 variance is around 0.08, so any boundary drawn inside that band gets crossed.
 One free judgement had been removed from this path and a second left in with a
 hard edge in the middle of it.
@@ -1097,15 +1097,16 @@ shipping the false one. It is unstable at the boundary too: the same finding on
 an identical diff scored 0.75 and then 0.80, which decided whether it reached
 the author.
 
-A verifier-established confidence is still held at 0.8
-(`review.confidence_threshold`) for a finding whose derived tier is `blocking`
-or `important`, and at 0.7 (`review.minor_confidence_threshold`, never above the
-first) for one at `minor` or `nit` (#343). Half the recall misses were verified
-findings held under 0.8, nearly all minors and nits, which cost the author least
-to decline. A
+A verifier-established confidence is held at one floor, 0.7 by default, at
+every tier (`review.confidence_threshold`, with
+`review.minor_confidence_threshold`, never above it, for `minor` and `nit`;
+#343, #479). Above verification the verifier's confidence did not separate true
+claims from false ones, so a finer gate mostly dropped true findings
+([ADR 0037](adr/0037-confidence-is-a-floor-materiality-is-a-verdict.md)). A
 finding in a category no suppression may reach (security, authorization,
-authentication, data integrity, trust boundary) takes the main floor at every
-tier, so a tier derived too low cannot also lower its bar. The rejection names
+authentication, data integrity, trust boundary) takes the higher of 0.8 and
+the main floor at every tier, so a tier derived too low cannot also lower its
+bar. The rejection names
 the floor that applied, and so does the `threshold` of its `belowGate` entry
 ([ADR 0016](adr/0016-what-the-verifier-could-not-check.md), amended
 2026-11-12). An analyst-only one is

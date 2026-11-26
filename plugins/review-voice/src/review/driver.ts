@@ -1056,7 +1056,14 @@ async function score(run: Run): Promise<void> {
       ...(typeof entry['claim'] === 'string' && entry['claim'] !== '' ? { text: entry['claim'] } : {}),
     });
   };
-  for (const entry of list(scores['belowGate'])) hold(entry, 'below-gate', 'score', `below the ${String(entry['gate'])} gate`);
+  for (const entry of list(scores['belowGate'])) {
+    hold(
+      entry,
+      'below-gate',
+      'score',
+      typeof entry['rejectedBecause'] === 'string' ? entry['rejectedBecause'] : `below the ${String(entry['gate'])} gate`,
+    );
+  }
   // An approved suppression held these back, so the reason names the rule and
   // the policy version that held it, which is what `explain` then shows under
   // "Held back" (docs/adr/0032). Each appears here and not in `belowGate`, so

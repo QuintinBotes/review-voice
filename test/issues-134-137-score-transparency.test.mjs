@@ -146,19 +146,22 @@ test('#135: a fixed boundary category says its tier ignores the request', () =>
 test('#136: --promote posts a below-gate finding, validates, and records the owner decision', () =>
   withDir((dir) => {
     repository(dir);
-    const verification = [{ candidate_id: 'cand_001', verified: true, technical_confidence: 0.9, impact_traced: true }];
-    const held = JSON.parse(score(dir, verification, ['--min-score', '0.99']).stdout);
+    // Since #479 a verified verifier-sourced claim is not held by the numeric
+    // score, so this one is held below the 0.7 confidence floor instead; the
+    // promote mechanism under test is the same.
+    const verification = [{ candidate_id: 'cand_001', verified: true, technical_confidence: 0.65 }];
+    const held = JSON.parse(score(dir, verification, ['--min-score', '0']).stdout);
     assert.equal(held.belowGate.length, 1);
     assert.equal(held.eligible.length, 0);
 
-    const scored = score(dir, verification, ['--min-score', '0.99', '--promote', 'cand_001']);
+    const scored = score(dir, verification, ['--min-score', '0', '--promote', 'cand_001']);
     assert.equal(scored.status, 0, scored.stderr);
     const out = JSON.parse(scored.stdout);
     assert.equal(out.belowGate.length, 0);
     assert.equal(out.eligible.length, 1);
     assert.equal(out.scores[0].eligible, true);
-    assert.equal(out.scores[0].ownerPromotion.gate, 'score');
-    assert.match(out.scores[0].ownerPromotion.heldBecause, /^score 0\.\d{4} is below the 0\.99 threshold$/);
+    assert.equal(out.scores[0].ownerPromotion.gate, 'confidence');
+    assert.match(out.scores[0].ownerPromotion.heldBecause, /^technical confidence 0\.65 \(verifier\) is below 0\.7, the floor for a minor finding$/);
 
     const scores = join(dir, 'scores.json');
     writeFileSync(scores, scored.stdout);
@@ -172,7 +175,7 @@ test('#136: --promote posts a below-gate finding, validates, and records the own
     const db = openDatabase(databasePath({ REVIEW_VOICE_DATA_DIR: join(dir, 'data') }));
     try {
       const stored = runDetail(db, JSON.parse(recorded.stdout).reviewRunId).scores.find((e) => e.candidate_id === 'cand_001');
-      assert.equal(stored.ownerPromotion.gate, 'score');
+      assert.equal(stored.ownerPromotion.gate, 'confidence');
     } finally {
       db.close();
     }
@@ -183,7 +186,7 @@ test('#136: --promote refuses a finding something other than a numeric gate stop
     repository(dir);
     const rejected = score(dir, [{ candidate_id: 'cand_001', verified: false, technical_confidence: 0.9 }], ['--promote', 'cand_001']);
     assert.equal(rejected.status, 2);
-    assert.match(rejected.stderr, /only a verified finding held by the score or confidence gate alone can be promoted/);
+    assert.match(rejected.stderr, /only a verified finding held by the score, confidence, materiality or owner-precedent gate alone can be promoted/);
     const unknown = score(dir, [], ['--promote', 'cand_404']);
     assert.equal(unknown.status, 2);
     assert.match(unknown.stderr, /unknown candidate "cand_404"/);
