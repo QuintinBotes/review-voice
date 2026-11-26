@@ -234,7 +234,8 @@ export function normaliseHeld(entry: unknown): unknown {
   // A repeat of a review-body or conversation comment has commentPath null (#467).
   if ('commentPath' in e && (e['commentPath'] === null || typeof e['commentPath'] === 'string') && typeof e['author'] === 'string') {
     mapped = { verdict: 'repeat', source: 'check-candidates', reason: str(e['reason']) };
-  } else if (typeof e['gate'] === 'string') {
+  } else if (typeof e['gate'] === 'string' && e['eligible'] === undefined) {
+    // A full score breakdown also carries `gate` since #485; only a belowGate entry has no `eligible`.
     const score = e['finalScore'] ?? e['technicalConfidence'];
     const label = e['finalScore'] !== undefined ? 'final score' : 'technical confidence';
     mapped = {

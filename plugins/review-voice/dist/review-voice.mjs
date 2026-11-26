@@ -9022,6 +9022,7 @@ function applyQuestionCap(breakdowns, limit = MAX_QUESTIONS) {
   );
   for (const dropped of ranked.slice(limit)) {
     dropped.eligible = false;
+    dropped.gate = "question-cap";
     dropped.rejectedBecause = `this review already asks ${limit} better-evidenced question${limit === 1 ? "" : "s"}, and a review that ends in a list of questions has stopped being a review`;
   }
 }
@@ -9568,41 +9569,55 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
   const anchoredFinalScore = score2(anchoredOwnerAlignment, anchoredRepositoryAlignment);
   const verifiedVerifierClaim = !isQuestion && confidenceSource === "verifier" && verification2?.verified === true;
   let rejectedBecause = null;
+  let gate = null;
   if (!Number.isFinite(finalScore) || !Number.isFinite(confidence)) {
+    gate = "not-computable";
     rejectedBecause = "score could not be computed from this candidate";
   } else if (alreadySaid !== null) {
+    gate = "already-said";
     rejectedBecause = `already stated at ${candidate.path}:${candidate.line} in precedent ${alreadySaid.eventId}`;
   } else if (isQuestion && verification2?.premisesVerified === false) {
+    gate = "question-premises-false";
     rejectedBecause = withVerifierReason(
       "the verifier could not verify the premises this question rests on (premises_verified: false)",
       verification2.reason
     );
   } else if (isQuestion && verification2?.verified !== true && verification2?.premisesVerified !== true) {
+    gate = "question-unverified";
     rejectedBecause = withVerifierReason(
       verification2 === void 0 ? "a question needs the verifier to confirm the premises it rests on (premises_verified: true), and there is no verifier verdict for this one" : "the verifier did not verify this question or confirm the premises it rests on (premises_verified is not true)",
       verification2?.reason
     );
   } else if (isQuestion && verification2?.verified === false && confidenceSource === "verifier" && confidence < QUESTION_GAP_FLOOR) {
+    gate = "question-gap";
     rejectedBecause = `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${QUESTION_GAP_FLOOR}, and the verifier rejected this question (verified: false)`;
   } else if (isQuestion) {
     if (ownerAlignment < NEUTRAL_ALIGNMENT) {
+      gate = "owner-precedent-question";
       rejectedBecause = `owner precedent is against asking this (${ownerAlignment.toFixed(2)} alignment), and a question the owner has dismissed the like of before is noise the second time`;
     }
   } else if (confidenceSource === "unverifiable-cap") {
+    gate = "unverifiable";
     rejectedBecause = UNVERIFIABLE_REJECTION;
   } else if (verification2?.verified === false) {
+    gate = "verified-false";
     rejectedBecause = "the verifier did not verify this claim (verified: false)";
   } else if (confidence < confidenceFloor) {
+    gate = "confidence-floor";
     rejectedBecause = `technical confidence ${confidence.toFixed(2)} (${confidenceSource}) is below ${confidenceFloor}` + (confidenceSource === "analyst" ? ". No verification was supplied, so this is the analyst's opinion of its own output." : `, ${verified.names}`);
   } else if (verifiedVerifierClaim) {
     if (ownerAlignment < NEUTRAL_ALIGNMENT) {
+      gate = "owner-precedent";
       rejectedBecause = `${OWNER_PRECEDENT_PREFIX} (${ownerAlignment.toFixed(2)} alignment), and a finding the owner has dismissed the like of before is noise the second time`;
     } else if (materiality.hold !== null) {
+      gate = "materiality";
       rejectedBecause = materiality.hold;
     }
   } else if (finalScore < thresholds.finalScore) {
+    gate = "score";
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
   } else if (materiality.hold !== null) {
+    gate = "materiality";
     rejectedBecause = materiality.hold;
   }
   const staleConsumer = candidate.anchor === STALE_CONSUMER;
@@ -9612,6 +9627,7 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
       // Without a route here a verified stale comment was a dead end, since `--severity` cannot restate nit (#317).
       "; outside a document (.md, .rst or .adoc) that holds at every tier, a comment in a source file included, so to post it untraced, have the analyst refile it as an ordinary finding on the changed line its `caused_by` names, with the consumer and its path in the claim and evidence"
     ));
+    gate = "stale-consumer";
     if (rejectedBecause === null) rejectedBecause = untraced;
     else if (rejectedBecause.startsWith("score ")) rejectedBecause = `${untraced}. Also: ${rejectedBecause}`;
     else rejectedBecause = `${rejectedBecause}. Also: ${untraced}`;
@@ -9646,6 +9662,9 @@ function scoreCandidate(candidate, precedents, kept, thresholds = DEFAULT_THRESH
     },
     eligible: rejectedBecause === null,
     rejectedBecause,
+    gate,
+    verified: verification2?.verified ?? null,
+    premisesVerified: verification2?.premisesVerified ?? null,
     duplicateOfPrecedent: alreadySaid?.eventId ?? null,
     precedentIds: precedents.map((p2) => p2.eventId),
     ...staleConsumer ? { anchor: STALE_CONSUMER, causedBy: candidate.causedBy ?? null } : {}
@@ -12516,7 +12535,7 @@ function normaliseHeld(entry) {
   let mapped = null;
   if ("commentPath" in e && (e["commentPath"] === null || typeof e["commentPath"] === "string") && typeof e["author"] === "string") {
     mapped = { verdict: "repeat", source: "check-candidates", reason: str2(e["reason"]) };
-  } else if (typeof e["gate"] === "string") {
+  } else if (typeof e["gate"] === "string" && e["eligible"] === void 0) {
     const score2 = e["finalScore"] ?? e["technicalConfidence"];
     const label2 = e["finalScore"] !== void 0 ? "final score" : "technical confidence";
     mapped = {
@@ -18881,8 +18900,8 @@ function challengeOf(outputJson) {
   for (const entry of Array.isArray(scores) ? scores : []) {
     if (typeof entry !== "object" || entry === null || !Object.hasOwn(entry, "challenge")) continue;
     judged += 1;
-    const because = entry.rejectedBecause;
-    if (typeof because === "string" && because.startsWith("challenge-")) held += 1;
+    const { gate, rejectedBecause: because } = entry;
+    if (typeof gate === "string" ? gate.startsWith("challenge-") : typeof because === "string" && because.startsWith("challenge-")) held += 1;
   }
   return { held, judged };
 }
@@ -23696,7 +23715,7 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
     const { candidate_id: _id, decisive_quotes: _quotes, answered: _answered, ...cited } = verdict2;
     const rest = { ...cited, decisive_evidence: withoutReproductionFiles(cited.decisive_evidence, reproductions) };
     const heldAs = holdReasons.get(id);
-    return heldAs === void 0 ? { ...entry, challenge: rest } : { ...entry, challenge: rest, eligible: false, rejectedBecause: `${heldAs.verdict}: ${heldAs.reason}` };
+    return heldAs === void 0 ? { ...entry, challenge: rest } : { ...entry, challenge: rest, eligible: false, gate: heldAs.verdict, rejectedBecause: `${heldAs.verdict}: ${heldAs.reason}` };
   };
   for (const finding of eligible) {
     const id = idOf2(finding);
@@ -23736,7 +23755,7 @@ function applyChallenge(scores, candidates, rawVerdicts, hunks, reproductions = 
     }
     const reason2 = `corrected line refused: ${moved.refused}`;
     hold(finding, id, "challenge-partly", reason2);
-    const heldAs = { eligible: false, rejectedBecause: `challenge-partly: ${reason2}` };
+    const heldAs = { eligible: false, gate: "challenge-partly", rejectedBecause: `challenge-partly: ${reason2}` };
     document = {
       ...document,
       scores: document["scores"].map((e) => isRecord4(e) && idOf2(e) === id ? { ...e, ...heldAs } : e),
@@ -34471,7 +34490,7 @@ function ownerQuestionProblem(breakdown, verification2) {
   return null;
 }
 function applyOwnerPromotion(breakdown, ownerNote, option = "--promote") {
-  const gate = gateOf(breakdown.rejectedBecause);
+  const gate = gateOf(breakdown);
   if (breakdown.eligible) return `${option} ${breakdown.candidateId}: it is already eligible.`;
   if (breakdown.confidenceSource === "unverifiable-cap" && breakdown.rejectedBecause === UNVERIFIABLE_REJECTION) {
     if (ownerNote === null) {
@@ -34479,12 +34498,14 @@ function applyOwnerPromotion(breakdown, ownerNote, option = "--promote") {
     }
     breakdown.ownerPromotion = { gate: "unverifiable", heldBecause: breakdown.rejectedBecause, ownerNote };
     breakdown.eligible = true;
+    breakdown.gate = null;
     breakdown.rejectedBecause = null;
     return null;
   }
   if (gate === "policy") {
     breakdown.ownerPromotion = { gate, heldBecause: breakdown.rejectedBecause, ruleId: breakdown.rejectedBecause.slice(POLICY_SUPPRESSED_PREFIX.length) };
     breakdown.eligible = true;
+    breakdown.gate = null;
     breakdown.rejectedBecause = null;
     return null;
   }
@@ -34493,6 +34514,7 @@ function applyOwnerPromotion(breakdown, ownerNote, option = "--promote") {
   }
   breakdown.ownerPromotion = { gate, heldBecause: breakdown.rejectedBecause };
   breakdown.eligible = true;
+  breakdown.gate = null;
   breakdown.rejectedBecause = null;
   return null;
 }
@@ -34513,6 +34535,7 @@ function applyOwnerSeverityOverride(breakdown, override, ceiling) {
   const hint = DOCUMENT_NIT_HINT.replace("<id>", breakdown.candidateId);
   if (override === "nit" && breakdown.rejectedBecause?.endsWith(hint) && !breakdown.rejectedBecause.includes(" Also: ")) {
     breakdown.eligible = true;
+    breakdown.gate = null;
     breakdown.rejectedBecause = null;
   }
   return null;
@@ -34780,12 +34803,14 @@ function scoreCommand(argv) {
         const suppression = matchingSuppression(suppressions, candidate);
         if (suppression !== null) {
           breakdown.eligible = false;
+          breakdown.gate = "policy";
           breakdown.rejectedBecause = `${POLICY_SUPPRESSED_PREFIX}${suppression.ruleId}`;
           suppressionByCandidate.set(candidate.candidateId, suppression);
         }
       }
       if (breakdown.eligible && uncorrectable.has(candidate.candidateId)) {
         breakdown.eligible = false;
+        breakdown.gate = "uncorrectable-correction";
         breakdown.rejectedBecause = `the verifier corrected ${JSON.stringify(uncorrectable.get(candidate.candidateId))}, which is not in the candidate's claim, failure mode or evidence, so the finding would state what the verifier found wrong`;
       }
       let absence = null;
@@ -34811,6 +34836,7 @@ function scoreCommand(argv) {
       }
       if (absence !== null && absence.found.length > 0) {
         breakdown.eligible = false;
+        breakdown.gate = "absence";
         breakdown.rejectedBecause = `claims something is absent, but the repository contains ${absence.found.join(", ")}`;
       }
       const followUp = followUpOf(candidate, verifications.get(candidate.candidateId), thread, owner);
@@ -34823,8 +34849,9 @@ function scoreCommand(argv) {
       const echoThread = followUp === null ? citedLocations(thread) : citedLocations(thread).filter(
         (comment) => !(comment.author === followUp.author && comment.path === followUp.path && comment.line === followUp.line) && !(comment.cited === true && comment.author === followUp.author)
       );
-      const listable = !breakdown.eligible && locallyListable(breakdown.rejectedBecause);
-      const alsoRejected = (because) => {
+      const listable = !breakdown.eligible && locallyListable(breakdown);
+      const alsoRejected = (because, code3) => {
+        breakdown.gate = code3;
         breakdown.rejectedBecause = `${breakdown.rejectedBecause ?? ""}. Also: ${because}`;
       };
       const echoed = breakdown.eligible || listable ? alreadySaidOnThread(candidate, echoThread) : null;
@@ -34832,28 +34859,31 @@ function scoreCommand(argv) {
         const because = `already said on this pull request by ${echoed.author}` + (echoed.path === null ? "" : ` at ${echoed.path}:${echoed.line ?? "?"}`);
         if (breakdown.eligible) {
           breakdown.eligible = false;
+          breakdown.gate = "echo";
           breakdown.rejectedBecause = because;
         } else {
-          alsoRejected(because);
+          alsoRejected(because, "echo");
         }
       }
       const anchorCheck = anchorHunks === null ? null : anchorFor(anchorHunks, candidate);
       if (anchorCheck !== null && !anchorCheck.ok && !onDeletedFile(candidate, anchorCheck)) {
         const earlier = breakdown.rejectedBecause;
         breakdown.eligible = false;
+        breakdown.gate = "anchor";
         breakdown.rejectedBecause = reason(anchorCheck) + (earlier === null ? "" : ` Also: ${earlier}`);
       }
       let citation = null;
-      const stillListable = !breakdown.eligible && listable && locallyListable(breakdown.rejectedBecause);
+      const stillListable = !breakdown.eligible && listable && locallyListable(breakdown);
       if ((breakdown.eligible || stillListable) && searchRoot !== null) {
         citation = checkCitation(candidate.path, searchRoot, baseRef, reachDiff);
         if (!citation.resolves && !citation.inconclusive) {
           const because = `cites ${candidate.path}, which does not exist at the reviewed ref` + (citation.suggestion === null ? "" : `; did it mean ${citation.suggestion}?`);
           if (breakdown.eligible) {
             breakdown.eligible = false;
+            breakdown.gate = "citation";
             breakdown.rejectedBecause = because;
           } else {
-            alsoRejected(because);
+            alsoRejected(because, "citation");
           }
         }
       }
@@ -34882,10 +34912,10 @@ function scoreCommand(argv) {
     }
     applyQuestionCap(results);
     const belowGate = results.filter((r) => {
-      const gate = gateOf(r.rejectedBecause);
+      const gate = gateOf(r);
       return !r.eligible && Number.isFinite(r.finalScore) && gate !== null && gate !== "policy" && (r.confidenceSource === "verifier" || gate === "materiality");
     }).map((r) => {
-      const gate = gateOf(r.rejectedBecause);
+      const gate = gateOf(r);
       return boundLists({
         candidateId: r.candidateId,
         path: r.path,
@@ -34900,7 +34930,7 @@ function scoreCommand(argv) {
         }
       });
     });
-    const suppressed = results.filter((r) => !r.eligible && gateOf(r.rejectedBecause) === "policy").map((r) => {
+    const suppressed = results.filter((r) => !r.eligible && gateOf(r) === "policy").map((r) => {
       const suppression = suppressionByCandidate.get(r.candidateId);
       return boundLists({
         candidateId: r.candidateId,
@@ -35066,11 +35096,26 @@ function scoreCommand(argv) {
     db.close();
   }
 }
-function locallyListable(rejectedBecause) {
-  if (rejectedBecause === null) return false;
-  return rejectedBecause === UNVERIFIABLE_REJECTION || gateOf(rejectedBecause) !== null;
+function locallyListable(breakdown) {
+  if (breakdown.rejectedBecause === null) return false;
+  return breakdown.gate === "unverifiable" || breakdown.rejectedBecause === UNVERIFIABLE_REJECTION || gateOf(breakdown) !== null;
 }
-function gateOf(rejectedBecause) {
+var LISTED_GATE = {
+  "confidence-floor": "confidence",
+  "question-gap": "confidence",
+  score: "score",
+  policy: "policy",
+  materiality: "materiality",
+  "owner-precedent": "owner-precedent"
+};
+function gateOf(breakdown) {
+  if (breakdown === null || typeof breakdown === "string") return gateFromProse(breakdown);
+  if (breakdown.gate !== void 0) {
+    return breakdown.gate === null ? null : LISTED_GATE[breakdown.gate] ?? null;
+  }
+  return gateFromProse(breakdown.rejectedBecause);
+}
+function gateFromProse(rejectedBecause) {
   if (rejectedBecause === null || rejectedBecause.includes(" Also: ")) return null;
   if (rejectedBecause.startsWith(POLICY_SUPPRESSED_PREFIX)) return "policy";
   if (rejectedBecause.startsWith(NOT_MATERIAL_PREFIX)) return "materiality";
