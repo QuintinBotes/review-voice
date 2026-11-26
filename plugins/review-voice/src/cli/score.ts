@@ -32,6 +32,7 @@ import {
   type Candidate,
   type RawCandidate,
   type ScoreBreakdown,
+  type HoldGate,
   type MissingContext,
   type Verification,
   ownerRaiseCeiling,
@@ -248,7 +249,7 @@ function ownerQuestionProblem(breakdown: ScoreBreakdown, verification: Verificat
  * stopped it. Anything else was stopped by a check of the claim itself.
  */
 function applyOwnerPromotion(breakdown: ScoreBreakdown, ownerNote: string | null, option: string = '--promote'): string | null {
-  const gate = gateOf(breakdown.rejectedBecause);
+  const gate = gateOf(breakdown);
   if (breakdown.eligible) return `${option} ${breakdown.candidateId}: it is already eligible.`;
   // The unverifiable cap is a check of the claim, not a preference gate, so it
   // only lifts on an explicit owner decision that is recorded with its reason (#163).
@@ -261,6 +262,7 @@ function applyOwnerPromotion(breakdown: ScoreBreakdown, ownerNote: string | null
     }
     breakdown.ownerPromotion = { gate: 'unverifiable', heldBecause: breakdown.rejectedBecause, ownerNote };
     breakdown.eligible = true;
+    breakdown.gate = null;
     breakdown.rejectedBecause = null;
     return null;
   }
@@ -270,6 +272,7 @@ function applyOwnerPromotion(breakdown: ScoreBreakdown, ownerNote: string | null
   if (gate === 'policy') {
     breakdown.ownerPromotion = { gate, heldBecause: breakdown.rejectedBecause!, ruleId: breakdown.rejectedBecause!.slice(POLICY_SUPPRESSED_PREFIX.length) };
     breakdown.eligible = true;
+    breakdown.gate = null;
     breakdown.rejectedBecause = null;
     return null;
   }
@@ -285,6 +288,7 @@ function applyOwnerPromotion(breakdown: ScoreBreakdown, ownerNote: string | null
   }
   breakdown.ownerPromotion = { gate, heldBecause: breakdown.rejectedBecause! };
   breakdown.eligible = true;
+  breakdown.gate = null;
   breakdown.rejectedBecause = null;
   return null;
 }
@@ -319,6 +323,7 @@ function applyOwnerSeverityOverride(breakdown: ScoreBreakdown, override: OwnerOv
   const hint = DOCUMENT_NIT_HINT.replace('<id>', breakdown.candidateId);
   if (override === 'nit' && breakdown.rejectedBecause?.endsWith(hint) && !breakdown.rejectedBecause.includes(' Also: ')) {
     breakdown.eligible = true;
+    breakdown.gate = null;
     breakdown.rejectedBecause = null;
   }
   return null;
@@ -664,6 +669,7 @@ export function scoreCommand(argv: string[]): number {
         const suppression = matchingSuppression(suppressions, candidate);
         if (suppression !== null) {
           breakdown.eligible = false;
+          breakdown.gate = 'policy';
           breakdown.rejectedBecause = `${POLICY_SUPPRESSED_PREFIX}${suppression.ruleId}`;
           suppressionByCandidate.set(candidate.candidateId, suppression);
         }
@@ -671,6 +677,7 @@ export function scoreCommand(argv: string[]): number {
 
       if (breakdown.eligible && uncorrectable.has(candidate.candidateId)) {
         breakdown.eligible = false;
+        breakdown.gate = 'uncorrectable-correction';
         breakdown.rejectedBecause =
           `the verifier corrected ${JSON.stringify(uncorrectable.get(candidate.candidateId))}, which is not in the ` +
           "candidate's claim, failure mode or evidence, so the finding would state what the verifier found wrong";
@@ -712,6 +719,7 @@ export function scoreCommand(argv: string[]): number {
 
       if (absence !== null && absence.found.length > 0) {
         breakdown.eligible = false;
+        breakdown.gate = 'absence';
         breakdown.rejectedBecause =
           `claims something is absent, but the repository contains ${absence.found.join(', ')}`;
       }
@@ -747,8 +755,9 @@ export function scoreCommand(argv: string[]): number {
       // A candidate one local gate stopped is still checked against the rules
       // below, so `belowGate` and `unverified` list only what that gate alone
       // stopped. A failure here is appended rather than replacing the reason.
-      const listable = !breakdown.eligible && locallyListable(breakdown.rejectedBecause);
-      const alsoRejected = (because: string): void => {
+      const listable = !breakdown.eligible && locallyListable(breakdown);
+      const alsoRejected = (because: string, code: 'echo' | 'citation'): void => {
+        breakdown.gate = code;
         breakdown.rejectedBecause = `${breakdown.rejectedBecause ?? ''}. Also: ${because}`;
       };
 
@@ -759,9 +768,10 @@ export function scoreCommand(argv: string[]): number {
           (echoed.path === null ? '' : ` at ${echoed.path}:${echoed.line ?? '?'}`);
         if (breakdown.eligible) {
           breakdown.eligible = false;
+          breakdown.gate = 'echo';
           breakdown.rejectedBecause = because;
         } else {
-          alsoRejected(because);
+          alsoRejected(because, 'echo');
         }
       }
 
@@ -775,13 +785,14 @@ export function scoreCommand(argv: string[]): number {
       if (anchorCheck !== null && !anchorCheck.ok && !onDeletedFile(candidate, anchorCheck)) {
         const earlier = breakdown.rejectedBecause;
         breakdown.eligible = false;
+        breakdown.gate = 'anchor';
         breakdown.rejectedBecause = reason(anchorCheck) + (earlier === null ? '' : ` Also: ${earlier}`);
       }
 
       // The path is the one field nothing checked, and a wrong one sends the
       // author to a file that does not exist.
       let citation = null;
-      const stillListable = !breakdown.eligible && listable && locallyListable(breakdown.rejectedBecause);
+      const stillListable = !breakdown.eligible && listable && locallyListable(breakdown);
       if ((breakdown.eligible || stillListable) && searchRoot !== null) {
         citation = checkCitation(candidate.path, searchRoot, baseRef, reachDiff);
         if (!citation.resolves && !citation.inconclusive) {
@@ -790,9 +801,10 @@ export function scoreCommand(argv: string[]): number {
             (citation.suggestion === null ? '' : `; did it mean ${citation.suggestion}?`);
           if (breakdown.eligible) {
             breakdown.eligible = false;
+            breakdown.gate = 'citation';
             breakdown.rejectedBecause = because;
           } else {
-            alsoRejected(because);
+            alsoRejected(because, 'citation');
           }
         }
       }
@@ -839,7 +851,7 @@ export function scoreCommand(argv: string[]): number {
     // `gate` says which one stopped it.
     const belowGate = results
       .filter((r) => {
-        const gate = gateOf(r.rejectedBecause);
+        const gate = gateOf(r);
         return (
           !r.eligible &&
           Number.isFinite(r.finalScore) &&
@@ -849,7 +861,7 @@ export function scoreCommand(argv: string[]): number {
         );
       })
       .map((r) => {
-        const gate = gateOf(r.rejectedBecause);
+        const gate = gateOf(r);
         return boundLists({
           candidateId: r.candidateId,
           path: r.path,
@@ -874,7 +886,7 @@ export function scoreCommand(argv: string[]): number {
     // Shown locally like `belowGate`, and never posted unless the owner
     // promotes it: a suppression is preference, not truth (docs/adr/0032).
     const suppressed = results
-      .filter((r) => !r.eligible && gateOf(r.rejectedBecause) === 'policy')
+      .filter((r) => !r.eligible && gateOf(r) === 'policy')
       .map((r) => {
         const suppression = suppressionByCandidate.get(r.candidateId);
         return boundLists({
@@ -1079,13 +1091,36 @@ export function scoreCommand(argv: string[]): number {
  * locally - the unverifiable cap, the confidence floor, the final score, the
  * materiality verdict or an approved suppression - and from nothing else yet.
  */
-function locallyListable(rejectedBecause: string | null): boolean {
-  if (rejectedBecause === null) return false;
-  return rejectedBecause === UNVERIFIABLE_REJECTION || gateOf(rejectedBecause) !== null;
+function locallyListable(breakdown: GateSource): boolean {
+  if (breakdown.rejectedBecause === null) return false;
+  return breakdown.gate === 'unverifiable' || breakdown.rejectedBecause === UNVERIFIABLE_REJECTION || gateOf(breakdown) !== null;
 }
 
-/** The gate that alone stopped a candidate, or null. */
-export function gateOf(rejectedBecause: string | null): 'score' | 'confidence' | 'policy' | 'materiality' | 'owner-precedent' | null {
+type GateSource = { rejectedBecause: string | null; gate?: HoldGate | null | undefined };
+
+/** What each recorded gate is called by the lists; a gate not named here is listed in none of them. */
+const LISTED_GATE = {
+  'confidence-floor': 'confidence',
+  'question-gap': 'confidence',
+  score: 'score',
+  policy: 'policy',
+  materiality: 'materiality',
+  'owner-precedent': 'owner-precedent',
+} as const;
+
+/**
+ * The gate that alone stopped a candidate, or null. Reads the recorded `gate`
+ * (#485); only a breakdown stored before it existed is read from the prose.
+ */
+export function gateOf(breakdown: GateSource | string | null): 'score' | 'confidence' | 'policy' | 'materiality' | 'owner-precedent' | null {
+  if (breakdown === null || typeof breakdown === 'string') return gateFromProse(breakdown);
+  if (breakdown.gate !== undefined) {
+    return breakdown.gate === null ? null : (LISTED_GATE as Record<string, 'score' | 'confidence' | 'policy' | 'materiality' | 'owner-precedent'>)[breakdown.gate] ?? null;
+  }
+  return gateFromProse(breakdown.rejectedBecause);
+}
+
+function gateFromProse(rejectedBecause: string | null): 'score' | 'confidence' | 'policy' | 'materiality' | 'owner-precedent' | null {
   if (rejectedBecause === null || rejectedBecause.includes(' Also: ')) return null;
   if (rejectedBecause.startsWith(POLICY_SUPPRESSED_PREFIX)) return 'policy';
   if (rejectedBecause.startsWith(NOT_MATERIAL_PREFIX)) return 'materiality';
