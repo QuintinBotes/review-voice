@@ -18,6 +18,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reviewed head deleted and the head restores stays an addition, so the
   withdrawn deletion still shows. (#477)
 
+## [1.29.2] - 2026-11-26
+
+### Fixed
+
+- A comment on another file rejects the candidate as a repeat only when it
+  names both the candidate's file (any case) and one of its symbols and shares
+  enough wording, the same bar as a comment on its own lines. A match on the
+  file or the symbol alone keeps the candidate. Every comment naming the file
+  or a symbol, at any distance and anchored or not (review bodies and
+  conversation comments too), is handed to the evidence verifier as
+  `possibleRepeatOf.alsoNaming`, best overlap first under a byte budget, with
+  `alsoNamingOmitted` counting any left out, so it can reject a root-cause
+  repeat and quote the comment. A file name only counts when it ends there:
+  `Child.tsx.bak` is not `Child.tsx` (#488).
+- The CI heads-up lines in a review body are checked against the thread: a
+  failing check is left out when a comment from another reviewer or a bot
+  contains every word of its name as a whole word, bar generic ones (check,
+  job, ci, status, workflow, run, build, test, tests) and short words such as
+  "pr" included, so "get under the PR size limit" hides "Check PR size" and
+  "size" alone does not. Only heads-up lines in comments by the tool's own
+  login are ignored; another author's count. A line left with no check is
+  dropped.
+  `--recheck-thread` applies both rules to comments added since the run, and
+  refuses with `thread-changed` (#488).
+
 ## [1.29.1] - 2026-11-23
 
 ### Fixed
