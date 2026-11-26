@@ -141,6 +141,13 @@ export function isFixVerdict(value: unknown): value is FixVerdict {
 export const EVIDENCE_QUALITIES = ['high', 'medium', 'low'] as const;
 export type EvidenceQuality = (typeof EVIDENCE_QUALITIES)[number];
 
+export const SEVERITY_FITS = ['right', 'too_high'] as const;
+export type SeverityFit = (typeof SEVERITY_FITS)[number];
+
+export function isSeverityFit(value: unknown): value is SeverityFit {
+  return typeof value === 'string' && (SEVERITY_FITS as readonly string[]).includes(value);
+}
+
 /**
  * What a boundary defect actually exposes, as the verifier traced it.
  * `no-exposure`: the boundary still holds elsewhere - the server rejects the
@@ -237,6 +244,12 @@ export interface Verification {
   /** The claim and failure mode cut to what the verifier confirmed, when it confirmed only part (#451). */
   narrowedClaim?: string | undefined;
   narrowedFailureMode?: string | undefined;
+  /** Whether a reasonable author would change code for this, judged after `verified` (#479). */
+  material?: boolean | undefined;
+  /** What breaks, and for whom, when `material` is answered (#479). */
+  materialReason?: string | undefined;
+  /** Whether the tier the claim carries fits, or is too high (#479). */
+  severityFit?: SeverityFit | undefined;
 }
 
 /** Longest verifier reason quoted in a rejection. */
@@ -309,6 +322,22 @@ export function isSuppressionExempt(category: string): boolean {
  * and `applyOwnerPromotion` in the CLI read it back (docs/adr/0032).
  */
 export const POLICY_SUPPRESSED_PREFIX = 'policy-suppressed:';
+
+/**
+ * What `rejectedBecause` starts with when the verifier judged a verified
+ * minor or nit not material (#479); the verifier's `material_reason`
+ * follows. `score` sets it, and `gateOf` in the CLI reads it back so the
+ * finding is listed in `belowGate` and stays promotable.
+ */
+export const NOT_MATERIAL_PREFIX = 'the verifier judged this not material:';
+
+/**
+ * What `rejectedBecause` starts with when owner precedent alone held a
+ * verified, verifier-sourced claim (#479). It replaced the final-score gate
+ * for those claims, so like that gate it is listed in `belowGate` and stays
+ * promotable; `gateOf` in the CLI reads it back.
+ */
+export const OWNER_PRECEDENT_PREFIX = 'owner precedent is against raising this';
 
 /**
  * The approved suppression that holds this candidate, or null (docs/adr/0032).
@@ -521,6 +550,53 @@ export function applyLaneSeverity(
 }
 
 /**
+ * The verifier's materiality verdict, applied to the tier scoring already
+ * derived, bounded and laned (#479). Materiality is separate from truth: it
+ * never changes confidence, and a claim the verifier rejected is left to that
+ * rejection. A minor or nit the verifier judged not material is held (the
+ * returned `hold`), except in a category no suppression may reach, which is
+ * never held for materiality. Anything else the verdict touches - an
+ * important or blocking judged not material or too high, an exempt minor -
+ * is lowered exactly one tier, with the reason saying why. A nit has no
+ * lower tier, so it is reported as it was. Missing fields mean material.
+ */
+function applyMaterialityVerdict(
+  derived: DerivedSeverity,
+  candidate: Candidate,
+  verification?: Verification | undefined,
+): { severity: DerivedSeverity; hold: string | null } {
+  const unchanged = { severity: derived, hold: null };
+  // Materiality is judged after truth, so only an explicit `verified: true` carries it.
+  if (verification?.verified !== true || derived.severity === 'question') return unchanged;
+  const notMaterial = verification.material === false;
+  const tooHigh = verification.severityFit === 'too_high';
+  if (!notMaterial && !tooHigh) return unchanged;
+  const at = TIER_ORDER.indexOf(derived.severity as (typeof TIER_ORDER)[number]);
+  if (at === -1) return unchanged;
+  const reason = verification.materialReason?.replace(/\s+/g, ' ').trim() ?? '';
+  if (notMaterial && at <= TIER_ORDER.indexOf('minor') && !isSuppressionExempt(candidate.category)) {
+    return { severity: derived, hold: reason === '' ? NOT_MATERIAL_PREFIX : `${NOT_MATERIAL_PREFIX} ${reason}` };
+  }
+  // too_high alone lowers only important or blocking; a nit has no lower tier.
+  if (at === 0 || (!notMaterial && at <= TIER_ORDER.indexOf('minor'))) return unchanged;
+  const lowered = TIER_ORDER[at - 1] as DerivedSeverity['severity'];
+  const why = [
+    ...(notMaterial ? [`the verifier judged this not material${reason === '' ? '' : `: ${reason}`}`] : []),
+    ...(tooHigh
+      ? [`the verifier judged the severity too high (severity_fit: too_high)${!notMaterial && reason !== '' ? `: ${reason}` : ''}`]
+      : []),
+  ];
+  return {
+    severity: {
+      ...derived,
+      severity: lowered,
+      reason: `${derived.reason}, lowered from ${derived.severity} to ${lowered} because ${why.join(' and ')}`,
+    },
+    hold: null,
+  };
+}
+
+/**
  * The ceiling for a claim nobody could check.
  *
  * Below every default gate, so such a candidate is rejected rather than merely
@@ -632,7 +708,7 @@ export interface ScoreBreakdown {
    * (docs/adr/0032).
    */
   ownerPromotion?: {
-    gate: 'score' | 'confidence' | 'unverifiable' | 'policy';
+    gate: 'score' | 'confidence' | 'unverifiable' | 'policy' | 'materiality' | 'owner-precedent';
     heldBecause: string;
     ownerNote?: string;
     ruleId?: string;
@@ -653,13 +729,17 @@ export interface ScoreBreakdown {
 }
 
 export interface Thresholds {
-  /** Applied to a confidence the verifier established, at blocking or important. */
+  /**
+   * The low floor on a confidence the verifier established, at blocking or
+   * important (#479). Measured above verification, the number does not
+   * separate true from false finely enough to gate on at 0.8, so it is a
+   * floor, not a truth gate; materiality is the verdict that does that work.
+   */
   technicalConfidence: number;
   /**
-   * Applied to a confidence the verifier established, at minor or nit (#343),
-   * and never above `technicalConfidence`. Of the runs that missed a seeded
-   * defect on the recall fixtures, half lost it to a verified finding held
-   * under 0.8, nearly all minors and nits, which cost the author least to decline.
+   * The same floor at minor or nit (#343, #479), and never above
+   * `technicalConfidence`. The tiered key stays: an owner may still set both
+   * keys and recover a stricter main floor with a lower minor one.
    */
   minorConfidence: number;
   /**
@@ -717,12 +797,32 @@ export interface Thresholds {
  * novelty and evidence quality say whether the owner would want this said,
  * which the confidence gate does not measure. It should not be re-litigating
  * whether the finding is real, which the verifier decided on better evidence.
+ *
+ * Since #479 that argument is applied where the verifier has actually
+ * decided: a non-question claim it verified, gated on its own confidence,
+ * is no longer held to this number at all - only to owner precedent against
+ * it, as a question already was. The score is still computed and reported.
+ * The numeric gate remains for a candidate with no such verdict, the
+ * analyst-only candidate above all.
  */
 /** Below this, a question the verifier rejected is more likely moot than not (#219). */
 export const QUESTION_GAP_FLOOR = 0.5;
 
+/**
+ * The floor a suppression-exempt category keeps at every tier (#479), however
+ * low the configured main floor is; a configured main above it still wins.
+ */
+export const EXEMPT_CONFIDENCE_FLOOR = 0.8;
+
+/**
+ * The fix confidence a verified suggested fix must reach to render. Its own
+ * constant since #479: it read `thresholds.technicalConfidence`, so lowering
+ * that floor would have loosened what repair text may be stated as verified.
+ */
+export const FIX_CONFIDENCE_THRESHOLD = 0.8;
+
 export const DEFAULT_THRESHOLDS: Thresholds = {
-  technicalConfidence: 0.8,
+  technicalConfidence: 0.7,
   minorConfidence: 0.7,
   analystOnlyConfidence: 0.7,
   finalScore: 0.68,
@@ -1587,6 +1687,8 @@ function renderFix(
   verification: Verification | undefined,
   thresholds: Thresholds,
 ): FixRendering {
+  // Its own 0.8 so the lower finding floor does not loosen it, raised with an owner's stricter main floor (ADR 0033).
+  const fixFloor = Math.max(FIX_CONFIDENCE_THRESHOLD, thresholds.technicalConfidence);
   const suggested = candidate.suggestedFix ?? null;
   const rawVerdict = verification?.fixVerdict;
   const verdict = isFixVerdict(rawVerdict) ? rawVerdict : null;
@@ -1605,7 +1707,7 @@ function renderFix(
   const analystConfidence = candidate.fixConfidence ?? null;
   const hasDirection = direction !== null && direction.trim().length > 0;
 
-  if (hasSuggested && verdict === 'verified' && confidence !== null && confidence >= thresholds.technicalConfidence) {
+  if (hasSuggested && verdict === 'verified' && confidence !== null && confidence >= fixFloor) {
     return {
       suggested,
       analystConfidence,
@@ -1615,7 +1717,7 @@ function renderFix(
       render: 'fix',
       reason:
         verifierReason ??
-        `verified fix confidence ${confidence.toFixed(2)} meets the ${thresholds.technicalConfidence} threshold`,
+        `verified fix confidence ${confidence.toFixed(2)} meets the ${fixFloor} threshold`,
     };
   }
 
@@ -1635,7 +1737,7 @@ function renderFix(
   if (!hasSuggested) {
     reason = 'no fix was proposed';
   } else if (verdict === 'verified' && confidence !== null) {
-    reason = `verified fix confidence ${confidence.toFixed(2)} is below the ${thresholds.technicalConfidence} threshold`;
+    reason = `verified fix confidence ${confidence.toFixed(2)} is below the ${fixFloor} threshold`;
   } else if (verdict === 'partial' && hasDirection) {
     reason = 'the direction is not one short sentence without code, so it is withheld';
   } else if (verdict === 'partial') {
@@ -1713,7 +1815,12 @@ function verifiedFloor(category: string, tier: Severity | 'question', thresholds
   // not also lower the bar for the claims a wrong comment costs most. An
   // unlabelled candidate arrives without a category.
   if (isSuppressionExempt(category ?? '')) {
-    return { floor: main, names: `the floor for every tier in the ${canonicalCategory(category)} category` };
+    // Kept at 0.8 however low the main floor goes (#479); an owner who raises
+    // the main threshold above it raises this one with it.
+    return {
+      floor: Math.max(EXEMPT_CONFIDENCE_FLOOR, main),
+      names: `the floor for every tier in the ${canonicalCategory(category)} category`,
+    };
   }
   if (tier !== 'minor' && tier !== 'nit') {
     return { floor: main, names: `the floor for ${tier === 'important' ? 'an' : 'a'} ${tier} finding` };
@@ -1782,12 +1889,16 @@ export function scoreCandidate(
   // The tier the finding is reported at, once evidence and the lane have
   // bounded it. The floor is read from this, not from the derivation before
   // the bound: a finding held at minor was refused at the important floor (#435).
-  const severity = withLegacyTierHint(
+  const boundedSeverity = withLegacyTierHint(
     applyLaneSeverity(boundSeverityByEvidence(derivedSeverity, candidate, verification), candidate, lane, verification),
     candidate,
     verification,
     lane,
   );
+  // The verifier's materiality verdict bounds the tier last, so the floor
+  // below is read from the tier the finding is actually reported at (#479).
+  const materiality = applyMaterialityVerdict(boundedSeverity, candidate, verification);
+  const severity = materiality.severity;
 
   // Which floor applies depends on who established the number. The verifier
   // checked the claim; the analyst did not.
@@ -1817,6 +1928,13 @@ export function scoreCandidate(
 
   const finalScore = score(ownerAlignment, repositoryAlignment);
   const anchoredFinalScore = score(anchoredOwnerAlignment, anchoredRepositoryAlignment);
+
+  // A claim the verifier verified, on the verifier's own confidence, is not
+  // re-litigated by the numeric score (#479): its only preference gate is
+  // owner precedent against it, the rule a question already uses. The score
+  // above is still computed and reported.
+  const verifiedVerifierClaim =
+    !isQuestion && confidenceSource === 'verifier' && verification?.verified === true;
 
   // A question asserts nothing, so a confidence gate protects the reader from
   // nothing.
@@ -1904,10 +2022,20 @@ export function scoreCandidate(
       (confidenceSource === 'analyst'
         ? '. No verification was supplied, so this is the analyst\'s opinion of its own output.'
         : `, ${verified.names}`);
+  } else if (verifiedVerifierClaim) {
+    if (ownerAlignment < NEUTRAL_ALIGNMENT) {
+      rejectedBecause =
+        `${OWNER_PRECEDENT_PREFIX} (${ownerAlignment.toFixed(2)} alignment), ` +
+        'and a finding the owner has dismissed the like of before is noise the second time';
+    } else if (materiality.hold !== null) {
+      rejectedBecause = materiality.hold;
+    }
   } else if (finalScore < thresholds.finalScore) {
     // Four places, because two produced "score 0.78 is below 0.78" on a
     // finalScore of 0.7788996174443317. True, and unreadable.
     rejectedBecause = `score ${finalScore.toFixed(4)} is below the ${thresholds.finalScore} threshold`;
+  } else if (materiality.hold !== null) {
+    rejectedBecause = materiality.hold;
   }
 
   // A stale consumer sits on code the diff did not touch, so nothing in the
@@ -1948,6 +2076,24 @@ export function scoreCandidate(
     else rejectedBecause = `${rejectedBecause}. Also: ${untraced}`;
   }
 
+  // Whether excluding anchor-less precedents would flip eligibility, read
+  // through the gate this candidate was actually held to: owner alignment
+  // for a question and for a verified verifier-sourced claim (#479), the
+  // numeric score for the rest. Every other rejection is independent of
+  // alignment, as it was.
+  const ownerGated = isQuestion || verifiedVerifierClaim;
+  const wouldChangeEligibility = ownerGated
+    ? rejectedBecause === null
+      ? anchoredOwnerAlignment < NEUTRAL_ALIGNMENT
+      : rejectedBecause.startsWith('owner precedent is against') &&
+        !rejectedBecause.includes(' Also: ') &&
+        // Without the precedent a materiality hold would still stop it.
+        materiality.hold === null &&
+        anchoredOwnerAlignment >= NEUTRAL_ALIGNMENT
+    : rejectedBecause === null
+      ? anchoredFinalScore < thresholds.finalScore
+      : rejectedBecause.startsWith('score ') && anchoredFinalScore >= thresholds.finalScore;
+
   const fix = renderFix(candidate, verification, thresholds);
 
   return {
@@ -1972,12 +2118,7 @@ export function scoreCandidate(
       ownerAlignment: anchoredOwnerAlignment,
       repositoryAlignment: anchoredRepositoryAlignment,
       finalScore: anchoredFinalScore,
-      // Only the score gate can flip here: every other rejection reason is
-      // independent of alignment.
-      wouldChangeEligibility:
-        rejectedBecause === null
-          ? anchoredFinalScore < thresholds.finalScore
-          : rejectedBecause.startsWith('score ') && anchoredFinalScore >= thresholds.finalScore,
+      wouldChangeEligibility,
     },
     eligible: rejectedBecause === null,
     rejectedBecause,

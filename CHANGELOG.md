@@ -5,6 +5,49 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- The evidence-verifier may return `material`, `material_reason` (at most
+  300 characters) and `severity_fit` (`right` or `too_high`): whether a
+  reasonable author would change code, what breaks and for whom, and whether
+  the tier fits, judged after `verified` and never by lowering
+  `technical_confidence`. Absent fields mean material. On a verified claim,
+  `material: false` at minor or nit holds the finding in `belowGate` with
+  `gate: materiality` and the verifier's reason, promotable with
+  `score --promote` as the other below-gate entries are; at important or
+  blocking, `material: false` or `severity_fit: too_high` reports it exactly
+  one tier lower, with the severity reason saying why. A security,
+  authorization, authentication, data integrity or trust boundary finding is
+  never held for materiality, only lowered that one tier. The verification
+  schema, `check-verification` and `score` refuse a non-boolean `material`,
+  an overlong `material_reason` or an unknown `severity_fit`. (#479,
+  docs/adr/0037)
+
+### Changed
+
+- Verifier confidence stops acting as a fine-grained truth gate.
+  `review.confidence_threshold` and `review.minor_confidence_threshold` now
+  default to 0.7 at every tier instead of 0.8 at blocking and important and
+  0.7 at minor and nit (a cross-family relabel found two false findings in the
+  0.50 to 0.70 band, so the floor is 0.7, not lower); both keys still override the
+  defaults, with the minor floor still clamped to at most the main one, so
+  setting 0.8 and 0.7 reproduces the old floors. A category no suppression
+  may reach keeps 0.8 at every tier, or the configured main floor when that
+  is higher. The analyst-only floor stays 0.7, and the verified suggested
+  fix still needs its own 0.8, or the configured main floor when that is
+  higher, so the lower finding floor does not loosen what repair text renders
+  as verified.
+- A non-question claim the verifier verified, gated on its own confidence,
+  no longer has to clear the numeric final score: it is held back only when
+  owner alignment is below neutral, the rule a question already used, and
+  is then listed in `belowGate` as `gate: owner-precedent`, promotable as the
+  score gate's entries were. The
+  final and anchored scores are still computed and reported, and the
+  anchored shadow is read through that owner gate. Analyst-only candidates
+  keep the numeric final-score gate. (#479, docs/adr/0037)
+
 ## [1.29.1] - 2026-11-23
 
 ### Fixed

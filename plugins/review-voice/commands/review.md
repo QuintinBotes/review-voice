@@ -683,6 +683,10 @@ Keep `fix_verdict`, `fix_confidence`, `fix_reason` and `fix_direction` in
 repair separately from the defect and must not be derived or filled in later.
 Keep `impact_traced` there too: scoring reads it to decide whether a finding may
 be reported above the tier the analyst asked for. Keep `impact_class` as well.
+Keep `material`, `material_reason` and `severity_fit` there: scoring reads the
+verifier's materiality verdict, separate from truth, deciding whether a
+verified minor or nit is held below the gate instead of posted, and whether a
+verified important or blocking is reported one tier lower.
 
 If nothing survives and nothing was set aside, output exactly
 `No actionable findings.` and stop only when `simplificationEnabled` is false.
@@ -839,8 +843,8 @@ the explicit owner override into the severity reason, and the resulting scores
 must still drive `validate-output` and `record --scores`.
 When the owner asks to post a finding listed in `belowGate` or in
 `suppressed`, rerun `score` with `--promote <candidate_id>`. It accepts only a
-`belowGate` entry, which is a verified finding held by the score or confidence
-gate alone, or a `suppressed` entry, which is a verified finding an approved
+`belowGate` entry, which is a verified finding held by the score, confidence
+or materiality gate alone, or a `suppressed` entry, which is a verified finding an approved
 policy held back, and records `ownerPromotion` with the gate it was held by.
 When the owner wants such a finding raised as a question rather than stated,
 rerun `score` with `--as-question <candidate_id>` instead. It posts the
@@ -925,8 +929,13 @@ entry the verifier marked `cosmetic` - context that would only sharpen the
 wording - does not trigger the cap; every other entry does.
 
 `belowGate` lists the verified candidates stopped only by the final score
-(`gate: score`) or only by the floor on the verifier's own confidence
-(`gate: confidence`). Keep it for step 6. They are never posted and are not part
+(`gate: score`), only by the floor on the verifier's own confidence
+(`gate: confidence`), or only by the verifier judging a minor or nit not
+material (`gate: materiality`, with its `rejectedBecause`). A verified
+verifier-sourced claim is not stopped by the numeric final score at all; it
+reports the score and is held back only by owner precedent against it
+(`gate: owner-precedent`, with its `rejectedBecause`), which the owner can
+still post with `--promote`. Keep it for step 6. They are never posted and are not part
 of the validated output.
 
 `suppressed` lists the verified candidates an approved policy held back, each
@@ -1154,7 +1163,7 @@ stray directory and another project's notes took the reviewed count from 11 to
 - Exit 0: display the output verbatim. When `belowGate` from step 4 is not
   empty, print after it a line `Below the gate (not posted)` and then one line
   per entry: `[severity] path:line - claim`. They are verified but stopped by
-  the score or confidence gate, are never posted, and are not part of the
+  the score, confidence, materiality or owner-precedent gate, are never posted, and are not part of the
   validated output. When `suppressed` from step 4 is not empty, print after
   that a line `Held by approved policy (not posted)` and then one line per
   entry: `[severity] path:line - claim (rule <ruleId>, policy version
@@ -1271,8 +1280,9 @@ stray directory and another project's notes took the reviewed count from 11 to
   `droppedAsRepeat` from step 2 as `repeat`, each `droppedAsTool` entry as
   `restates-tool` with the fields from step 2, any cross-check result of PARTLY or
   REFUTED, each `belowGate` entry from step 4 as `below-gate` with its
-  `severity` and the reason `below the confidence gate` or `below the score
-  gate` after its `gate` (a blocking, important or minor finding held by the
+  `severity` and, after its `gate`, the reason `below the confidence gate`,
+  `below the score gate`, or for `gate: materiality` its `rejectedBecause`
+  (a blocking, important or minor finding held by the
   confidence gate keeps the review from approving, and `verdict` reads exactly
   that reason and severity, docs/adr/0016), each
   `suppressed` entry from step 4 as `policy-suppressed` with a reason naming

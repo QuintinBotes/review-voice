@@ -330,7 +330,9 @@ Such a finding can still be reported at `nit`, and only at `nit`.
 - The candidate makes a concrete technical claim.
 - The failure mode is plausible and material.
 - Evidence is cited from changed code, project context, or static findings.
-- Technical confidence meets the configured threshold (default 0.80).
+- Technical confidence meets the configured threshold (default 0.7 at every
+  tier, and 0.8 for a security, authorization, authentication, data integrity or trust
+  boundary finding).
 - Nothing in known code behavior or repository policy contradicts it.
 - It does not duplicate another candidate.
 - It is not purely stylistic, hypothetical, or generic.
@@ -505,6 +507,36 @@ Do not report a reach or radius. The CLI computes reach from the candidate's
 claim, changed path, and reviewed ref, and records the symbols and paths it
 searched. An agent-supplied value would make that derivation unfalsifiable.
 
+## Materiality is a separate verdict
+
+After you have decided `verified` and `technical_confidence`, answer three
+separate questions. Materiality is not truth: a claim can be entirely true
+and still not be worth a code change, and that never lowers your
+`technical_confidence`, which stays your judgement of whether the claim
+holds. Do not reject a true claim only because it is immaterial, and do not
+verify a false one because it would matter if true.
+
+1. Would a reasonable author change code for this? Report that as
+   `material` (true or false).
+2. What breaks, and for whom? Report that, in at most 300 characters, as
+   `material_reason`. When `material` is false, say why nothing that matters
+   breaks - who is unaffected, or what already covers it.
+3. Is the severity the claim carries the right one, or too high? Report
+   `severity_fit` as exactly `right` or `too_high`.
+
+Report truth and worth separately. When the facts and the failure mode hold
+and your objection is only about worth, severity, taste or "not a blocker",
+answer `verified: true` with `material: false`, and `severity_fit: "too_high"`
+where it applies. `verified: false` is reserved for claims whose facts or
+failure mode do not hold.
+
+Leave all three fields out when you are unsure; absent means material, at a
+fitting severity. Scoring reads them only on a verified claim: a minor or
+nit judged not material is held below the gate (never a security,
+authorization, authentication, data integrity or trust boundary finding),
+and an important or blocking judged not material, or `too_high`, is lowered
+exactly one tier.
+
 ## Verify the suggested fix separately
 
 Trace a candidate's `suggested_fix` through the same real inputs as the defect,
@@ -582,7 +614,8 @@ simplification verification; that mode uses the specialised output above.
 JSON only: `candidate_id`, `verified`, `evidence_quality`,
 `technical_confidence`, `contradictions`, `required_context_missing`, `reason`,
 `fix_verdict`, `fix_confidence`, `fix_reason`, `fix_direction`,
-`impact_traced`, `impact_class` for a boundary finding when it applies,
+`impact_traced`, `material`, `material_reason` and `severity_fit` when you can
+answer the materiality questions, `impact_class` for a boundary finding when it applies,
 `also_at` for further confirmed instances of the same defect, `corrections`
 for a detail the candidate states wrongly, `narrowed_claim` and
 `narrowed_failure_mode` when only part of it holds,

@@ -37,6 +37,9 @@ import {
   ownerRaiseCeiling,
   matchingSuppression,
   POLICY_SUPPRESSED_PREFIX,
+  NOT_MATERIAL_PREFIX,
+  OWNER_PRECEDENT_PREFIX,
+  isSeverityFit,
 } from '../scoring/score.ts';
 import {
   readStdin,
@@ -270,9 +273,13 @@ function applyOwnerPromotion(breakdown: ScoreBreakdown, ownerNote: string | null
     breakdown.rejectedBecause = null;
     return null;
   }
-  if (breakdown.confidenceSource !== 'verifier' || !Number.isFinite(breakdown.finalScore) || gate === null) {
+  if (
+    (breakdown.confidenceSource !== 'verifier' && gate !== 'materiality') ||
+    !Number.isFinite(breakdown.finalScore) ||
+    gate === null
+  ) {
     return (
-      `${option} ${breakdown.candidateId}: only a verified finding held by the score or confidence gate alone ` +
+      `${option} ${breakdown.candidateId}: only a verified finding held by the score, confidence, materiality or owner-precedent gate alone ` +
       `can be promoted, and this one was rejected because ${breakdown.rejectedBecause}.`
     );
   }
@@ -401,6 +408,9 @@ export function scoreCommand(argv: string[]): number {
         const verified = raw['verified'];
         const reason = raw['reason'];
         const blockerConfirmed = raw['blocker_confirmed'] ?? raw['blockerConfirmed'];
+        const material = raw['material'];
+        const materialReason = raw['material_reason'] ?? raw['materialReason'];
+        const severityFit = raw['severity_fit'] ?? raw['severityFit'];
         verifications.set(id, {
           candidateId: id,
           evidenceQuality: (raw['evidence_quality'] ?? raw['evidenceQuality']) as Verification['evidenceQuality'],
@@ -424,6 +434,10 @@ export function scoreCommand(argv: string[]): number {
           premisesVerified: typeof premisesVerified === 'boolean' ? premisesVerified : undefined,
           verified: typeof verified === 'boolean' ? verified : undefined,
           blockerConfirmed: typeof blockerConfirmed === 'boolean' ? blockerConfirmed : undefined,
+          // Already checked by `verificationProblem`; only the real shapes count.
+          material: typeof material === 'boolean' ? material : undefined,
+          materialReason: typeof materialReason === 'string' ? materialReason : undefined,
+          severityFit: isSeverityFit(severityFit) ? severityFit : undefined,
           reason: typeof reason === 'string' ? reason : undefined,
           // Already checked by `verificationProblem`.
           alsoAt: (raw['also_at'] ?? raw['alsoAt']) as string[] | undefined,
@@ -816,21 +830,24 @@ export function scoreCommand(argv: string[]): number {
     // before the distribution below so `cleared` counts what actually ships.
     applyQuestionCap(results);
 
-    // Confirmed by the verifier and stopped by one numeric gate alone: the
-    // final score, which is preference, or the floor on the verifier's own
-    // confidence. Real by the verifier's account, but not shipped. Shown
-    // locally so it is not lost, and never posted. A rejection from any other
-    // gate leads its reason or is appended after "Also:", so the prefix tells
-    // them apart; `gate` says which one stopped it.
+    // Confirmed by the verifier and stopped by one gate alone: the final
+    // score, which is preference, the floor on the verifier's own confidence,
+    // or the verifier's materiality verdict on a minor or nit (#479). Real by
+    // the verifier's account, but not shipped. Shown locally so it is not
+    // lost, and never posted. A rejection from any other gate leads its
+    // reason or is appended after "Also:", so the prefix tells them apart;
+    // `gate` says which one stopped it.
     const belowGate = results
-      .filter(
-        (r) =>
-          r.confidenceSource === 'verifier' &&
+      .filter((r) => {
+        const gate = gateOf(r.rejectedBecause);
+        return (
           !r.eligible &&
           Number.isFinite(r.finalScore) &&
-          gateOf(r.rejectedBecause) !== null &&
-          gateOf(r.rejectedBecause) !== 'policy',
-      )
+          gate !== null &&
+          gate !== 'policy' &&
+          (r.confidenceSource === 'verifier' || gate === 'materiality')
+        );
+      })
       .map((r) => {
         const gate = gateOf(r.rejectedBecause);
         return boundLists({
@@ -843,10 +860,12 @@ export function scoreCommand(argv: string[]): number {
           gate,
           ...(gate === 'score'
             ? { finalScore: r.finalScore, threshold: thresholds.finalScore }
-            : {
-                technicalConfidence: r.technicalConfidence,
-                threshold: r.confidenceFloor,
-              }),
+            : gate === 'materiality' || gate === 'owner-precedent'
+              ? { rejectedBecause: r.rejectedBecause }
+              : {
+                  technicalConfidence: r.technicalConfidence,
+                  threshold: r.confidenceFloor,
+                }),
         });
       });
 
@@ -1057,8 +1076,8 @@ export function scoreCommand(argv: string[]): number {
 
 /**
  * Whether a rejection came from one of the gates whose candidates are listed
- * locally - the unverifiable cap, the confidence floor, the final score or an
- * approved suppression - and from nothing else yet.
+ * locally - the unverifiable cap, the confidence floor, the final score, the
+ * materiality verdict or an approved suppression - and from nothing else yet.
  */
 function locallyListable(rejectedBecause: string | null): boolean {
   if (rejectedBecause === null) return false;
@@ -1066,9 +1085,11 @@ function locallyListable(rejectedBecause: string | null): boolean {
 }
 
 /** The gate that alone stopped a candidate, or null. */
-function gateOf(rejectedBecause: string | null): 'score' | 'confidence' | 'policy' | null {
+export function gateOf(rejectedBecause: string | null): 'score' | 'confidence' | 'policy' | 'materiality' | 'owner-precedent' | null {
   if (rejectedBecause === null || rejectedBecause.includes(' Also: ')) return null;
   if (rejectedBecause.startsWith(POLICY_SUPPRESSED_PREFIX)) return 'policy';
+  if (rejectedBecause.startsWith(NOT_MATERIAL_PREFIX)) return 'materiality';
+  if (rejectedBecause.startsWith(OWNER_PRECEDENT_PREFIX)) return 'owner-precedent';
   if (rejectedBecause.startsWith('score ')) return 'score';
   if (rejectedBecause.startsWith('technical confidence ')) return 'confidence';
   return null;
