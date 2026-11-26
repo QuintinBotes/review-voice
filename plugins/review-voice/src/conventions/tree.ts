@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
+import { catFileBlobTimeoutMs, runGitCatFileSync } from '../git-exec.ts';
 
 /**
  * Everything convention discovery asks of a tree, with repository-relative
@@ -103,10 +104,13 @@ export function gitTreeReader(root: string, ref: string): TreeReader {
       const { object } = file(path);
       let blob = blobs.get(object);
       if (blob === undefined) {
-        blob = execFileSync('git', ['cat-file', 'blob', object], {
-          cwd: root,
-          stdio: ['ignore', 'pipe', 'pipe'],
+        // Bounded per blob (`CAT_FILE_BLOB_TIMEOUT_MS`): in a partial
+        // clone this read can wait on a lazy fetch, and a dead fetch
+        // must fail as any other unreadable blob does, never hang
+        // (issue #482). stdin carries nothing, as `ignore` did.
+        blob = runGitCatFileSync(root, ['cat-file', 'blob', object], {
           maxBuffer: GIT_BUFFER,
+          timeoutMs: catFileBlobTimeoutMs(),
         });
         blobs.set(object, blob);
       }

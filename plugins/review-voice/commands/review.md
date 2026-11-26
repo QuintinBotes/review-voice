@@ -843,8 +843,8 @@ the explicit owner override into the severity reason, and the resulting scores
 must still drive `validate-output` and `record --scores`.
 When the owner asks to post a finding listed in `belowGate` or in
 `suppressed`, rerun `score` with `--promote <candidate_id>`. It accepts only a
-`belowGate` entry, which is a verified finding held by the score, confidence
-or materiality gate alone, or a `suppressed` entry, which is a verified finding an approved
+`belowGate` entry, which is a verified finding held by the score, confidence,
+materiality or owner-precedent gate alone, or a `suppressed` entry, which is a verified finding an approved
 policy held back, and records `ownerPromotion` with the gate it was held by.
 When the owner wants such a finding raised as a question rather than stated,
 rerun `score` with `--as-question <candidate_id>` instead. It posts the

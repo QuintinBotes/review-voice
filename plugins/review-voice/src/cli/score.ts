@@ -638,6 +638,9 @@ export function scoreCommand(argv: string[]): number {
         text: `${candidate.claim} ${candidate.failureMode}`,
         repository: flag(argv, '--repository') ?? undefined,
         allowlist: loadedConfig?.allowlist,
+        ownerReviewer: loadedConfig?.ownerReviewer,
+        botPatterns: loadedConfig?.queue.skip.authorPatterns,
+        category: candidate.category,
         filePath: candidate.path,
         // A comment on the pull request under review is the conversation, not
         // precedent, and it is the route by which a posted review comes back
