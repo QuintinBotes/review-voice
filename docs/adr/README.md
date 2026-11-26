@@ -48,3 +48,4 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0034](0034-a-cross-family-runner-is-configured-never-detected-into-use.md) | A cross-family runner is configured, never detected into use | Accepted |
 | [0035](0035-one-bounded-reply-per-own-finding.md) | One bounded reply per own finding | Accepted |
 | [0036](0036-approvals-are-followed-to-an-outcome.md) | Approvals are followed to an outcome | Accepted |
+| [0038](0038-the-queue-reviews-what-concerns-the-team.md) | The queue reviews what concerns the team | Accepted |

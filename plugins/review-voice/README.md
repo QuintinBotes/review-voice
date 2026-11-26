@@ -74,6 +74,34 @@ Without `--post` it reviews and records but posts nothing. Clones live under
 `watch.workspace`, never in your own working trees, and a second watcher on the
 same data directory exits at once.
 
+## Skip what does not concern your team
+
+By default `queue` lists every pull request your team is asked to review. Set
+`queue.relevance` and a team-only request that matches no signal is skipped
+(rule `relevance`, with its reasons). It is off without that block, and a
+personal request, an assignment, a follow-up or a dismissed review is never
+filtered. The check reads only the files list and CODEOWNERS at the base
+commit; no agent runs.
+
+```yaml
+queue:
+  relevance:
+    teams: [org/slug]          # default: queue.teams
+    min_owned_share: 0.2       # share of changed lines in files the team owns
+    ignore_owned_paths: []     # owned globs that do not count toward the share
+    paths: []                  # any changed file matching one is a signal
+    added_line_patterns: []    # case-insensitive regular expressions on added lines
+    authors: []                # logins
+    keywords: []               # whole words in the title or description
+    discover: { updated_within_hours: 24, max_pulls: 50 }   # optional
+```
+
+`review-voice relevance --pr <n> [--repository owner/repo]` prints the result as
+JSON (exit 0 whether or not it is relevant). With `discover`, recently updated
+pull requests nobody requested are listed as `SURFACE` when they match. A
+surfaced pull request is report-only: `watch` prints it and never reviews,
+posts or records it. See [ADR 0038](../../docs/adr/0038-the-queue-reviews-what-concerns-the-team.md).
+
 ## Requirements
 
 Node 22 or newer. `git`. `gh` only if you enable GitHub history ingestion.

@@ -19,10 +19,16 @@ const LABEL: Record<QueueEntry['action']['kind'], string> = {
   'verdict-only': 'VERDICT-ONLY',
   'recheck-ci': 'RECHECK-CI',
   skip: 'SKIP',
+  surface: 'SURFACE',
 };
 
 function line(entry: QueueEntry): string {
-  const rule = entry.action.kind === 'skip' ? ` (${entry.action.rule})` : '';
+  const rule =
+    entry.action.kind === 'skip'
+      ? ` (${entry.action.rule}${entry.action.reasons === undefined ? '' : `: ${entry.action.reasons.join('; ')}`})`
+      : entry.action.kind === 'surface'
+        ? ` (${entry.action.signals.map((signal) => signal.detail).join('; ')})`
+        : '';
   return `${LABEL[entry.action.kind]} ${entry.repository}#${entry.pull} ${entry.head.slice(0, 7)} @${entry.author} [${entry.sources.join(', ')}]${rule}`;
 }
 
@@ -118,7 +124,7 @@ export async function queueCommand(argv: string[], deps: QueueCommandDeps): Prom
 
   const db = deps.openDb();
   try {
-    const result = await buildQueue({ client, db, config: queue, me: viewer.login, now: deps.now, maxAttemptsPerHead });
+    const result = await buildQueue({ client, db, config: queue, me: viewer.login, now: deps.now, maxAttemptsPerHead, allowlist: config.allowlist });
     deps.out(argv.includes('--json') ? JSON.stringify(result, null, 2) : renderQueue(result));
     return 0;
   } finally {

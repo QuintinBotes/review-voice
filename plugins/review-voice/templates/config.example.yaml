@@ -368,6 +368,17 @@ queue:
     # Skip a team request one of these logins already approved at the current head.
     approved_at_head_by: { logins: [], sources: [team] }
     drafts: true
+  # Skip team-only requests that do not concern the team (docs/adr/0038).
+  # Off unless this block is present; personal requests are never filtered.
+  # relevance:                       # example
+  #   teams: [your-org/your-team]    # default: queue.teams
+  #   min_owned_share: 0.2           # share of changed lines in CODEOWNERS-owned files
+  #   ignore_owned_paths: ['docs/**']
+  #   paths: ['src/billing/**']      # any changed file matching is a signal
+  #   added_line_patterns: ['\bbilling\b']
+  #   authors: [teammate-login]
+  #   keywords: [invoice]
+  #   discover: { updated_within_hours: 24, max_pulls: 50 }  # list unrequested matches, report-only
 
 # What `review-voice watch` does each pass (docs/adr/0027). Every key is
 # optional; the values below are the defaults unless marked as an example.
