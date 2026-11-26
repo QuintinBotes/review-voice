@@ -86,6 +86,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   posting (422), because it is not in the pull request diff. A line the
   reviewed head deleted and the head restores stays an addition, so the
   withdrawn deletion still shows. (#477)
+- The remaining git calls in the diff and conventions path (commit
+  checks, `check-attr`, `diff`, `merge-tree`, `ls-tree`, the prior-review
+  fetch) run through the same bounded, group-killed runner: 10 s for a
+  commit-exists check, 60 s for the rest. A timeout degrades as that
+  call's failure already did. Ctrl-C while one blocks still cannot kill
+  the detached group, because a synchronous call runs no signal handler
+  (documented in `git-exec.ts`). (#487)
 
 ## [1.29.2] - 2026-11-26
 

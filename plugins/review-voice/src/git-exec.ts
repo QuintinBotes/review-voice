@@ -104,7 +104,7 @@ function warnPartialCloneOnce(root: string): void {
   if (!isPartialClone(root)) return;
   warnedAboutPartialClone = true;
   console.error(
-    'review-voice: git cat-file timed out; this repository is a partial clone, so a lazy fetch of missing blobs is the likely cause. Continuing without those blobs.',
+    'review-voice: a git command timed out; this repository is a partial clone, so a lazy fetch of missing blobs is the likely cause. Continuing without those blobs.',
   );
 }
 
@@ -116,6 +116,25 @@ export interface GitCatFileOptions {
   killTree?: (pid: number | undefined) => void;
 }
 
+/** A local-object check (`cat-file -e`, `rev-parse --verify`): a lazy fetch is the only slow case. */
+export const GIT_CHECK_TIMEOUT_MS = 10_000;
+/** Any other git read or fetch in the diff and conventions path (issue #487). */
+export const GIT_READ_TIMEOUT_MS = 60_000;
+
+/** The bound for a git call in the diff path, injectable in tests; like the cat-file bounds it can only shorten. */
+export function gitTimeoutMs(fallback: number): number {
+  return timeoutFromEnv('REVIEW_VOICE_GIT_TIMEOUT_MS', fallback);
+}
+
+/** The same bounded, group-killed run for any git command; `maxBuffer` defaults to 64 MiB. Failures carry `status`, `stdout` and `stderr` (strings) as `execFileSync` errors did. */
+export function runGitSync(
+  root: string,
+  args: readonly string[],
+  options: { input?: string; maxBuffer?: number; timeoutMs: number },
+): Buffer {
+  return runGitCatFileSync(root, args, { maxBuffer: 64 * 1024 * 1024, ...options });
+}
+
 /**
  * Runs `git <args>` synchronously in `root`, bounded by `timeoutMs`, and
  * returns stdout. Throws on spawn failure, timeout (with `code`
@@ -123,6 +142,9 @@ export interface GitCatFileOptions {
  * callers keep treating a failure as an unreadable blob. A timeout in a
  * partial clone names it once on stderr.
  */
+// shortcut: Ctrl-C while this blocks does not kill the detached group. spawnSync blocks the
+// event loop, so no JS SIGINT/SIGTERM handler can run, and the terminal signals only node's
+// own group. Upgrade to an async runner with a signal handler if a leftover git or ssh is reported.
 export function runGitCatFileSync(root: string, args: readonly string[], options: GitCatFileOptions): Buffer {
   // `detached` is forwarded by spawnSync to spawn, so the child leads
   // its own process group, though `SpawnSyncOptions` in @types/node
@@ -161,7 +183,11 @@ export function runGitCatFileSync(root: string, args: readonly string[], options
   }
   if (result.status !== 0) {
     const stderr = result.stderr?.toString('utf8').trim() ?? '';
-    throw new Error(`git ${args.join(' ')} failed${stderr === '' ? '' : `: ${stderr}`}`);
+    throw Object.assign(new Error(`git ${args.join(' ')} failed${stderr === '' ? '' : `: ${stderr}`}`), {
+      status: result.status,
+      stdout: result.stdout?.toString('utf8') ?? '',
+      stderr,
+    });
   }
   return result.stdout ?? Buffer.alloc(0);
 }

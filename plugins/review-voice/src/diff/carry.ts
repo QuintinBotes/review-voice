@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGitSync } from '../git-exec.ts';
 import { topPathspecs } from './incremental.ts';
 import { DEFAULT_LIMITS } from '../contract/limits.ts';
 import { reason, type FileHunks } from './hunks.ts';
@@ -86,7 +86,7 @@ interface OldHunk {
 /** True when `ref` names a commit this clone can read. */
 export function commitReadable(ref: string, cwd: string): boolean {
   try {
-    execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd, stdio: 'ignore' });
+    runGitSync(cwd, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { timeoutMs: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS) });
     return true;
   } catch {
     return false;
@@ -137,12 +137,7 @@ export class CarryError extends Error {}
 
 function gitOut(args: string[], cwd: string): string {
   try {
-    return execFileSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString('utf8');
   } catch (error) {
     throw new CarryError(`git ${args.join(' ')} failed: ${(error as Error).message}`);
   }
@@ -150,7 +145,7 @@ function gitOut(args: string[], cwd: string): string {
 
 function existsAt(ref: string, path: string, cwd: string): boolean {
   try {
-    execFileSync('git', ['cat-file', '-e', `${ref}:${path}`], { cwd, stdio: 'ignore' });
+    runGitSync(cwd, ['cat-file', '-e', `${ref}:${path}`], { timeoutMs: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS) });
     return true;
   } catch {
     return false;
