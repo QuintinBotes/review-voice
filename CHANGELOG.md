@@ -45,6 +45,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema, `check-verification` and `score` refuse a non-boolean `material`,
   an overlong `material_reason` or an unknown `severity_fit`. (#479,
   docs/adr/0037)
+- `evaluate calibration --labels <file> [--thresholds <yaml-or-json>]
+  [--repository <o/r>] [--text]` measures stored score breakdowns against a
+  human-labelled set (`{run, candidate_id, label}` with TRUE,
+  TRUE-NOT-WORTH, PARTLY, FALSE or UNCHECKABLE): precision by
+  verifier-confidence band and by category with Wilson 95% lower bounds,
+  verified and verifier-rejected candidates apart; eligible findings per
+  review and holds by reason under the recorded thresholds and, with
+  `--thresholds`, under a proposed set re-applied through the scorer's own
+  gate logic (breakdowns lacking a needed field count under
+  `notReapplicable`); a materiality 2x2 where `material` is recorded (`n: 0`
+  while none is); and a rejection audit of false rejects. Malformed labels
+  exit 2 naming the entry and field; unmatched labels are listed, never
+  counted. `evaluate label-sample --out <file> --n <k> --seed <s>` writes a
+  blank labelling sheet from a seeded stratified draw (band crossed with
+  verified-or-rejected) that a filled sheet returns to `--labels`
+  unchanged. Holds are bucketed by the recorded `gate`, the verdict is the
+  recorded `verified`, and a held candidate keeps the category and claim
+  stored with it (older breakdowns fall back to the prose, and a run stored
+  before held candidates were recorded reports category `unknown`). Neither
+  subcommand reads the network, calls a model or writes the store: both open
+  it read-only, an absent store is an empty report, and a store older than
+  the code exits 2. (#481, docs/adr/0040)
 
 ### Changed
 

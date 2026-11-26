@@ -1935,8 +1935,12 @@ function withLegacyTierHint(
   };
 }
 
-/** The floor a confidence the verifier established must clear, and the words that name it (#343). */
-function verifiedFloor(category: string, tier: Severity | 'question', thresholds: Thresholds): { floor: number; names: string } {
+/**
+ * The floor a confidence the verifier established must clear, and the words
+ * that name it (#343). Exported so calibration re-gating (#481) applies this
+ * one floor rule rather than a second copy of it.
+ */
+export function verifiedFloor(category: string, tier: Severity | 'question', thresholds: Thresholds): { floor: number; names: string } {
   const main = thresholds.technicalConfidence;
   // The same categories no suppression may reach: a tier derived too low must
   // not also lower the bar for the claims a wrong comment costs most. An
@@ -2285,4 +2289,140 @@ export function scoreCandidate(
     precedentIds: precedents.map((p) => p.eventId),
     ...(staleConsumer ? { anchor: STALE_CONSUMER, causedBy: candidate.causedBy ?? null } : {}),
   };
+}
+
+/** The hold buckets calibration counts by (#481); every ineligible breakdown lands in exactly one. */
+export type HoldReason = 'confidenceFloor' | 'materiality' | 'ownerPrecedent' | 'unverifiable' | 'score' | 'policy' | 'other';
+
+const GATE_HOLD: Partial<Record<HoldGate, HoldReason>> = {
+  'confidence-floor': 'confidenceFloor',
+  'question-gap': 'confidenceFloor',
+  materiality: 'materiality',
+  'owner-precedent': 'ownerPrecedent',
+  'owner-precedent-question': 'ownerPrecedent',
+  unverifiable: 'unverifiable',
+  score: 'score',
+  policy: 'policy',
+};
+
+/**
+ * Which bucket a rejection belongs to. The recorded `gate` (#485) decides when
+ * the breakdown has one: the threshold-style codes have their own bucket
+ * and every other code is `other`. Only a breakdown stored before it existed
+ * (`gate` undefined) is read from its leading reason: the segment before any
+ * ` Also: ` suffix, which is the reason `scoreCandidate` reached first.
+ * Null when there is no rejection to classify.
+ */
+export function holdReasonOf(rejectedBecause: string | null | undefined, gate?: unknown): HoldReason | null {
+  if (typeof rejectedBecause !== 'string' || rejectedBecause.length === 0) return null;
+  if (gate !== undefined) return (typeof gate === 'string' && Object.hasOwn(GATE_HOLD, gate) && GATE_HOLD[gate as HoldGate]) || 'other';
+  const also = rejectedBecause.indexOf(' Also: ');
+  const leading = also === -1 ? rejectedBecause : rejectedBecause.slice(0, also);
+  if (leading.startsWith(POLICY_SUPPRESSED_PREFIX)) return 'policy';
+  if (leading.startsWith(UNVERIFIABLE_REJECTION)) return 'unverifiable';
+  if (leading.startsWith('technical confidence ')) return 'confidenceFloor';
+  if (leading.startsWith('score ')) return 'score';
+  if (leading.startsWith('owner precedent ')) return 'ownerPrecedent';
+  if (/\bmaterial(?:ity)?\b/i.test(leading)) return 'materiality';
+  return 'other';
+}
+
+/** Just enough of a stored breakdown to re-apply the threshold gates to it (#481). */
+export interface ReGateInput {
+  eligible?: unknown;
+  rejectedBecause?: unknown;
+  /** The recorded `HoldGate`, absent on a breakdown stored before #485. */
+  gate?: unknown;
+  technicalConfidence?: unknown;
+  confidenceSource?: unknown;
+  finalScore?: unknown;
+  /** The derived tier: `severity.severity` of the breakdown. */
+  severityTier?: unknown;
+  category?: unknown;
+  ownerPromotion?: unknown;
+}
+
+export type ReGateResult =
+  | { reapplicable: true; eligible: boolean; hold: HoldReason | null }
+  | { reapplicable: false; reason: string };
+
+const RE_GATE_TIERS: readonly string[] = ['blocking', 'important', 'minor', 'nit', 'question'];
+const finiteNumber = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+/**
+ * Re-applies only the threshold-dependent gates of `scoreCandidate` to a
+ * stored breakdown, under a proposed threshold set (#481).
+ *
+ * This is the scorer's own gate logic, shared rather than copied: the floor
+ * comes from `verifiedFloor` (or the analyst-only floor, by
+ * `confidenceSource`, exactly as `scoreCandidate` chooses it), then the
+ * final-score gate, in that order. A question skips both, again as in
+ * `scoreCandidate`; its recorded outcome stands, since neither the question
+ * gap floor nor the owner-precedent rule reads a threshold.
+ *
+ * A breakdown held by anything other than those two gates alone stays held:
+ * no threshold set can release a claim the verifier rejected, an unverifiable
+ * cap, a suppression or an anchor failure, and the `else if` chain in
+ * `scoreCandidate` guarantees a confidence or score rejection was reached
+ * only after every earlier check passed. An owner promotion stands for the
+ * same reason `score --promote` exists: it is a recorded decision, not a
+ * threshold outcome.
+ *
+ * When a field the decision needs is absent or malformed the result is
+ * not reapplicable, with the field named. Nothing is guessed: a missing
+ * category could be a suppression-exempt one, whose floor differs.
+ */
+export function reGateBreakdown(input: ReGateInput, thresholds: Thresholds): ReGateResult {
+  if (typeof input.eligible !== 'boolean') return { reapplicable: false, reason: 'missing eligible' };
+  const rejected =
+    input.rejectedBecause === undefined || input.rejectedBecause === null
+      ? null
+      : typeof input.rejectedBecause === 'string'
+        ? input.rejectedBecause
+        : undefined;
+  if (rejected === undefined) return { reapplicable: false, reason: 'rejectedBecause is not a string or null' };
+  if (input.eligible && rejected !== null && rejected.length > 0) {
+    return { reapplicable: false, reason: 'eligible disagrees with rejectedBecause' };
+  }
+  if (input.ownerPromotion !== undefined && input.ownerPromotion !== null && input.ownerPromotion !== false) {
+    return { reapplicable: true, eligible: true, hold: null };
+  }
+  if (!input.eligible) {
+    if (rejected === null || rejected.length === 0) {
+      return { reapplicable: false, reason: 'missing rejectedBecause for an ineligible breakdown' };
+    }
+    const hold = holdReasonOf(rejected, input.gate) ?? 'other';
+    const gateAlone = (hold === 'confidenceFloor' || hold === 'score') && !rejected.includes(' Also: ');
+    if (!gateAlone) return { reapplicable: true, eligible: false, hold };
+  }
+  const tier = typeof input.severityTier === 'string' ? input.severityTier : null;
+  if (tier === null || !RE_GATE_TIERS.includes(tier)) return { reapplicable: false, reason: 'missing severity tier' };
+  if (tier === 'question') {
+    return input.eligible
+      ? { reapplicable: true, eligible: true, hold: null }
+      : { reapplicable: true, eligible: false, hold: holdReasonOf(rejected, input.gate) ?? 'other' };
+  }
+  const source = input.confidenceSource;
+  if (source !== 'verifier' && source !== 'analyst' && source !== 'unverifiable-cap') {
+    return { reapplicable: false, reason: 'missing confidenceSource' };
+  }
+  if (source === 'unverifiable-cap') {
+    return { reapplicable: false, reason: 'confidenceSource unverifiable-cap cannot be re-gated for a non-question' };
+  }
+  const confidence = finiteNumber(input.technicalConfidence);
+  if (confidence === null) return { reapplicable: false, reason: 'missing technicalConfidence' };
+  const finalScore = finiteNumber(input.finalScore);
+  if (finalScore === null) return { reapplicable: false, reason: 'missing finalScore' };
+  let floor: number;
+  if (source === 'verifier') {
+    const category = typeof input.category === 'string' && input.category.length > 0 ? input.category : null;
+    if (category === null) return { reapplicable: false, reason: 'missing category' };
+    floor = verifiedFloor(category, tier as Severity, thresholds).floor;
+  } else {
+    floor = thresholds.analystOnlyConfidence;
+  }
+  if (confidence < floor) return { reapplicable: true, eligible: false, hold: 'confidenceFloor' };
+  if (finalScore < thresholds.finalScore) return { reapplicable: true, eligible: false, hold: 'score' };
+  return { reapplicable: true, eligible: true, hold: null };
 }
