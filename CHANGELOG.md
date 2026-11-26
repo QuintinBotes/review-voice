@@ -9,16 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A comment on another file that names the candidate's file (any case) or one
-  of its symbols now rejects the candidate as a repeat when it shares enough
-  wording, the same bar as a comment on its own lines. Every comment naming the
-  file or symbol, at any distance, is handed to the evidence verifier as
-  `possibleRepeatOf.alsoNaming`, so it can reject a root-cause repeat and quote
-  the comment (#488).
-- The CI heads-up lines in a review body are checked against the thread like a
-  finding: a failing check another reviewer or a bot already named is left
-  out, and a line left with no check is dropped. `--recheck-thread` applies the
-  cross-file rule and the heads-up rule to comments added since the run, and
+- A comment on another file rejects the candidate as a repeat only when it
+  names both the candidate's file (any case) and one of its symbols and shares
+  enough wording, the same bar as a comment on its own lines. A match on the
+  file or the symbol alone keeps the candidate. Every comment naming the file
+  or a symbol, at any distance, is handed to the evidence verifier as
+  `possibleRepeatOf.alsoNaming`, so it can reject a root-cause repeat and
+  quote the comment (#488).
+- The CI heads-up lines in a review body are checked against the thread: a
+  failing check is left out when a comment from another reviewer or a bot
+  contains every word of its name as a whole word, bar generic ones (check,
+  job, ci, status, workflow, run, build, test, tests) and short words such as
+  "pr" included, so "get under the PR size limit" hides "Check PR size" and
+  "size" alone does not. A line left with no check is dropped.
+  `--recheck-thread` applies both rules to comments added since the run, and
   refuses with `thread-changed` (#488).
 
 ## [1.29.1] - 2026-11-23

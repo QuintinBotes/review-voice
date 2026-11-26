@@ -874,9 +874,10 @@ export function alreadySaidOnThread(
     const anchored = comment.path !== null && comment.line !== null;
     if (anchored) {
       if (!onFile(comment, candidate.path)) {
-        // Another file: only a comment that names this file or symbol can be
-        // the same point, and then at the anchored bar (#488).
-        if (namesCandidate(comment.body, candidate) && overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) {
+        // Another file: only a comment that names this file and one of its
+        // symbols is dropped, at the anchored bar (#488). One of the two alone
+        // goes to the verifier.
+        if (namesFile(comment.body, candidate.path) && namesSymbol(comment.body, candidate) && overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) {
           return comment;
         }
         continue;
@@ -1005,7 +1006,10 @@ function candidateSymbols(candidate: Candidate): string[] {
 
 /** Whether `body` names the candidate's file or one of its symbols (#488). */
 export function namesCandidate(body: string, candidate: Candidate): boolean {
-  if (namesFile(body, candidate.path)) return true;
+  return namesFile(body, candidate.path) || namesSymbol(body, candidate);
+}
+
+function namesSymbol(body: string, candidate: Candidate): boolean {
   return candidateSymbols(candidate).some((symbol) => {
     const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`(?<![\\w$])${escaped}(?![\\w$])`).test(body);
@@ -1028,24 +1032,27 @@ export function commentsNaming(candidate: Candidate, thread: ThreadComment[]): T
 }
 
 /** Words in a check's name that say nothing about which check it is. */
-const GENERIC_CHECK_WORDS = new Set(['check', 'checks', 'status', 'job', 'jobs', 'pipeline', 'workflow']);
+const GENERIC_CHECK_WORDS = new Set(['check', 'job', 'ci', 'status', 'workflow', 'run', 'build', 'test', 'tests']);
 
 /**
- * A comment that already names this failing check (#488): the check's
- * distinctive words, as many as `DUPLICATE_OVERLAP` of them, appear in it. A
- * heads-up line the tool adds to a body is a point like a finding, so another
- * reviewer or a bot saying it first makes it a repeat. The tool's own earlier
- * heads-up lines and the description do not count.
+ * A comment that already names this failing check (#488): every word of the
+ * check's name, bar the generic ones, appears in it as a whole word, short
+ * words such as "pr" included. One shared word such as "size" is not enough,
+ * and "get under the PR size limit" is enough for "Check PR size". A heads-up
+ * line the tool adds to a body is a point like a finding, so another reviewer
+ * or a bot saying it first makes it a repeat. The tool's own earlier heads-up
+ * lines and the description do not count.
  */
 export function threadRaisesCheck(name: string, thread: ThreadComment[]): ThreadComment | null {
-  const all = significantWords(name);
-  const words = new Set([...all].filter((word) => !GENERIC_CHECK_WORDS.has(word)));
-  const mine = words.size > 0 ? words : all;
+  const all = name.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const distinctive = all.filter((word) => !GENERIC_CHECK_WORDS.has(word));
+  const mine = new Set(distinctive.length > 0 ? distinctive : all);
   if (mine.size === 0) return null;
   for (const comment of thread) {
     if (comment.kind === 'description') continue;
     const body = comment.body.split('\n').filter((line) => !/^\s*(?:>\s*)?Heads up:/.test(line)).join('\n');
-    if (overlap(mine, significantWords(body)) >= DUPLICATE_OVERLAP) return comment;
+    const words = new Set(body.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+    if ([...mine].every((word) => words.has(word))) return comment;
   }
   return null;
 }

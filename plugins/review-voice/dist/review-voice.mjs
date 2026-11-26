@@ -8926,7 +8926,7 @@ function alreadySaidOnThread(candidate, thread) {
     const anchored = comment.path !== null && comment.line !== null;
     if (anchored) {
       if (!onFile(comment, candidate.path)) {
-        if (namesCandidate(comment.body, candidate) && overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) {
+        if (namesFile(comment.body, candidate.path) && namesSymbol(comment.body, candidate) && overlap(mine, significantWords(comment.body)) >= DUPLICATE_OVERLAP) {
           return comment;
         }
         continue;
@@ -8992,7 +8992,9 @@ function candidateSymbols(candidate) {
   return [...new Set([...text5.matchAll(SYMBOL)].map((match) => match[0]).filter((symbol) => symbol.length > 3))];
 }
 function namesCandidate(body, candidate) {
-  if (namesFile(body, candidate.path)) return true;
+  return namesFile(body, candidate.path) || namesSymbol(body, candidate);
+}
+function namesSymbol(body, candidate) {
   return candidateSymbols(candidate).some((symbol) => {
     const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return new RegExp(`(?<![\\w$])${escaped}(?![\\w$])`).test(body);
@@ -9003,16 +9005,17 @@ function commentsNaming(candidate, thread) {
     (comment) => comment.kind !== "description" && comment.path !== null && comment.line !== null && namesCandidate(comment.body, candidate)
   );
 }
-var GENERIC_CHECK_WORDS = /* @__PURE__ */ new Set(["check", "checks", "status", "job", "jobs", "pipeline", "workflow"]);
+var GENERIC_CHECK_WORDS = /* @__PURE__ */ new Set(["check", "job", "ci", "status", "workflow", "run", "build", "test", "tests"]);
 function threadRaisesCheck(name, thread) {
-  const all = significantWords(name);
-  const words = new Set([...all].filter((word) => !GENERIC_CHECK_WORDS.has(word)));
-  const mine = words.size > 0 ? words : all;
+  const all = name.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const distinctive = all.filter((word) => !GENERIC_CHECK_WORDS.has(word));
+  const mine = new Set(distinctive.length > 0 ? distinctive : all);
   if (mine.size === 0) return null;
   for (const comment of thread) {
     if (comment.kind === "description") continue;
     const body = comment.body.split("\n").filter((line3) => !/^\s*(?:>\s*)?Heads up:/.test(line3)).join("\n");
-    if (overlap(mine, significantWords(body)) >= DUPLICATE_OVERLAP) return comment;
+    const words = new Set(body.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+    if ([...mine].every((word) => words.has(word))) return comment;
   }
   return null;
 }

@@ -37,16 +37,19 @@ const candidate = {
 const onParent = (body) => ({ path: 'src/Parent.tsx', line: 89, author: 'a-reviewer', body, kind: 'review-comment' });
 const SAME = 'The form in child.tsx is built before the upload settles, so the spaceIds defaults start empty and a saved selection is lost.';
 
-test('scenario 1: a comment on another file that names the candidate file repeats it', () => {
-  const found = alreadySaidOnThread(candidate, [onParent(SAME.replace('spaceIds', 'the'))]);
+test('scenario 1: a comment on another file naming both the file and a symbol repeats it', () => {
+  const found = alreadySaidOnThread(candidate, [onParent(SAME)]);
   assert.equal(found?.path, 'src/Parent.tsx');
   assert.equal(found?.line, 89);
 });
 
-test('scenario 1: a comment on another file that names the candidate symbol repeats it', () => {
+test('a comment on another file naming only the file is not dropped', () => {
+  assert.equal(alreadySaidOnThread(candidate, [onParent(SAME.replace('spaceIds', 'the'))]), null);
+});
+
+test('a comment on another file naming only a symbol is not dropped', () => {
   const body = 'The form is built before the upload settles, so the spaceIds defaults start empty and a saved selection is lost.';
-  const found = alreadySaidOnThread(candidate, [onParent(body)]);
-  assert.equal(found?.author, 'a-reviewer');
+  assert.equal(alreadySaidOnThread(candidate, [onParent(body)]), null);
 });
 
 test('scenario 2: a comment on another file naming neither file nor symbol is not a repeat', () => {
@@ -124,6 +127,23 @@ test('check-candidates drops the cross-file repeat, and passes a weaker named co
   }
 });
 
+test('check-candidates hints a file-only match and a symbol-only match, and drops neither', () => {
+  const fileOnly = setup([onParent(SAME.replace('spaceIds', 'the'))]);
+  const symbolOnly = setup([onParent('The form is built before the upload settles, so the spaceIds defaults start empty and a saved selection is lost.')]);
+  try {
+    for (const s of [fileOnly, symbolOnly]) {
+      const out = check(s);
+      assert.deepEqual(out.droppedAsRepeat, []);
+      assert.equal(out.kept.length, 1);
+      const hint = out.kept[0].possibleRepeatOf;
+      assert.equal(hint.path === 'src/Parent.tsx' || hint.alsoNaming.some((c) => c.path === 'src/Parent.tsx'), true);
+    }
+  } finally {
+    rmSync(fileOnly.dir, { recursive: true, force: true });
+    rmSync(symbolOnly.dir, { recursive: true, force: true });
+  }
+});
+
 test('check-candidates keeps a candidate untouched when no comment names it', () => {
   const s = setup([onParent('Unrelated remark about naming here.')]);
   try {
@@ -190,7 +210,7 @@ const SPLIT = {
   id: 7,
   user: { login: 'a-colleague' },
   state: 'COMMENTED',
-  body: 'Please split this PR to get under the size limit.',
+  body: 'Consider splitting this change to get under the PR size limit.',
   html_url: `https://github.com/${REPO}/pull/${PR}#pullrequestreview-7`,
   submitted_at: '2099-01-01T00:00:00Z',
 };
@@ -218,6 +238,20 @@ test('scenario 4: a failing check nobody mentioned keeps its heads-up', async ()
   });
 });
 
+test('threadRaisesCheck: "PR size" hides Check PR size, "size" alone does not', () => {
+  const said = (body) => [{ path: null, line: null, author: 'x', body, kind: 'review-body' }];
+  assert.notEqual(threadRaisesCheck('Check PR size', said('Consider splitting this change to get under the PR size limit.')), null);
+  assert.equal(threadRaisesCheck('Check PR size', said('The size of this file is fine.')), null);
+});
+
+test('a comment saying only "size" keeps the heads-up for Check PR size', async () => {
+  await withDb(async (db) => {
+    record(db, CLEAN);
+    const { output } = await verdict(db, fakeGitHub({ checks: [failing('Check PR size')], reviews: [{ ...SPLIT, body: 'The size of this file is fine.' }] }));
+    assert.deepEqual(output.annotations, ['Heads up: `Check PR size` failing on this head.']);
+  });
+});
+
 test('scenario 3: only the check the thread named is dropped from a line naming two', async () => {
   await withDb(async (db) => {
     record(db, CLEAN);
@@ -232,7 +266,7 @@ test('threadRaisesCheck ignores the description and the tool\'s own earlier head
   assert.equal(threadRaisesCheck('Check PR size', [own, description]), null);
 });
 
-const MINOR_PROSE = 'The total skips the discount. A discounted cart is overcharged.';
+const MINOR_PROSE = 'The cartTotal skips the discount. A discounted cart is overcharged.';
 const MINOR = `[minor] \`src/cart.ts:12\` - ${MINOR_PROSE}`;
 const scored = [{ candidateId: 'src/cart.ts:12', path: 'src/cart.ts', line: 12, severity: { severity: 'minor' }, confidenceSource: 'verifier', eligible: true }];
 const send = (db, impl, extra = {}) =>
