@@ -133,12 +133,20 @@ test('a resolution that cannot be matched to hunks reads the two-head diff, and 
 
     const { scope, interdiffPatch } = plan(repository);
     assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
-    assert.equal(interdiffPatch, repository.git('diff', repository.reviewed, 'HEAD', '--', 'src/a.ts'));
+    // The two-head diff, except the base's line taken at line 5 is not a
+    // changed line of the pull request's own diff, so it reads as context
+    // and the hunk is recounted (#477).
+    const twoHead = repository.git('diff', repository.reviewed, 'HEAD', '--', 'src/a.ts');
+    assert.equal(
+      interdiffPatch,
+      twoHead.replace('+a 5 rewritten on main\n', ' a 5 rewritten on main\n').replace('@@ -2,7 +2,7 @@', '@@ -2,8 +2,7 @@'),
+    );
     assert.doesNotMatch(interdiffPatch, /a 300/);
     assert.match(scope.detail, /read as the two-head diff minus base changes after a conflicting replay, as its resolution could not be matched to hunks: src\/a\.ts/);
+    assert.match(scope.detail, /shown as context where the base added lines after a conflicting replay: src\/a\.ts/);
 
     const scoped = applyReviewScope(acquired(repository), 7, scope, repository.root, undefined, interdiffPatch);
-    assert.match(scoped.scopeNote, /could not be matched to hunks: src\/a\.ts\.$/);
+    assert.match(scoped.scopeNote, /could not be matched to hunks: src\/a\.ts; shown as context where the base added lines after a conflicting replay: src\/a\.ts\.$/);
     assert.equal(diffSummary({ ...scoped, mode: 'pull-request' }).scope.detail, scope.detail);
   });
 });
