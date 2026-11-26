@@ -104,6 +104,11 @@ export function gitTimeoutMs(fallback: number): number {
   return timeoutFromEnv('REVIEW_VOICE_GIT_TIMEOUT_MS', fallback);
 }
 
+/** Options that bound a synchronous git child process: a SIGKILL timeout and capped output (issue #502). */
+export function boundedGit(timeoutMs: number, maxBuffer: number = 64 * 1024 * 1024): { timeout: number; killSignal: 'SIGKILL'; maxBuffer: number } {
+  return { timeout: gitTimeoutMs(timeoutMs), killSignal: 'SIGKILL', maxBuffer };
+}
+
 /** The same bounded, group-killed run for any git command; `maxBuffer` defaults to 64 MiB. Failures carry `status`, `stdout` and `stderr` (strings) as `execFileSync` errors did. */
 export function runGit(
   root: string,

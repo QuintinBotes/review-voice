@@ -73,165 +73,6 @@ function outputSafe(text5) {
 // plugins/review-voice/src/doctor.ts
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
-var require2 = createRequire(import.meta.url);
-var MIN_NODE_MAJOR = 22;
-function checkNode() {
-  const major = Number(process.versions.node.split(".")[0]);
-  return {
-    name: "node",
-    ok: major >= MIN_NODE_MAJOR,
-    detail: major >= MIN_NODE_MAJOR ? `v${process.versions.node}` : `v${process.versions.node} - Review Voice needs Node ${MIN_NODE_MAJOR} or newer`
-  };
-}
-function checkSqlite() {
-  try {
-    const { DatabaseSync: DatabaseSync2 } = require2("node:sqlite");
-    const db = new DatabaseSync2(":memory:");
-    db.exec("CREATE TABLE probe (id INTEGER PRIMARY KEY)");
-    db.close();
-    return { name: "node:sqlite", ok: true, detail: "available" };
-  } catch (error) {
-    return {
-      name: "node:sqlite",
-      ok: false,
-      detail: error instanceof Error ? error.message : "unavailable"
-    };
-  }
-}
-function checkBinary(name, args) {
-  try {
-    const out = execFileSync(name, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    return { name, ok: true, detail: out.trim().split("\n")[0] ?? "available" };
-  } catch {
-    return { name, ok: false, detail: "not found on PATH" };
-  }
-}
-function checkClaude() {
-  const bin = process.env["REVIEW_VOICE_CLAUDE_BIN"] || "claude";
-  const found2 = checkBinary(bin, ["--version"]);
-  return {
-    name: "claude",
-    ok: found2.ok,
-    detail: found2.ok ? `found (login not checked): ${found2.detail}` : `${bin} not found on PATH (needed only by review and watch)`
-  };
-}
-function checkFamily(family) {
-  const found2 = checkBinary(family, ["--version"]);
-  return {
-    name: family,
-    ok: found2.ok,
-    detail: found2.ok ? `found (used only when runners.${family} is configured): ${found2.detail}` : `not found on PATH (needed only when runners.${family} is configured)`
-  };
-}
-var OPTIONAL_CHECKS = /* @__PURE__ */ new Set(["gh", "claude", "codex", "gemini"]);
-function runDoctor() {
-  return [
-    checkNode(),
-    checkSqlite(),
-    checkBinary("git", ["--version"]),
-    // gh is how Review Voice borrows GitHub credentials; see docs/adr/0002.
-    checkBinary("gh", ["--version"]),
-    checkClaude(),
-    checkFamily("codex"),
-    checkFamily("gemini")
-  ];
-}
-
-// plugins/review-voice/src/contract/limits.ts
-var SEVERITIES = ["blocking", "important", "minor", "nit", "question"];
-var SEVERITY_ORDER = {
-  blocking: 0,
-  important: 1,
-  minor: 2,
-  nit: 3,
-  question: 4
-};
-var BUDGET_FLOOR = 600;
-var BUDGET_PER_FILE = 60;
-var BUDGET_CEILING = 3e3;
-function totalWordBudget(reviewableFiles) {
-  const scaled = BUDGET_FLOOR + BUDGET_PER_FILE * Math.max(0, reviewableFiles - 1);
-  return Math.min(BUDGET_CEILING, Math.max(BUDGET_FLOOR, scaled));
-}
-var DEFAULT_LIMITS = {
-  // No cap. A count cap and a word budget do the same job, and the count is
-  // the worse of the two: on tight findings it discards ones the budget would
-  // have allowed. Severity ordering does the triage instead.
-  maxFindings: null,
-  maxWordsPerFinding: 40,
-  maxTotalWords: BUDGET_FLOOR,
-  // Kept as the floor rather than a separate constant: a caller that does not
-  // know the file count still gets a budget that will not silently trim.
-  noFindingsResponse: "No actionable findings.",
-  // Only phrases that hide a claim or replace one. A hedge makes a finding
-  // unfalsifiable - "you might consider" states nothing to agree or disagree
-  // with. "overall" and "summary" left out deliberately: they appear in real
-  // prose ("overall latency", "the summary endpoint") and word-boundary
-  // matching cannot tell those from a summary section.
-  forbiddenPhrases: [
-    "consider",
-    "maybe",
-    "might",
-    "could potentially",
-    "it may be worth",
-    "nice work",
-    "great job"
-  ]
-};
-
-// plugins/review-voice/src/contract/parse.ts
-var SEVERITY_ALTERNATION = SEVERITIES.join("|");
-var OPENS_FINDING = new RegExp(`^\\[(?:${SEVERITY_ALTERNATION}|[a-z_]+)\\]`, "i");
-var FINDING = new RegExp(`^\\[([a-z_]+)\\]\\s+\`([^\`]+):(\\d+)\`\\s+-\\s*([\\s\\S]*)$`, "i");
-function splitFindings(output) {
-  return scanFindings(output).blocks;
-}
-function strayLines(output) {
-  return scanFindings(output).stray;
-}
-function scanFindings(output) {
-  const blocks = [];
-  const stray = [];
-  let current = null;
-  const flush = () => {
-    if (current) blocks.push({ raw: current.raw.join("\n").trim(), startLine: current.startLine });
-    current = null;
-  };
-  output.split("\n").forEach((line3, index) => {
-    if (OPENS_FINDING.test(line3)) {
-      flush();
-      current = { raw: [line3], startLine: index + 1 };
-    } else if (line3.trim() === "") {
-      flush();
-    } else if (current) {
-      current.raw.push(line3);
-    } else if (blocks.length > 0) {
-      stray.push(index + 1);
-    }
-  });
-  flush();
-  return { blocks, stray };
-}
-function parseFinding(raw, startLine) {
-  const joined2 = raw.replace(/\s*\n\s*/g, " ").trim();
-  const match = FINDING.exec(joined2);
-  if (!match) {
-    return { startLine, raw, severity: null, path: null, line: null, prose: "" };
-  }
-  const [, severityRaw, path, lineRaw, prose] = match;
-  const severity = SEVERITIES.includes(severityRaw.toLowerCase()) ? severityRaw.toLowerCase() : null;
-  return {
-    startLine,
-    raw,
-    severity,
-    path: path ?? null,
-    line: Number(lineRaw),
-    prose: (prose ?? "").trim()
-  };
-}
-
-// plugins/review-voice/src/diff/acquire.ts
-import { execFileSync as execFileSync2 } from "node:child_process";
 
 // plugins/review-voice/src/git-exec.ts
 import { readFileSync as readFileSync2 } from "node:fs";
@@ -914,7 +755,7 @@ function killGroup(pid, signal2) {
 }
 function killTree(pid, signal2) {
   if (process.platform === "win32") {
-    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 1e4, killSignal: "SIGKILL" });
     return;
   }
   killGroup(pid, signal2);
@@ -1061,6 +902,9 @@ var GIT_READ_TIMEOUT_MS = 6e4;
 function gitTimeoutMs(fallback) {
   return timeoutFromEnv("REVIEW_VOICE_GIT_TIMEOUT_MS", fallback);
 }
+function boundedGit(timeoutMs, maxBuffer = 64 * 1024 * 1024) {
+  return { timeout: gitTimeoutMs(timeoutMs), killSignal: "SIGKILL", maxBuffer };
+}
 function runGit(root, args, options) {
   return runGitCatFile(root, args, { maxBuffer: 64 * 1024 * 1024, ...options });
 }
@@ -1097,7 +941,166 @@ async function runGitCatFile(root, args, options) {
   return result.stdoutBytes ?? Buffer.alloc(0);
 }
 
+// plugins/review-voice/src/doctor.ts
+var require2 = createRequire(import.meta.url);
+var MIN_NODE_MAJOR = 22;
+function checkNode() {
+  const major = Number(process.versions.node.split(".")[0]);
+  return {
+    name: "node",
+    ok: major >= MIN_NODE_MAJOR,
+    detail: major >= MIN_NODE_MAJOR ? `v${process.versions.node}` : `v${process.versions.node} - Review Voice needs Node ${MIN_NODE_MAJOR} or newer`
+  };
+}
+function checkSqlite() {
+  try {
+    const { DatabaseSync: DatabaseSync2 } = require2("node:sqlite");
+    const db = new DatabaseSync2(":memory:");
+    db.exec("CREATE TABLE probe (id INTEGER PRIMARY KEY)");
+    db.close();
+    return { name: "node:sqlite", ok: true, detail: "available" };
+  } catch (error) {
+    return {
+      name: "node:sqlite",
+      ok: false,
+      detail: error instanceof Error ? error.message : "unavailable"
+    };
+  }
+}
+function checkBinary(name, args) {
+  try {
+    const out = execFileSync(name, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], ...boundedGit(GIT_CHECK_TIMEOUT_MS, 1024 * 1024) });
+    return { name, ok: true, detail: out.trim().split("\n")[0] ?? "available" };
+  } catch {
+    return { name, ok: false, detail: "not found on PATH" };
+  }
+}
+function checkClaude() {
+  const bin = process.env["REVIEW_VOICE_CLAUDE_BIN"] || "claude";
+  const found2 = checkBinary(bin, ["--version"]);
+  return {
+    name: "claude",
+    ok: found2.ok,
+    detail: found2.ok ? `found (login not checked): ${found2.detail}` : `${bin} not found on PATH (needed only by review and watch)`
+  };
+}
+function checkFamily(family) {
+  const found2 = checkBinary(family, ["--version"]);
+  return {
+    name: family,
+    ok: found2.ok,
+    detail: found2.ok ? `found (used only when runners.${family} is configured): ${found2.detail}` : `not found on PATH (needed only when runners.${family} is configured)`
+  };
+}
+var OPTIONAL_CHECKS = /* @__PURE__ */ new Set(["gh", "claude", "codex", "gemini"]);
+function runDoctor() {
+  return [
+    checkNode(),
+    checkSqlite(),
+    checkBinary("git", ["--version"]),
+    // gh is how Review Voice borrows GitHub credentials; see docs/adr/0002.
+    checkBinary("gh", ["--version"]),
+    checkClaude(),
+    checkFamily("codex"),
+    checkFamily("gemini")
+  ];
+}
+
+// plugins/review-voice/src/contract/limits.ts
+var SEVERITIES = ["blocking", "important", "minor", "nit", "question"];
+var SEVERITY_ORDER = {
+  blocking: 0,
+  important: 1,
+  minor: 2,
+  nit: 3,
+  question: 4
+};
+var BUDGET_FLOOR = 600;
+var BUDGET_PER_FILE = 60;
+var BUDGET_CEILING = 3e3;
+function totalWordBudget(reviewableFiles) {
+  const scaled = BUDGET_FLOOR + BUDGET_PER_FILE * Math.max(0, reviewableFiles - 1);
+  return Math.min(BUDGET_CEILING, Math.max(BUDGET_FLOOR, scaled));
+}
+var DEFAULT_LIMITS = {
+  // No cap. A count cap and a word budget do the same job, and the count is
+  // the worse of the two: on tight findings it discards ones the budget would
+  // have allowed. Severity ordering does the triage instead.
+  maxFindings: null,
+  maxWordsPerFinding: 40,
+  maxTotalWords: BUDGET_FLOOR,
+  // Kept as the floor rather than a separate constant: a caller that does not
+  // know the file count still gets a budget that will not silently trim.
+  noFindingsResponse: "No actionable findings.",
+  // Only phrases that hide a claim or replace one. A hedge makes a finding
+  // unfalsifiable - "you might consider" states nothing to agree or disagree
+  // with. "overall" and "summary" left out deliberately: they appear in real
+  // prose ("overall latency", "the summary endpoint") and word-boundary
+  // matching cannot tell those from a summary section.
+  forbiddenPhrases: [
+    "consider",
+    "maybe",
+    "might",
+    "could potentially",
+    "it may be worth",
+    "nice work",
+    "great job"
+  ]
+};
+
+// plugins/review-voice/src/contract/parse.ts
+var SEVERITY_ALTERNATION = SEVERITIES.join("|");
+var OPENS_FINDING = new RegExp(`^\\[(?:${SEVERITY_ALTERNATION}|[a-z_]+)\\]`, "i");
+var FINDING = new RegExp(`^\\[([a-z_]+)\\]\\s+\`([^\`]+):(\\d+)\`\\s+-\\s*([\\s\\S]*)$`, "i");
+function splitFindings(output) {
+  return scanFindings(output).blocks;
+}
+function strayLines(output) {
+  return scanFindings(output).stray;
+}
+function scanFindings(output) {
+  const blocks = [];
+  const stray = [];
+  let current = null;
+  const flush = () => {
+    if (current) blocks.push({ raw: current.raw.join("\n").trim(), startLine: current.startLine });
+    current = null;
+  };
+  output.split("\n").forEach((line3, index) => {
+    if (OPENS_FINDING.test(line3)) {
+      flush();
+      current = { raw: [line3], startLine: index + 1 };
+    } else if (line3.trim() === "") {
+      flush();
+    } else if (current) {
+      current.raw.push(line3);
+    } else if (blocks.length > 0) {
+      stray.push(index + 1);
+    }
+  });
+  flush();
+  return { blocks, stray };
+}
+function parseFinding(raw, startLine) {
+  const joined2 = raw.replace(/\s*\n\s*/g, " ").trim();
+  const match = FINDING.exec(joined2);
+  if (!match) {
+    return { startLine, raw, severity: null, path: null, line: null, prose: "" };
+  }
+  const [, severityRaw, path, lineRaw, prose] = match;
+  const severity = SEVERITIES.includes(severityRaw.toLowerCase()) ? severityRaw.toLowerCase() : null;
+  return {
+    startLine,
+    raw,
+    severity,
+    path: path ?? null,
+    line: Number(lineRaw),
+    prose: (prose ?? "").trim()
+  };
+}
+
 // plugins/review-voice/src/diff/acquire.ts
+import { execFileSync as execFileSync2 } from "node:child_process";
 import { readFileSync as readFileSync3 } from "node:fs";
 import { join as join3 } from "node:path";
 
@@ -10877,7 +10880,8 @@ function githubToken(env = process.env) {
   try {
     const token = execFileSync3("gh", ["auth", "token"], {
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
+      stdio: ["ignore", "pipe", "ignore"],
+      ...boundedGit(GIT_CHECK_TIMEOUT_MS, 1024 * 1024)
     }).trim();
     if (token.length > 0) return token;
   } catch {
@@ -15118,7 +15122,7 @@ var SAFE_GIT = [
   "submodule.recurse=false"
 ];
 function safeGit(args, cwd) {
-  execFileSync4("git", [...SAFE_GIT, ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+  execFileSync4("git", [...SAFE_GIT, ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], ...boundedGit(CAT_FILE_BATCH_TIMEOUT_MS) });
 }
 function addHeadWorktree(headDir, head, cwd = process.cwd()) {
   const stale = lstatSync2(headDir, { throwIfNoEntry: false });
@@ -15138,7 +15142,7 @@ function addHeadWorktree(headDir, head, cwd = process.cwd()) {
 }
 function removeHeadWorktree(headDir, cwd = process.cwd()) {
   try {
-    execFileSync4("git", ["worktree", "remove", "--force", headDir], { cwd, stdio: "ignore" });
+    execFileSync4("git", ["worktree", "remove", "--force", headDir], { cwd, stdio: "ignore", ...boundedGit(GIT_READ_TIMEOUT_MS) });
     return true;
   } catch {
     return false;
@@ -15153,7 +15157,7 @@ var runGit2 = (args, cwd) => execFileSync5("git", [...SAFE_GIT, ...args], {
   cwd,
   encoding: "utf8",
   stdio: ["ignore", "pipe", "pipe"],
-  maxBuffer: 64 * 1024 * 1024,
+  ...boundedGit(GIT_READ_TIMEOUT_MS),
   env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }
 });
 var OUTPUT_CAP_BYTES = 8 * 1024;
@@ -24832,7 +24836,7 @@ var CONFIG_PATH = ".review-voice/config.yaml";
 var shortRef = (ref) => /^[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 7) : ref;
 function showAt(ref, path) {
   try {
-    return execFileSync7("git", [...SAFE_GIT, "show", `${ref}:${path}`], { cwd: process.cwd(), stdio: ["ignore", "pipe", "ignore"], maxBuffer: 16 * 1024 * 1024 });
+    return execFileSync7("git", [...SAFE_GIT, "show", `${ref}:${path}`], { cwd: process.cwd(), stdio: ["ignore", "pipe", "ignore"], ...boundedGit(GIT_READ_TIMEOUT_MS, 16 * 1024 * 1024) });
   } catch {
     return null;
   }
@@ -24919,7 +24923,7 @@ async function must(run, argv, stdin, code3 = 2) {
   return result;
 }
 function localGit(args) {
-  return execFileSync8("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  return execFileSync8("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...boundedGit(GIT_READ_TIMEOUT_MS) }).trim();
 }
 function localHead(ref) {
   let sha;
@@ -25120,7 +25124,7 @@ function authorshipOf(run) {
       const log = execFileSync8(
         "git",
         [...SAFE_GIT, "log", "--max-count=500", "--format=%(trailers:key=Co-authored-by,valueonly,unfold)", `${run.base}..${run.head}`],
-        { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024 }
+        { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...boundedGit(GIT_READ_TIMEOUT_MS, 16 * 1024 * 1024) }
       );
       trailers = log.split("\n").map((line3) => line3.trim()).filter((line3) => line3 !== "");
     } catch {
@@ -25174,7 +25178,7 @@ function prepareWorkspace(run) {
   if (!(isRecord5(refs["head"]) && refs["head"]["available"] === true)) {
     throw new Stop(2, `The head ${run.head} is not in this clone. Fetch it and run again.`);
   }
-  const git6 = (args) => execFileSync8("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+  const git6 = (args) => execFileSync8("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], ...boundedGit(GIT_READ_TIMEOUT_MS) });
   const headDir = at(run, "head");
   if (run.headDir === null) {
     addHeadWorktree(headDir, run.head);
@@ -29250,7 +29254,7 @@ var modelVerifier = async (candidate) => {
 };
 function gitHead() {
   try {
-    return execFileSync10("git", ["rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return execFileSync10("git", ["rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], ...boundedGit(GIT_CHECK_TIMEOUT_MS) }).trim();
   } catch {
     return null;
   }
@@ -30456,7 +30460,8 @@ function git3(cwd, label2, args) {
       cwd,
       env: gitEnvironment(),
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      ...boundedGit(GIT_READ_TIMEOUT_MS)
     });
   } catch (error) {
     const stderr = error.stderr;
@@ -30651,7 +30656,7 @@ function shimFiles(repoDir, base, head, paths) {
     const text5 = execFileSync12("git", ["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", path], {
       cwd: repoDir,
       encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024
+      ...boundedGit(GIT_READ_TIMEOUT_MS)
     });
     const at2 = text5.indexOf("\n@@");
     const header = at2 === -1 ? text5 : text5.slice(0, at2);
@@ -30745,7 +30750,7 @@ function trailOf(report) {
   };
 }
 function checkoutBase(repoDir) {
-  execFileSync12("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"] });
+  execFileSync12("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"], ...boundedGit(GIT_READ_TIMEOUT_MS) });
 }
 async function runFixture(fixture, index, context2) {
   const { expectation } = fixture;
@@ -31078,7 +31083,7 @@ function probeBuild(scratch, slug, diff) {
     mkdirSync12(fixture, { recursive: true });
     writeFileSync13(join28(fixture, "diff.patch"), diff);
     const { base, head, files: files2 } = materializeFixture(fixture, repo, { name: slug });
-    const git6 = (args) => execFileSync13("git", args, { cwd: repo, env: gitEnvironment2(), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    const git6 = (args) => execFileSync13("git", args, { cwd: repo, env: gitEnvironment2(), encoding: "utf8", ...boundedGit(GIT_READ_TIMEOUT_MS) });
     const hunks = parseHunks(git6(["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", ...files2]));
     const handEdited = findHandEdited([...hunks].filter(([, file2]) => file2.ranges.length > 0).map(([path]) => path), (path) => {
       try {
@@ -31251,7 +31256,7 @@ function insideGit(dir) {
     LC_ALL: "C"
   };
   try {
-    const answer2 = execFileSync14("git", ["rev-parse", "--is-inside-work-tree", "--is-inside-git-dir"], { cwd: dir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const answer2 = execFileSync14("git", ["rev-parse", "--is-inside-work-tree", "--is-inside-git-dir"], { cwd: dir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...boundedGit(GIT_CHECK_TIMEOUT_MS) });
     return answer2.split("\n").some((line3) => line3.trim() === "true");
   } catch (error) {
     const { status, stderr } = error;
@@ -35572,7 +35577,7 @@ function git5(args, cwd) {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
-    timeout: 1e4
+    ...boundedGit(GIT_CHECK_TIMEOUT_MS)
   });
 }
 function normalise2(path) {
@@ -35626,7 +35631,7 @@ function deletedFileCheck(argv) {
   const cwd = process.cwd();
   if (base === null || head === null || !refExistsSync(base, cwd) || !refExistsSync(head, cwd)) return () => false;
   const firstParty = firstPartyMatcher(repositoryConfig()?.firstPartyPaths ?? []);
-  const git6 = (args) => execFileSync19("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
+  const git6 = (args) => execFileSync19("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], ...boundedGit(GIT_READ_TIMEOUT_MS) });
   let deleted;
   const deletions = () => {
     if (deleted !== void 0) return deleted;
@@ -37037,7 +37042,7 @@ async function recordCommand(argv) {
             const content = heldRevision === null ? readFileSync40(join34(repositoryRoot(process.cwd()), entry.path), "utf8") : execFileSync20("git", [...SAFE_GIT, "show", `${heldRevision}:${entry.path}`], {
               encoding: "utf8",
               stdio: ["ignore", "pipe", "ignore"],
-              maxBuffer: 64 * 1024 * 1024
+              ...boundedGit(GIT_READ_TIMEOUT_MS)
             });
             const lines2 = content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
             if (entry.line > lines2) console.error(`Held entry ${entry.path}:${entry.line} is past the end of the file (${lines2} lines).`);

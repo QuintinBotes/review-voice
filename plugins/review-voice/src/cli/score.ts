@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { SEVERITY_ORDER, type Severity } from '../contract/limits.ts';
 import { firstPartyMatcher, isReviewable } from '../diff/classify.ts';
 import { parseHunks, reason, type AnchorCheck, type FileHunks } from '../diff/hunks.ts';
+import { GIT_READ_TIMEOUT_MS, boundedGit } from '../git-exec.ts';
 import type { ThreadComment } from '../diff/thread.ts';
 import { openDatabase } from '../store/db.ts';
 import { DIFF_LANE, laneNamed } from '../review/lanes.ts';
@@ -109,7 +110,7 @@ export function deletedFileCheck(argv: string[]): (candidate: { path: string; li
   if (base === null || head === null || !refExistsSync(base, cwd) || !refExistsSync(head, cwd)) return () => false;
   // The list the diff was read with, so a deleted file is one a review would read here exactly when it is there.
   const firstParty = firstPartyMatcher(repositoryConfig()?.firstPartyPaths ?? []);
-  const git = (args: string[]): string => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
+  const git = (args: string[]): string => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...boundedGit(GIT_READ_TIMEOUT_MS) });
   // What this change deleted, measured from where it forked: a file the base
   // branch added later is not one, and neither is a rename's old path, which
   // a rename-aware comparison reports as R rather than D. One git call, made

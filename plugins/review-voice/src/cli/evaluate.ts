@@ -25,6 +25,7 @@ import { DEFAULT_THRESHOLDS, type Thresholds } from '../scoring/score.ts';
 import { DEFAULT_STABILITY_MAX_CALLS } from '../policy/load.ts';
 import { flag, repositoryConfig, resolveOutPath } from './shared.ts';
 import { terminalSafe, terminalSafeDeep } from '../terminal.ts';
+import { GIT_CHECK_TIMEOUT_MS, boundedGit } from '../git-exec.ts';
 
 /** The first token `argv` holds that is none of the named flags or a flag's value, or null. */
 function unknownArg(argv: string[], valueFlags: readonly string[], booleanFlags: readonly string[]): string | null {
@@ -95,7 +96,7 @@ const modelVerifier: StabilityVerifier = async (candidate) => {
 
 function gitHead(): string | null {
   try {
-    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...boundedGit(GIT_CHECK_TIMEOUT_MS) }).trim();
   } catch {
     return null;
   }

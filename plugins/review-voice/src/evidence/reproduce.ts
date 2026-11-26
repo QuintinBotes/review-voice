@@ -8,6 +8,7 @@ import { redact } from '../redact/redact.ts';
 import { terminalSafe } from '../terminal.ts';
 import { SAFE_GIT } from '../review/worktree.ts';
 import { onStop, SHELL_UNAVAILABLE_EXIT_CODES, spawnCommand, spawnInGroup, type CommandResult, type CommandSpawner } from './run.ts';
+import { GIT_READ_TIMEOUT_MS, boundedGit } from '../git-exec.ts';
 
 /**
  * The confined runner for verifier-written reproductions (S16, docs/adr/0003).
@@ -86,7 +87,7 @@ export type GitRunner = (args: string[], cwd: string) => string;
 // copy may take the optional lock that refreshes, so rewrites, the head's index.
 const runGit: GitRunner = (args, cwd) =>
   execFileSync('git', [...SAFE_GIT, ...args], {
-    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...boundedGit(GIT_READ_TIMEOUT_MS), env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
   });
 
 export interface ReproduceContext {

@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { lstatSync, rmSync, unlinkSync } from 'node:fs';
+import { CAT_FILE_BATCH_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, boundedGit } from '../git-exec.ts';
 
 /**
  * Git with every way a checkout can run repository code turned off: hooks
@@ -16,7 +17,7 @@ export const SAFE_GIT = [
 ];
 
 function safeGit(args: string[], cwd: string): void {
-  execFileSync('git', [...SAFE_GIT, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+  execFileSync('git', [...SAFE_GIT, ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'], ...boundedGit(CAT_FILE_BATCH_TIMEOUT_MS) });
 }
 
 /**
@@ -56,7 +57,7 @@ export function addHeadWorktree(headDir: string, head: string, cwd: string = pro
 /** Removes the worktree at `headDir`; false when git could not. */
 export function removeHeadWorktree(headDir: string, cwd: string = process.cwd()): boolean {
   try {
-    execFileSync('git', ['worktree', 'remove', '--force', headDir], { cwd, stdio: 'ignore' });
+    execFileSync('git', ['worktree', 'remove', '--force', headDir], { cwd, stdio: 'ignore', ...boundedGit(GIT_READ_TIMEOUT_MS) });
     return true;
   } catch {
     return false;

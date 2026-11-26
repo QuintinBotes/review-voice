@@ -105,6 +105,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The git calls outside the diff and conventions paths (`score`'s deleted-file
+  check, `record`'s held-line read, the review driver, worktree and config
+  reads, citation and reproduction checks, and the evaluate, recall and
+  benchmark paths) now end at a SIGKILL timeout with capped output, so a stalled
+  git no longer hangs them. Each keeps its degrade-on-failure behaviour. A guard
+  test fails when a new git call lacks a timeout (#502). The `doctor`
+  tool probes, the `gh auth token` read and the Windows `taskkill` call are
+  bounded the same way, and the guard now covers any synchronous child-process
+  call, not only git.
 - Git reads in the diff and conventions path now run through the async
   runner `evidence/run.ts` uses. The timer ends git's process group (the whole
   tree on Windows) while git is still unreaped, so a group id another process
