@@ -1082,6 +1082,17 @@ This qualifies every reproducibility number in `docs/EVALUATION.md`. They are
 valid because each comparison ran identical batches through both versions. A
 comparison over different batches would measure the batch.
 
+### A hold is a code, not a sentence
+
+A breakdown records why a candidate was held twice: `rejectedBecause`, a
+sentence for people, and `gate`, a stable `HoldGate` code written by the same
+branch (docs/adr/0041, #485). Beside it `verified` and `premisesVerified` copy
+the verifier's verdict, null when there is none. Readers - `gateOf`, the
+`belowGate` and `suppressed` lists, the challenge metric - read the code; only a
+breakdown stored before the field existed is read from the prose. A later stage
+that appends `Also:` or leads over an earlier reason records its own code, so a
+compound hold is never read as one gate alone.
+
 ### Two confidence floors, because they measure different things
 
 The verifier checked the claim against the repository. The analyst reported how
