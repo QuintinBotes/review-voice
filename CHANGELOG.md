@@ -5,6 +5,19 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- After a conflicting replay, added lines a kept-whole interdiff hunk took
+  from the base are shown as context when the pull request's own diff does
+  not add them and the base added them between the two merge bases, with
+  the hunk recounted and the files still in the patch named in the scope
+  detail. Such a line could take an anchor that GitHub then refuses at
+  posting (422), because it is not in the pull request diff. A line the
+  reviewed head deleted and the head restores stays an addition, so the
+  withdrawn deletion still shows. (#477)
+
 ## [1.29.2] - 2026-11-26
 
 ### Fixed
