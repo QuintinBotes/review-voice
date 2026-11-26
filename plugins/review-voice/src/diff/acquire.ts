@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGitSync } from '../git-exec.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { classify, findHandEdited, firstPartyMatcher, isReviewable, languageOf, type FileClass } from './classify.ts';
@@ -56,14 +56,9 @@ export interface DiffResult {
 
 export class GitError extends Error {}
 
-function git(args: string[], cwd: string): string {
+function git(args: string[], cwd: string, timeout = GIT_READ_TIMEOUT_MS): string {
   try {
-    return execFileSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(timeout) }).toString('utf8');
   } catch (error) {
     const stderr = (error as { stderr?: string }).stderr ?? '';
     throw new GitError(`git ${args[0]} failed: ${stderr.trim() || String(error)}`);
@@ -76,12 +71,7 @@ function git(args: string[], cwd: string): string {
  */
 function gitAllowingDifference(args: string[], cwd: string): string {
   try {
-    return execFileSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString('utf8');
   } catch (error) {
     const typed = error as { status?: number; stdout?: string };
     if (typed.status === 1 && typeof typed.stdout === 'string') return typed.stdout;
@@ -104,7 +94,7 @@ function untrackedFiles(root: string): string[] {
 
 function hasCommitLocally(commit: string, root: string): boolean {
   try {
-    git(['cat-file', '-e', `${commit}^{commit}`], root);
+    git(['cat-file', '-e', `${commit}^{commit}`], root, GIT_CHECK_TIMEOUT_MS);
     return true;
   } catch {
     return false;
@@ -150,13 +140,10 @@ export function linguistGeneratedPaths(root: string, paths: readonly string[], s
   if (paths.length === 0 || source === null || !hasCommitLocally(source, root)) return marked;
   let raw: string;
   try {
-    raw = execFileSync('git', ['check-attr', '--source', source, '-z', '--stdin', 'linguist-generated'], {
-      cwd: root,
-      encoding: 'utf8',
+    raw = runGitSync(root, ['check-attr', '--source', source, '-z', '--stdin', 'linguist-generated'], {
       input: `${paths.join('\0')}\0`,
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+      timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS),
+    }).toString('utf8');
   } catch {
     return marked;
   }

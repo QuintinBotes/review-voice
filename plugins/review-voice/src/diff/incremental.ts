@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGitSync } from '../git-exec.ts';
 import { firstPartyMatcher, isReviewable } from './classify.ts';
 import { patchRenames, unquoteGitPath } from './hunks.ts';
 
@@ -298,14 +298,9 @@ function firstLine(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).split('\n')[0] ?? '';
 }
 
-function runGit(args: string[], cwd: string): string {
+function runGit(args: string[], cwd: string, timeout = GIT_READ_TIMEOUT_MS): string {
   try {
-    return execFileSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(timeout) }).toString('utf8');
   } catch (error) {
     // Rethrown with the command named, so a full read can say which git step
     // failed; `status` is kept because `isAncestor` reads exit 1 as an answer.
@@ -316,7 +311,7 @@ function runGit(args: string[], cwd: string): string {
 const systemGit: IncrementalGit = {
   hasCommit(sha, cwd) {
     try {
-      runGit(['cat-file', '-e', `${sha}^{commit}`], cwd);
+      runGit(['cat-file', '-e', `${sha}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS);
       return true;
     } catch {
       return false;
@@ -375,7 +370,7 @@ const systemGit: IncrementalGit = {
     let output: string;
     let conflicted = false;
     try {
-      output = execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+      output = runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString('utf8');
     } catch (error) {
       // Exit 1 is merge-tree's answer for "conflicts", with the tree and the
       // conflicted paths still on stdout. Anything else is a failed command.

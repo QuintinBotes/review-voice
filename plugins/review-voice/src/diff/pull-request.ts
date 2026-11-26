@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGitSync } from '../git-exec.ts';
 import { GitHubClient } from '../github/client.ts';
 import { classify, findHandEdited, firstPartyMatcher, isReviewable, languageOf } from './classify.ts';
 import { COVERED_EARLIER, excludedReason, FILE_DELETED, NO_PATCH, SAME_AS_BASE_TIP, summariseExclusions } from './exclusions.ts';
@@ -88,20 +88,14 @@ export interface RefAvailability {
   note: string | null;
 }
 
-function git(args: string[], cwd: string, timeout = 60_000): string {
-  return execFileSync('git', args, {
-    cwd,
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'ignore'],
-    timeout,
-  });
+function git(args: string[], cwd: string, timeout = GIT_READ_TIMEOUT_MS): string {
+  return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(timeout) }).toString('utf8');
 }
 
 /** Whether a commit object is present, asked of git rather than assumed. */
 function hasCommit(sha: string, cwd: string): boolean {
   try {
-    git(['cat-file', '-e', `${sha}^{commit}`], cwd, 10_000);
+    git(['cat-file', '-e', `${sha}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS);
     return true;
   } catch {
     return false;
@@ -330,13 +324,7 @@ export function applyReviewScope(
     (since, head, files, root) => {
       const args = ['diff', '--no-ext-diff', '--no-color', '--unified=3', '--src-prefix=a/', '--dst-prefix=b/', since, head, '--', ...topPathspecs(files)];
       try {
-        return execFileSync('git', args, {
-          cwd: root,
-          encoding: 'utf8',
-          maxBuffer: 64 * 1024 * 1024,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: 60_000,
-        });
+        return runGitSync(root, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString('utf8');
       } catch (error) {
         throw new Error(gitFailure(args, error));
       }

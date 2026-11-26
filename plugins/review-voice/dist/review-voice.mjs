@@ -230,10 +230,118 @@ function parseFinding(raw, startLine) {
   };
 }
 
-// plugins/review-voice/src/diff/acquire.ts
-import { execFileSync as execFileSync2 } from "node:child_process";
+// plugins/review-voice/src/git-exec.ts
+import { spawnSync } from "node:child_process";
 import { readFileSync as readFileSync2 } from "node:fs";
 import { join as join2 } from "node:path";
+var CAT_FILE_BATCH_TIMEOUT_MS = 12e4;
+var CAT_FILE_BLOB_TIMEOUT_MS = 3e4;
+function timeoutFromEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === void 0) return fallback;
+  const parsed2 = Number(raw);
+  return Number.isFinite(parsed2) && parsed2 > 0 ? Math.min(parsed2, fallback) : fallback;
+}
+function catFileBatchTimeoutMs() {
+  return timeoutFromEnv("REVIEW_VOICE_CAT_FILE_BATCH_TIMEOUT_MS", CAT_FILE_BATCH_TIMEOUT_MS);
+}
+function catFileBlobTimeoutMs() {
+  return timeoutFromEnv("REVIEW_VOICE_CAT_FILE_BLOB_TIMEOUT_MS", CAT_FILE_BLOB_TIMEOUT_MS);
+}
+function killGroup(pid) {
+  if (pid === void 0) return;
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+  }
+}
+var warnedAboutPartialClone = false;
+function readGitConfig(root) {
+  const texts = [];
+  const read = (path) => {
+    try {
+      return readFileSync2(path, "utf8");
+    } catch {
+      return null;
+    }
+  };
+  const dotGit = read(join2(root, ".git"));
+  let gitDir = join2(root, ".git");
+  if (dotGit !== null && dotGit.startsWith("gitdir:")) {
+    const named = dotGit.slice("gitdir:".length).trim();
+    gitDir = named.startsWith("/") ? named : join2(root, named);
+    const common = read(join2(gitDir, "commondir"))?.trim();
+    if (common !== void 0 && common !== "") {
+      gitDir = common.startsWith("/") ? common : join2(gitDir, common);
+    }
+  }
+  const config2 = read(join2(gitDir, "config"));
+  if (config2 !== null) texts.push(config2);
+  return texts.join("\n");
+}
+function isPartialClone(root) {
+  return /partialclonefilter/i.test(readGitConfig(root));
+}
+function warnPartialCloneOnce(root) {
+  if (warnedAboutPartialClone) return;
+  if (!isPartialClone(root)) return;
+  warnedAboutPartialClone = true;
+  console.error(
+    "review-voice: a git command timed out; this repository is a partial clone, so a lazy fetch of missing blobs is the likely cause. Continuing without those blobs."
+  );
+}
+var GIT_CHECK_TIMEOUT_MS = 1e4;
+var GIT_READ_TIMEOUT_MS = 6e4;
+function gitTimeoutMs(fallback) {
+  return timeoutFromEnv("REVIEW_VOICE_GIT_TIMEOUT_MS", fallback);
+}
+function runGitSync(root, args, options) {
+  return runGitCatFileSync(root, args, { maxBuffer: 64 * 1024 * 1024, ...options });
+}
+function runGitCatFileSync(root, args, options) {
+  const spawnOptions = {
+    cwd: root,
+    ...options.input === void 0 ? {} : { input: options.input },
+    maxBuffer: options.maxBuffer,
+    timeout: options.timeoutMs,
+    killSignal: "SIGKILL",
+    detached: process.platform !== "win32",
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"]
+  };
+  const result = spawnSync("git", [...args], spawnOptions);
+  const timedOut = result.error?.code === "ETIMEDOUT";
+  if (timedOut || result.signal !== null) {
+    (options.killTree ?? killGroup)(result.pid);
+  }
+  if (timedOut) warnPartialCloneOnce(root);
+  if (result.error !== void 0) {
+    if (timedOut) {
+      const bound = options.timeoutMs < 1e3 ? `${options.timeoutMs}ms` : `${options.timeoutMs / 1e3}s`;
+      const error = new Error(`git ${args.join(" ")} timed out after ${bound}`);
+      error.code = "ETIMEDOUT";
+      throw error;
+    }
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    const stderr = result.stderr?.toString("utf8").trim() ?? "";
+    throw Object.assign(new Error(`git ${args.join(" ")} failed${stderr === "" ? "" : `: ${stderr}`}`), {
+      status: result.status,
+      stdout: result.stdout?.toString("utf8") ?? "",
+      stderr
+    });
+  }
+  return result.stdout ?? Buffer.alloc(0);
+}
+
+// plugins/review-voice/src/diff/acquire.ts
+import { readFileSync as readFileSync3 } from "node:fs";
+import { join as join3 } from "node:path";
 
 // plugins/review-voice/src/conventions/globs.ts
 function frontmatterPaths(content) {
@@ -631,14 +739,9 @@ function parseExclusions(raw) {
 // plugins/review-voice/src/diff/acquire.ts
 var GitError = class extends Error {
 };
-function git(args, cwd) {
+function git(args, cwd, timeout = GIT_READ_TIMEOUT_MS) {
   try {
-    return execFileSync2("git", args, {
-      cwd,
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
+    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(timeout) }).toString("utf8");
   } catch (error) {
     const stderr = error.stderr ?? "";
     throw new GitError(`git ${args[0]} failed: ${stderr.trim() || String(error)}`);
@@ -646,12 +749,7 @@ function git(args, cwd) {
 }
 function gitAllowingDifference(args, cwd) {
   try {
-    return execFileSync2("git", args, {
-      cwd,
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
+    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString("utf8");
   } catch (error) {
     const typed = error;
     if (typed.status === 1 && typeof typed.stdout === "string") return typed.stdout;
@@ -663,7 +761,7 @@ function untrackedFiles(root) {
 }
 function hasCommitLocally(commit, root) {
   try {
-    git(["cat-file", "-e", `${commit}^{commit}`], root);
+    git(["cat-file", "-e", `${commit}^{commit}`], root, GIT_CHECK_TIMEOUT_MS);
     return true;
   } catch {
     return false;
@@ -686,13 +784,10 @@ function linguistGeneratedPaths(root, paths, source) {
   if (paths.length === 0 || source === null || !hasCommitLocally(source, root)) return marked;
   let raw;
   try {
-    raw = execFileSync2("git", ["check-attr", "--source", source, "-z", "--stdin", "linguist-generated"], {
-      cwd: root,
-      encoding: "utf8",
+    raw = runGitSync(root, ["check-attr", "--source", source, "-z", "--stdin", "linguist-generated"], {
       input: `${paths.join("\0")}\0`,
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
+      timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS)
+    }).toString("utf8");
   } catch {
     return marked;
   }
@@ -758,7 +853,7 @@ function acquireDiff(options) {
   const isBinary = (path) => untracked.has(path) ? gitAllowingDifference(["diff", "--numstat", "--no-index", "--", "/dev/null", path], root).startsWith("-	-	") : binary2.has(path);
   const readHead3 = (path) => {
     try {
-      if (mode === "worktree") return readFileSync2(join2(root, path), "utf8");
+      if (mode === "worktree") return readFileSync3(join3(root, path), "utf8");
       return git(["show", mode === "staged" ? `:${path}` : `HEAD:${path}`], root);
     } catch {
       return null;
@@ -1163,26 +1258,26 @@ import { dirname as dirname2 } from "node:path";
 
 // plugins/review-voice/src/store/paths.ts
 import { homedir } from "node:os";
-import { join as join3 } from "node:path";
+import { join as join4 } from "node:path";
 function dataDirectory(env = process.env) {
   const override = env["REVIEW_VOICE_DATA_DIR"];
   if (override !== void 0 && override.length > 0) return override;
   const home = homedir();
   switch (process.platform) {
     case "darwin":
-      return join3(home, "Library", "Application Support", "review-voice");
+      return join4(home, "Library", "Application Support", "review-voice");
     case "win32": {
       const appData = env["APPDATA"];
-      return appData !== void 0 && appData.length > 0 ? join3(appData, "review-voice") : join3(home, "AppData", "Roaming", "review-voice");
+      return appData !== void 0 && appData.length > 0 ? join4(appData, "review-voice") : join4(home, "AppData", "Roaming", "review-voice");
     }
     default: {
       const xdg = env["XDG_DATA_HOME"];
-      return xdg !== void 0 && xdg.length > 0 ? join3(xdg, "review-voice") : join3(home, ".local", "share", "review-voice");
+      return xdg !== void 0 && xdg.length > 0 ? join4(xdg, "review-voice") : join4(home, ".local", "share", "review-voice");
     }
   }
 }
 function databasePath(env) {
-  return join3(dataDirectory(env), "review-voice.db");
+  return join4(dataDirectory(env), "review-voice.db");
 }
 
 // plugins/review-voice/src/store/db.ts
@@ -8587,7 +8682,7 @@ import { posix } from "node:path";
 
 // plugins/review-voice/src/review/lanes.ts
 import { existsSync } from "node:fs";
-import { dirname as dirname3, join as join4 } from "node:path";
+import { dirname as dirname3, join as join5 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 var LANE_TIERS = ["nit", "minor", "important", "blocking"];
 var LANE_SIGNAL_KEYS = {
@@ -8605,8 +8700,8 @@ function laneNamed(lanes2, name) {
 function agentsDirectory() {
   let dir = dirname3(fileURLToPath2(import.meta.url));
   for (let depth = 0; depth < 4; depth += 1) {
-    const candidate = join4(dir, "agents");
-    if (existsSync(join4(candidate, `${DIFF_LANE.agent}.md`))) return candidate;
+    const candidate = join5(dir, "agents");
+    if (existsSync(join5(candidate, `${DIFF_LANE.agent}.md`))) return candidate;
     dir = dirname3(dir);
   }
   return null;
@@ -8614,7 +8709,7 @@ function agentsDirectory() {
 function agentExists(name) {
   if (!/^[a-z][a-z0-9-]*$/.test(name)) return false;
   const dir = agentsDirectory();
-  return dir !== null && existsSync(join4(dir, `${name}.md`));
+  return dir !== null && existsSync(join5(dir, `${name}.md`));
 }
 function signalCount(structure, signal2, paths) {
   if (typeof structure !== "object" || structure === null) return 0;
@@ -9909,14 +10004,14 @@ function listPolicies(db, scope) {
 }
 
 // plugins/review-voice/src/github/auth.ts
-import { execFileSync as execFileSync3 } from "node:child_process";
+import { execFileSync as execFileSync2 } from "node:child_process";
 var AuthError = class extends Error {
 };
 function githubToken(env = process.env) {
   const fromEnv = env["GITHUB_TOKEN"] ?? env["GH_TOKEN"];
   if (fromEnv !== void 0 && fromEnv.length > 0) return fromEnv;
   try {
-    const token = execFileSync3("gh", ["auth", "token"], {
+    const token = execFileSync2("gh", ["auth", "token"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
     }).trim();
@@ -10504,103 +10599,6 @@ async function readCi(client, repository, sha, gates = [], now = Date.now(), rul
 // plugins/review-voice/src/diff/structure.ts
 import { readFileSync as readFileSync4 } from "node:fs";
 import { join as join6 } from "node:path";
-
-// plugins/review-voice/src/git-exec.ts
-import { spawnSync } from "node:child_process";
-import { readFileSync as readFileSync3 } from "node:fs";
-import { join as join5 } from "node:path";
-var CAT_FILE_BATCH_TIMEOUT_MS = 12e4;
-var CAT_FILE_BLOB_TIMEOUT_MS = 3e4;
-function timeoutFromEnv(name, fallback) {
-  const raw = process.env[name];
-  if (raw === void 0) return fallback;
-  const parsed2 = Number(raw);
-  return Number.isFinite(parsed2) && parsed2 > 0 ? Math.min(parsed2, fallback) : fallback;
-}
-function catFileBatchTimeoutMs() {
-  return timeoutFromEnv("REVIEW_VOICE_CAT_FILE_BATCH_TIMEOUT_MS", CAT_FILE_BATCH_TIMEOUT_MS);
-}
-function catFileBlobTimeoutMs() {
-  return timeoutFromEnv("REVIEW_VOICE_CAT_FILE_BLOB_TIMEOUT_MS", CAT_FILE_BLOB_TIMEOUT_MS);
-}
-function killGroup(pid) {
-  if (pid === void 0) return;
-  if (process.platform === "win32") {
-    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
-    return;
-  }
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
-  }
-}
-var warnedAboutPartialClone = false;
-function readGitConfig(root) {
-  const texts = [];
-  const read = (path) => {
-    try {
-      return readFileSync3(path, "utf8");
-    } catch {
-      return null;
-    }
-  };
-  const dotGit = read(join5(root, ".git"));
-  let gitDir = join5(root, ".git");
-  if (dotGit !== null && dotGit.startsWith("gitdir:")) {
-    const named = dotGit.slice("gitdir:".length).trim();
-    gitDir = named.startsWith("/") ? named : join5(root, named);
-    const common = read(join5(gitDir, "commondir"))?.trim();
-    if (common !== void 0 && common !== "") {
-      gitDir = common.startsWith("/") ? common : join5(gitDir, common);
-    }
-  }
-  const config2 = read(join5(gitDir, "config"));
-  if (config2 !== null) texts.push(config2);
-  return texts.join("\n");
-}
-function isPartialClone(root) {
-  return /partialclonefilter/i.test(readGitConfig(root));
-}
-function warnPartialCloneOnce(root) {
-  if (warnedAboutPartialClone) return;
-  if (!isPartialClone(root)) return;
-  warnedAboutPartialClone = true;
-  console.error(
-    "review-voice: git cat-file timed out; this repository is a partial clone, so a lazy fetch of missing blobs is the likely cause. Continuing without those blobs."
-  );
-}
-function runGitCatFileSync(root, args, options) {
-  const spawnOptions = {
-    cwd: root,
-    ...options.input === void 0 ? {} : { input: options.input },
-    maxBuffer: options.maxBuffer,
-    timeout: options.timeoutMs,
-    killSignal: "SIGKILL",
-    detached: process.platform !== "win32",
-    windowsHide: true,
-    stdio: ["pipe", "pipe", "pipe"]
-  };
-  const result = spawnSync("git", [...args], spawnOptions);
-  const timedOut = result.error?.code === "ETIMEDOUT";
-  if (timedOut || result.signal !== null) {
-    (options.killTree ?? killGroup)(result.pid);
-  }
-  if (timedOut) warnPartialCloneOnce(root);
-  if (result.error !== void 0) {
-    if (timedOut) {
-      const bound = options.timeoutMs < 1e3 ? `${options.timeoutMs}ms` : `${options.timeoutMs / 1e3}s`;
-      const error = new Error(`git ${args.join(" ")} timed out after ${bound}`);
-      error.code = "ETIMEDOUT";
-      throw error;
-    }
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    const stderr = result.stderr?.toString("utf8").trim() ?? "";
-    throw new Error(`git ${args.join(" ")} failed${stderr === "" ? "" : `: ${stderr}`}`);
-  }
-  return result.stdout ?? Buffer.alloc(0);
-}
 
 // plugins/review-voice/src/diff/removed-controls.ts
 import { basename, extname as extname2 } from "node:path";
@@ -11342,7 +11340,6 @@ import { randomUUID as randomUUID3, createHash as createHash2 } from "node:crypt
 import { posix as posix3 } from "node:path";
 
 // plugins/review-voice/src/diff/incremental.ts
-import { execFileSync as execFileSync4 } from "node:child_process";
 var nullableString = (value) => typeof value === "string" || value === null;
 var UNCHANGED_REASONS = /* @__PURE__ */ new Set(["base-merged", "history-rewritten", "base-sync-only"]);
 function parseReviewScope(value) {
@@ -11392,14 +11389,9 @@ function gitFailure(args, error) {
 function firstLine(error) {
   return (error instanceof Error ? error.message : String(error)).split("\n")[0] ?? "";
 }
-function runGit(args, cwd) {
+function runGit(args, cwd, timeout = GIT_READ_TIMEOUT_MS) {
   try {
-    return execFileSync4("git", args, {
-      cwd,
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
+    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(timeout) }).toString("utf8");
   } catch (error) {
     throw Object.assign(new Error(gitFailure(args, error)), { status: error.status });
   }
@@ -11407,7 +11399,7 @@ function runGit(args, cwd) {
 var systemGit = {
   hasCommit(sha, cwd) {
     try {
-      runGit(["cat-file", "-e", `${sha}^{commit}`], cwd);
+      runGit(["cat-file", "-e", `${sha}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS);
       return true;
     } catch {
       return false;
@@ -11456,7 +11448,7 @@ var systemGit = {
     let output;
     let conflicted = false;
     try {
-      output = execFileSync4("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+      output = runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString("utf8");
     } catch (error) {
       const failure = error;
       if (failure.status !== 1 || typeof failure.stdout !== "string") throw new Error(gitFailure(args, error));
@@ -11979,9 +11971,6 @@ function interdiffFrom(options, prior, git6, from, mergeBase, paths, unchangedRe
   };
 }
 
-// plugins/review-voice/src/diff/carry.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
-
 // plugins/review-voice/src/diff/reanchor.ts
 function candidateAnchor(hunks, candidate) {
   return candidate.anchor === "stale-consumer" ? classifyStaleConsumer(hunks, candidate.path, candidate.line, candidate.causedBy ?? null) : classifyAnchor(hunks, candidate.path, candidate.line);
@@ -12052,7 +12041,7 @@ function seriousNotCarried(notCarried) {
 var NEIGHBOURHOOD = 2;
 function commitReadable(ref, cwd) {
   try {
-    execFileSync5("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
+    runGitSync(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { timeoutMs: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS) });
     return true;
   } catch {
     return false;
@@ -12087,19 +12076,14 @@ var CarryError = class extends Error {
 };
 function gitOut(args, cwd) {
   try {
-    return execFileSync5("git", args, {
-      cwd,
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
+    return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString("utf8");
   } catch (error) {
     throw new CarryError(`git ${args.join(" ")} failed: ${error.message}`);
   }
 }
 function existsAt(ref, path, cwd) {
   try {
-    execFileSync5("git", ["cat-file", "-e", `${ref}:${path}`], { cwd, stdio: "ignore" });
+    runGitSync(cwd, ["cat-file", "-e", `${ref}:${path}`], { timeoutMs: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS) });
     return true;
   } catch {
     return false;
@@ -14384,7 +14368,7 @@ function retentionLine(result) {
 }
 
 // plugins/review-voice/src/evidence/reproduce.ts
-import { execFileSync as execFileSync7 } from "node:child_process";
+import { execFileSync as execFileSync4 } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync as chmodSync2, constants, cpSync, existsSync as existsSync3, lstatSync as lstatSync3, mkdirSync as mkdirSync2, mkdtempSync, readdirSync as readdirSync2, readFileSync as readFileSync5, realpathSync, renameSync, rmSync as rmSync3, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -14392,7 +14376,7 @@ import { userInfo } from "node:os";
 import { basename as basename4, dirname as dirname5, join as join8, relative, resolve } from "node:path";
 
 // plugins/review-voice/src/review/worktree.ts
-import { execFileSync as execFileSync6 } from "node:child_process";
+import { execFileSync as execFileSync3 } from "node:child_process";
 import { lstatSync as lstatSync2, rmSync as rmSync2, unlinkSync } from "node:fs";
 var SAFE_GIT = [
   "-c",
@@ -14409,7 +14393,7 @@ var SAFE_GIT = [
   "submodule.recurse=false"
 ];
 function safeGit(args, cwd) {
-  execFileSync6("git", [...SAFE_GIT, ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+  execFileSync3("git", [...SAFE_GIT, ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
 }
 function addHeadWorktree(headDir, head, cwd = process.cwd()) {
   const stale = lstatSync2(headDir, { throwIfNoEntry: false });
@@ -14429,7 +14413,7 @@ function addHeadWorktree(headDir, head, cwd = process.cwd()) {
 }
 function removeHeadWorktree(headDir, cwd = process.cwd()) {
   try {
-    execFileSync6("git", ["worktree", "remove", "--force", headDir], { cwd, stdio: "ignore" });
+    execFileSync3("git", ["worktree", "remove", "--force", headDir], { cwd, stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -15054,7 +15038,7 @@ function spawnCommand(command, options) {
 function defaultReproduction() {
   return { enabled: false, runners: [], linkPaths: [], memoryMb: 1024, cpuSeconds: 60 };
 }
-var runGit2 = (args, cwd) => execFileSync7("git", [...SAFE_GIT, ...args], {
+var runGit2 = (args, cwd) => execFileSync4("git", [...SAFE_GIT, ...args], {
   cwd,
   encoding: "utf8",
   stdio: ["ignore", "pipe", "pipe"],
@@ -20271,7 +20255,7 @@ async function acquireLock(dataDir, port = lockPort(dataDir), patience = DEFAULT
 }
 
 // plugins/review-voice/src/watch/workspace.ts
-import { execFileSync as execFileSync8 } from "node:child_process";
+import { execFileSync as execFileSync5 } from "node:child_process";
 import { existsSync as existsSync5, mkdirSync as mkdirSync3, readdirSync as readdirSync3, statSync as statSync2, unlinkSync as unlinkSync3 } from "node:fs";
 import { dirname as dirname7, join as join11 } from "node:path";
 var NAME = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/;
@@ -20281,7 +20265,7 @@ function cloneDir(workspace, repository) {
   return join11(workspace, ...repository.split("/"));
 }
 var runQuietly = (command, args) => {
-  execFileSync8(command, args, { stdio: ["ignore", "ignore", "pipe"], timeout: 6e5 });
+  execFileSync5(command, args, { stdio: ["ignore", "ignore", "pipe"], timeout: 6e5 });
 };
 var STALE_LOCK_MS = 10 * 6e4;
 function removeStaleGitLocks(dir, now = Date.now()) {
@@ -22378,7 +22362,7 @@ function topLevelHelp() {
 }
 
 // plugins/review-voice/src/review/driver.ts
-import { execFileSync as execFileSync11 } from "node:child_process";
+import { execFileSync as execFileSync7 } from "node:child_process";
 import { appendFileSync as appendFileSync2, copyFileSync, existsSync as existsSync11, mkdirSync as mkdirSync6, readFileSync as readFileSync14, rmSync as rmSync7, writeFileSync as writeFileSync7 } from "node:fs";
 import { dirname as dirname10, join as join19, resolve as resolve5, sep } from "node:path";
 
@@ -24334,12 +24318,11 @@ var STAGES = [
 ];
 
 // plugins/review-voice/src/review/config.ts
-import { execFileSync as execFileSync10 } from "node:child_process";
+import { execFileSync as execFileSync6 } from "node:child_process";
 import { existsSync as existsSync10, rmSync as rmSync6, writeFileSync as writeFileSync6 } from "node:fs";
 import { isAbsolute as isAbsolute5, join as join18, resolve as resolve4 } from "node:path";
 
 // plugins/review-voice/src/diff/pull-request.ts
-import { execFileSync as execFileSync9 } from "node:child_process";
 var STATUS2 = {
   added: "added",
   modified: "modified",
@@ -24359,18 +24342,12 @@ function toUnifiedDiff(file2) {
   ].join("\n");
 }
 var GITHUB_MAX_FILES = 3e3;
-function git2(args, cwd, timeout = 6e4) {
-  return execFileSync9("git", args, {
-    cwd,
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout
-  });
+function git2(args, cwd, timeout = GIT_READ_TIMEOUT_MS) {
+  return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(timeout) }).toString("utf8");
 }
 function hasCommit(sha, cwd) {
   try {
-    git2(["cat-file", "-e", `${sha}^{commit}`], cwd, 1e4);
+    git2(["cat-file", "-e", `${sha}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS);
     return true;
   } catch {
     return false;
@@ -24475,13 +24452,7 @@ function fullScopeResult(result, pullNumber, scope) {
 function applyReviewScope(result, pullNumber, scope, cwd, readIncrementalDiff = (since, head, files2, root) => {
   const args = ["diff", "--no-ext-diff", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/", since, head, "--", ...topPathspecs(files2)];
   try {
-    return execFileSync9("git", args, {
-      cwd: root,
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 6e4
-    });
+    return runGitSync(root, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) }).toString("utf8");
   } catch (error) {
     throw new Error(gitFailure(args, error));
   }
@@ -24669,7 +24640,7 @@ var CONFIG_PATH = ".review-voice/config.yaml";
 var shortRef = (ref) => /^[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 7) : ref;
 function showAt(ref, path) {
   try {
-    return execFileSync10("git", [...SAFE_GIT, "show", `${ref}:${path}`], { cwd: process.cwd(), stdio: ["ignore", "pipe", "ignore"], maxBuffer: 16 * 1024 * 1024 });
+    return execFileSync6("git", [...SAFE_GIT, "show", `${ref}:${path}`], { cwd: process.cwd(), stdio: ["ignore", "pipe", "ignore"], maxBuffer: 16 * 1024 * 1024 });
   } catch {
     return null;
   }
@@ -24756,7 +24727,7 @@ async function must(run, argv, stdin, code3 = 2) {
   return result;
 }
 function localGit(args) {
-  return execFileSync11("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  return execFileSync7("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 function localHead(ref) {
   let sha;
@@ -24967,7 +24938,7 @@ function authorshipOf(run) {
   if (run.base === null) unread = "base not readable, trailers not read";
   else {
     try {
-      const log = execFileSync11(
+      const log = execFileSync7(
         "git",
         [...SAFE_GIT, "log", "--max-count=500", "--format=%(trailers:key=Co-authored-by,valueonly,unfold)", `${run.base}..${run.head}`],
         { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024 }
@@ -25024,7 +24995,7 @@ function prepareWorkspace(run) {
   if (!(isRecord5(refs["head"]) && refs["head"]["available"] === true)) {
     throw new Stop(2, `The head ${run.head} is not in this clone. Fetch it and run again.`);
   }
-  const git6 = (args) => execFileSync11("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+  const git6 = (args) => execFileSync7("git", [...SAFE_GIT, ...args], { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
   const headDir = at(run, "head");
   if (run.headDir === null) {
     addHeadWorktree(headDir, run.head);
@@ -25577,7 +25548,7 @@ function claudeVersionOf(run) {
   if (run.claudeVersion !== void 0) return run.claudeVersion;
   const env = run.deps.env ?? process.env;
   try {
-    const out = execFileSync11(claudeBin(env), ["--version"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15e3 });
+    const out = execFileSync7(claudeBin(env), ["--version"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15e3 });
     run.claudeVersion = out.split("\n")[0].trim() || null;
   } catch {
     run.claudeVersion = null;
@@ -25952,7 +25923,7 @@ function reportText(report) {
 // plugins/review-voice/src/cli/shared.ts
 import { readSync, mkdirSync as mkdirSync7, statSync as statSync3, existsSync as existsSync12, realpathSync as realpathSync3 } from "node:fs";
 import { basename as basename5, dirname as dirname11, join as join20 } from "node:path";
-import { execFileSync as execFileSync12 } from "node:child_process";
+import { execFileSync as execFileSync8 } from "node:child_process";
 var STDIN_INPUT = {
   "check-candidates": "candidates JSON",
   "check-verification": "the evidence-verifier output",
@@ -26021,7 +25992,7 @@ function numericFlag(argv, name, fallback) {
 }
 function inferRepository(cwd) {
   try {
-    const url = execFileSync12("git", ["remote", "get-url", "origin"], {
+    const url = execFileSync8("git", ["remote", "get-url", "origin"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
@@ -26035,7 +26006,7 @@ function inferRepository(cwd) {
 function remoteRepositories(cwd) {
   let out;
   try {
-    out = execFileSync12("git", ["config", "--get-regexp", "^remote\\..*\\.url$"], {
+    out = execFileSync8("git", ["config", "--get-regexp", "^remote\\..*\\.url$"], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
@@ -26130,7 +26101,7 @@ function containsCut(before, after) {
 }
 function refExists(ref, cwd) {
   try {
-    execFileSync12("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
+    execFileSync8("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd, stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -28357,7 +28328,6 @@ import { readFileSync as readFileSync21 } from "node:fs";
 import { dirname as dirname14, join as join24, sep as sep3 } from "node:path";
 
 // plugins/review-voice/src/conventions/tree.ts
-import { execFileSync as execFileSync13 } from "node:child_process";
 import { existsSync as existsSync15, readFileSync as readFileSync20, readdirSync as readdirSync4, statSync as statSync6 } from "node:fs";
 import { join as join23, sep as sep2 } from "node:path";
 function filesystemReader(root) {
@@ -28377,10 +28347,9 @@ function filesystemReader(root) {
 }
 var GIT_BUFFER = 512 * 1024 * 1024;
 function gitTreeReader(root, ref) {
-  const listing = execFileSync13("git", ["ls-tree", "-r", "-l", "--full-tree", "-z", ref], {
-    cwd: root,
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: GIT_BUFFER
+  const listing = runGitSync(root, ["ls-tree", "-r", "-l", "--full-tree", "-z", ref], {
+    maxBuffer: GIT_BUFFER,
+    timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS)
   });
   const files2 = /* @__PURE__ */ new Map();
   const directories = /* @__PURE__ */ new Map();
@@ -29008,13 +28977,13 @@ import { writeFileSync as writeFileSync12, mkdirSync as mkdirSync10, statSync as
 import { dirname as dirname16, isAbsolute as isAbsolute6, relative as relative4, resolve as resolve10, sep as sep5 } from "node:path";
 
 // plugins/review-voice/src/evaluate/recall.ts
-import { execFileSync as execFileSync15 } from "node:child_process";
+import { execFileSync as execFileSync10 } from "node:child_process";
 import { copyFileSync as copyFileSync2, existsSync as existsSync17, mkdirSync as mkdirSync9, mkdtempSync as mkdtempSync5, readdirSync as readdirSync6, readFileSync as readFileSync24, rmSync as rmSync9, statSync as statSync7 } from "node:fs";
 import { tmpdir as tmpdir4 } from "node:os";
 import { join as join26, resolve as resolve9 } from "node:path";
 
 // plugins/review-voice/src/evaluate/fixtures.ts
-import { execFileSync as execFileSync14 } from "node:child_process";
+import { execFileSync as execFileSync9 } from "node:child_process";
 import {
   existsSync as existsSync16,
   lstatSync as lstatSync4,
@@ -29264,7 +29233,7 @@ function gitEnvironment() {
 }
 function git3(cwd, label2, args) {
   try {
-    return execFileSync14("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", "-c", "maintenance.auto=false", "-c", "core.precomposeunicode=false", ...args], {
+    return execFileSync9("git", ["-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", "-c", "maintenance.auto=false", "-c", "core.precomposeunicode=false", ...args], {
       cwd,
       env: gitEnvironment(),
       encoding: "utf8",
@@ -29460,7 +29429,7 @@ function selectFixtures(options) {
 var json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 function shimFiles(repoDir, base, head, paths) {
   return paths.map((path) => {
-    const text5 = execFileSync15("git", ["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", path], {
+    const text5 = execFileSync10("git", ["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", path], {
       cwd: repoDir,
       encoding: "utf8",
       maxBuffer: 64 * 1024 * 1024
@@ -29557,7 +29526,7 @@ function trailOf(report) {
   };
 }
 function checkoutBase(repoDir) {
-  execFileSync15("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"] });
+  execFileSync10("git", ["-c", "core.hooksPath=/dev/null", "checkout", "-q", "main"], { cwd: repoDir, stdio: ["ignore", "ignore", "pipe"] });
 }
 async function runFixture(fixture, index, context2) {
   const { expectation } = fixture;
@@ -29807,13 +29776,13 @@ async function recallCommand(argv, runInProcess2) {
 }
 
 // plugins/review-voice/src/cli/import-benchmark.ts
-import { execFileSync as execFileSync17 } from "node:child_process";
+import { execFileSync as execFileSync12 } from "node:child_process";
 import { createHash as createHash7, randomBytes as randomBytes2 } from "node:crypto";
 import { constants as constants3, copyFileSync as copyFileSync3, existsSync as existsSync19, lstatSync as lstatSync7, mkdirSync as mkdirSync12, readdirSync as readdirSync7, readFileSync as readFileSync26, renameSync as renameSync4, rmdirSync, rmSync as rmSync12, statSync as statSync9 } from "node:fs";
 import { dirname as dirname17, join as join28, resolve as resolve11 } from "node:path";
 
 // plugins/review-voice/src/evaluate/benchmark.ts
-import { execFileSync as execFileSync16 } from "node:child_process";
+import { execFileSync as execFileSync11 } from "node:child_process";
 import { lstatSync as lstatSync6, mkdirSync as mkdirSync11, mkdtempSync as mkdtempSync6, readFileSync as readFileSync25, rmSync as rmSync11, writeFileSync as writeFileSync13 } from "node:fs";
 import { tmpdir as tmpdir5 } from "node:os";
 import { join as join27 } from "node:path";
@@ -29890,7 +29859,7 @@ function probeBuild(scratch, slug, diff) {
     mkdirSync11(fixture, { recursive: true });
     writeFileSync13(join27(fixture, "diff.patch"), diff);
     const { base, head, files: files2 } = materializeFixture(fixture, repo, { name: slug });
-    const git6 = (args) => execFileSync16("git", args, { cwd: repo, env: gitEnvironment2(), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    const git6 = (args) => execFileSync11("git", args, { cwd: repo, env: gitEnvironment2(), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
     const hunks = parseHunks(git6(["-c", "core.quotepath=off", "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", base, head, "--", ...files2]));
     const handEdited = findHandEdited([...hunks].filter(([, file2]) => file2.ranges.length > 0).map(([path]) => path), (path) => {
       try {
@@ -30063,7 +30032,7 @@ function insideGit(dir) {
     LC_ALL: "C"
   };
   try {
-    const answer2 = execFileSync17("git", ["rev-parse", "--is-inside-work-tree", "--is-inside-git-dir"], { cwd: dir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const answer2 = execFileSync12("git", ["rev-parse", "--is-inside-work-tree", "--is-inside-git-dir"], { cwd: dir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     return answer2.split("\n").some((line3) => line3.trim() === "true");
   } catch (error) {
     const { status, stderr } = error;
@@ -30246,7 +30215,7 @@ function importBenchmarkCommand(argv) {
 // plugins/review-voice/src/cli/worktree.ts
 import { statSync as statSync10, lstatSync as lstatSync8, rmSync as rmSync13 } from "node:fs";
 import { join as join29, resolve as resolve12 } from "node:path";
-import { execFileSync as execFileSync18 } from "node:child_process";
+import { execFileSync as execFileSync13 } from "node:child_process";
 function worktreeCommand(argv) {
   const action = argv[0];
   const dir = flag2(argv, "--dir");
@@ -30290,7 +30259,7 @@ function worktreeCommand(argv) {
   }
   let sha;
   try {
-    sha = execFileSync18("git", ["rev-parse", "--verify", "--quiet", `${head}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    sha = execFileSync13("git", ["rev-parse", "--verify", "--quiet", `${head}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     console.error(`--head ${head} is not a commit in this clone. Fetch it and run again.`);
     return 2;
@@ -30419,13 +30388,12 @@ import { readFileSync as readFileSync28, writeFileSync as writeFileSync15, mkdir
 import { join as join31 } from "node:path";
 
 // plugins/review-voice/src/diff/prior.ts
-import { execFileSync as execFileSync19 } from "node:child_process";
-function git4(args, cwd) {
-  return execFileSync19("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 6e4 });
+function git4(args, cwd, fallbackMs = GIT_READ_TIMEOUT_MS) {
+  return runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(fallbackMs) }).toString("utf8");
 }
 function resolveCommit(ref, cwd) {
   try {
-    return git4(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], cwd).trim() || null;
+    return git4(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], cwd, GIT_CHECK_TIMEOUT_MS).trim() || null;
   } catch {
     return null;
   }
@@ -30459,7 +30427,7 @@ function fetchPriorHead(sha, repository, cwd) {
   }
   const args = ["fetch", "--no-tags", "--quiet", "origin", sha];
   try {
-    execFileSync19("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 6e4 });
+    runGitSync(cwd, args, { timeoutMs: gitTimeoutMs(GIT_READ_TIMEOUT_MS) });
     return null;
   } catch (error) {
     return gitFailure(args, error);
@@ -30817,7 +30785,7 @@ async function threadCommand(argv) {
 import { readFileSync as readFileSync29, writeFileSync as writeFileSync17 } from "node:fs";
 
 // plugins/review-voice/src/scoring/existence.ts
-import { execFileSync as execFileSync20 } from "node:child_process";
+import { execFileSync as execFileSync14 } from "node:child_process";
 var ASSERTS_ABSENCE = [
   /\b(?:does|do)\s+not\s+exist\b/i,
   /\b(?:is|are)\s+(?:not\s+(?:present|defined|declared)|missing|absent)\b/i,
@@ -30888,10 +30856,10 @@ var gitGrep = (symbol, cwd, ref, exclude) => {
   const at2 = ref === null ? [] : [ref];
   try {
     if (exclude === void 0) {
-      execFileSync20("git", [...base, "--quiet", "-e", pattern, ...at2], { cwd, stdio: "ignore", timeout: 1e4 });
+      execFileSync14("git", [...base, "--quiet", "-e", pattern, ...at2], { cwd, stdio: "ignore", timeout: 1e4 });
       return true;
     }
-    const output = execFileSync20("git", [...base, "-n", "-z", "-e", pattern, ...at2], {
+    const output = execFileSync14("git", [...base, "-n", "-z", "-e", pattern, ...at2], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -30926,7 +30894,7 @@ function grepPaths(wholeIdentifier, ...[symbol, cwd, ref, timeoutMs]) {
     ...ref === null ? [] : [ref]
   ];
   try {
-    const output = execFileSync20("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
+    const output = execFileSync14("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: Math.min(1e4, timeoutMs ?? 1e4) });
     const prefix = ref === null ? "" : `${ref}:`;
     return output.split("\0").filter((path) => path.length > 0).map((path) => prefix !== "" && path.startsWith(prefix) ? path.slice(prefix.length) : path);
   } catch (error) {
@@ -30938,7 +30906,7 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
   const [first, second] = patterns;
   const args = ref === null ? ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second] : ["grep", "-n", "-z", "-I", "-i", "--full-name", "-F", "-e", first, "--and", "-e", second, ref];
   try {
-    const output = execFileSync20("git", args, {
+    const output = execFileSync14("git", args, {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -30966,7 +30934,7 @@ var gitGrepLines = (patterns, cwd, ref, timeoutMs) => {
 };
 var gitTrackedPaths = (cwd, ref) => {
   const args = ref === null ? ["ls-files", "-z", "--full-name", "--", ":/"] : ["ls-tree", "-r", "-z", "--name-only", "--full-tree", ref];
-  const output = execFileSync20("git", args, {
+  const output = execFileSync14("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -30987,7 +30955,7 @@ var RESOURCE_PATHSPECS = [
 ];
 var gitResourceSources = (cwd) => {
   try {
-    const output = execFileSync20("git", ["ls-files", "-z", "--", ...RESOURCE_PATHSPECS], {
+    const output = execFileSync14("git", ["ls-files", "-z", "--", ...RESOURCE_PATHSPECS], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -33081,7 +33049,7 @@ function checkSimplificationCommand(argv) {
 // plugins/review-voice/src/cli/verify.ts
 import { statSync as statSync12 } from "node:fs";
 import { resolve as resolve14 } from "node:path";
-import { execFileSync as execFileSync21 } from "node:child_process";
+import { execFileSync as execFileSync15 } from "node:child_process";
 async function verifyCommand(argv) {
   const cwdFlag = flag2(argv, "--cwd");
   if (argv.includes("--cwd") && cwdFlag === null) {
@@ -33124,7 +33092,7 @@ async function verifyCommand(argv) {
     const commitOf = (ref) => {
       if (ref === null) return null;
       try {
-        return execFileSync21("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        return execFileSync15("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
       } catch {
         console.error(`${ref} does not resolve to a commit here, so the verification command is not told about it.`);
         return null;
@@ -34366,7 +34334,7 @@ function carryCandidatesCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/record.ts
-import { execFileSync as execFileSync24 } from "node:child_process";
+import { execFileSync as execFileSync18 } from "node:child_process";
 import { readFileSync as readFileSync40 } from "node:fs";
 import { join as join33, posix as posix7 } from "node:path";
 
@@ -34376,12 +34344,12 @@ import { isAbsolute as isAbsolute8, posix as posix6, relative as relative5 } fro
 
 // plugins/review-voice/src/cli/score.ts
 import { readFileSync as readFileSync38 } from "node:fs";
-import { execFileSync as execFileSync23 } from "node:child_process";
+import { execFileSync as execFileSync17 } from "node:child_process";
 
 // plugins/review-voice/src/scoring/citation.ts
-import { execFileSync as execFileSync22 } from "node:child_process";
+import { execFileSync as execFileSync16 } from "node:child_process";
 function git5(args, cwd) {
-  return execFileSync22("git", args, {
+  return execFileSync16("git", args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -34439,7 +34407,7 @@ function deletedFileCheck(argv) {
   const cwd = process.cwd();
   if (base === null || head === null || !refExists(base, cwd) || !refExists(head, cwd)) return () => false;
   const firstParty = firstPartyMatcher(repositoryConfig()?.firstPartyPaths ?? []);
-  const git6 = (args) => execFileSync23("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
+  const git6 = (args) => execFileSync17("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
   let deleted;
   const deletions = () => {
     if (deleted !== void 0) return deleted;
@@ -35846,7 +35814,7 @@ function recordCommand(argv) {
           }
           if (atHead && heldRevision === null) continue;
           try {
-            const content = heldRevision === null ? readFileSync40(join33(repositoryRoot(process.cwd()), entry.path), "utf8") : execFileSync24("git", [...SAFE_GIT, "show", `${heldRevision}:${entry.path}`], {
+            const content = heldRevision === null ? readFileSync40(join33(repositoryRoot(process.cwd()), entry.path), "utf8") : execFileSync18("git", [...SAFE_GIT, "show", `${heldRevision}:${entry.path}`], {
               encoding: "utf8",
               stdio: ["ignore", "pipe", "ignore"],
               maxBuffer: 64 * 1024 * 1024
