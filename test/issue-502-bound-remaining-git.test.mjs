@@ -17,6 +17,7 @@ import { runInProcess } from '../plugins/review-voice/src/cli.ts';
 import { deletedFileCheck } from '../plugins/review-voice/src/cli/score.ts';
 import { addHeadWorktree } from '../plugins/review-voice/src/review/worktree.ts';
 import { checkCitation } from '../plugins/review-voice/src/scoring/citation.ts';
+import { runDoctor } from '../plugins/review-voice/src/doctor.ts';
 import { runRecall } from '../plugins/review-voice/src/evaluate/recall.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -64,7 +65,7 @@ async function hanging(t, subcommands, fn) {
     [
       '#!/bin/bash',
       'sub=; skip=0',
-      'for a in "$@"; do if [ $skip = 1 ]; then skip=0; continue; fi; case "$a" in -c) skip=1;; -*) ;; *) sub=$a; break;; esac; done',
+      'for a in "$@"; do if [ $skip = 1 ]; then skip=0; continue; fi; case "$a" in -c) skip=1;; --version) sub=--version; break;; -*) ;; *) sub=$a; break;; esac; done',
       `case "$sub" in ${subcommands.join('|')})`,
       "  trap '' TERM",
       `  echo $$ >> "${pidFile}"`,
@@ -204,7 +205,13 @@ test('evaluate benchmark: a hung git diff in the probe ends the import and leave
   await assertGone(pids, survived);
 });
 
-test('guard: every git call in src carries a timeout, repositoryRoot excepted', () => {
+test('doctor: a git that hangs on --version is reported as unavailable and leaves no git behind', opts, async (t) => {
+  const { result, pids, survived } = await hanging(t, ['--version'], () => runDoctor().find((check) => check.name === 'git'));
+  assert.equal(result.ok, false);
+  await assertGone(pids, survived);
+});
+
+test('guard: every synchronous child-process call in src carries a timeout, git or not', () => {
   const files = [];
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -217,7 +224,7 @@ test('guard: every git call in src carries a timeout, repositoryRoot excepted', 
   const offenders = [];
   for (const file of files) {
     const text = readFileSync(file, 'utf8');
-    for (const match of text.matchAll(/(?:execFileSync|spawnSync)\(\s*'git'|execSync\(/g)) {
+    for (const match of text.matchAll(/(?<![.\w])(?:execFileSync|spawnSync|execSync)\(/g)) {
       // The call's text, to its closing parenthesis.
       let depth = 0;
       let end = match.index;
@@ -233,5 +240,5 @@ test('guard: every git call in src carries a timeout, repositoryRoot excepted', 
       if (!/\btimeout\b|boundedGit\(/.test(call)) offenders.push(where);
     }
   }
-  assert.deepEqual(offenders, [], 'git calls without a timeout');
+  assert.deepEqual(offenders, [], 'child-process calls without a timeout');
 });

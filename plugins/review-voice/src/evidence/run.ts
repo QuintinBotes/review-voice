@@ -360,7 +360,7 @@ function killGroup(pid: number, signal: NodeJS.Signals): void {
 /** Ends the group (POSIX) or the tree (Windows), for a caller whose leader is still unreaped. */
 function killTree(pid: number, signal: NodeJS.Signals): void {
   if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 10_000, killSignal: 'SIGKILL' });
     return;
   }
   killGroup(pid, signal);

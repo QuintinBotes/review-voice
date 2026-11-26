@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { GIT_CHECK_TIMEOUT_MS, boundedGit } from '../git-exec.ts';
 
 export class AuthError extends Error {}
 
@@ -15,6 +16,7 @@ export function githubToken(env: NodeJS.ProcessEnv = process.env): string {
     const token = execFileSync('gh', ['auth', 'token'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      ...boundedGit(GIT_CHECK_TIMEOUT_MS, 1024 * 1024),
     }).trim();
     if (token.length > 0) return token;
   } catch {

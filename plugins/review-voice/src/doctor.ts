@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { GIT_CHECK_TIMEOUT_MS, boundedGit } from './git-exec.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -43,7 +44,7 @@ function checkSqlite(): Check {
 
 function checkBinary(name: string, args: string[]): Check {
   try {
-    const out = execFileSync(name, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const out = execFileSync(name, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...boundedGit(GIT_CHECK_TIMEOUT_MS, 1024 * 1024) });
     return { name, ok: true, detail: out.trim().split('\n')[0] ?? 'available' };
   } catch {
     return { name, ok: false, detail: 'not found on PATH' };
