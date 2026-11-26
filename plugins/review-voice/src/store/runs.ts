@@ -327,6 +327,8 @@ export interface CandidateHint {
   candidate_id?: unknown;
   /** The analyst's evidence strings, read for the convention quotes they cite. */
   evidence?: unknown;
+  /** True for a scored candidate that was held back; absent on runs from before #486, which stored only eligible ones. */
+  held?: boolean | undefined;
 }
 
 export const ORIGINS = ['driver', 'interactive', 'watch', 'action'] as const;
@@ -1190,7 +1192,8 @@ export function recordRun(
     throw new Error('A review may record at most one body-only simplification finding.');
   }
   const reviewRunId = randomUUID();
-  const findings = assignIds(input.output, input.candidates ?? [], { toolSignals: input.toolSignals, conventions: input.conventions });
+  // A held candidate is stored for its context but never stands for a posted finding.
+  const findings = assignIds(input.output, (input.candidates ?? []).filter((hint) => hint.held !== true), { toolSignals: input.toolSignals, conventions: input.conventions });
 
   // Checked before anything is written, so a refused record leaves no run behind.
   if (input.carried !== undefined) {

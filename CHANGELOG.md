@@ -68,6 +68,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   final and anchored scores are still computed and reported, and the
   anchored shadow is read through that owner gate. Analyst-only candidates
   keep the numeric final-score gate. (#479, docs/adr/0037)
+- A recorded run now keeps the category, claim and failure mode of every scored
+  candidate, not only the eligible ones. Held candidates are stored with
+  `held: true` and never stand for a posted finding, a feedback id or the
+  candidate-set agreement. `record --candidates` still accepts a list without the
+  mark (#486).
 
 ### Fixed
 

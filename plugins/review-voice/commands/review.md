@@ -1188,9 +1188,13 @@ stray directory and another project's notes took the reviewed count from 11 to
   `[severity] path:line - claim (rejectedBecause)`. When `challengeHeld[]` from step 4b is not empty, print after
   that a line `Held by the challenge (not posted)` and then one line per entry:
   `[severity] path:line - text (verdict: reason)`. Then
-  record it. Write the scored candidates, the challenged scores' `eligible[]`
-  so a finding step 4b moved carries its category at its new line, to a
-  temporary file and pass it:
+  record it. Write every scored candidate to a temporary file and pass it: the
+  challenged scores' `eligible[]` entries, each with `"held": false`, so a
+  finding step 4b moved carries its category at its new line, then each other
+  candidate piped into step 4's `score` (held by a gate, a policy, the
+  verifier or the challenge), as it was piped, each with `"held": true`, so
+  the stored run can group held findings by category. A list without
+  the `held` mark is still accepted and is read as eligible only:
   `RV record --repository <owner/repo> --base <ref> --head <sha> --candidates <file>
   --diff-file <tmpdir>/diff.patch --files <tmpdir>/files.json --stages <file>
   --evidence <tmpdir>/evidence.json --symbols <tmpdir>/symbols.json --conventions <tmpdir>/conventions.json --origin interactive` with the validated output on

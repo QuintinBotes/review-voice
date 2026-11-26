@@ -922,6 +922,7 @@ function candidateSetAgreement(db: Database): { value: number | null; basis: str
     // misses, understating agreement on precisely the findings both runs did
     // agree about.
     const located: Located[] = (list as Record<string, unknown>[])
+      .filter((candidate) => candidate['held'] !== true)
       .map((candidate) => {
         const line = Number(candidate['line']);
         return {
