@@ -1010,6 +1010,7 @@ function demoteBaseAdditions(section: string, shouldDemote: (headLine: number) =
   const parsed = sectionHunks(section);
   if (parsed === null || parsed.hunks.length === 0) return { text: section, demoted: false };
   let demoted = false;
+  let touched = false;
   const kept: string[] = [];
   for (const hunk of parsed.hunks) {
     const [header, ...body] = hunk.text.split('\n');
@@ -1032,14 +1033,15 @@ function demoteBaseAdditions(section: string, shouldDemote: (headLine: number) =
       kept.push(hunk.text);
       continue;
     }
-    demoted = true;
+    touched = true;
     if (!lines.some((text) => text.startsWith('+') || text.startsWith('-'))) continue;
+    demoted = true;
     const oldCount = lines.filter((text) => text.startsWith(' ') || text.startsWith('-')).length;
     const newCount = lines.filter((text) => text.startsWith(' ') || text.startsWith('+')).length;
     kept.push([`@@ -${numbers[1]},${oldCount} +${numbers[2]},${newCount} @@${numbers[3]}`, ...lines].join('\n'));
   }
-  if (!demoted) return { text: section, demoted: false };
-  return { text: kept.length === 0 ? '' : parsed.header + kept.join(''), demoted: true };
+  if (!touched) return { text: section, demoted: false };
+  return { text: kept.length === 0 ? '' : parsed.header + kept.join(''), demoted };
 }
 
 /**

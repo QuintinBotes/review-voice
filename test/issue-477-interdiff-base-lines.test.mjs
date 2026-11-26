@@ -250,3 +250,32 @@ test('the shown-as-context note does not name a file whose demoted section dropp
     assertHunkCounts(interdiffPatch);
   });
 });
+
+test('the shown-as-context note does not name a file whose demoted hunk was dropped beside a kept author hunk', () => {
+  const file = 'src/mixed.ts';
+  const reviewedContents = original.replace('line 9\n', 'line 9\nauthor inserted\n');
+  const baseContents = original.replace('line 9\n', 'line 9\nbase inserted\n');
+  const merged = original.replace('line 9\n', 'line 9\nauthor inserted\nbase inserted\n');
+  withGitRepo({ [file]: original }, (repo) => {
+    repo.git('checkout', '-q', '-b', 'pr');
+    repo.write(file, reviewedContents);
+    const reviewed = repo.commit('reviewed head');
+    repo.git('checkout', '-q', 'main');
+    repo.write(file, baseContents);
+    const base = repo.commit('base advances');
+    repo.git('checkout', '-q', 'pr');
+    assert.throws(() => repo.git('merge', '-q', '--no-ff', 'main', '-m', 'merge base'));
+    repo.write(file, merged);
+    repo.commit('merge base keeping both insertions');
+    repo.write(file, merged.replace('line 30\n', 'author new thirty\n'));
+    repo.commit('follow-up far from the base block');
+
+    const { scope, interdiffPatch } = planFor(repo, reviewed, base, [file]);
+    assert.equal(scope.kind, 'interdiff', JSON.stringify(scope));
+    assert.match(interdiffPatch, /^\+author new thirty$/m);
+    assert.doesNotMatch(interdiffPatch, /base inserted/);
+    // The hunk holding the base line is gone, so no line of it shows as context.
+    assert.doesNotMatch(scope.detail, /shown as context where the base added lines/);
+    assertHunkCounts(interdiffPatch);
+  });
+});

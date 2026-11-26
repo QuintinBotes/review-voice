@@ -11610,6 +11610,7 @@ function demoteBaseAdditions(section2, shouldDemote) {
   const parsed2 = sectionHunks(section2);
   if (parsed2 === null || parsed2.hunks.length === 0) return { text: section2, demoted: false };
   let demoted = false;
+  let touched = false;
   const kept = [];
   for (const hunk of parsed2.hunks) {
     const [header, ...body] = hunk.text.split("\n");
@@ -11632,14 +11633,15 @@ function demoteBaseAdditions(section2, shouldDemote) {
       kept.push(hunk.text);
       continue;
     }
-    demoted = true;
+    touched = true;
     if (!lines2.some((text5) => text5.startsWith("+") || text5.startsWith("-"))) continue;
+    demoted = true;
     const oldCount = lines2.filter((text5) => text5.startsWith(" ") || text5.startsWith("-")).length;
     const newCount = lines2.filter((text5) => text5.startsWith(" ") || text5.startsWith("+")).length;
     kept.push([`@@ -${numbers[1]},${oldCount} +${numbers[2]},${newCount} @@${numbers[3]}`, ...lines2].join("\n"));
   }
-  if (!demoted) return { text: section2, demoted: false };
-  return { text: kept.length === 0 ? "" : parsed2.header + kept.join(""), demoted: true };
+  if (!touched) return { text: section2, demoted: false };
+  return { text: kept.length === 0 ? "" : parsed2.header + kept.join(""), demoted };
 }
 function hasReplayMarkers(section2) {
   return /^-<{7} /m.test(section2) && /^->{7} /m.test(section2);
