@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `git cat-file` reads are bounded (one 120 s bound for the structure
+  step's `--batch`, 30 s per blob for trusted-tree convention reads),
+  and git runs in its own process group so the bound holds when a lazy
+  fetch over ssh in a partial clone is the process holding the pipes.
+  A timed-out batch reports its files unmeasured and a timed-out blob
+  reads as unreadable; a timeout in a partial clone names it once on
+  stderr. (#482)
 - After a conflicting replay, added lines a kept-whole interdiff hunk took
   from the base are shown as context when the pull request's own diff does
   not add them and the base added them between the two merge bases, with
