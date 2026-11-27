@@ -14567,6 +14567,14 @@ function decide(input) {
     }
     return done({ event: "COMMENT", action: "post", reasons: [...reasons, why], exitCode: 0, cappedByCi: false }, annotations);
   }
+  const openEarlier = input.openEarlier ?? [];
+  if (openEarlier.length > 0 && input.mapped === "APPROVE") {
+    const why = `an earlier review posted ${plural3(openEarlier.length, "finding")} that still ${openEarlier.length === 1 ? "stands" : "stand"} (${openEarlier.join(", ")}), so this comments rather than approves`;
+    if (input.recheck) {
+      return done({ event: "COMMENT", action: "refuse", reasons: [...reasons, why], exitCode: 2, cappedByCi: false });
+    }
+    return done({ event: "COMMENT", action: "post", reasons: [...reasons, why], exitCode: 0, cappedByCi: false }, annotations);
+  }
   const policyHold = policy.neverApprove ? "approval is left to a person by policy" : input.approvalPathHold ?? null;
   if (policyHold !== null && input.mapped === "APPROVE") {
     if (input.recheck) {
@@ -16203,8 +16211,10 @@ async function followRun(options, context2, run, viewerLogin) {
       line: finding.line,
       reviewIdSource: source
     };
-    options.db.prepare("DELETE FROM finding_outcomes WHERE review_run_id = ? AND comment_id = ? AND finding_id <> ?").run(run.runId, outcome.commentId, outcome.findingId);
-    saveOutcome(options.db, outcome);
+    if (options.store !== false) {
+      options.db.prepare("DELETE FROM finding_outcomes WHERE review_run_id = ? AND comment_id = ? AND finding_id <> ?").run(run.runId, outcome.commentId, outcome.findingId);
+      saveOutcome(options.db, outcome);
+    }
     outcomes.push(outcome);
   }
   return { outcomes, questions };
@@ -19709,6 +19719,20 @@ function pullRequestComplexity(run, loadRun) {
   }
   return found2;
 }
+async function openEarlierFindings(options, run) {
+  const checked = await checkOutcomes({
+    db: options.db,
+    client: options.client,
+    allowlist: [options.repository],
+    repository: options.repository,
+    pullNumber: options.pullNumber,
+    since: (/* @__PURE__ */ new Date(0)).toISOString(),
+    ownerReviewer: options.owner ?? null,
+    store: false
+  });
+  const severity = (runId, findingId) => (runDetail(options.db, runId)?.findings.find((finding) => finding.findingId === findingId)?.severity ?? "").toLowerCase();
+  return checked.outcomes.filter((o) => o.reviewRunId !== run.reviewRunId && (o.outcome === "open" || o.outcome === "unknown")).filter((o) => SERIOUS_SEVERITIES.includes(severity(o.reviewRunId, o.findingId))).map((o) => `${o.path}:${o.line}`);
+}
 var MAX_REVIEWS2 = 300;
 async function standingOwnerReview(client, repository, pullNumber, owner) {
   const reviews = await client.paginate(`/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`, MAX_REVIEWS2);
@@ -19892,6 +19916,8 @@ async function computeVerdict(options) {
   const ci = headMoved ? null : await readCi(options.client, options.repository, head, options.gateChecks ?? [], options.now ?? Date.now(), options.ciRules ?? {});
   const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
   const needsHuman = complexity?.level === "high";
+  const narrower = run.scope?.kind === "incremental" || run.scope?.kind === "interdiff";
+  const openEarlier = narrower && !headMoved && planned.mapped === "APPROVE" ? await openEarlierFindings(options, run) : [];
   const lookupReasons = [];
   const carriedReviewUrl = !headMoved && policy.carryApprovalOnUnchanged ? await carriedApproval(options, run, lookupReasons) : null;
   const pathRule = policy.malformedApprovalPaths !== null || policy.neverApprovePaths.length > 0 || policy.onlyApprovePaths.length > 0;
@@ -19910,6 +19936,7 @@ async function computeVerdict(options) {
     heldBackApproval: planned.heldBackApproval,
     needsHuman,
     uncoveredCarry: run.carry?.covered === false,
+    openEarlier,
     carriedReviewUrl,
     approvalPathHold: pathHold?.reason ?? null,
     policy
@@ -19941,7 +19968,7 @@ async function computeVerdict(options) {
       // them names human review or the carry in the posted body. A path hold
       // alone ends the line with its fixed sentence, which names the setting
       // and never a path.
-      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval || run.carry?.covered === false && planned.mapped === "APPROVE" ? "held" : decision.cappedByPolicy ? "policy" : needsHuman && policy.capApproval && planned.mapped === "APPROVE" ? "complexity" : null,
+      cappedBy: decision.cappedByCi ? "ci" : planned.heldBackApproval || (run.carry?.covered === false || openEarlier.length > 0) && planned.mapped === "APPROVE" ? "held" : decision.cappedByPolicy ? "policy" : needsHuman && policy.capApproval && planned.mapped === "APPROVE" ? "complexity" : null,
       ...decision.cappedByPolicy && !policy.neverApprove && pathHold !== null ? { pathHold: pathHold.posted } : {}
     });
     key2 = idempotencyKey(options.repository, options.pullNumber, full2);

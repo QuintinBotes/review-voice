@@ -7,6 +7,8 @@ import { GitHubError, NotAllowlisted, type GitHubClient } from '../github/client
 import { tokenLogin } from '../github/identity.ts';
 import { REVIEW_EVENTS, WriteViolation, type ReviewWriter } from '../github/writer.ts';
 import { readThread } from '../diff/thread.ts';
+import { SERIOUS_SEVERITIES } from '../diff/carry.ts';
+import { checkOutcomes } from '../store/outcomes.ts';
 import {
   alreadySaidOnThread,
   threadRaisesCheck,
@@ -260,6 +262,32 @@ function pullRequestComplexity(run: RunDetail, loadRun: (id: string) => RunDetai
     current = prior;
   }
   return found;
+}
+
+/**
+ * The blocking or important findings earlier reviews of this pull request
+ * posted that still stand: their thread is open, nobody turned them down, and
+ * their lines are unchanged at this head, or that could not be told (#534).
+ * Read through the outcome rules without storing anything.
+ */
+async function openEarlierFindings(options: VerdictOptions, run: RunDetail): Promise<string[]> {
+  // shortcut: a pull request whose thread cannot be read yields no outcomes, so it does not hold the approval; hold on that warning if it proves common.
+  const checked = await checkOutcomes({
+    db: options.db,
+    client: options.client,
+    allowlist: [options.repository],
+    repository: options.repository,
+    pullNumber: options.pullNumber,
+    since: new Date(0).toISOString(),
+    ownerReviewer: options.owner ?? null,
+    store: false,
+  });
+  const severity = (runId: string, findingId: string): string =>
+    (runDetail(options.db, runId)?.findings.find((finding) => finding.findingId === findingId)?.severity ?? '').toLowerCase();
+  return checked.outcomes
+    .filter((o) => o.reviewRunId !== run.reviewRunId && (o.outcome === 'open' || o.outcome === 'unknown'))
+    .filter((o) => SERIOUS_SEVERITIES.includes(severity(o.reviewRunId, o.findingId)))
+    .map((o) => `${o.path}:${o.line}`);
 }
 
 interface RawReview {
@@ -558,6 +586,10 @@ export async function computeVerdict(
 
   const complexity = pullRequestComplexity(run, (id) => runDetail(options.db, id));
   const needsHuman = complexity?.level === 'high';
+  // A narrower scope read only the commits since an earlier review, so that
+  // review's findings on other lines are not in this one (#534).
+  const narrower = run.scope?.kind === 'incremental' || run.scope?.kind === 'interdiff';
+  const openEarlier = narrower && !headMoved && planned.mapped === 'APPROVE' ? await openEarlierFindings(options, run) : [];
 
   const lookupReasons: string[] = [];
   const carriedReviewUrl =
@@ -590,6 +622,7 @@ export async function computeVerdict(
     heldBackApproval: planned.heldBackApproval,
     needsHuman,
     uncoveredCarry: run.carry?.covered === false,
+    openEarlier,
     carriedReviewUrl,
     approvalPathHold: pathHold?.reason ?? null,
     policy,
@@ -633,7 +666,7 @@ export async function computeVerdict(
       // and never a path.
       cappedBy: decision.cappedByCi
         ? 'ci'
-        : planned.heldBackApproval || (run.carry?.covered === false && planned.mapped === 'APPROVE')
+        : planned.heldBackApproval || ((run.carry?.covered === false || openEarlier.length > 0) && planned.mapped === 'APPROVE')
           ? 'held'
           : decision.cappedByPolicy
             ? 'policy'
