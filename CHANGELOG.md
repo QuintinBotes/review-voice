@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   422, so only clean changes got a red check. GitHub sends nothing in that case,
   so the job now passes with a warning naming the setting, and docs/ACTION.md
   says how to turn it on (#535).
+- A pull request whose largest source file GitHub sent no patch for (too large
+  to diff) was approved with that file unread. On review-voice-scratch#3 a
+  40,007-line source file went unread under "No problems found". A changed
+  source file with no patch, or a file list cut at GitHub's limit, now raises
+  the change for human review, so the review comments rather than approves,
+  and the human-review note names the file (docs/adr/0012, #536).
 - `outcomes` matched a posted finding to its comment by line, and on the live
   API the list of a review's comments has no `line` or `original_line` (only
   `position`), so no finding was ever matched and nothing was recorded for a
