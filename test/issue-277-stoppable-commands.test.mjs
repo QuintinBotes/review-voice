@@ -212,8 +212,8 @@ test('a timeout returns at once even when a descendant outside the group holds t
   // The timeout only has to fire after the holder exists; nothing measures how long the return takes.
   const result = await spawnCommand(`${holder.escape}; sleep 30`, options(holder.dir, { timeout: 5000 }));
   assert.equal(result.error?.code, 'ETIMEDOUT');
-  // Killed: null as under spawnSync, or 137 when the shell reports its child's kill (#512).
-  assert.ok(result.status === null || result.status === 137, `status ${result.status}`);
+  // A stopped command reports null as under spawnSync, whatever its shell says of its child's kill (#512).
+  assert.equal(result.status, null);
   assert.equal(existsSync(holder.gate), false, 'returned before the gate opened');
   assert.equal(alive(await pidIn(holder.pidFile)), true, 'the holder still holds the pipes');
 });
