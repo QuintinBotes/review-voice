@@ -222,10 +222,31 @@ test('#508: a review held for CI says it ran, and the log carries one line with 
   assert.match(result.summary, /the review ran, but CI is pending or needs a rerun, so its verdict was not posted\./);
   assert.equal(result.summary.includes('no review was posted'), false);
   const lines = result.stdout.split('\n').filter((line) => line.startsWith('Review Voice: verdict'));
-  assert.deepEqual(lines, ['Review Voice: verdict APPROVE, 2 posted, 1 held, posted false, cost $0.31 in 20.5 s']);
+  assert.deepEqual(lines, ['Review Voice: verdict APPROVE, 2 findings, 1 held, review posted false, cost $0.31 in 20.5 s']);
 });
 
 test('#508: a report that is not JSON adds no verdict line', (t) => {
   const result = run(t, scratch(t), { report: 'not json' });
   assert.equal(result.stdout.includes('Review Voice: verdict'), false);
+});
+
+// A refusal in the post stage leaves a note and no `error`; the log must say why the job failed (#507).
+test('#507: a refusal from the post stage is printed as an escaped error annotation when the job fails, not only as the help hint', (t) => {
+  const note = 'post exited 2: the pull request head moved, 100% sure\r\nsecond line ::add-mask::x';
+  const report = JSON.stringify({ exitCode: 2, notes: ['an earlier note', note] });
+  const result = run(t, scratch(t), { report, code: 2 });
+  assert.equal(result.status, 2);
+  const annotations = result.stdout.split('\n').filter((line) => line.startsWith('::'));
+  assert.deepEqual(annotations, ['::error::Review Voice: post exited 2: the pull request head moved, 100%25 sure%0D']);
+});
+
+test('#507: a refusal note is not annotated when the job passes, and an error already printed is not repeated', (t) => {
+  const s = scratch(t);
+  const held = JSON.stringify({ exitCode: 4, notes: ['post exited 4: CI is pending'] });
+  const passed = run(t, s, { report: held, code: 4 });
+  assert.equal(passed.status, 0);
+  assert.equal(passed.stdout.includes('::error::'), false);
+  const stopped = JSON.stringify({ exitCode: 7, error: 'The diff lane failed twice', notes: ['post exited 2: x'] });
+  const failed = run(t, s, { report: stopped, code: 7 });
+  assert.deepEqual(failed.stdout.split('\n').filter((line) => line.startsWith('::')), ['::error::Review Voice: The diff lane failed twice']);
 });

@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   review was posted. The summary now says the review ran and only its verdict
   is waiting on CI, and the log carries one line with the verdict, the
   findings, the cost and the time (#508).
+- A refusal in the post stage that still fails the Action's job is printed as
+  an `::error::` annotation with its reason, not only the help hint that
+  exit 2 adds. The `post exited` note now reads the refusal's reasons as text
+  instead of their JSON (#507, #525). The one-line verdict in the log says
+  `2 findings` and `review posted false`, so a count of findings is not read as
+  a count of posted reviews (#525).
 - The Action's store cache is keyed per pull request, so two pull requests
   reviewed at once no longer restore the same store and each save one without
   the other's records. A pull request's first run still starts from the newest

@@ -25833,7 +25833,8 @@ async function record2(run, extra) {
     run.notes.push(`not posted: ${POSTING_OFF}`);
     return;
   }
-  if (posted.code !== 0) run.notes.push(`post exited ${posted.code}: ${firstLines(posted.stderr || JSON.stringify(output["reasons"] ?? ""))}`);
+  const why = Array.isArray(reasons) ? reasons.filter((reason2) => typeof reason2 === "string").join("; ") : "";
+  if (posted.code !== 0) run.notes.push(`post exited ${posted.code}: ${firstLines(posted.stderr) || why}`);
 }
 var HANDLERS = {
   prep,

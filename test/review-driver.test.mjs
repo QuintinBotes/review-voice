@@ -2445,3 +2445,16 @@ test('#410: a --base that does not resolve stops with exit 2 before anything run
   assert.match(report.error, /--base no-such-branch does not resolve/);
   assert.deepEqual(github.calls, []);
 });
+
+test('#507: a post refused for another reason exits with its code, and the note reads the refusal\'s reasons as text', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD }, { '.review-voice/config.yaml': 'writes:\n  github_posting_enabled: true\n' });
+  const github = fakeGitHub(repo);
+  const refused = JSON.stringify({ status: 'refused', reasons: ['run r1 reviewed other/repo, not acme/api', 'second reason'] });
+  const command = async (argv, stdin) =>
+    argv[0] === 'post' ? { code: 2, stdout: refused, stderr: '' } : runInProcess(argv, { stdin, fetchImpl: github });
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-data-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const report = await reviewIn(repo, fakes(t, fullRun()), github, data, { post: true }, { command });
+  assert.equal(report.exitCode, 2);
+  assert.ok(report.notes.includes('post exited 2: run r1 reviewed other/repo, not acme/api; second reason'), JSON.stringify(report.notes));
+});
