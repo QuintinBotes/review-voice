@@ -75,8 +75,14 @@ runs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/review-voice
-        key: review-voice-${{ github.repository }}-${{ github.run_id }}
-        restore-keys: review-voice-${{ github.repository }}-
+        # Per pull request: a repository-wide prefix lets two pull requests
+        # reviewed at once restore the same store and each save one without the
+        # other's records (#509). The second key is for a pull request's first
+        # run, which starts from the newest store of any pull request.
+        key: review-voice-${{ github.repository }}-pr${{ steps.gate.outputs.pr }}-${{ github.run_id }}
+        restore-keys: |
+          review-voice-${{ github.repository }}-pr${{ steps.gate.outputs.pr }}-
+          review-voice-${{ github.repository }}-
 
     - name: Review
       id: review
@@ -91,6 +97,10 @@ runs:
         POST: ${{ inputs.post }}
         CONFIG: ${{ inputs.config }}
         FAIL_OPEN: ${{ inputs.fail-open }}
+        # This job is a check run on the head, still running when the verdict
+        # reads CI, so it would keep CI pending for every review (#508). Empty
+        # where GitHub does not give the job its check run id.
+        REVIEW_VOICE_OWN_CHECK_RUN: ${{ job.check_run_id }}
       run: |
         mkdir -p "$REVIEW_VOICE_DATA_DIR"
         args=(review --pr "$PR" --repository "$GITHUB_REPOSITORY" --mode "$MODE" --origin action --json)
@@ -131,6 +141,10 @@ runs:
         node "$GITHUB_ACTION_PATH/plugins/review-voice/dist/review-voice.mjs" "${args[@]}" > "$report"
         code=$?
         set -e
+        # One line in the log, so a short green job reads as a review that ran
+        # and not as a skip. Only the verdict event and numbers: nothing from the
+        # pull request reaches it.
+        jq -r 'if type == "object" then "Review Voice: verdict \(.verdict.event // .verdict.action // "none"), \((.findings // []) | length) posted, \((.held // []) | length) held, posted \(.posted == true), cost $\(.costUsd // "n/a") in \(.seconds // "n/a") s" else empty end' "$report" 2>/dev/null || true
         {
           echo "## Review Voice"
           if jq -e . "$report" > /dev/null 2>&1; then
@@ -153,7 +167,7 @@ runs:
         jq -r 'if type == "object" and (.notes | type) == "array" then .notes[] | select(type == "string" and startswith("not posted: ")) | split("\n")[0] | .[0:500] | gsub("%"; "%25") | gsub("\r"; "%0D") | "::warning::Review Voice: \(.)" else empty end' "$report" 2>/dev/null || true
         case "$code" in
           3) echo "Review Voice: the head moved during the review; a newer run covers it." >> "$GITHUB_STEP_SUMMARY"; code=0 ;;
-          4 | 6) echo "Review Voice: CI is pending or needs a rerun, so no review was posted." >> "$GITHUB_STEP_SUMMARY"; code=0 ;;
+          4 | 6) echo "Review Voice: the review ran, but CI is pending or needs a rerun, so its verdict was not posted." >> "$GITHUB_STEP_SUMMARY"; code=0 ;;
         esac
         # S03: a review that could not run on a low-risk change may pass the job
         # when the workflow opts in; a high-risk or unassessed one never does.

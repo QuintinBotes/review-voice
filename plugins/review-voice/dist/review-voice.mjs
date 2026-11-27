@@ -11441,11 +11441,12 @@ async function attachAnnotations(client, repository, runs, signatures) {
   }
 }
 async function readCi(client, repository, sha, gates = [], now = Date.now(), rules = {}) {
-  const checkRuns = await client.paginateWrapped(
+  const own = process.env["REVIEW_VOICE_OWN_CHECK_RUN"] ?? "";
+  const checkRuns = (await client.paginateWrapped(
     `/repos/${repository}/commits/${sha}/check-runs?filter=latest&per_page=100`,
     "check_runs",
     MAX_ENTRIES + 1
-  );
+  )).filter((run) => own === "" || String(run.id) !== own);
   await attachAnnotations(client, repository, checkRuns.slice(0, MAX_ENTRIES), rules.rerunSignatures ?? BUILTIN_RERUN_SIGNATURES);
   const first = await client.get(
     `/repos/${repository}/commits/${sha}/status?per_page=100`

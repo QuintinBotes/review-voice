@@ -5,6 +5,22 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The Action leaves its own running job out of the CI it reads for the verdict
+  (`REVIEW_VOICE_OWN_CHECK_RUN`, set from `job.check_run_id`). That job is a
+  check run on the head and is always in progress when the verdict runs, so CI
+  was never green: every clean review ended `wait` and the summary said no
+  review was posted. The summary now says the review ran and only its verdict
+  is waiting on CI, and the log carries one line with the verdict, the
+  findings, the cost and the time (#508).
+- The Action's store cache is keyed per pull request, so two pull requests
+  reviewed at once no longer restore the same store and each save one without
+  the other's records. A pull request's first run still starts from the newest
+  store of any pull request (#509).
+
 ## [1.30.0] - 2026-11-26
 
 ### Added
