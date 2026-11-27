@@ -2669,6 +2669,14 @@ function assessComplexity(diff, files2, partial, markedGenerated2 = /* @__PURE__
       `${densest.decisionPoints} decision points in one ${densest.declaration === true ? "declaration of the new file" : "hunk at"} ${densest.path}:${densest.line} (limit ${limits.maxHunkDecisionPoints})`
     );
   }
+  const unread = productionPaths(
+    files2.filter((file2) => file2.excludedBecause === NO_PATCH && file2.additions + file2.deletions > 0).map((file2) => ({ ...file2, reviewed: true })),
+    partial,
+    markedGenerated2
+  );
+  if (unread.length > 0) {
+    reasons.push(`${unread.length} changed source file(s) not read, GitHub sent no patch (${listedStructure(unread, (path) => path)})`);
+  }
   if (sensitive.length > 0) {
     const shown = matches.slice(0, 3).map((match) => `${match.path} matched ${match.glob}`).join(", ");
     const more = sensitive.length - Math.min(3, listed.length);
@@ -31947,6 +31955,10 @@ async function emitDiff(acquired, outDir) {
   const production = productionPaths(scopedFiles, config2?.humanReview, generated);
   const deletedProduction = deletedProductionPaths(scopedFiles, config2?.humanReview, generated);
   const structure = await collectStructure(process.cwd(), acquired, production, config2?.structure, deletedProduction);
+  if (acquired.truncated === true) {
+    assessed.reasons.push("GitHub listed only part of the changed files, so the rest were not read");
+    assessed.level = "high";
+  }
   const complexity = applyStructureHumanReviewCap(assessed, structure, config2?.humanReview);
   const result = {
     ...acquired,

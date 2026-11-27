@@ -370,6 +370,11 @@ export async function emitDiff(acquired: EmittedDiff, outDir: string | null): Pr
   // the base; it is classified by the same rules as the files the review reads.
   const deletedProduction = deletedProductionPaths(scopedFiles, config?.humanReview, generated);
   const structure = await collectStructure(process.cwd(), acquired, production, config?.structure, deletedProduction);
+  // Files past GitHub's list limit were never read, so an approval would cover them unread (#536).
+  if (acquired.truncated === true) {
+    assessed.reasons.push("GitHub listed only part of the changed files, so the rest were not read");
+    assessed.level = 'high';
+  }
   const complexity = applyStructureHumanReviewCap(assessed, structure, config?.humanReview);
   const result: EmittedDiff = {
     ...acquired,

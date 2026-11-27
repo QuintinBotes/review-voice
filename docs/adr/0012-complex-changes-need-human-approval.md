@@ -23,8 +23,8 @@ it has no effect on the verdict.
 review says so, and why, so a human picks it up.**
 
 - **Assessed in the CLI, from the diff.** `diff --out` computes the assessment
-  and writes it into `files.json` and its summary. Two signals, either one is
-  enough:
+  and writes it into `files.json` and its summary. Each signal is enough on its
+  own:
   - *Added decision points*: a lexical count of branches (`if`, loops, `case`,
     `catch`, `&&`, `||`, ternaries) on lines added to reviewed source files,
     for the change as a whole and for its densest hunk. A new file is one
@@ -36,6 +36,11 @@ review says so, and why, so a human picks it up.**
   - *Sensitive paths*: any changed path matching a configured glob, whether or
     not the file was reviewed - a path excluded from the review is no less
     sensitive for it.
+  - *Unread source* (amended 2026-11-27, #536): a production source file that
+    changed lines but came with no patch from GitHub, too large to diff, or a
+    file list cut at GitHub's limit. Nothing read that code, so "nothing
+    found" says nothing about it. A binary has no patch either, and GitHub
+    counts no lines for it, so it does not raise the change.
 - **Configured, with defaults.** `review.human_review` sets
   `max_decision_points`, `max_hunk_decision_points` and `sensitive_paths`.
   Built-in sensitive paths are `.github/workflows/**`, `**/migrations/**`,

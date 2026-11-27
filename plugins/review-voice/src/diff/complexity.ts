@@ -2,6 +2,7 @@ import type { ChangedFile } from './acquire.ts';
 import { unquoteGitPath } from './hunks.ts';
 import { globToRegExp } from '../conventions/globs.ts';
 import { isDocumentation } from './classify.ts';
+import { NO_PATCH } from './exclusions.ts';
 import type { StructureSignals } from './structure.ts';
 
 /**
@@ -553,6 +554,17 @@ export function assessComplexity(
       `${densest.decisionPoints} decision points in one ${densest.declaration === true ? 'declaration of the new file' : 'hunk at'} ` +
         `${densest.path}:${densest.line} (limit ${limits.maxHunkDecisionPoints})`,
     );
+  }
+  // A production file GitHub sent no patch for, too large to diff, was never
+  // read, so an approval would cover code nobody looked at (#536). A binary
+  // has no patch either, and GitHub counts no lines for it.
+  const unread = productionPaths(
+    files.filter((file) => file.excludedBecause === NO_PATCH && file.additions + file.deletions > 0).map((file) => ({ ...file, reviewed: true })),
+    partial,
+    markedGenerated,
+  );
+  if (unread.length > 0) {
+    reasons.push(`${unread.length} changed source file(s) not read, GitHub sent no patch (${listedStructure(unread, (path) => path)})`);
   }
   if (sensitive.length > 0) {
     const shown = matches.slice(0, 3).map((match) => `${match.path} matched ${match.glob}`).join(', ');
