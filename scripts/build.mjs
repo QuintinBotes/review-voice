@@ -37,6 +37,10 @@ const result = await build({
   alias: { yaml: join(root, 'node_modules/yaml/browser/dist/index.js') },
   mainFields: ['module', 'main'],
   write: false,
+  // esbuild comments each bundled file with its path relative to the build root, and
+  // follows a symlinked node_modules (a git worktree sharing another checkout's) to
+  // its real location, so the same source built differently by checkout layout (#526).
+  preserveSymlinks: true,
   banner: { js: '#!/usr/bin/env node' },
   // node:sqlite is experimental on Node 22. The warning is noise for users who
   // never chose to depend on it, so it is suppressed at the bundle boundary.
@@ -45,6 +49,13 @@ const result = await build({
 });
 
 const built = result.outputFiles[0].text;
+
+// A path that leaves the repository is a build that depends on where it ran.
+const outside = /^\/\/ (\.\.\/.*)$/m.exec(built);
+if (outside !== null) {
+  console.error(`The bundle names a path outside the repository (${outside[1]}), so it would differ by checkout layout.`);
+  process.exit(1);
+}
 
 if (checkOnly) {
   if (!existsSync(outfile)) {
