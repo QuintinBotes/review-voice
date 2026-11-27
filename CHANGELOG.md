@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Action says in the job log, not only in the summary, when it skipped a
+  review (no Anthropic API key, as on a fork pull request), when the head moved,
+  and when CI was pending so the verdict was not posted. A green skip read as a
+  review that ran, and a held review's one log line read as an approval that
+  failed to post (#533).
 - `outcomes` matched a posted finding to its comment by line, and on the live
   API the list of a review's comments has no `line` or `original_line` (only
   `position`), so no finding was ever matched and nothing was recorded for a
