@@ -2458,3 +2458,32 @@ test('#507: a post refused for another reason exits with its code, and the note 
   assert.equal(report.exitCode, 2);
   assert.ok(report.notes.includes('post exited 2: run r1 reviewed other/repo, not acme/api; second reason'), JSON.stringify(report.notes));
 });
+
+// The Action's github.token is an installation token, which GET /user refuses with 403 (#525).
+test('#525: under an installation token the post still goes out, naming the token as github-actions[bot]', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD }, { '.review-voice/config.yaml': 'writes:\n  github_posting_enabled: true\n' });
+  const inner = fakeGitHub(repo);
+  const github = async (url, init) => (new URL(String(url)).pathname === '/user' ? json({ message: 'Resource not accessible by integration' }, 403) : inner(url, init));
+  github.calls = inner.calls;
+  const { report } = await withEnv({ GITHUB_ACTIONS: 'true' }, () => review(t, repo, fakes(t, fullRun()), github, { post: true, origin: 'action' }));
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(report.posted, true);
+  assert.equal(inner.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/reviews')).length, 1);
+});
+
+test('#525: outside Actions the same refusal still stops the post, with GitHub\'s reason in the note', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD }, { '.review-voice/config.yaml': 'writes:\n  github_posting_enabled: true\n' });
+  const inner = fakeGitHub(repo);
+  const github = async (url, init) => (new URL(String(url)).pathname === '/user' ? json({ message: 'Resource not accessible by integration' }, 403) : inner(url, init));
+  github.calls = inner.calls;
+  const saved = process.env.GITHUB_ACTIONS;
+  delete process.env.GITHUB_ACTIONS;
+  try {
+    const { report } = await review(t, repo, fakes(t, fullRun()), github, { post: true });
+    assert.equal(report.exitCode, 1);
+    assert.equal(report.posted, false);
+    assert.ok(report.notes.some((note) => /^post exited 1: could not re-read the thread before sending: GitHub returned 403 for \/user/.test(note)), JSON.stringify(report.notes));
+  } finally {
+    if (saved !== undefined) process.env.GITHUB_ACTIONS = saved;
+  }
+});

@@ -1,5 +1,6 @@
 import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGit } from '../git-exec.ts';
 import type { GitHubClient } from '../github/client.ts';
+import { tokenLogin } from '../github/identity.ts';
 import { gitFailure, type PriorPullReview } from './incremental.ts';
 
 /**
@@ -119,8 +120,7 @@ export async function latestOwnReview(
   pullNumber: number,
 ): Promise<{ head: string; submittedAt: string | null } | null> {
   try {
-    const { data: viewer } = await client.get<{ login?: string }>('/user');
-    const login = viewer.login?.toLowerCase();
+    const login = (await tokenLogin(client))?.toLowerCase();
     if (login === undefined) return null;
     const reviews = await client.paginate<RawReview>(
       `/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`,

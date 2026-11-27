@@ -4,6 +4,7 @@ import { latestRunForPull, runDetail, type RunDetail } from '../store/runs.ts';
 import { humanReviewNote, type ComplexityAssessment } from '../diff/complexity.ts';
 import { AuthError } from '../github/auth.ts';
 import { GitHubError, NotAllowlisted, type GitHubClient } from '../github/client.ts';
+import { tokenLogin } from '../github/identity.ts';
 import { REVIEW_EVENTS, WriteViolation, type ReviewWriter } from '../github/writer.ts';
 import { readThread } from '../diff/thread.ts';
 import {
@@ -511,11 +512,11 @@ async function ciNotOnThread(
   let comments: ThreadComment[];
   let me: string;
   try {
-    const { data: viewer } = await options.client.get<{ login?: unknown }>('/user');
+    const login = await tokenLogin(options.client);
     // Without our own login the tool's heads-up lines cannot be told from
     // another author's, so the line is kept.
-    if (typeof viewer?.login !== 'string') return ci;
-    me = viewer.login.toLowerCase();
+    if (login === undefined) return ci;
+    me = login.toLowerCase();
     comments = (await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client })).comments;
   } catch {
     return ci;
@@ -794,9 +795,9 @@ async function commentsSinceRun(
   options: { client: GitHubClient; repository: string; pullNumber: number },
   run: RunDetail,
 ): Promise<{ comment: ThreadComment; url: string | null }[]> {
-  const { data: viewer } = await options.client.get<{ login?: unknown }>('/user');
-  if (typeof viewer?.login !== 'string') throw new Error('GitHub did not say whose token this is');
-  const me = viewer.login.toLowerCase();
+  const login = await tokenLogin(options.client);
+  if (login === undefined) throw new Error('GitHub did not say whose token this is');
+  const me = login.toLowerCase();
 
   const { comments } = await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client });
   const mine = new Set(comments.filter((c) => c.author.toLowerCase() === me && c.id !== undefined).map((c) => c.id));
