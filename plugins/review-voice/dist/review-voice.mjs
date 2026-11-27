@@ -18574,6 +18574,17 @@ async function relevanceCommand(argv, deps) {
 import { closeSync, constants as constants2, existsSync as existsSync7, fsyncSync, mkdirSync as mkdirSync4, openSync, readFileSync as readFileSync8, renameSync as renameSync2, unlinkSync as unlinkSync4, writeSync } from "node:fs";
 import { join as join12, resolve as resolve2 } from "node:path";
 
+// plugins/review-voice/src/github/identity.ts
+async function tokenLogin(client) {
+  try {
+    const { data } = await client.get("/user");
+    return typeof data?.login === "string" ? data.login : void 0;
+  } catch (error) {
+    if (error instanceof GitHubError && error.status === 403 && process.env["GITHUB_ACTIONS"] === "true") return "github-actions[bot]";
+    throw error;
+  }
+}
+
 // plugins/review-voice/src/github/writer.ts
 var WriteViolation = class extends Error {
 };
@@ -19818,9 +19829,9 @@ async function ciNotOnThread(options, ci, policy) {
   let comments;
   let me;
   try {
-    const { data: viewer } = await options.client.get("/user");
-    if (typeof viewer?.login !== "string") return ci;
-    me = viewer.login.toLowerCase();
+    const login = await tokenLogin(options.client);
+    if (login === void 0) return ci;
+    me = login.toLowerCase();
     comments = (await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client })).comments;
   } catch {
     return ci;
@@ -19971,9 +19982,9 @@ function recordedCandidates(db, runId) {
 }
 var PASTED_TEXT_MIN = 40;
 async function commentsSinceRun(options, run) {
-  const { data: viewer } = await options.client.get("/user");
-  if (typeof viewer?.login !== "string") throw new Error("GitHub did not say whose token this is");
-  const me = viewer.login.toLowerCase();
+  const login = await tokenLogin(options.client);
+  if (login === void 0) throw new Error("GitHub did not say whose token this is");
+  const me = login.toLowerCase();
   const { comments } = await readThread({ repository: options.repository, pullNumber: options.pullNumber, client: options.client });
   const mine = new Set(comments.filter((c) => c.author.toLowerCase() === me && c.id !== void 0).map((c) => c.id));
   const started = Date.parse(run.createdAt);
@@ -31674,8 +31685,7 @@ async function fetchPriorHead(sha, repository, cwd) {
 }
 async function latestOwnReview(client, repository, pullNumber) {
   try {
-    const { data: viewer } = await client.get("/user");
-    const login = viewer.login?.toLowerCase();
+    const login = (await tokenLogin(client))?.toLowerCase();
     if (login === void 0) return null;
     const reviews = await client.paginate(
       `/repos/${repository}/pulls/${pullNumber}/reviews?per_page=100`,

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Posting from the Action no longer fails after the review was paid for. The
+  thread re-check before posting asked `GET /user` whose token it was, and the
+  Action's `github.token` is a GitHub App installation token, which `/user`
+  refuses with 403 ("Resource not accessible by integration"). In GitHub
+  Actions that refusal now means the token acts as `github-actions[bot]`, which
+  the re-check, the thread's own-comment filter and the earlier-review lookup
+  use; outside Actions the refusal is still an error (#525).
 - A configured command that was stopped (a timeout, an abort or an output
   overflow) now always reports status `null`, as `spawnSync` did. A shell that
   outlived the group kill could report its last command's SIGKILL as its own
