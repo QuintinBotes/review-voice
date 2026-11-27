@@ -144,7 +144,7 @@ runs:
         # One line in the log, so a short green job reads as a review that ran
         # and not as a skip. Only the verdict event and numbers: nothing from the
         # pull request reaches it.
-        jq -r 'if type == "object" then "Review Voice: verdict \(.verdict.event // .verdict.action // "none"), \((.findings // []) | length) posted, \((.held // []) | length) held, posted \(.posted == true), cost $\(.costUsd // "n/a") in \(.seconds // "n/a") s" else empty end' "$report" 2>/dev/null || true
+        jq -r 'if type == "object" then "Review Voice: verdict \(.verdict.event // .verdict.action // "none"), \((.findings // []) | length) findings, \((.held // []) | length) held, review posted \(.posted == true), cost $\(.costUsd // "n/a") in \(.seconds // "n/a") s" else empty end' "$report" 2>/dev/null || true
         {
           echo "## Review Voice"
           if jq -e . "$report" > /dev/null 2>&1; then
@@ -169,6 +169,13 @@ runs:
           3) echo "Review Voice: the head moved during the review; a newer run covers it." >> "$GITHUB_STEP_SUMMARY"; code=0 ;;
           4 | 6) echo "Review Voice: the review ran, but CI is pending or needs a rerun, so its verdict was not posted." >> "$GITHUB_STEP_SUMMARY"; code=0 ;;
         esac
+        # A refusal in the post stage leaves a note and no error, so without this
+        # the log shows only the help hint for exit 2 (#507). Only when the job
+        # still fails, and escaped like the reason above.
+        if [ -z "$reason" ] && [ "$code" != 0 ]; then
+          note=$(jq -r 'if type == "object" and (.notes | type) == "array" then [.notes[] | strings | select(test("^(post|verdict) exited [0-9]+: "))] | last // empty | split("\n")[0] | .[0:500] | gsub("%"; "%25") | gsub("\r"; "%0D") else empty end' "$report" 2>/dev/null || true)
+          if [ -n "$note" ]; then echo "::error::Review Voice: $note"; fi
+        fi
         # S03: a review that could not run on a low-risk change may pass the job
         # when the workflow opts in; a high-risk or unassessed one never does.
         # Only one well-formed report saying failed_open can pass the job; a report

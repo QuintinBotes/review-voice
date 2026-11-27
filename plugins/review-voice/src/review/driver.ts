@@ -1353,7 +1353,9 @@ async function record(run: Run, extra: string[]): Promise<void> {
     run.notes.push(`not posted: ${POSTING_OFF}`);
     return;
   }
-  if (posted.code !== 0) run.notes.push(`post exited ${posted.code}: ${firstLines(posted.stderr || JSON.stringify(output['reasons'] ?? ''))}`);
+  // The refusal's own reasons, as text: the Action prints this note as the error when the job fails.
+  const why = Array.isArray(reasons) ? reasons.filter((reason): reason is string => typeof reason === 'string').join('; ') : '';
+  if (posted.code !== 0) run.notes.push(`post exited ${posted.code}: ${firstLines(posted.stderr) || why}`);
 }
 
 /** record walks verdict and post itself, so the walker has nothing left for `post`. */
