@@ -12,7 +12,7 @@
     "build": "node scripts/build.mjs",
     "check:dist": "node scripts/build.mjs --check",
     "typecheck": "tsc --noEmit",
-    "test": "node --test \"test/**/*.test.mjs\"",
+    "test": "node --test --import ./test/support/hermetic-git.mjs \"test/**/*.test.mjs\"",
     "validate:plugin": "claude plugin validate plugins/review-voice --strict",
     "validate:marketplace": "claude plugin validate . --strict",
     "guard:identity": "node scripts/guard-identity.mjs",
