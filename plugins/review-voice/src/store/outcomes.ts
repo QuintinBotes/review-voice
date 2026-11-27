@@ -92,6 +92,8 @@ export interface RawComment {
   body?: string;
   created_at?: string;
   in_reply_to_id?: number | null;
+  /** On the pull request's comment list only; the list per review carries neither this nor a line. */
+  pull_request_review_id?: number | null;
   user?: { login?: string; type?: string };
 }
 
@@ -483,6 +485,28 @@ function postedAs(comment: RawComment, finding: StoredFinding): boolean {
  * earlier review already carried it) cannot take another finding's comment
  * at the same line.
  */
+/**
+ * The comments of one review with the line numbers they lack. The list per review is the older
+ * review-comment shape, with `position` and no `line` or `original_line`, so a finding could
+ * never be matched to its comment by line; the pull request's whole list, read once, has them
+ * (#531). A comment that list does not hold is left as it came.
+ */
+export function withLines(comments: RawComment[], all: RawComment[]): RawComment[] {
+  const byId = new Map<number, RawComment>();
+  for (const comment of all) if (typeof comment.id === 'number') byId.set(comment.id, comment);
+  return comments.map((comment) => {
+    const full = typeof comment.id === 'number' ? byId.get(comment.id) : undefined;
+    if (full === undefined) return comment;
+    return {
+      ...comment,
+      line: comment.line ?? full.line ?? null,
+      original_line: comment.original_line ?? full.original_line ?? null,
+      start_line: comment.start_line ?? full.start_line ?? null,
+      original_start_line: comment.original_start_line ?? full.original_start_line ?? null,
+    };
+  });
+}
+
 function matchComments(findings: StoredFinding[], comments: RawComment[]): Map<string, RawComment> {
   const taken = new Set<number>();
   const matched = new Map<string, RawComment>();
@@ -540,7 +564,7 @@ async function followRun(
       )),
     );
   }
-  const matched = matchComments(detail.findings, comments);
+  const matched = matchComments(detail.findings, withLines(comments, context.replies));
   const checkedAt = (options.now?.() ?? new Date()).toISOString();
   const outcomes: FindingOutcome[] = [];
   const questions: PendingQuestion[] = [];

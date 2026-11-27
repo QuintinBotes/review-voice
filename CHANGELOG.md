@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `outcomes` matched a posted finding to its comment by line, and on the live
+  API the list of a review's comments has no `line` or `original_line` (only
+  `position`), so no finding was ever matched and nothing was recorded for a
+  run it knew about. The lines now come from the pull request's own comment
+  list, by comment id, and `outcomes --recover` reads that list too, so it
+  finds the Action's reviews (#531).
 - Posting from the Action no longer fails after the review was paid for. The
   thread re-check before posting asked `GET /user` whose token it was, and the
   Action's `github.token` is a GitHub App installation token, which `/user`

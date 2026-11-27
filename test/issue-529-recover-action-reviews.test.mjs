@@ -31,8 +31,13 @@ const finding = (id, path, line, text, extra = {}) => ({ id, path, line, origina
 
 /** The Action's review 900 with two findings, one with an owner reply; a person's review; one with no finding in it. */
 function fakeGitHub({ replies = [{ id: 401, in_reply_to_id: 301, user: { login: 'owner' }, body: 'Agreed, fixed in the next commit.', created_at: '2026-11-27T10:00:00Z' }], pulls } = {}) {
-  const first = finding(301, 'src/a.ts', 5, 'The total ignores the discount for carts.');
-  const second = finding(302, 'src/b.ts', 9, 'The cache key leaves out the locale.');
+  const first = finding(301, 'src/a.ts', 5, 'The total ignores the discount for carts.', { pull_request_review_id: 900 });
+  const second = finding(302, 'src/b.ts', 9, 'The cache key leaves out the locale.', { pull_request_review_id: 900 });
+  const persons = finding(350, 'src/c.ts', 1, 'A person wrote this in the same words.', { pull_request_review_id: 901 });
+  // A review whose only comment is a person's note, not a finding.
+  const note = { id: 360, path: 'src/d.ts', line: 3, original_line: 3, body: 'Looks fine to me.', user: { login: BOT }, pull_request_review_id: 902 };
+  // The list per review is the older shape: `position`, and neither `line` nor `original_line` (#531).
+  const perReview = (comments) => comments.map(({ line, original_line, ...rest }) => ({ ...rest, position: 3 }));
   const calls = [];
   const impl = async (url, init = {}) => {
     const parsed = new URL(String(url));
@@ -52,11 +57,10 @@ function fakeGitHub({ replies = [{ id: 401, in_reply_to_id: 301, user: { login: 
         { id: 902, state: 'COMMENTED', commit_id: HEAD, user: { login: BOT } },
       ]);
     }
-    if (path === `/repos/${REPO}/pulls/${PR}/reviews/900/comments`) return json([first, second]);
-    if (path === `/repos/${REPO}/pulls/${PR}/reviews/901/comments`) return json([finding(350, 'src/c.ts', 1, 'A person wrote this in the same words.')]);
-    // A review whose only comment is a person's note, not a finding.
-    if (path === `/repos/${REPO}/pulls/${PR}/reviews/902/comments`) return json([{ id: 360, path: 'src/d.ts', line: 3, body: 'Looks fine to me.', user: { login: BOT } }]);
-    if (path === `/repos/${REPO}/pulls/${PR}/comments`) return json([first, second, ...replies]);
+    if (path === `/repos/${REPO}/pulls/${PR}/reviews/900/comments`) return json(perReview([first, second]));
+    if (path === `/repos/${REPO}/pulls/${PR}/reviews/901/comments`) return json(perReview([persons]));
+    if (path === `/repos/${REPO}/pulls/${PR}/reviews/902/comments`) return json(perReview([note]));
+    if (path === `/repos/${REPO}/pulls/${PR}/comments`) return json([first, second, persons, note, ...replies]);
     if (path.includes('/compare/')) return json({ files: [{ filename: 'src/a.ts', patch: '@@ -3,5 +3,5 @@\n x\n x\n-old\n+new\n x\n x' }] });
     if (path === '/user') return new Response(JSON.stringify({ message: 'Resource not accessible by integration' }), { status: 403, headers: { 'content-type': 'application/json' } });
     return new Response('not found', { status: 404 });
@@ -184,4 +188,17 @@ test('#529: outcomes --recover records the review first, then follows it, from t
     }
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('#531: a comment the review list gave without lines takes them from the pull request list, by id, and keeps any it has', async () => {
+  const { withLines } = await import('../plugins/review-voice/src/store/outcomes.ts');
+  const all = [
+    { id: 1, line: 27, original_line: 25, start_line: null, original_start_line: null },
+    { id: 2, line: 9, original_line: 9 },
+  ];
+  assert.deepEqual(withLines([{ id: 1, path: 'a', position: 3 }, { id: 2, path: 'b', line: 11 }, { id: 3, path: 'c' }], all), [
+    { id: 1, path: 'a', position: 3, line: 27, original_line: 25, start_line: null, original_start_line: null },
+    { id: 2, path: 'b', line: 11, original_line: 9, start_line: null, original_start_line: null },
+    { id: 3, path: 'c' },
+  ]);
 });

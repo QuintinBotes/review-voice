@@ -38,6 +38,8 @@ interface RawReview {
 }
 
 interface RawReviewComment {
+  id?: number;
+  pull_request_review_id?: number | null;
   path?: string;
   line?: number | null;
   original_line?: number | null;
@@ -131,19 +133,20 @@ export async function recoverPostedReviews(options: RecoverOptions): Promise<Rec
       if (typeof pull.number !== 'number') continue;
       try {
         const reviews = await options.client.paginate<RawReview>(`/repos/${repository}/pulls/${pull.number}/reviews?per_page=100`, READ_LIMIT);
-        for (const review of reviews) {
+        const wanted = reviews.filter((review) => {
           const author = review.user?.login?.toLowerCase();
-          if (author === undefined || !logins.has(author)) continue;
-          if (typeof review.id !== 'number' || known.has(review.id)) continue;
+          return author !== undefined && logins.has(author) && typeof review.id === 'number' && !known.has(review.id);
+        });
+        if (wanted.length === 0) continue;
+        // The pull request's own list, which has each comment's line and review; the list per review has neither (#531).
+        const all = await options.client.paginate<RawReviewComment>(`/repos/${repository}/pulls/${pull.number}/comments?per_page=100`, READ_LIMIT);
+        for (const review of wanted) {
           if (review.state === 'PENDING' || typeof review.commit_id !== 'string' || review.commit_id === '') continue;
-          const comments = await options.client.paginate<RawReviewComment>(
-            `/repos/${repository}/pulls/${pull.number}/reviews/${review.id}/comments?per_page=100`,
-            READ_LIMIT,
-          );
+          const comments = all.filter((comment) => comment.pull_request_review_id === review.id);
           const findings = postedFindings(comments);
           if (findings.length === 0) continue;
-          result.recovered.push(recordReview(options.db, repository, pull.number, review.id, review.commit_id, findings));
-          known.add(review.id);
+          result.recovered.push(recordReview(options.db, repository, pull.number, review.id!, review.commit_id, findings));
+          known.add(review.id!);
         }
       } catch (error) {
         result.warnings.push(`${repository}#${pull.number}: not recovered (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
