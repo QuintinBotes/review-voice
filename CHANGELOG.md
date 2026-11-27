@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and when CI was pending so the verdict was not posted. A green skip read as a
   review that ran, and a held review's one log line read as an approval that
   failed to post (#533).
+- An approval posted with a workflow token in a repository that does not let
+  GitHub Actions approve pull requests (GitHub's default) failed the job with a
+  422, so only clean changes got a red check. GitHub sends nothing in that case,
+  so the job now passes with a warning naming the setting, and docs/ACTION.md
+  says how to turn it on (#535).
 - `outcomes` matched a posted finding to its comment by line, and on the live
   API the list of a review's comments has no `line` or `original_line` (only
   `position`), so no finding was ever matched and nothing was recorded for a
