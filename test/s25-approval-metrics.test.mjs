@@ -234,12 +234,19 @@ test('the outcomes block is read with defaults, and a bad value warns and keeps 
       rmSync(dir, { recursive: true, force: true });
     }
   };
-  assert.deepEqual(load('identity: {}\n').outcomes, { approvalWindowDays: 14, approvalEscapeWarn: 0.05 });
-  assert.deepEqual(load('outcomes:\n  approval_window_days: 7\n  approval_escape_warn: 0.1\n').outcomes, { approvalWindowDays: 7, approvalEscapeWarn: 0.1 });
+  assert.deepEqual(load('identity: {}\n').outcomes, { approvalWindowDays: 14, approvalEscapeWarn: 0.05, recoverFrom: ['github-actions[bot]'] });
+  assert.deepEqual(load('outcomes:\n  approval_window_days: 7\n  approval_escape_warn: 0.1\n').outcomes, { approvalWindowDays: 7, approvalEscapeWarn: 0.1, recoverFrom: ['github-actions[bot]'] });
   const bad = load('outcomes:\n  approval_window_days: 0\n  approval_escape_warn: 2\n');
-  assert.deepEqual(bad.outcomes, { approvalWindowDays: 14, approvalEscapeWarn: 0.05 });
+  assert.deepEqual(bad.outcomes, { approvalWindowDays: 14, approvalEscapeWarn: 0.05, recoverFrom: ['github-actions[bot]'] });
   assert.ok(bad.warnings.includes('outcomes.approval_window_days must be a whole number above zero; using 14.'), bad.warnings.join('\n'));
   assert.ok(bad.warnings.includes('outcomes.approval_escape_warn must be a number from 0 to 1; using 0.05.'), bad.warnings.join('\n'));
+  // The logins `outcomes --recover` rebuilds runs from (#529).
+  assert.deepEqual(load('outcomes:\n  recover_from: ["github-actions[bot]", "other-bot[bot]"]\n').outcomes.recoverFrom, ['github-actions[bot]', 'other-bot[bot]']);
+  for (const value of ['[]', 'nobody', '[1, 2]', '["", "x"]']) {
+    const wrong = load(`outcomes:\n  recover_from: ${value}\n`);
+    assert.deepEqual(wrong.outcomes.recoverFrom, ['github-actions[bot]'], value);
+    assert.ok(wrong.warnings.includes('outcomes.recover_from must be a list of logins; using github-actions[bot].'), `${value}: ${wrong.warnings.join('\n')}`);
+  }
   assert.ok(load('outcomes: 3\n').warnings.includes('outcomes must be a mapping; using the defaults.'));
   assert.ok(load('outcomes:\n  window: 3\n').warnings.includes('outcomes.window is not a setting Review Voice reads; ignoring it.'));
 });

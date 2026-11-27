@@ -224,7 +224,7 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
   'queue.relevance.discover': ['updated_within_hours', 'max_pulls'],
   watch: ['workspace', 'interval', 'post', 'lock_port', 'run_repository_commands', 'review_timeout', 'max_attempts_per_head'],
   retention: ['runs_days', 'audit_days'],
-  outcomes: ['approval_window_days', 'approval_escape_warn'],
+  outcomes: ['approval_window_days', 'approval_escape_warn', 'recover_from'],
   evaluate: ['stability_max_calls'],
   writes: ['github_posting_enabled'],
 };
@@ -1076,6 +1076,14 @@ function readOutcomes(block: Record<string, unknown> | null, result: LoadedConfi
     if (typeof warn === 'number' && warn >= 0 && warn <= 1) result.outcomes.approvalEscapeWarn = warn;
     else result.warnings.push(`outcomes.approval_escape_warn must be a number from 0 to 1; using ${DEFAULT_OUTCOMES.approvalEscapeWarn}.`);
   }
+  const from = block['recover_from'];
+  if (from !== undefined) {
+    if (Array.isArray(from) && from.length > 0 && from.every((login) => typeof login === 'string' && login.trim() !== '')) {
+      result.outcomes.recoverFrom = from.map((login) => (login as string).trim());
+    } else {
+      result.warnings.push(`outcomes.recover_from must be a list of logins; using ${DEFAULT_OUTCOMES.recoverFrom.join(', ')}.`);
+    }
+  }
 }
 
 export const DEFAULT_STABILITY_MAX_CALLS = 200;
@@ -1541,7 +1549,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     queue: defaultQueueConfig(),
     watch: defaultWatchConfig(),
     retention: { ...DEFAULT_RETENTION },
-    outcomes: { ...DEFAULT_OUTCOMES },
+    outcomes: { ...DEFAULT_OUTCOMES, recoverFrom: [...DEFAULT_OUTCOMES.recoverFrom] },
     evaluate: { stabilityMaxCalls: DEFAULT_STABILITY_MAX_CALLS },
     staticEvidence: { enabled: false, commands: [], envPassthrough: [] },
     reproduction: defaultReproduction(),

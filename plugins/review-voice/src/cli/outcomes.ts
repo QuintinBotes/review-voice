@@ -3,6 +3,7 @@ import { loadConfig } from '../policy/load.ts';
 import { repositoryRoot } from '../diff/acquire.ts';
 import { checkOutcomes, type PendingQuestion } from '../store/outcomes.ts';
 import { checkApprovals, DEFAULT_OUTCOMES } from '../store/approvals.ts';
+import { recoverPostedReviews } from '../store/recover.ts';
 import { flag, githubClient } from './shared.ts';
 
 /** The one text-mode line per thread awaiting this tool's reply (docs/adr/0035); `--json` stays an array of outcomes. */
@@ -34,10 +35,12 @@ export async function outcomesCommand(argv: string[]): Promise<number> {
   // reply is an owner signal, whichever repository is named.
   let ownerReviewer: string | null = null;
   let windowDays = DEFAULT_OUTCOMES.approvalWindowDays;
+  let recoverFrom: string[] = [...DEFAULT_OUTCOMES.recoverFrom];
   try {
     const config = loadConfig(repositoryRoot(process.cwd()));
     ownerReviewer = config.ownerReviewer;
     windowDays = config.outcomes.approvalWindowDays;
+    recoverFrom = config.outcomes.recoverFrom;
     if (repository === null) allowlist = config.allowlist;
   } catch {
     // Not in a repository: no allowlist, so nothing is read, and no owner.
@@ -62,6 +65,13 @@ export async function outcomesCommand(argv: string[]): Promise<number> {
           `${count('closed')} closed, ${count('open')} open, ${count('unknown')} unknown`,
       );
       return 0;
+    }
+    if (argv.includes('--recover')) {
+      // Reviews the Action posted live only in its runner's store: record them here first (docs/adr/0042).
+      const recovered = await recoverPostedReviews({ db, client: githubClient(allowlist), allowlist, repository: repository ?? undefined, since, logins: recoverFrom });
+      for (const warning of recovered.warnings) console.error(warning);
+      for (const r of recovered.recovered) console.error(`${r.repository}#${r.pullNumber}: recovered review ${r.reviewId} as run ${r.runId} (${r.findings} finding(s))`);
+      console.error(`${recovered.recovered.length} review(s) recovered from ${recoverFrom.join(', ')}`);
     }
     const result = await checkOutcomes({
       db,
