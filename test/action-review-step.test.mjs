@@ -225,6 +225,32 @@ test('#508: a review held for CI says it ran, and the log carries one line with 
   assert.deepEqual(lines, ['Review Voice: verdict APPROVE, 2 findings, 1 held, review posted false, cost $0.31 in 20.5 s']);
 });
 
+// The live report of run 46046051722 on review-voice-scratch#1, CI `test` in progress.
+test('#533: a review held for CI says in the log that its verdict was not posted, after the verdict line', (t) => {
+  const report = JSON.stringify({
+    exitCode: 4,
+    verdict: { event: 'APPROVE', action: 'wait', reasons: ['CI is still running; approve once it is green with verdict --recheck'] },
+    findings: [],
+    held: [],
+    posted: false,
+    costUsd: 0.0158,
+    seconds: 12.74,
+  });
+  const result = run(t, scratch(t), { report, code: 4 });
+  assert.equal(result.status, 0);
+  const lines = result.stdout.split('\n').filter((line) => line.startsWith('Review Voice:'));
+  assert.deepEqual(lines, [
+    'Review Voice: verdict APPROVE, 0 findings, 0 held, review posted false, cost $0.0158 in 12.74 s',
+    'Review Voice: the review ran, but CI is pending or needs a rerun, so its verdict was not posted.',
+  ]);
+});
+
+test('#533: a review whose head moved says so in the log', (t) => {
+  const result = run(t, scratch(t), { report: JSON.stringify({ exitCode: 3, verdict: { event: 'APPROVE', action: 'refuse' } }), code: 3 });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /^Review Voice: the head moved during the review; a newer run covers it\.$/m);
+});
+
 test('#508: a report that is not JSON adds no verdict line', (t) => {
   const result = run(t, scratch(t), { report: 'not json' });
   assert.equal(result.stdout.includes('Review Voice: verdict'), false);

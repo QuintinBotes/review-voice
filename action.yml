@@ -52,7 +52,8 @@ runs:
       run: |
         skip() {
           echo "skip=true" >> "$GITHUB_OUTPUT"
-          echo "Review Voice skipped: $1" >> "$GITHUB_STEP_SUMMARY"
+          # In the log too, or a green skip reads as a review that ran (#533).
+          echo "Review Voice skipped: $1" | tee -a "$GITHUB_STEP_SUMMARY"
           exit 0
         }
         case "$EVENT_NAME" in pull_request | pull_request_target) ;; *) skip "not a pull request event." ;; esac
@@ -165,9 +166,10 @@ runs:
         if [ -n "$reason" ]; then echo "::error::Review Voice: $reason"; fi
         # A review that stood but was not posted (posting off at the base commit, issue 507) says so the same way.
         jq -r 'if type == "object" and (.notes | type) == "array" then .notes[] | select(type == "string" and startswith("not posted: ")) | split("\n")[0] | .[0:500] | gsub("%"; "%25") | gsub("\r"; "%0D") | "::warning::Review Voice: \(.)" else empty end' "$report" 2>/dev/null || true
+        # In the log too, or the verdict line above reads as a review that failed to post (#533).
         case "$code" in
-          3) echo "Review Voice: the head moved during the review; a newer run covers it." >> "$GITHUB_STEP_SUMMARY"; code=0 ;;
-          4 | 6) echo "Review Voice: the review ran, but CI is pending or needs a rerun, so its verdict was not posted." >> "$GITHUB_STEP_SUMMARY"; code=0 ;;
+          3) echo "Review Voice: the head moved during the review; a newer run covers it." | tee -a "$GITHUB_STEP_SUMMARY"; code=0 ;;
+          4 | 6) echo "Review Voice: the review ran, but CI is pending or needs a rerun, so its verdict was not posted." | tee -a "$GITHUB_STEP_SUMMARY"; code=0 ;;
         esac
         # A refusal in the post stage leaves a note and no error, so without this
         # the log shows only the help hint for exit 2 (#507). Only when the job

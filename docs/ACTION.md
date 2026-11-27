@@ -105,7 +105,7 @@ is offered under its threads.
 ## Forks
 
 Pull requests from forks get no secrets. The action sees an empty key, writes a
-skip line to the job summary and exits 0, so the check does not fail.
+skip line to the log and the job summary and exits 0, so the check does not fail.
 
 ## Cost
 
@@ -123,7 +123,7 @@ The action exits 1 in that case. Use `pull_request`.
 ## Exit codes
 
 The action exits with the review command's code, except that a moved head (3)
-and pending or rerun-needed CI (4, 6) exit 0 with a line in the summary.
+and pending or rerun-needed CI (4, 6) exit 0 with a line in the log and the summary.
 
 ## When the review is unavailable
 
