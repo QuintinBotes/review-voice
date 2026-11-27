@@ -214,3 +214,18 @@ test('issue 507: a review that was not posted says why in the log, one escaped w
   const annotations = result.stdout.split('\n').filter((line) => line.startsWith('::'));
   assert.deepEqual(annotations, ['::warning::Review Voice: not posted: writes.github_posting_enabled is false in .review-voice/config.yaml']);
 });
+
+test('#508: a review held for CI says it ran, and the log carries one line with its verdict', (t) => {
+  const report = JSON.stringify({ exitCode: 4, verdict: { event: 'APPROVE', action: 'wait' }, findings: [{}, {}], held: [{}], posted: false, costUsd: 0.31, seconds: 20.5 });
+  const result = run(t, scratch(t), { report, code: 4 });
+  assert.equal(result.status, 0);
+  assert.match(result.summary, /the review ran, but CI is pending or needs a rerun, so its verdict was not posted\./);
+  assert.equal(result.summary.includes('no review was posted'), false);
+  const lines = result.stdout.split('\n').filter((line) => line.startsWith('Review Voice: verdict'));
+  assert.deepEqual(lines, ['Review Voice: verdict APPROVE, 2 posted, 1 held, posted false, cost $0.31 in 20.5 s']);
+});
+
+test('#508: a report that is not JSON adds no verdict line', (t) => {
+  const result = run(t, scratch(t), { report: 'not json' });
+  assert.equal(result.stdout.includes('Review Voice: verdict'), false);
+});

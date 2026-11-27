@@ -63,3 +63,10 @@ test('#509: the store cache is keyed per pull request, with the repository as th
     'review-voice-${{ github.repository }}-',
   ]);
 });
+
+// The review's own job is a check run on the head and is still running when the
+// verdict reads CI (#508); the review step passes its id so CI can leave it out.
+test('#508: the review step passes its own check run id', () => {
+  const review = steps.find((s) => s.id === 'review');
+  assert.equal(review.env.REVIEW_VOICE_OWN_CHECK_RUN, '${{ job.check_run_id }}');
+});

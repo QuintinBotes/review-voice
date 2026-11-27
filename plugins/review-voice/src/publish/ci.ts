@@ -432,11 +432,17 @@ export async function readCi(
   now: number = Date.now(),
   rules: CiRules = {},
 ): Promise<CiState> {
-  const checkRuns = await client.paginateWrapped<RawCheckRun>(
-    `/repos/${repository}/commits/${sha}/check-runs?filter=latest&per_page=100`,
-    'check_runs',
-    MAX_ENTRIES + 1,
-  );
+  // The Action's own job is a check run on this head, and it is still running
+  // while the verdict is computed, so it would keep CI pending for every review
+  // (#508). The Action passes its own check run's id; nothing else is left out.
+  const own = process.env['REVIEW_VOICE_OWN_CHECK_RUN'] ?? '';
+  const checkRuns = (
+    await client.paginateWrapped<RawCheckRun>(
+      `/repos/${repository}/commits/${sha}/check-runs?filter=latest&per_page=100`,
+      'check_runs',
+      MAX_ENTRIES + 1,
+    )
+  ).filter((run) => own === '' || String(run.id) !== own);
 
   await attachAnnotations(client, repository, checkRuns.slice(0, MAX_ENTRIES), rules.rerunSignatures ?? BUILTIN_RERUN_SIGNATURES);
 
