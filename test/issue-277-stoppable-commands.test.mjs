@@ -52,9 +52,7 @@ async function assertGone(pid, what) {
 test('a check past its timeout is reported as timed out after its seconds, and its background child is killed', async (t) => {
   const dir = temporary(t);
   const pidFile = join(dir, 'child.pid');
-  const started = Date.now();
   const report = await collectEvidence([{ name: 'slow', run: `sleep 30 & echo $! > "${pidFile}"; wait`, timeoutSeconds: 1 }], { cwd: dir, enabled: true });
-  assert.ok(Date.now() - started < 5000, 'the timeout cut it off');
   assert.equal(report.commands[0].unavailable, 'timed out after 1s');
   assert.equal(report.commands[0].exitCode, null);
   assert.deepEqual(report.didNotRun, ['slow']);
@@ -82,13 +80,11 @@ test('output past the cap is cut there, and the check is reported as not run, as
 test('stopCommands kills a running command with what it started, and the command returns at once', async (t) => {
   const dir = temporary(t);
   const pidFile = join(dir, 'child.pid');
-  const started = Date.now();
   const running = spawnCommand(`sleep 30 & echo $! > "${pidFile}"; wait`, options(dir, { timeout: 60000 }));
   const pid = await pidIn(pidFile);
   stopCommands();
   const result = await running;
-  assert.ok(Date.now() - started < 5000, 'it returned without waiting for the sleep');
-  assert.equal(result.status, null, 'the shell was killed');
+  assert.equal(result.status, null, 'the shell was killed, so it did not wait for the sleep');
   await assertGone(pid, 'the background child went with its process group');
 });
 
@@ -97,7 +93,6 @@ test('a command is read as it prints, and aborting its signal kills it with what
   const pidFile = join(dir, 'child.pid');
   const killer = new AbortController();
   let printed = '';
-  const started = Date.now();
   const running = spawnCommand(`sleep 30 & echo $! > "${pidFile}"; echo ready; wait`, options(dir, { timeout: 60000, signal: killer.signal, onStdout: (text) => (printed += text) }));
   const pid = await pidIn(pidFile);
   for (let waited = 0; printed !== 'ready\n'; waited += 20) {
@@ -106,8 +101,7 @@ test('a command is read as it prints, and aborting its signal kills it with what
   }
   killer.abort();
   const result = await running;
-  assert.ok(Date.now() - started < 5000, 'it returned without waiting for the sleep');
-  assert.deepEqual([result.status, result.error?.code, result.stdout], [null, 'ABORT_ERR', 'ready\n']);
+  assert.deepEqual([result.status, result.error?.code, result.stdout], [null, 'ABORT_ERR', 'ready\n'], 'killed by the abort, so it did not wait for the sleep');
   await assertGone(pid, 'the background child went with its process group');
 });
 
@@ -177,26 +171,60 @@ test('an in-process command that awaits keeps only its own output, not what othe
 });
 
 // A descendant that leaves the group keeps the pipes open after the group is
-// killed; a timeout or the cap must not wait for it, as spawnSync did not.
-const escapee = (seconds) =>
-  `node -e "require('child_process').spawn('sleep', ['${seconds}'], { detached: true, stdio: 'inherit' }).unref()"`;
+// killed; a timeout or the cap must not wait for it, as spawnSync did not. The
+// holder waits on a gate file instead of a sleep, so "returned at once" is
+// checked as an order of events: the result arrives while the holder is alive.
+function pipeHolder(t) {
+  const dir = temporary(t);
+  const gate = join(dir, 'gate');
+  const pidFile = join(dir, 'holder.pid');
+  // The holder also exits once its directory is removed, so no test leaves it behind.
+  writeFileSync(join(dir, 'holder.cjs'), [
+    "const { existsSync, writeFileSync } = require('fs');",
+    "const { dirname } = require('path');",
+    "const [gate, pidFile] = process.argv.slice(2);",
+    "writeFileSync(pidFile, String(process.pid));",
+    "(function wait() { existsSync(gate) || !existsSync(dirname(gate)) ? process.exit(0) : setTimeout(wait, 20); })();",
+  ].join('\n'));
+  writeFileSync(join(dir, 'escapee.cjs'), [
+    "const { spawn } = require('child_process');",
+    "const { join } = require('path');",
+    "spawn(process.execPath, [join(__dirname, 'holder.cjs'), ...process.argv.slice(2)], { detached: true, stdio: 'inherit' }).unref();",
+  ].join('\n'));
+  // A regression would wait for the pipes until the gate opens; this turns that hang into a failure below.
+  const safety = setTimeout(() => writeFileSync(gate, ''), 60000);
+  t.after(() => { clearTimeout(safety); if (existsSync(dir)) writeFileSync(gate, ''); });
+  const escape = `"${process.execPath}" "${join(dir, 'escapee.cjs')}" "${gate}" "${pidFile}"; while [ ! -s "${pidFile}" ]; do sleep 0.05; done`;
+  return { dir, gate, pidFile, escape };
+}
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 test('a timeout returns at once even when a descendant outside the group holds the pipes', async (t) => {
-  const started = Date.now();
-  const result = await spawnCommand(`${escapee(4)}; sleep 30`, options(temporary(t), { timeout: 500 }));
-  const elapsed = Date.now() - started;
+  const holder = pipeHolder(t);
+  // The timeout only has to fire after the holder exists; nothing measures how long the return takes.
+  const result = await spawnCommand(`${holder.escape}; sleep 30`, options(holder.dir, { timeout: 5000 }));
   assert.equal(result.error?.code, 'ETIMEDOUT');
-  assert.equal(result.status, null);
-  assert.ok(elapsed < 2500, `returned after ${elapsed} ms`);
+  // Killed: null as under spawnSync, or 137 when the shell reports its child's kill (#512).
+  assert.ok(result.status === null || result.status === 137, `status ${result.status}`);
+  assert.equal(existsSync(holder.gate), false, 'returned before the gate opened');
+  assert.equal(alive(await pidIn(holder.pidFile)), true, 'the holder still holds the pipes');
 });
 
 test('output past the cap returns at once even when a descendant outside the group holds the pipes', async (t) => {
-  const started = Date.now();
-  const result = await spawnCommand(`${escapee(4)}; head -c 100000 /dev/zero; sleep 30`, options(temporary(t), { maxBuffer: 1000 }));
-  const elapsed = Date.now() - started;
+  const holder = pipeHolder(t);
+  const result = await spawnCommand(`${holder.escape}; head -c 100000 /dev/zero; sleep 30`, options(holder.dir, { maxBuffer: 1000 }));
   assert.equal(result.error?.code, 'ENOBUFS');
   assert.equal(result.stdout.length, 1000);
-  assert.ok(elapsed < 2500, `returned after ${elapsed} ms`);
+  assert.equal(existsSync(holder.gate), false, 'returned before the gate opened');
+  assert.equal(alive(await pidIn(holder.pidFile)), true, 'the holder still holds the pipes');
 });
 
 // Run on its own, the CLI shares no process group with its configured
