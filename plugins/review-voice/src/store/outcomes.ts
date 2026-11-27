@@ -355,6 +355,8 @@ export interface CheckOptions {
    * the poster's replies stay ignored and a feedback dismissal records no one.
    */
   ownerReviewer?: string | null | undefined;
+  /** False reads the outcomes without storing them, for the read-only verdict (#534). */
+  store?: boolean | undefined;
 }
 
 export interface CheckResult {
@@ -608,10 +610,12 @@ async function followRun(
     };
     // The matcher gives a comment to one finding of the run. A row an earlier
     // matcher stored, pairing it with another finding, would count its thread twice.
-    options.db
-      .prepare('DELETE FROM finding_outcomes WHERE review_run_id = ? AND comment_id = ? AND finding_id <> ?')
-      .run(run.runId, outcome.commentId, outcome.findingId);
-    saveOutcome(options.db, outcome);
+    if (options.store !== false) {
+      options.db
+        .prepare('DELETE FROM finding_outcomes WHERE review_run_id = ? AND comment_id = ? AND finding_id <> ?')
+        .run(run.runId, outcome.commentId, outcome.findingId);
+      saveOutcome(options.db, outcome);
+    }
     outcomes.push(outcome);
   }
   return { outcomes, questions };

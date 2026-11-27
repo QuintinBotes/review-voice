@@ -617,6 +617,11 @@ export function decide(input: {
    */
   uncoveredCarry?: boolean;
   /**
+   * Blocking or important findings an earlier review posted that still stand
+   * at this head, on a narrower scope that did not read their lines (#534).
+   */
+  openEarlier?: readonly string[] | undefined;
+  /**
    * The owner's approval that still stands on an unchanged scope, when
    * `carry_approval_on_unchanged` is on and one was found.
    */
@@ -692,6 +697,18 @@ export function decide(input: {
   // body says only that this is not an approval yet (docs/adr/0017).
   if (input.uncoveredCarry === true && input.mapped === 'APPROVE') {
     const why = 'candidates were carried to this head without a review of the commits since, so this comments rather than approves';
+    if (input.recheck) {
+      return done({ event: 'COMMENT', action: 'refuse', reasons: [...reasons, why], exitCode: 2, cappedByCi: false });
+    }
+    return done({ event: 'COMMENT', action: 'post', reasons: [...reasons, why], exitCode: 0, cappedByCi: false }, annotations);
+  }
+
+  // An earlier finding that still stands is not covered by a review of the
+  // commits since: approving would replace this tool's own request for changes
+  // over code it flagged and nobody changed (#534). Before the CI guard, as above.
+  const openEarlier = input.openEarlier ?? [];
+  if (openEarlier.length > 0 && input.mapped === 'APPROVE') {
+    const why = `an earlier review posted ${plural(openEarlier.length, 'finding')} that still ${openEarlier.length === 1 ? 'stands' : 'stand'} (${openEarlier.join(', ')}), so this comments rather than approves`;
     if (input.recheck) {
       return done({ event: 'COMMENT', action: 'refuse', reasons: [...reasons, why], exitCode: 2, cappedByCi: false });
     }

@@ -1408,6 +1408,18 @@ same path and line that itself keeps a review from approving, which is the
 one entry per place above. A finding in its review text there, or a claim it
 holds there as `unverified`, `refuted` or `partly`, ends nothing, since that
 is another claim and not a judgement of the held one.
+
+The findings an earlier review posted are followed the same way. When an
+incremental or interdiff review would approve, `verdict` runs the outcome
+rules over the pull request's sent runs without storing anything (#534). A
+blocking or important finding whose outcome is `open` (thread open, nobody
+turned it down, anchored lines unchanged) or `unknown` keeps the event at
+COMMENT. The posted body says "Not approving yet." and the local reason names
+each finding's path and line. Otherwise the approval would replace this
+tool's own request for changes over code it flagged and nobody touched. A
+fixed, outdated, resolved or dismissed finding does not hold it. A full
+review reads every line itself, so it does not look them up.
+
 With `verdict.scope_block_models: true` the scope
 block's origin sentence names a challenge family other than Claude and its
 trailer carries `families`.

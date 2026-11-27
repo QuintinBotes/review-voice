@@ -38,6 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source file with no patch, or a file list cut at GitHub's limit, now raises
   the change for human review, so the review comments rather than approves,
   and the human-review note names the file (docs/adr/0012, #536).
+- A re-review that read only the commits since an earlier review approved
+  over that review's important findings when the new commits did not touch
+  their lines. On review-voice-scratch#1 a push that changed only `ci-mode.txt`
+  mapped to APPROVE with both important findings still open, and on GitHub
+  that approval would replace the tool's own request for changes. An
+  incremental or interdiff review now follows the earlier findings through the
+  outcome rules, read-only, and comments rather than approves while a blocking
+  or important one is still open or cannot be told (#534).
 - `outcomes` matched a posted finding to its comment by line, and on the live
   API the list of a review's comments has no `line` or `original_line` (only
   `position`), so no finding was ever matched and nothing was recorded for a
