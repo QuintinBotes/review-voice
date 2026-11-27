@@ -16101,6 +16101,21 @@ function postedProse(body) {
 function postedAs(comment, finding) {
   return postedProse(comment.body ?? "") === `${severityPrefix(finding)}${parseFinding(finding.text, 0).prose}`;
 }
+function withLines(comments, all) {
+  const byId = /* @__PURE__ */ new Map();
+  for (const comment of all) if (typeof comment.id === "number") byId.set(comment.id, comment);
+  return comments.map((comment) => {
+    const full2 = typeof comment.id === "number" ? byId.get(comment.id) : void 0;
+    if (full2 === void 0) return comment;
+    return {
+      ...comment,
+      line: comment.line ?? full2.line ?? null,
+      original_line: comment.original_line ?? full2.original_line ?? null,
+      start_line: comment.start_line ?? full2.start_line ?? null,
+      original_start_line: comment.original_start_line ?? full2.original_start_line ?? null
+    };
+  });
+}
 function matchComments(findings, comments) {
   const taken = /* @__PURE__ */ new Set();
   const matched = /* @__PURE__ */ new Map();
@@ -16146,7 +16161,7 @@ async function followRun(options, context2, run, viewerLogin) {
       )
     );
   }
-  const matched = matchComments(detail.findings, comments);
+  const matched = matchComments(detail.findings, withLines(comments, context2.replies));
   const checkedAt = (options.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
   const outcomes = [];
   const questions = [];
@@ -33890,15 +33905,15 @@ async function recoverPostedReviews(options) {
       if (typeof pull.number !== "number") continue;
       try {
         const reviews = await options.client.paginate(`/repos/${repository}/pulls/${pull.number}/reviews?per_page=100`, READ_LIMIT3);
-        for (const review2 of reviews) {
+        const wanted = reviews.filter((review2) => {
           const author = review2.user?.login?.toLowerCase();
-          if (author === void 0 || !logins.has(author)) continue;
-          if (typeof review2.id !== "number" || known.has(review2.id)) continue;
+          return author !== void 0 && logins.has(author) && typeof review2.id === "number" && !known.has(review2.id);
+        });
+        if (wanted.length === 0) continue;
+        const all = await options.client.paginate(`/repos/${repository}/pulls/${pull.number}/comments?per_page=100`, READ_LIMIT3);
+        for (const review2 of wanted) {
           if (review2.state === "PENDING" || typeof review2.commit_id !== "string" || review2.commit_id === "") continue;
-          const comments = await options.client.paginate(
-            `/repos/${repository}/pulls/${pull.number}/reviews/${review2.id}/comments?per_page=100`,
-            READ_LIMIT3
-          );
+          const comments = all.filter((comment) => comment.pull_request_review_id === review2.id);
           const findings = postedFindings(comments);
           if (findings.length === 0) continue;
           result.recovered.push(recordReview(options.db, repository, pull.number, review2.id, review2.commit_id, findings));
