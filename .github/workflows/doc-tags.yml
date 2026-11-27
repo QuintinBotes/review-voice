@@ -1,0 +1,33 @@
+name: Doc tags
+
+# The README and docs/ACTION.md pin the action to a release tag. A release
+# commit bumps them before its tag can exist, so this runs on main - not on pull
+# requests - and again daily, so it turns green once the tag is pushed and red
+# if a release is merged and never tagged.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  doc-tags:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The check reads the tags, which a shallow checkout does not fetch.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+
+      - run: npm run check:doc-tags
