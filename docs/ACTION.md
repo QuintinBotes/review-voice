@@ -84,6 +84,10 @@ Posting needs both `post: true` in the workflow and
 `writes.github_posting_enabled: true` in the repository config, plus
 `pull-requests: write`. The review is authored by the token's identity. With
 `post: false` the review is computed and written to the job summary only.
+With `post: true` and posting off in the config the review reads (the base
+commit's), the review still runs and the job passes: nothing is posted, and
+the log carries a warning saying so. That is the state of the pull request
+that adds the config, since the base commit has none yet.
 
 ## Forks
 

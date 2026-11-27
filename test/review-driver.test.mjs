@@ -823,6 +823,18 @@ test('an editor that fails validation twice stops with exit 7 and records nothin
   assertWorktreeGone(repo, report);
 });
 
+test('issue 507: --post with posting off at the base config reviews, posts nothing, exits 0 and says why', async (t) => {
+  // The pull request that adds the config: the base commit has none, so posting is off.
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const fakeDir = fakes(t, fullRun());
+  const github = fakeGitHub(repo);
+  const { report } = await review(t, repo, fakeDir, github, { post: true });
+  assert.equal(report.exitCode, 0, `${report.error} ${JSON.stringify(report.notes)}`);
+  assert.equal(report.posted, false);
+  assert.equal(github.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/reviews')).length, 0);
+  assert.ok(report.notes.some((note) => /not posted: writes\.github_posting_enabled is false/.test(note)), JSON.stringify(report.notes));
+});
+
 test('exit 8 from post, a point raised on the thread during the run, surfaces as exit 8', async (t) => {
   const repo = repository(t, { 'src/app.ts': APP_HEAD }, { '.review-voice/config.yaml': 'writes:\n  github_posting_enabled: true\n' });
   const fakeDir = fakes(t, fullRun());
