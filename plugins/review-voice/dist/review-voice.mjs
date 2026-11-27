@@ -19569,6 +19569,7 @@ function evaluatePostingGate(db, configEnabled) {
 
 // plugins/review-voice/src/publish/post.ts
 var SHA2 = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+var POSTING_OFF = "writes.github_posting_enabled is false in .review-voice/config.yaml";
 function normalise(text5) {
   return text5.replace(/\r\n/g, "\n").trim();
 }
@@ -20059,7 +20060,7 @@ async function postReview(options) {
     return { exitCode: exitCode2, output: { status: "refused", reasons, key: key3, verdict: verdict3, postCheck, ...extra } };
   };
   if (!options.postingEnabled) {
-    return refuse(2, ["writes.github_posting_enabled is false in .review-voice/config.yaml"], null, null);
+    return refuse(2, [POSTING_OFF], null, null);
   }
   if (options.confirm && !REVIEW_EVENTS.includes(options.event)) {
     return refuse(
@@ -25819,6 +25820,12 @@ async function record2(run, extra) {
   run.posted = output["status"] === "sent";
   const review2 = isRecord5(output["review"]) ? output["review"]["url"] : output["reviewUrl"];
   if (typeof review2 === "string") run.reviewUrl = review2;
+  const reasons = output["reasons"];
+  if (posted.code === 2 && output["status"] === "refused" && Array.isArray(reasons) && reasons.length === 1 && reasons[0] === POSTING_OFF) {
+    run.exitCode = 0;
+    run.notes.push(`not posted: ${POSTING_OFF}`);
+    return;
+  }
   if (posted.code !== 0) run.notes.push(`post exited ${posted.code}: ${firstLines(posted.stderr || JSON.stringify(output["reasons"] ?? ""))}`);
 }
 var HANDLERS = {

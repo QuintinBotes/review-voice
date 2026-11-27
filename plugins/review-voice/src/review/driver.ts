@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { claudeBin } from '../agents/claude-cli.ts';
+import { POSTING_OFF } from '../publish/post.ts';
 import { inParallel, ownSignals, readAgentTools, runAgent, stopAll, type AgentResult } from '../agents/runner.ts';
 import { DEFAULT_AGENT_PARALLELISM, type Family, type RunnerSpec } from '../agents/types.ts';
 import { seriousNotCarried, type NotCarriedFinding } from '../diff/carry.ts';
@@ -1344,6 +1345,14 @@ async function record(run: Run, extra: string[]): Promise<void> {
   run.posted = output['status'] === 'sent';
   const review = isRecord(output['review']) ? output['review']['url'] : output['reviewUrl'];
   if (typeof review === 'string') run.reviewUrl = review;
+  // Posting off is the config's choice, not a failed review: the first pull request adding a config is read against a
+  // base without one (issue 507). The review stands, unposted, and says so.
+  const reasons = output['reasons'];
+  if (posted.code === 2 && output['status'] === 'refused' && Array.isArray(reasons) && reasons.length === 1 && reasons[0] === POSTING_OFF) {
+    run.exitCode = 0;
+    run.notes.push(`not posted: ${POSTING_OFF}`);
+    return;
+  }
   if (posted.code !== 0) run.notes.push(`post exited ${posted.code}: ${firstLines(posted.stderr || JSON.stringify(output['reasons'] ?? ''))}`);
 }
 

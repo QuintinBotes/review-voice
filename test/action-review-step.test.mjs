@@ -205,3 +205,12 @@ test('a report with no error prints no annotation', (t) => {
   assert.equal(result.status, 0);
   assert.equal(result.stdout.includes('::error::'), false);
 });
+
+test('issue 507: a review that was not posted says why in the log, one escaped warning a line', (t) => {
+  const s = scratch(t);
+  const notes = ['not posted: writes.github_posting_enabled is false in .review-voice/config.yaml', 'injected\n::error::forged'];
+  const result = run(t, s, { post: 'true', report: JSON.stringify({ exitCode: 0, posted: false, findings: [], notes }) });
+  assert.equal(result.status, 0);
+  const annotations = result.stdout.split('\n').filter((line) => line.startsWith('::'));
+  assert.deepEqual(annotations, ['::warning::Review Voice: not posted: writes.github_posting_enabled is false in .review-voice/config.yaml']);
+});

@@ -149,6 +149,8 @@ runs:
         # for the workflow command, so text from the review cannot start another.
         reason=$(jq -r 'if type == "object" and (.error | type) == "string" then .error | split("\n")[0] | .[0:500] | gsub("%"; "%25") | gsub("\r"; "%0D") else empty end' "$report" 2>/dev/null || true)
         if [ -n "$reason" ]; then echo "::error::Review Voice: $reason"; fi
+        # A review that stood but was not posted (posting off at the base commit, issue 507) says so the same way.
+        jq -r 'if type == "object" and (.notes | type) == "array" then .notes[] | select(type == "string" and startswith("not posted: ")) | split("\n")[0] | .[0:500] | gsub("%"; "%25") | gsub("\r"; "%0D") | "::warning::Review Voice: \(.)" else empty end' "$report" 2>/dev/null || true
         case "$code" in
           3) echo "Review Voice: the head moved during the review; a newer run covers it." >> "$GITHUB_STEP_SUMMARY"; code=0 ;;
           4 | 6) echo "Review Voice: CI is pending or needs a rerun, so no review was posted." >> "$GITHUB_STEP_SUMMARY"; code=0 ;;
