@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A rerun of the Action's job ("Re-run jobs") kept the first attempt's cache
+  key, so it restored that store and never saved its own: what the rerun
+  posted was forgotten by the next run. On review-voice-e2e#2 a third attempt
+  approved over a finding the second had posted. The run attempt is now part
+  of the key (#541).
 - The Action says in the job log, not only in the summary, when it skipped a
   review (no Anthropic API key, as on a fork pull request), when the head moved,
   and when CI was pending so the verdict was not posted. A green skip read as a

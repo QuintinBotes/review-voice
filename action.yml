@@ -79,8 +79,10 @@ runs:
         # Per pull request: a repository-wide prefix lets two pull requests
         # reviewed at once restore the same store and each save one without the
         # other's records (#509). The second key is for a pull request's first
-        # run, which starts from the newest store of any pull request.
-        key: review-voice-${{ github.repository }}-pr${{ steps.gate.outputs.pr }}-${{ github.run_id }}
+        # run, which starts from the newest store of any pull request. The
+        # attempt is in the key, or a rerun restores the first attempt's store
+        # and never saves its own, so what it posted is forgotten (#541).
+        key: review-voice-${{ github.repository }}-pr${{ steps.gate.outputs.pr }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
           review-voice-${{ github.repository }}-pr${{ steps.gate.outputs.pr }}-
           review-voice-${{ github.repository }}-

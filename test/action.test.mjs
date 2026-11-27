@@ -57,11 +57,25 @@ test('secrets reach the review step only through env', () => {
 test('#509: the store cache is keyed per pull request, with the repository as the fallback for a first run', () => {
   const cache = steps.find((s) => String(s.uses ?? '').startsWith('actions/cache@'));
   const pr = '${{ steps.gate.outputs.pr }}';
-  assert.equal(cache.with.key, `review-voice-\${{ github.repository }}-pr${pr}-\${{ github.run_id }}`);
+  assert.equal(cache.with.key, `review-voice-\${{ github.repository }}-pr${pr}-\${{ github.run_id }}-\${{ github.run_attempt }}`);
   assert.deepEqual(cache.with['restore-keys'].trim().split('\n'), [
     `review-voice-\${{ github.repository }}-pr${pr}-`,
     'review-voice-${{ github.repository }}-',
   ]);
+});
+
+// A rerun keeps the run id. Without the attempt in the key it restores the first
+// attempt's store by exact key, and actions/cache never saves over a hit, so the
+// rerun's records were lost: on review-voice-e2e#2 attempt 3 approved over a
+// finding attempt 2 had posted (#541).
+test('#541: every attempt of a run saves its own store, and the next restores the newest', () => {
+  const cache = steps.find((s) => String(s.uses ?? '').startsWith('actions/cache@'));
+  const key = cache.with.key;
+  const restore = cache.with['restore-keys'].trim().split('\n');
+  const attempt = (n) => key.replace('${{ github.run_id }}', '46070541377').replace('${{ github.run_attempt }}', String(n));
+  assert.notEqual(attempt(1), attempt(2), 'a rerun has a key of its own, so it is a miss and is saved');
+  const prefix = restore[0].replace('${{ github.run_id }}', '46070541377');
+  assert.ok(attempt(1).startsWith(prefix) && attempt(2).startsWith(prefix), 'both attempts stay under the pull request prefix the next run restores from');
 });
 
 // The review's own job is a check run on the head and is still running when the
