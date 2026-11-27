@@ -152,6 +152,8 @@ interface SentRun {
   headRef: string | null;
   /** Review ids the audit log recorded; empty when a sent row names none. */
   reviewIds: number[];
+  /** Rebuilt from a review found on GitHub (docs/adr/0042), not posted from here: no reply is offered on its threads. */
+  recovered: boolean;
 }
 
 /** The run each `review_post_attempted` row names, by audit id; a sent row points at its attempt, not its run. */
@@ -169,10 +171,11 @@ function attemptRuns(db: Database): Map<string, string> {
 export function sentRuns(db: Database, options: { since: string; repository?: string | undefined }): SentRun[] {
   const attempts = attemptRuns(db);
   const reviewIdsByRun = new Map<string, number[]>();
+  const recoveredRuns = new Set<string>();
   for (const row of db
     .prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ?`)
     .all(options.since) as { metadata_json: string }[]) {
-    let meta: { attempt?: unknown; reviewId?: unknown };
+    let meta: { attempt?: unknown; reviewId?: unknown; recovered?: unknown };
     try {
       meta = JSON.parse(row.metadata_json) as typeof meta;
     } catch {
@@ -180,6 +183,7 @@ export function sentRuns(db: Database, options: { since: string; repository?: st
     }
     const run = typeof meta.attempt === 'string' ? attempts.get(meta.attempt) : undefined;
     if (run === undefined) continue;
+    if (meta.recovered === true) recoveredRuns.add(run);
     const ids = reviewIdsByRun.get(run) ?? [];
     const id = Number(meta.reviewId);
     if (Number.isInteger(id) && id > 0) ids.push(id);
@@ -198,7 +202,14 @@ export function sentRuns(db: Database, options: { since: string; repository?: st
     const reviewIds = reviewIdsByRun.get(row.review_run_id);
     if (reviewIds === undefined) continue;
     if (wanted !== undefined && row.repository.toLowerCase() !== wanted) continue;
-    runs.push({ runId: row.review_run_id, repository: row.repository, pullNumber: row.pull_number, headRef: row.head_ref, reviewIds });
+    runs.push({
+      runId: row.review_run_id,
+      repository: row.repository,
+      pullNumber: row.pull_number,
+      headRef: row.head_ref,
+      reviewIds,
+      recovered: recoveredRuns.has(row.review_run_id),
+    });
   }
   return runs;
 }
@@ -454,7 +465,7 @@ function severityPrefix(finding: StoredFinding): string {
 }
 
 /** A root comment's prose as posted: the evidence and suggestion blocks removed, as `commentSignature` removes them. */
-function postedProse(body: string): string {
+export function postedProse(body: string): string {
   const prose = stripEvidenceBlock(body);
   const block = prose.lastIndexOf('\n\n```suggestion\n');
   return block >= 0 && prose.endsWith('```') ? prose.slice(0, block) : prose;
@@ -542,7 +553,7 @@ async function followRun(
     // And only a comment holding exactly this finding's text is its thread, so
     // the reply quotes the evidence of the finding the person asked about.
     const wanted =
-      source === 'audit' && postedAs(comment, finding)
+      source === 'audit' && !run.recovered && postedAs(comment, finding)
         ? replyWanted(comment, context.replies, context.states?.get(comment.id!) ?? null, options.ownerReviewer ?? null)
         : null;
     if (wanted !== null) {

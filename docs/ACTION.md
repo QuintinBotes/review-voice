@@ -89,6 +89,19 @@ commit's), the review still runs and the job passes: nothing is posted, and
 the log carries a warning saying so. That is the state of the pull request
 that adds the config, since the base commit has none yet.
 
+## Following what the Action posts
+
+The Action keeps its store on the runner, so a review it posts is not in your
+local store and `outcomes` does not see it. `review-voice outcomes --recover`
+reads GitHub for reviews by `github-actions[bot]` (or the logins in
+`outcomes.recover_from`) on the allowlisted repositories' pull requests updated
+inside `--since`, records each one whose inline comments are findings as a run,
+and then follows them as usual: an owner's reply, a resolution or a change to
+the lines becomes an outcome. It reads GitHub and writes only your local store,
+and running it again records nothing twice (docs/adr/0042). A recovered run has
+no category or scores, since the posted text does not carry them, and no reply
+is offered under its threads.
+
 ## Forks
 
 Pull requests from forks get no secrets. The action sees an empty key, writes a

@@ -17,9 +17,11 @@ export interface OutcomesConfig {
   approvalWindowDays: number;
   /** `status` warns when the escape rate's Wilson 95% upper bound is above this. */
   approvalEscapeWarn: number;
+  /** The logins `outcomes --recover` rebuilds runs from: who the Action posts as (docs/adr/0042). */
+  recoverFrom: string[];
 }
 
-export const DEFAULT_OUTCOMES: Readonly<OutcomesConfig> = { approvalWindowDays: 14, approvalEscapeWarn: 0.05 };
+export const DEFAULT_OUTCOMES: Readonly<OutcomesConfig> = { approvalWindowDays: 14, approvalEscapeWarn: 0.05, recoverFrom: ['github-actions[bot]'] };
 
 /** Fewest settled approvals before `status` warns; below it one revert moves the bound too far. */
 export const APPROVAL_WARN_MIN_SETTLED = 30;

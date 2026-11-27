@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `outcomes --recover` records the reviews the Action posted as runs, read from
+  GitHub, before the usual outcome check, so the owner's replies, resolutions
+  and dismissals of what the Action posted become outcomes, precedent and
+  decisions a tool can read. The Action keeps its store on the runner, so
+  nothing it posted could be followed from a developer's machine. A review by
+  a login in the new `outcomes.recover_from` (default `github-actions[bot]`)
+  whose inline comments read as findings becomes a run; a review already
+  recorded, or with no finding comment, is skipped, so a second run records
+  nothing twice. No reply is offered under a recovered thread
+  (docs/adr/0042, #529).
+
 ### Fixed
 
 - Posting from the Action no longer fails after the review was paid for. The

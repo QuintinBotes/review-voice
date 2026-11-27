@@ -15935,6 +15935,7 @@ function attemptRuns(db) {
 function sentRuns(db, options) {
   const attempts = attemptRuns(db);
   const reviewIdsByRun = /* @__PURE__ */ new Map();
+  const recoveredRuns = /* @__PURE__ */ new Set();
   for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent' AND created_at >= ?`).all(options.since)) {
     let meta;
     try {
@@ -15944,6 +15945,7 @@ function sentRuns(db, options) {
     }
     const run = typeof meta.attempt === "string" ? attempts.get(meta.attempt) : void 0;
     if (run === void 0) continue;
+    if (meta.recovered === true) recoveredRuns.add(run);
     const ids = reviewIdsByRun.get(run) ?? [];
     const id = Number(meta.reviewId);
     if (Number.isInteger(id) && id > 0) ids.push(id);
@@ -15959,7 +15961,14 @@ function sentRuns(db, options) {
     const reviewIds = reviewIdsByRun.get(row.review_run_id);
     if (reviewIds === void 0) continue;
     if (wanted !== void 0 && row.repository.toLowerCase() !== wanted) continue;
-    runs.push({ runId: row.review_run_id, repository: row.repository, pullNumber: row.pull_number, headRef: row.head_ref, reviewIds });
+    runs.push({
+      runId: row.review_run_id,
+      repository: row.repository,
+      pullNumber: row.pull_number,
+      headRef: row.head_ref,
+      reviewIds,
+      recovered: recoveredRuns.has(row.review_run_id)
+    });
   }
   return runs;
 }
@@ -16144,7 +16153,7 @@ async function followRun(options, context2, run, viewerLogin) {
   for (const finding of detail.findings) {
     const comment = matched.get(finding.findingId);
     if (comment === void 0) continue;
-    const wanted = source === "audit" && postedAs(comment, finding) ? replyWanted(comment, context2.replies, context2.states?.get(comment.id) ?? null, options.ownerReviewer ?? null) : null;
+    const wanted = source === "audit" && !run.recovered && postedAs(comment, finding) ? replyWanted(comment, context2.replies, context2.states?.get(comment.id) ?? null, options.ownerReviewer ?? null) : null;
     if (wanted !== null) {
       questions.push({
         reviewRunId: run.runId,
@@ -16413,7 +16422,7 @@ function precisionBreakdown(db, { since } = {}) {
 }
 
 // plugins/review-voice/src/store/approvals.ts
-var DEFAULT_OUTCOMES = { approvalWindowDays: 14, approvalEscapeWarn: 0.05 };
+var DEFAULT_OUTCOMES = { approvalWindowDays: 14, approvalEscapeWarn: 0.05, recoverFrom: ["github-actions[bot]"] };
 var APPROVAL_WARN_MIN_SETTLED = 30;
 var READ_LIMIT2 = 1e3;
 var EPOCH = "0000-01-01T00:00:00.000Z";
@@ -16716,7 +16725,7 @@ var CONFIG_KEYS = {
   "queue.relevance.discover": ["updated_within_hours", "max_pulls"],
   watch: ["workspace", "interval", "post", "lock_port", "run_repository_commands", "review_timeout", "max_attempts_per_head"],
   retention: ["runs_days", "audit_days"],
-  outcomes: ["approval_window_days", "approval_escape_warn"],
+  outcomes: ["approval_window_days", "approval_escape_warn", "recover_from"],
   evaluate: ["stability_max_calls"],
   writes: ["github_posting_enabled"]
 };
@@ -17460,6 +17469,14 @@ function readOutcomes(block, result) {
     if (typeof warn2 === "number" && warn2 >= 0 && warn2 <= 1) result.outcomes.approvalEscapeWarn = warn2;
     else result.warnings.push(`outcomes.approval_escape_warn must be a number from 0 to 1; using ${DEFAULT_OUTCOMES.approvalEscapeWarn}.`);
   }
+  const from = block["recover_from"];
+  if (from !== void 0) {
+    if (Array.isArray(from) && from.length > 0 && from.every((login) => typeof login === "string" && login.trim() !== "")) {
+      result.outcomes.recoverFrom = from.map((login) => login.trim());
+    } else {
+      result.warnings.push(`outcomes.recover_from must be a list of logins; using ${DEFAULT_OUTCOMES.recoverFrom.join(", ")}.`);
+    }
+  }
 }
 var DEFAULT_STABILITY_MAX_CALLS = 200;
 function readEvaluate(block, result) {
@@ -17807,7 +17824,7 @@ function loadConfig(repositoryRoot2, baselinePath, path, db, source) {
     queue: defaultQueueConfig(),
     watch: defaultWatchConfig(),
     retention: { ...DEFAULT_RETENTION },
-    outcomes: { ...DEFAULT_OUTCOMES },
+    outcomes: { ...DEFAULT_OUTCOMES, recoverFrom: [...DEFAULT_OUTCOMES.recoverFrom] },
     evaluate: { stabilityMaxCalls: DEFAULT_STABILITY_MAX_CALLS },
     staticEvidence: { enabled: false, commands: [], envPassthrough: [] },
     reproduction: defaultReproduction(),
@@ -21767,9 +21784,16 @@ var COMMAND_HELP = {
       "  With --approvals, follow each APPROVE Review Voice sent instead: reverted, changes_requested",
       "  and survived are strong; merged_other_head, pending, closed, open and unknown are weak. A merge",
       "  inside outcomes.approval_window_days (default 14) is pending, never survived.",
+      "  With --recover, first record the reviews the Action posted as runs here (docs/adr/0042). The Action",
+      "  keeps its store on the runner, so nothing it posted could be followed. A review by a login in",
+      "  outcomes.recover_from (default github-actions[bot]) on a pull request updated inside --since, with",
+      "  inline comments written as findings (**severity** - text), becomes a run with those findings; a review",
+      "  already named by a sent row, and one with no finding comment, is left alone, so a second run records",
+      "  nothing twice. No reply is offered on a recovered thread.",
       "",
       "Flags:",
       "  --approvals            Follow sent approvals rather than posted findings",
+      "  --recover              First record the Action's posted reviews as runs (reads GitHub, writes the local store)",
       "  --repository <name>    Only runs for owner/repo; naming it allows reading it",
       "  --since <Nd>           Only reviews sent in the last N days (default 30d). With --approvals, an approval",
       "                         not yet settled is checked whatever its age, and --since limits only which",
@@ -33817,6 +33841,101 @@ async function syncCommand(argv) {
   }
 }
 
+// plugins/review-voice/src/store/recover.ts
+var DEFAULT_RECOVER_FROM = ["github-actions[bot]"];
+var RECOVER_MAX_PULLS = 100;
+var READ_LIMIT3 = 1e3;
+var FINDING_COMMENT = new RegExp(`^\\*\\*(${SEVERITIES.join("|")})\\*\\* - ([\\s\\S]+)$`);
+function knownReviewIds(db) {
+  const known = /* @__PURE__ */ new Set();
+  for (const row of db.prepare(`SELECT metadata_json FROM audit_events WHERE action = 'review_post_sent'`).all()) {
+    try {
+      const id = Number(JSON.parse(row.metadata_json).reviewId);
+      if (Number.isInteger(id) && id > 0) known.add(id);
+    } catch {
+    }
+  }
+  return known;
+}
+function postedFindings(comments) {
+  const lines2 = [];
+  for (const comment of comments) {
+    if (comment.in_reply_to_id !== void 0 && comment.in_reply_to_id !== null) continue;
+    const line3 = comment.line ?? comment.original_line;
+    if (typeof comment.path !== "string" || typeof line3 !== "number" || !Number.isInteger(line3) || line3 < 1) continue;
+    const match = FINDING_COMMENT.exec(postedProse(comment.body ?? "").trim());
+    if (match === null) continue;
+    const prose = match[2].replace(/\s*\n\s*/g, " ").trim();
+    if (prose === "") continue;
+    lines2.push(`[${match[1]}] \`${comment.path}:${line3}\` - ${prose}`);
+  }
+  return lines2;
+}
+async function recoverPostedReviews(options) {
+  const result = { recovered: [], warnings: [] };
+  const logins = new Set((options.logins ?? DEFAULT_RECOVER_FROM).map((login) => login.toLowerCase()));
+  const repositories = options.repository === void 0 ? options.allowlist : [options.repository];
+  const known = knownReviewIds(options.db);
+  const limit = options.maxPulls ?? RECOVER_MAX_PULLS;
+  for (const repository of repositories) {
+    let pulls;
+    try {
+      pulls = await options.client.paginate(`/repos/${repository}/pulls?state=all&sort=updated&direction=desc&per_page=100`, limit);
+    } catch (error) {
+      result.warnings.push(`${repository}: pull requests not read (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
+      continue;
+    }
+    for (const pull of pulls) {
+      if (typeof pull.updated_at === "string" && pull.updated_at < options.since) break;
+      if (typeof pull.number !== "number") continue;
+      try {
+        const reviews = await options.client.paginate(`/repos/${repository}/pulls/${pull.number}/reviews?per_page=100`, READ_LIMIT3);
+        for (const review2 of reviews) {
+          const author = review2.user?.login?.toLowerCase();
+          if (author === void 0 || !logins.has(author)) continue;
+          if (typeof review2.id !== "number" || known.has(review2.id)) continue;
+          if (review2.state === "PENDING" || typeof review2.commit_id !== "string" || review2.commit_id === "") continue;
+          const comments = await options.client.paginate(
+            `/repos/${repository}/pulls/${pull.number}/reviews/${review2.id}/comments?per_page=100`,
+            READ_LIMIT3
+          );
+          const findings = postedFindings(comments);
+          if (findings.length === 0) continue;
+          result.recovered.push(recordReview(options.db, repository, pull.number, review2.id, review2.commit_id, findings));
+          known.add(review2.id);
+        }
+      } catch (error) {
+        result.warnings.push(`${repository}#${pull.number}: not recovered (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
+      }
+    }
+  }
+  return result;
+}
+function recordReview(db, repository, pullNumber, reviewId, head, findings) {
+  db.exec("SAVEPOINT recover_review");
+  try {
+    const run = recordRun(db, {
+      repository,
+      baseRef: null,
+      headRef: head,
+      pullNumber,
+      // No diff was read: the hash only has to be stable per review.
+      diff: `recovered from review ${reviewId} on ${repository}#${pullNumber}`,
+      output: findings.join("\n")
+    });
+    const subject = { type: "pull_request", id: `${repository.toLowerCase()}#${pullNumber}` };
+    const key2 = `recovered:${repository.toLowerCase()}#${pullNumber}:${reviewId}`;
+    const attempt = recordAudit(db, "review_post_attempted", subject, { key: key2, run: run.reviewRunId, recovered: true });
+    recordAudit(db, "review_post_sent", subject, { key: key2, attempt, head, reviewId, inline: [], recovered: true });
+    db.exec("RELEASE recover_review");
+    return { repository, pullNumber, reviewId, runId: run.reviewRunId, findings: run.findings.length };
+  } catch (error) {
+    db.exec("ROLLBACK TO recover_review");
+    db.exec("RELEASE recover_review");
+    throw error;
+  }
+}
+
 // plugins/review-voice/src/cli/outcomes.ts
 function pendingQuestionLine(question) {
   return `${question.repository}#${question.pullNumber} ${question.findingId} ${question.path}:${question.line} question from ${question.askedBy} awaiting a reply; run reply --pr ${question.pullNumber}`;
@@ -33837,10 +33956,12 @@ async function outcomesCommand(argv) {
   let allowlist = repository === null ? [] : [repository];
   let ownerReviewer = null;
   let windowDays = DEFAULT_OUTCOMES.approvalWindowDays;
+  let recoverFrom = [...DEFAULT_OUTCOMES.recoverFrom];
   try {
     const config2 = loadConfig(repositoryRoot(process.cwd()));
     ownerReviewer = config2.ownerReviewer;
     windowDays = config2.outcomes.approvalWindowDays;
+    recoverFrom = config2.outcomes.recoverFrom;
     if (repository === null) allowlist = config2.allowlist;
   } catch {
   }
@@ -33860,6 +33981,12 @@ async function outcomesCommand(argv) {
         `${result2.outcomes.length} approval(s) tracked: ${count5("reverted")} reverted, ${count5("changes_requested")} changes requested, ${count5("survived")} survived, ${count5("merged_other_head")} merged at another head, ${count5("pending")} pending, ${count5("closed")} closed, ${count5("open")} open, ${count5("unknown")} unknown`
       );
       return 0;
+    }
+    if (argv.includes("--recover")) {
+      const recovered = await recoverPostedReviews({ db, client: githubClient(allowlist), allowlist, repository: repository ?? void 0, since, logins: recoverFrom });
+      for (const warning of recovered.warnings) console.error(warning);
+      for (const r of recovered.recovered) console.error(`${r.repository}#${r.pullNumber}: recovered review ${r.reviewId} as run ${r.runId} (${r.findings} finding(s))`);
+      console.error(`${recovered.recovered.length} review(s) recovered from ${recoverFrom.join(", ")}`);
     }
     const result = await checkOutcomes({
       db,

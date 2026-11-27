@@ -53,3 +53,4 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0039](0039-outcomes-become-precedent.md) | Outcomes become precedent | Accepted |
 | [0040](0040-calibration-is-measured-against-labels.md) | Calibration is measured against labels | Accepted |
 | [0041](0041-holds-are-recorded-as-data.md) | Holds are recorded as data | Accepted |
+| [0042](0042-the-actions-reviews-are-recovered-from-github.md) | The Action's reviews are recovered from GitHub | Accepted |
