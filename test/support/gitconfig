@@ -1,0 +1,7 @@
+[user]
+	name = Test
+	email = test@example.com
+[commit]
+	gpgsign = false
+[tag]
+	gpgsign = false

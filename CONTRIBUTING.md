@@ -46,6 +46,10 @@ npm install          # dev tooling only; the plugin itself ships zero deps
 npm run verify       # typecheck, tests, bundle drift, identity guard
 ```
 
+`npm test` runs every test with a fixed git config (`test/support/gitconfig`), so
+your own global hooks, signing and identity never reach a test repository. To run
+one file the same way: `node --test --import ./test/support/hermetic-git.mjs test/x.test.mjs`.
+
 Try your working copy in Claude Code:
 
 ```
