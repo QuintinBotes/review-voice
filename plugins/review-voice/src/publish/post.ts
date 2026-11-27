@@ -51,6 +51,9 @@ import { withEvidenceBlocks } from './evidence-block.ts';
 
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
+/** Why `post` refuses while the repository config has posting off; the driver reads it as an unposted review. */
+export const POSTING_OFF = 'writes.github_posting_enabled is false in .review-voice/config.yaml';
+
 export interface VerdictOptions {
   db: Database;
   client: GitHubClient;
@@ -959,7 +962,7 @@ export async function postReview(options: PostOptions): Promise<{ exitCode: numb
   };
 
   if (!options.postingEnabled) {
-    return refuse(2, ['writes.github_posting_enabled is false in .review-voice/config.yaml'], null, null);
+    return refuse(2, [POSTING_OFF], null, null);
   }
   if (options.confirm && !REVIEW_EVENTS.includes(options.event as ReviewEvent)) {
     return refuse(
