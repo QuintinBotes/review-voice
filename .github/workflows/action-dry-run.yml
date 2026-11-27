@@ -18,7 +18,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+      # Runs the whole action on a runner with no model (#519): the key is a
+      # placeholder that only passes the gate, and the agents answer from a fixed
+      # file, so the cache, the review step's script and its environment, the
+      # driver and the verdict all run. Nothing is posted and no secret is used,
+      # so it also runs for fork pull requests.
       - uses: ./
+        env:
+          REVIEW_VOICE_FAKE_AGENTS: ${{ github.workspace }}/.github/action-dry-run
+          REVIEW_VOICE_NO_COMMANDS: '1'
         with:
           post: false
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic-api-key: placeholder-no-model-is-called
+
+      - name: The review ran to a verdict
+        run: |
+          report="$RUNNER_TEMP/review-voice/report.json"
+          # A verdict, not an analyst stage: an unchanged diff carries the earlier review, which runs no agent.
+          jq -e '.verdict.event != null' "$report" > /dev/null || {
+            echo "::error::The action did not review the pull request: no verdict in $report."
+            jq -c '{exitCode, error, notes, verdict, stages: [.stages[] | {name, skipped}]}' "$report" || true
+            exit 1
+          }
