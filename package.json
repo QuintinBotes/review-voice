@@ -17,7 +17,8 @@
     "validate:marketplace": "claude plugin validate . --strict",
     "guard:identity": "node scripts/guard-identity.mjs",
     "verify": "npm run typecheck && npm run check:dist && npm run test && npm run guard:identity && npm run check:pins",
-    "check:pins": "node scripts/check-action-pins.mjs"
+    "check:pins": "node scripts/check-action-pins.mjs",
+    "check:doc-tags": "node scripts/check-doc-tags.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
