@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A configured command that was stopped (a timeout, an abort or an output
+  overflow) now always reports status `null`, as `spawnSync` did. A shell that
+  outlived the group kill could report its last command's SIGKILL as its own
+  exit, 137, which a caller reading `status !== null` would take as a command
+  that finished. The stop is still reported as the error (#512).
 - The Action leaves its own running job out of the CI it reads for the verdict
   (`REVIEW_VOICE_OWN_CHECK_RUN`, set from `job.check_run_id`). That job is a
   check run on the head and is always in progress when the verdict runs, so CI

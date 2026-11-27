@@ -840,7 +840,13 @@ function spawnCommand(command, options) {
     child.on("error", (error) => finish(null, error));
     child.on(
       "close",
-      (status) => finish(status, failure === void 0 ? void 0 : Object.assign(new Error(`spawn ${child.spawnfile} ${failure}`), { code: failure }))
+      (status) => finish(
+        // spawnSync reports a command it killed as status null. A shell that outlived the group
+        // kill long enough to see its last command die reports that as its own exit, 128 + 9,
+        // which a caller reading status !== null would take as a command that finished (#512).
+        failure !== void 0 && status === 137 ? null : status,
+        failure === void 0 ? void 0 : Object.assign(new Error(`spawn ${child.spawnfile} ${failure}`), { code: failure })
+      )
     );
     child.stdin.on("error", () => void 0);
     child.stdin.end(options.input);
