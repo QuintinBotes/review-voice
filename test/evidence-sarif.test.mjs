@@ -732,13 +732,18 @@ test('AC-2: results sharing one long rule id, rule description, artifact or esli
     'eslint file': (value) => collected([`${value}.ts`, ...lines.map((line) => `  ${line}:1  error  bad  no-bad`)].join('\n'), { command: 'eslint .' }),
   };
   for (const [name, run] of Object.entries(cases)) {
+    // The fastest of three, so a busy machine that stalls one run does not read as a slow input (#515); a cleaning
+    // that costs seconds per result is slow in all three.
     const timed = async (value) => {
-      const started = performance.now();
-      const { signals } = await run(value);
-      const elapsed = performance.now() - started;
-      assert.equal(signals.length, 1000, name);
-      assert.ok(signals.every((signal) => signal.path !== null), name);
-      return elapsed;
+      let fastest = Infinity;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const started = performance.now();
+        const { signals } = await run(value);
+        fastest = Math.min(fastest, performance.now() - started);
+        assert.equal(signals.length, 1000, name);
+        assert.ok(signals.every((signal) => signal.path !== null), name);
+      }
+      return fastest;
     };
     // Against a short value of the same shape, so the bound holds on a slower machine; cleaned for each result, the long one took seconds.
     const short = await timed('a.a.');

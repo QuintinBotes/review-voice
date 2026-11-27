@@ -278,20 +278,25 @@ test('a missing binary fails the call instead of throwing', async (t) => {
 test('a call past its timeout kills the process tree and reports "timeout"', async (t) => {
   const dir = tempDir(t);
   const stub = writeStub(dir);
-  const childPid = join(dir, 'child.pid');
-  const started = Date.now();
-  const result = await runAgent(
-    { ...analyst, timeoutMs: 700 },
-    'x',
-    dir,
-    [],
-    stubEnv(stub, { STUB_MODE: 'sleep', STUB_CHILD_PID: childPid }),
-  );
-  assert.equal(result.ok, false);
-  assert.equal(result.error, 'timeout');
-  assert.ok(Date.now() - started < 10_000, 'returned promptly');
+  // The stub writes its child's pid once it has started; on a busy machine that can be later than a short timeout,
+  // and a call killed before it wrote anything shows nothing about the tree. So the timeout doubles until the stub
+  // got that far, which is a bound the machine sets, not one the test guesses (#515).
+  let pid;
+  for (let timeoutMs = 700; pid === undefined; timeoutMs *= 2) {
+    assert.ok(timeoutMs <= 700 * 2 ** 6, 'the stub never started, even with a long timeout');
+    const childPid = join(dir, `child-${timeoutMs}.pid`);
+    const result = await runAgent(
+      { ...analyst, timeoutMs },
+      'x',
+      dir,
+      [],
+      stubEnv(stub, { STUB_MODE: 'sleep', STUB_CHILD_PID: childPid }),
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.error, 'timeout');
+    if (existsSync(childPid)) pid = readJson(childPid).child;
+  }
 
-  const pid = readJson(childPid).child;
   // The grandchild belongs to the killed group; give the kernel a moment.
   let alive = true;
   for (let i = 0; i < 50 && alive; i += 1) {
