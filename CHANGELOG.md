@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The Action's store cache is keyed per pull request, so two pull requests
+  reviewed at once no longer restore the same store and each save one without
+  the other's records. A pull request's first run still starts from the newest
+  store of any pull request (#509).
+
 ## [1.30.0] - 2026-11-26
 
 ### Added

@@ -50,3 +50,16 @@ test('secrets reach the review step only through env', () => {
   assert.doesNotMatch(review.run, /\$\{\{/);
   assert.ok(review.env.ANTHROPIC_API_KEY && review.env.GITHUB_TOKEN);
 });
+
+// Two pull requests reviewed at once must not restore, then overwrite, each
+// other's store (#509). `pr1-` must not prefix-match `pr12-`, so the number is
+// followed by a dash.
+test('#509: the store cache is keyed per pull request, with the repository as the fallback for a first run', () => {
+  const cache = steps.find((s) => String(s.uses ?? '').startsWith('actions/cache@'));
+  const pr = '${{ steps.gate.outputs.pr }}';
+  assert.equal(cache.with.key, `review-voice-\${{ github.repository }}-pr${pr}-\${{ github.run_id }}`);
+  assert.deepEqual(cache.with['restore-keys'].trim().split('\n'), [
+    `review-voice-\${{ github.repository }}-pr${pr}-`,
+    'review-voice-${{ github.repository }}-',
+  ]);
+});

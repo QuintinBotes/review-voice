@@ -75,8 +75,14 @@ runs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/review-voice
-        key: review-voice-${{ github.repository }}-${{ github.run_id }}
-        restore-keys: review-voice-${{ github.repository }}-
+        # Per pull request: a repository-wide prefix lets two pull requests
+        # reviewed at once restore the same store and each save one without the
+        # other's records (#509). The second key is for a pull request's first
+        # run, which starts from the newest store of any pull request.
+        key: review-voice-${{ github.repository }}-pr${{ steps.gate.outputs.pr }}-${{ github.run_id }}
+        restore-keys: |
+          review-voice-${{ github.repository }}-pr${{ steps.gate.outputs.pr }}-
+          review-voice-${{ github.repository }}-
 
     - name: Review
       id: review
