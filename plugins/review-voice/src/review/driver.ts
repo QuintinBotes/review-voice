@@ -440,7 +440,7 @@ async function prep(run: Run): Promise<void> {
   const refs = isRecord(run.summary['refs']) ? run.summary['refs'] : {};
   const baseReadable = isRecord(refs['base']) && refs['base']['available'] === true;
   run.base = typeof run.summary['mergeBase'] === 'string' ? run.summary['mergeBase'] : baseReadable ? String(run.summary['base']) : null;
-  for (const key of ['truncationNote', 'scopeNote', 'humanReviewNote'] as const) {
+  for (const key of ['truncationNote', 'scopeNote', 'humanReviewNote', 'dependencyNote'] as const) {
     if (typeof run.summary[key] === 'string') run.notes.push(run.summary[key] as string);
   }
   noteConfigChange(run);

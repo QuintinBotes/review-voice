@@ -4,6 +4,7 @@ import { globToRegExp } from '../conventions/globs.ts';
 import { isDocumentation } from './classify.ts';
 import { NO_PATCH } from './exclusions.ts';
 import type { StructureSignals } from './structure.ts';
+import type { DependencySeverity } from './dependencies.ts';
 
 /**
  * Whether a change is complex enough that a person, not this tool, should
@@ -38,6 +39,8 @@ export interface HumanReviewConfig {
   generatedPaths: string[];
   /** Structural signals that may opt into the ADR 0012 approval cap. */
   structure: HumanReviewStructureConfig;
+  /** `dependency_review`: the advisory severity on an added runtime dependency that holds an approval; null is off (#546). */
+  dependencyReview?: DependencySeverity | null;
 }
 
 /** A partial config may choose either structural signal independently. */

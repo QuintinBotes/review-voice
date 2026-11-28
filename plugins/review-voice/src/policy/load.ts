@@ -11,6 +11,7 @@ import { activePolicyRows } from './versions.ts';
 import { readSuppressions } from './rules.ts';
 import { BUILTIN_RERUN_SIGNATURES, type CiRules, type GateCheck } from '../publish/ci.ts';
 import { DEFAULT_HUMAN_REVIEW, type HumanReviewConfig } from '../diff/complexity.ts';
+import { DEPENDENCY_SEVERITIES, type DependencySeverity } from '../diff/dependencies.ts';
 import { DEFAULT_STRUCTURE, type StructureConfig } from '../diff/structure.ts';
 import { DEFAULT_VERDICT_POLICY, POSTED_TIERS, type VerdictPolicy } from '../publish/verdict.ts';
 import { globToRegExp } from '../conventions/globs.ts';
@@ -192,7 +193,7 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
   ],
   'review.human_review': [
     'max_decision_points', 'max_hunk_decision_points', 'sensitive_paths', 'sensitive_exempt_paths', 'test_paths',
-    'generated_paths', 'cap_approval', 'structure',
+    'generated_paths', 'cap_approval', 'structure', 'dependency_review',
   ],
   'review.human_review.structure': ['file_line_crossing', 'branch_growth', 'removed_controls'],
   'review.structure': ['max_file_lines', 'max_added_branches_per_function', 'simplify'],
@@ -276,6 +277,11 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
     if (typeof cap === 'boolean') result.verdictPolicy.capApproval = cap;
     else result.warnings.push('review.human_review.cap_approval must be true or false; using true.');
   }
+
+  const dependencyReview = block['dependency_review'];
+  if (dependencyReview === false) result.humanReview.dependencyReview = null;
+  else if (DEPENDENCY_SEVERITIES.includes(dependencyReview as DependencySeverity)) result.humanReview.dependencyReview = dependencyReview as DependencySeverity;
+  else if (dependencyReview !== undefined) result.warnings.push(`review.human_review.dependency_review must be false or one of ${DEPENDENCY_SEVERITIES.join(', ')}; leaving it off.`);
 
   const structure = block['structure'];
   if (structure === undefined) return;

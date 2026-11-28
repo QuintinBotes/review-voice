@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `review.human_review.dependency_review` (off by default; `low`, `moderate`,
+  `high` or `critical`): when a pull request changes a lock file or dependency
+  manifest, `review --pr` reads GitHub's dependency review for its base and
+  head, and an added or bumped runtime dependency with an advisory at or above
+  that severity raises the change for human review, so the review comments
+  rather than approves and the human-review note names the GHSA id. Lock files
+  are excluded from the diff, and whether a version is vulnerable is a fact
+  from an advisory database, not something to read from it. Licences the
+  change adds, and a dependency change the check could not read (a 403 or 404
+  from GitHub, a branch review), are a local note only; with the setting off
+  nothing is read or said (docs/adr/0012, #546).
 - `outcomes --recover` records the reviews the Action posted as runs, read from
   GitHub, before the usual outcome check, so the owner's replies, resolutions
   and dismissals of what the Action posted become outcomes, precedent and
