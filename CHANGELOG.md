@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A candidate whose anchor was still refused after its lane re-anchored it
+  stopped the whole review with exit 7, so one model mistake failed the job
+  (QuintinBotes/memory#149). The candidate is now dropped and held as
+  `unverified` with the reason, the review goes on with the rest, and the
+  report says how many were dropped. A malformed candidate file still stops
+  the review (#553).
 - A rerun of the Action's job ("Re-run jobs") kept the first attempt's cache
   key, so it restored that store and never saved its own: what the rerun
   posted was forgotten by the next run. On review-voice-e2e#2 a third attempt
@@ -40,11 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and when CI was pending so the verdict was not posted. A green skip read as a
   review that ran, and a held review's one log line read as an approval that
   failed to post (#533).
-- An approval posted with a workflow token in a repository that does not let
-  GitHub Actions approve pull requests (GitHub's default) failed the job with a
-  422, so only clean changes got a red check. GitHub sends nothing in that case,
-  so the job now passes with a warning naming the setting, and docs/ACTION.md
-  says how to turn it on (#535).
+- The Action never approves. An approval from a workflow token was refused
+  with a 422 in a repository that does not let GitHub Actions approve pull
+  requests (GitHub's default), which failed the job and dropped the review's
+  findings, so only clean changes got a red check. A review that would approve
+  is now posted as a COMMENT with its findings and summary line, as
+  `verdict.never_approve` does, and a person approves (#535, #554).
 - A pull request whose largest source file GitHub sent no patch for (too large
   to diff) was approved with that file unread. On review-voice-scratch#3 a
   40,007-line source file went unread under "No problems found". A changed
