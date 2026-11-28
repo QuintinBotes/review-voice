@@ -1,5 +1,6 @@
 import { githubToken } from './auth.ts';
 import { GitHubError, NotAllowlisted } from './client.ts';
+import { apiBaseUrl } from './host.ts';
 
 /** Raised for any write other than the two this writer exists to make. */
 export class WriteViolation extends Error {}
@@ -74,7 +75,7 @@ export class ReviewWriter {
 
   constructor(options: WriterOptions) {
     this.allowlist = new Set(options.allowlist.map((name) => name.toLowerCase()));
-    this.baseUrl = options.baseUrl ?? 'https://api.github.com';
+    this.baseUrl = options.baseUrl ?? apiBaseUrl();
     this.doFetch = options.fetchImpl ?? fetch;
     this.token = options.token ?? null;
   }

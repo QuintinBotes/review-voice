@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { webHost } from '../github/host.ts';
 
 /** Makes the clone at `dir` exist and hold the pull request's head. */
 export type PrepareClone = (repository: string, pull: number, dir: string) => Promise<void> | void;
@@ -67,11 +68,12 @@ export function gitPrepareClone(run: Run = runQuietly): PrepareClone {
   return (repository, pull, dir) => {
     if (!existsSync(join(dir, '.git'))) {
       mkdirSync(dirname(dir), { recursive: true });
+      const host = webHost();
       try {
-        run('gh', ['repo', 'clone', repository, dir, '--', '--filter=blob:none']);
+        run('gh', ['repo', 'clone', host === 'github.com' ? repository : `${host}/${repository}`, dir, '--', '--filter=blob:none']);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-        run('git', ['clone', '--filter=blob:none', `https://github.com/${repository}.git`, dir]);
+        run('git', ['clone', '--filter=blob:none', `https://${host}/${repository}.git`, dir]);
       }
     }
     removeStaleGitLocks(dir);

@@ -1,4 +1,5 @@
 import { githubToken } from './auth.ts';
+import { apiBaseUrl } from './host.ts';
 
 export class ReadOnlyViolation extends Error {}
 export class NotAllowlisted extends Error {}
@@ -238,7 +239,7 @@ export class GitHubClient {
         this.entries.push(entry.toLowerCase());
       }
     }
-    this.baseUrl = options.baseUrl ?? 'https://api.github.com';
+    this.baseUrl = options.baseUrl ?? apiBaseUrl();
     this.doFetch = options.fetchImpl ?? fetch;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.token = options.token ?? null;
@@ -359,6 +360,11 @@ export class GitHubClient {
           'user-agent': 'review-voice',
         },
       });
+
+      // Fetch drops the token on a redirect to another origin; the answer from there is refused too.
+      if (response.redirected && new URL(response.url).origin !== resolved.origin) {
+        throw new NotAllowlisted(`Refused a redirect to ${new URL(response.url).origin}: only ${this.baseUrl} is read.`);
+      }
 
       if (response.status === 403 || response.status === 429) {
         const retryAfter = Number(response.headers.get('retry-after') ?? '0');

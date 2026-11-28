@@ -10886,13 +10886,42 @@ function listPolicies(db, scope) {
 
 // plugins/review-voice/src/github/auth.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
+
+// plugins/review-voice/src/github/host.ts
+function apiBaseUrl(env = process.env) {
+  const value = env["GITHUB_API_URL"];
+  if (value === void 0 || value === "") return "https://api.github.com";
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("GITHUB_API_URL is not a URL.");
+  }
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
+    throw new Error(`GITHUB_API_URL must be a plain https URL such as https://ghe.example.com/api/v3.`);
+  }
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+function webHost(baseUrl = apiBaseUrl()) {
+  const url = new URL(baseUrl);
+  if (url.hostname === "api.github.com") return "github.com";
+  if (/^api\.[^.]+\.ghe\.com$/.test(url.hostname)) return url.host.slice("api.".length);
+  return url.host;
+}
+function remoteRepository(url, host = webHost()) {
+  const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`${escaped}[:/]([^/]+/[^/]+?)(?:\\.git)?$`).exec(url)?.[1] ?? null;
+}
+
+// plugins/review-voice/src/github/auth.ts
 var AuthError = class extends Error {
 };
 function githubToken(env = process.env) {
   const fromEnv = env["GITHUB_TOKEN"] ?? env["GH_TOKEN"];
   if (fromEnv !== void 0 && fromEnv.length > 0) return fromEnv;
   try {
-    const token = execFileSync3("gh", ["auth", "token"], {
+    const host = webHost(apiBaseUrl(env));
+    const token = execFileSync3("gh", host === "github.com" ? ["auth", "token"] : ["auth", "token", "--hostname", host], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       ...boundedGit(GIT_CHECK_TIMEOUT_MS, 1024 * 1024)
@@ -11029,7 +11058,7 @@ var GitHubClient = class {
         this.entries.push(entry.toLowerCase());
       }
     }
-    this.baseUrl = options.baseUrl ?? "https://api.github.com";
+    this.baseUrl = options.baseUrl ?? apiBaseUrl();
     this.doFetch = options.fetchImpl ?? fetch;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve17) => setTimeout(resolve17, ms)));
     this.token = options.token ?? null;
@@ -11122,6 +11151,9 @@ var GitHubClient = class {
           "user-agent": "review-voice"
         }
       });
+      if (response.redirected && new URL(response.url).origin !== resolved.origin) {
+        throw new NotAllowlisted(`Refused a redirect to ${new URL(response.url).origin}: only ${this.baseUrl} is read.`);
+      }
       if (response.status === 403 || response.status === 429) {
         const retryAfter = Number(response.headers.get("retry-after") ?? "0");
         const remaining = response.headers.get("x-ratelimit-remaining");
@@ -18650,7 +18682,7 @@ var ReviewWriter = class {
   token;
   constructor(options) {
     this.allowlist = new Set(options.allowlist.map((name) => name.toLowerCase()));
-    this.baseUrl = options.baseUrl ?? "https://api.github.com";
+    this.baseUrl = options.baseUrl ?? apiBaseUrl();
     this.doFetch = options.fetchImpl ?? fetch;
     this.token = options.token ?? null;
   }
@@ -20515,11 +20547,12 @@ function gitPrepareClone(run = runQuietly) {
   return (repository, pull, dir) => {
     if (!existsSync6(join11(dir, ".git"))) {
       mkdirSync3(dirname7(dir), { recursive: true });
+      const host = webHost();
       try {
-        run("gh", ["repo", "clone", repository, dir, "--", "--filter=blob:none"]);
+        run("gh", ["repo", "clone", host === "github.com" ? repository : `${host}/${repository}`, dir, "--", "--filter=blob:none"]);
       } catch (error) {
         if (error.code !== "ENOENT") throw error;
-        run("git", ["clone", "--filter=blob:none", `https://github.com/${repository}.git`, dir]);
+        run("git", ["clone", "--filter=blob:none", `https://${host}/${repository}.git`, dir]);
       }
     }
     removeStaleGitLocks(dir);
@@ -24647,7 +24680,7 @@ async function mergeBaseOf(base, head, cwd) {
 async function originRepository(cwd) {
   try {
     const url = (await git2(["remote", "get-url", "origin"], cwd, 1e4)).trim();
-    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
+    return remoteRepository(url);
   } catch {
     return null;
   }
@@ -26282,8 +26315,7 @@ function inferRepository(cwd) {
       timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS),
       killSignal: "SIGKILL"
     }).trim();
-    const match = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url);
-    return match?.[1] ?? null;
+    return remoteRepository(url);
   } catch {
     return null;
   }
@@ -26303,10 +26335,11 @@ function remoteRepositories(cwd) {
   }
   const slugs = [];
   for (const line3 of out.split("\n")) {
-    const match = /^remote\.(.+)\.url\s+.*github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(line3.trim());
-    if (match === null) continue;
-    if (match[1] === "origin") slugs.unshift(match[2]);
-    else slugs.push(match[2]);
+    const match = /^remote\.(.+)\.url\s+(.*)$/.exec(line3.trim());
+    const slug = match === null ? null : remoteRepository(match[2]);
+    if (match === null || slug === null) continue;
+    if (match[1] === "origin") slugs.unshift(slug);
+    else slugs.push(slug);
   }
   return slugs;
 }
@@ -31725,7 +31758,7 @@ async function resolveCommit(ref, cwd) {
 async function originRepository2(cwd) {
   try {
     const url = (await git4(["remote", "get-url", "origin"], cwd)).trim();
-    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
+    return remoteRepository(url);
   } catch {
     return null;
   }

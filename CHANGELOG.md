@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- GitHub Enterprise Server (3.9 or later) and GHE.com data-residency hosts. The
+  API host is `GITHUB_API_URL`, which the Actions runner sets and an operator
+  sets locally, never anything from the pull request; unset, it is still
+  `api.github.com`. Reads, the GraphQL query, the review and the reply go to
+  that host with the token and to no other, a redirected answer from another
+  host is refused, `gh auth token` is asked for that host's token, and
+  `origin` matching and the watcher's clone follow its web host
+  (docs/adr/0002) (#545).
 - `outcomes --recover` records the reviews the Action posted as runs, read from
   GitHub, before the usual outcome check, so the owner's replies, resolutions
   and dismissals of what the Action posted become outcomes, precedent and

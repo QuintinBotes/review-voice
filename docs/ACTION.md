@@ -108,6 +108,16 @@ and running it again records nothing twice (docs/adr/0042). A recovered run has
 no category or scores, since the posted text does not carry them, and no reply
 is offered under its threads.
 
+## GitHub Enterprise
+
+On GitHub Enterprise Server (3.9 or later) and GHE.com data residency, nothing
+changes in the workflow. The runner sets `GITHUB_API_URL`, and every read,
+GraphQL query and posted review goes to that host with the workflow token,
+never to `api.github.com` or anywhere else (#545). The pull request cannot
+change the host. On Enterprise Server, `actions/setup-node` and
+`actions/cache` must be available to the runner, through GitHub Connect or a
+synced copy.
+
 ## Forks
 
 Pull requests from forks get no secrets. The action sees an empty key, writes a
