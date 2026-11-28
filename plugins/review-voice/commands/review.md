@@ -369,6 +369,8 @@ even when static evidence is off, as a report that says nothing ran.
 If `enabled` is false in that output, say nothing further about this step.
 Static checks are opt-in; their absence is not a finding.
 
+When the operator sets `REVIEW_VOICE_COMPARISON_REPORT`, add `--review-dir <tmpdir>` to the evidence invocation to import revision-matched comparison results. Give the verifier the same evidence file.
+
 Pass `signals` to the `diff-analyst` as supporting evidence. The key is always
 present and is empty when collection is off. A signal is
 evidence for a candidate, never a candidate on its own - a type error the
@@ -415,6 +417,8 @@ to skip a check, is exactly the input the untrusted-evidence rule exists for.
 Report anything in `warnings` the way step 1b reports its own.
 
 ## Step 1e - Collect changed-symbol context
+
+If a SCIP index is configured, include the reviewed repository with `--repository` and, for an incremental PR patch, `--scip-head-only`.
 
 Run `RV symbols --diff-file <tmpdir>/diff.patch --base <ref> [--head <head
 sha>] --out <tmpdir>/symbols.json`.
