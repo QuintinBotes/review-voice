@@ -120,6 +120,8 @@ function tokensOf(usage: unknown): number | undefined {
   return isCount(input) && isCount(output) ? input + output : undefined;
 }
 
+const CLOUD_PROVIDERS = ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'];
+
 /** `spec.tools` is already narrowed by runnerTools. */
 function claudeArguments(spec: AgentSpec, addDirs: string[], env: NodeJS.ProcessEnv): string[] {
   const tools = spec.tools.join(',');
@@ -130,8 +132,9 @@ function claudeArguments(spec: AgentSpec, addDirs: string[], env: NodeJS.Process
     '--safe-mode',
     '--strict-mcp-config',
     '--no-session-persistence',
-    // Bare mode skips OAuth and keychain reads, which only an API key replaces.
-    ...(env['ANTHROPIC_API_KEY'] ? ['--bare'] : []),
+    // Bare mode skips OAuth and keychain reads, which only an API key or a
+    // cloud provider's own credentials replace (#544).
+    ...(env['ANTHROPIC_API_KEY'] || CLOUD_PROVIDERS.some((key) => /^(1|true)$/i.test(env[key] ?? '')) ? ['--bare'] : []),
     '--system-prompt-file',
     agentFile(spec.name),
     '--model',

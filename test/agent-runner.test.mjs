@@ -181,6 +181,23 @@ test('claude-cli backend adds --bare when ANTHROPIC_API_KEY is set', async (t) =
   assert.ok(JSON.parse(readFileSync(record, 'utf8')).argv.includes('--bare'));
 });
 
+// A cloud provider authenticates with its own credentials under --bare, as an API key does (#544).
+test('#544: claude-cli backend adds --bare for a cloud provider, and not for an OAuth token or a provider set to 0', async (t) => {
+  const dir = tempDir(t);
+  const stub = writeStub(dir);
+  const record = join(dir, 'record.json');
+  const bare = async (extra) => {
+    const result = await runAgent(analyst, 'x', dir, [], stubEnv(stub, { STUB_RECORD: record, ...extra }));
+    assert.equal(result.ok, true, result.error);
+    return JSON.parse(readFileSync(record, 'utf8')).argv.includes('--bare');
+  };
+  for (const key of ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY']) {
+    assert.equal(await bare({ [key]: '1' }), true, key);
+    assert.equal(await bare({ [key]: '0' }), false, `${key}=0 selects no provider`);
+  }
+  assert.equal(await bare({ CLAUDE_CODE_OAUTH_TOKEN: 'placeholder' }), false, 'bare mode never reads an OAuth token');
+});
+
 test('an agent that declares no tools gets an empty --tools and no --allowedTools', async (t) => {
   const dir = tempDir(t);
   const stub = writeStub(dir);

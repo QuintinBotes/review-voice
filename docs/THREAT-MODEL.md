@@ -216,6 +216,25 @@ the next argument as the pattern whatever it looks like, and the extractor
 refuses a token beginning with a dash. The command is invoked with an argument
 array and never a shell string, so quoting is not part of the trust boundary.
 
+### 3c. The model credential in CI
+
+**Attack.** The agents read untrusted code with the model credential in their
+environment. With a cloud provider (#544) that credential is the cloud
+identity the workflow's login step obtained, which can be broader than one
+model key.
+
+**Mitigations.** The provider is the workflow's `provider` input, never read
+from the pull request or the base commit, and the review step clears any other
+provider selection and, on a cloud provider, the Anthropic key and token. The
+agents' process still gets no `GITHUB_TOKEN`, `GH_TOKEN` or `REVIEW_VOICE_*`.
+docs/ACTION.md asks for an OIDC role whose only grant is model invocation, so
+the credential is short-lived and stores no secret; a fork run gets no secret
+and no OIDC token and skips.
+
+**Residual risk.** The rest of the job's environment reaches the agents as it
+did before, so a role granted more than model invocation is exposed to the
+same prompt injection as the API key is.
+
 ### 4. Arbitrary code execution through static analysis
 
 **Attack.** Review Voice auto-detects and runs a project script; the repository

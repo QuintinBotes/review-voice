@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Action runs a review on credentials other than an Anthropic API key: a
+  Claude Code OAuth token (`claude-code-oauth-token`), or Amazon Bedrock,
+  Google Cloud's Agent Platform or Microsoft Foundry through the new `provider`
+  input, with the short-lived credentials the provider's own OIDC login step
+  exports. The gate skips with a reason naming what it looked for when the
+  chosen provider has no credential, as a fork run has none. The provider is
+  the input alone: the review step clears any other selection, passes no
+  Anthropic credential to a cloud provider, and fails a model the account
+  cannot use instead of switching models. A cloud provider's agents run with
+  `--bare`, as an API key's do. Defaults are unchanged (#544).
 - `outcomes --recover` records the reviews the Action posted as runs, read from
   GitHub, before the usual outcome check, so the owner's replies, resolutions
   and dismissals of what the Action posted become outcomes, precedent and

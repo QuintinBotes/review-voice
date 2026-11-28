@@ -22761,6 +22761,7 @@ function tokensOf(usage) {
   const { input_tokens: input, output_tokens: output } = usage;
   return isCount2(input) && isCount2(output) ? input + output : void 0;
 }
+var CLOUD_PROVIDERS = ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"];
 function claudeArguments(spec, addDirs, env) {
   const tools = spec.tools.join(",");
   return [
@@ -22770,8 +22771,9 @@ function claudeArguments(spec, addDirs, env) {
     "--safe-mode",
     "--strict-mcp-config",
     "--no-session-persistence",
-    // Bare mode skips OAuth and keychain reads, which only an API key replaces.
-    ...env["ANTHROPIC_API_KEY"] ? ["--bare"] : [],
+    // Bare mode skips OAuth and keychain reads, which only an API key or a
+    // cloud provider's own credentials replace (#544).
+    ...env["ANTHROPIC_API_KEY"] || CLOUD_PROVIDERS.some((key2) => /^(1|true)$/i.test(env[key2] ?? "")) ? ["--bare"] : [],
     "--system-prompt-file",
     agentFile(spec.name),
     "--model",

@@ -12,9 +12,16 @@ inputs:
     description: Post the review to the pull request. Also needs writes.github_posting_enabled in the repository config.
     default: 'false'
   anthropic-api-key:
-    description: Anthropic API key. When empty the action skips.
+    description: Anthropic API key, for provider anthropic. With no key and no OAuth token the action skips.
     required: false
     default: ''
+  claude-code-oauth-token:
+    description: Claude Code OAuth token from claude setup-token, for provider anthropic in place of an API key.
+    required: false
+    default: ''
+  provider:
+    description: Where the model runs (anthropic, bedrock, vertex or foundry). A cloud provider reads the credentials an earlier step, such as its OIDC login action, put in the job's environment; with none the action skips.
+    default: anthropic
   github-token:
     description: Token used to read the pull request and, when posting, to author the review.
     default: ${{ github.token }}
@@ -49,6 +56,8 @@ runs:
       env:
         EVENT_NAME: ${{ github.event_name }}
         API_KEY: ${{ inputs.anthropic-api-key }}
+        OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token }}
+        PROVIDER: ${{ inputs.provider }}
       run: |
         skip() {
           echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -57,7 +66,15 @@ runs:
           exit 0
         }
         case "$EVENT_NAME" in pull_request | pull_request_target) ;; *) skip "not a pull request event." ;; esac
-        [ -n "$API_KEY" ] || skip "no Anthropic API key is available (fork pull requests receive no secrets)."
+        # A cloud provider's credential is whatever its login step exported; the
+        # gate only looks for one, so a fork run, which gets none, skips (#544).
+        case "${PROVIDER:-anthropic}" in
+          anthropic) [ -n "$API_KEY$OAUTH_TOKEN" ] || skip "no Anthropic API key or Claude Code OAuth token is available (fork pull requests receive no secrets)." ;;
+          bedrock) [ -n "${AWS_ACCESS_KEY_ID:-}${AWS_BEARER_TOKEN_BEDROCK:-}${AWS_PROFILE:-}${AWS_WEB_IDENTITY_TOKEN_FILE:-}" ] || skip "no Amazon Bedrock credential is available: none of AWS_ACCESS_KEY_ID, AWS_BEARER_TOKEN_BEDROCK, AWS_PROFILE or AWS_WEB_IDENTITY_TOKEN_FILE is set (fork pull requests receive no secrets or OIDC token)." ;;
+          vertex) [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] || skip "no Google Cloud credential is available: GOOGLE_APPLICATION_CREDENTIALS is not set (fork pull requests receive no secrets or OIDC token)." ;;
+          foundry) [ -n "${ANTHROPIC_FOUNDRY_API_KEY:-}${AZURE_CLIENT_ID:-}" ] || skip "no Microsoft Foundry credential is available: neither ANTHROPIC_FOUNDRY_API_KEY nor AZURE_CLIENT_ID is set (fork pull requests receive no secrets or OIDC token)." ;;
+          *) echo "::error::The provider input must be anthropic, bedrock, vertex or foundry."; exit 2 ;;
+        esac
         echo "skip=false" >> "$GITHUB_OUTPUT"
         echo "pr=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")" >> "$GITHUB_OUTPUT"
 
@@ -93,6 +110,8 @@ runs:
       shell: bash
       env:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token }}
+        PROVIDER: ${{ inputs.provider }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         REVIEW_VOICE_DATA_DIR: ${{ runner.temp }}/review-voice
         PR: ${{ steps.gate.outputs.pr }}
@@ -105,6 +124,24 @@ runs:
         # where GitHub does not give the job its check run id.
         REVIEW_VOICE_OWN_CHECK_RUN: ${{ job.check_run_id }}
       run: |
+        # The provider is the provider input alone, never a variable left in the
+        # job's env (#544). An empty credential is unset, not passed empty, since
+        # an empty one can still take its slot in Claude Code's precedence.
+        unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_MANTLE
+        case "${PROVIDER:-anthropic}" in
+          bedrock) export CLAUDE_CODE_USE_BEDROCK=1 ;;
+          vertex) export CLAUDE_CODE_USE_VERTEX=1 ;;
+          foundry) export CLAUDE_CODE_USE_FOUNDRY=1 ;;
+        esac
+        if [ "${PROVIDER:-anthropic}" = anthropic ]; then
+          [ -n "${ANTHROPIC_API_KEY:-}" ] || unset ANTHROPIC_API_KEY
+          [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || unset CLAUDE_CODE_OAUTH_TOKEN
+        else
+          unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN
+          # A model the provider does not serve fails the stage, with its reason
+          # in the log, instead of switching to another model mid-review.
+          export CLAUDE_CODE_DISABLE_MODEL_ACCESS_FALLBACK=1
+        fi
         mkdir -p "$REVIEW_VOICE_DATA_DIR"
         args=(review --pr "$PR" --repository "$GITHUB_REPOSITORY" --mode "$MODE" --origin action --json)
         [ "$POST" = "true" ] && args+=(--post)
