@@ -28,6 +28,14 @@ shapes, and a `common` symbol deliberately omits its references. If a file is
 `inconclusive`, its partial list is not complete. Keep the rule against
 asserting an absence you have not searched for.
 
+`linked.consumers`, when present, are files in other repositories that
+mention a changed declaration or literal contract name. Each entry gives a line
+and a redacted fragment from the matching blob. You cannot open those files; the fragment is all there
+is. When a fragment shows a use the change breaks, raise it on the changed
+line, never as a stale consumer, and name `<repository>/<path>:<line>` and the
+fragment in `claim` and `evidence`. An `inconclusive` linked block, or a
+`skipped` repository, is not evidence that no other repository uses the name.
+
 `declared[].possibleExisting` is a reading hint, never proof that the new
 declaration duplicates a helper. An inconclusive declaration means unknown,
 not none. Raise a `maintainability` candidate only after reading the existing

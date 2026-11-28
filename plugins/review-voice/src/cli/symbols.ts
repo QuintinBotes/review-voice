@@ -1,7 +1,8 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { DEFAULT_TEST_PATHS } from '../diff/complexity.ts';
 import { collectSymbolContext, DEFAULT_MAX_MS } from '../diff/symbols.ts';
-import { flag, resolveOutPath, repositoryConfig, refExists } from './shared.ts';
+import { linkedConsumers } from '../diff/linked.ts';
+import { flag, githubClient, resolveOutPath, repositoryConfig, refExists } from './shared.ts';
 
 /**
  * Gives the agents a bounded list of places worth reading after the diff.
@@ -62,7 +63,18 @@ export async function symbolsCommand(argv: string[]): Promise<number> {
   // names its tests differently gets the same split here.
   const config = repositoryConfig();
   const testPaths = config?.humanReview.testPaths ?? DEFAULT_TEST_PATHS;
+  const started = Date.now();
   const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, head, testPaths, firstPartyPaths: config?.firstPartyPaths ?? [], maxMs });
+  // Consumers in linked repositories (#548), under what is left of the same budget.
+  const linked = config === null || config.linkedRepositories.length === 0
+    ? undefined
+    : await linkedConsumers({
+      diff,
+      linked: config.linkedRepositories,
+      client: githubClient(config.allowlist, true),
+      remaining: () => maxMs - (Date.now() - started),
+    });
+  if (linked !== undefined) result.linked = linked;
   const out = flag(argv, '--out');
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));
@@ -80,6 +92,7 @@ export async function symbolsCommand(argv: string[]): Promise<number> {
           downstreamFiles: result.downstreamFiles,
           inconclusiveFiles: result.files.filter((file) => file.inconclusive === true).length,
           budgetExhausted: result.budget.exhausted,
+          ...(linked === undefined ? {} : { linkedConsumers: linked.consumers.length, ...(linked.note === undefined ? {} : { linkedNote: linked.note }) }),
         },
         null,
         2,

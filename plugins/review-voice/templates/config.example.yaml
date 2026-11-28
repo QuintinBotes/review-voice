@@ -36,6 +36,11 @@ review:
   # generated output or a binary under it still is. `review --pr` reads this
   # from the base commit, so a pull request cannot set it for itself.
   first_party_paths: []
+  # Other repositories whose default branches are searched, through GitHub code
+  # search, for consumers of a declaration the change removes, renames or
+  # re-signs. Each must also be in repositories.include; one that is not is
+  # skipped with a note and never read. At most six searches per review.
+  # linked_repositories: [your-org/consumer-service]
   # Set the model for a stage in every mode; an override never turns a stage
   # on or off. Keys: intent, analyst (the diff lane), lanes, verify, tie-break,
   # challenge, edit. Defaults are sonnet, or opus where the mode calls for it.

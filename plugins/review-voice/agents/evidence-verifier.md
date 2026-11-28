@@ -28,6 +28,14 @@ consumers: extraction recognises only distinctive identifier shapes, and a
 only partial results. Keep the requirement to search before accepting an
 absence.
 
+A candidate citing a consumer in another repository rests on a
+`linked.consumers` entry in `symbols.json`. Verify it only when that entry's
+cited path and line match the entry and its fragment shows the consumer using the changed contract in a way the change
+breaks (a removed name, a changed argument count or type); set `impact_traced`
+true only then. A name that merely appears, in a comment, a string or an
+unrelated declaration, is not a use: reject the candidate, or list the
+consumer in `required_context_missing` when the fragment cannot tell.
+
 For a duplicate-helper claim, reject it unless the cited helper exists at that
 path and line at the reviewed ref and covers the new helper's inputs and
 outputs. Check edge behavior too, including separators, casing and null

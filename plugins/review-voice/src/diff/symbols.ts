@@ -12,6 +12,7 @@ import {
   declarationsFromDiff,
   type LexicalDeclaration,
 } from './declarations.ts';
+import type { LinkedConsumers } from './linked.ts';
 import { globToRegExp } from '../conventions/globs.ts';
 import { firstPartyMatcher } from './classify.ts';
 import { DEFAULT_TEST_PATHS } from './complexity.ts';
@@ -94,6 +95,8 @@ export interface SymbolContextReport {
   /** Untouched production code paths that reference at least one reported changed symbol; tests are not counted. */
   downstreamFiles: number;
   budget: SymbolBudget;
+  /** Consumers in `review.linked_repositories`, present only when some are configured (#548). */
+  linked?: LinkedConsumers;
 }
 
 export interface CollectSymbolContextOptions {

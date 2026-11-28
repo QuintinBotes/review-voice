@@ -498,7 +498,7 @@ async function prep(run: Run): Promise<void> {
   // New declarations are searched for callers at the head, which exists only
   // when the diff could read it; without it they stay inconclusive.
   const headReadable = isRecord(refs['head']) && refs['head']['available'] === true;
-  await must(run, [
+  const symbols = await must(run, [
     'symbols',
     '--diff-file',
     at(run, 'diff.patch'),
@@ -507,6 +507,8 @@ async function prep(run: Run): Promise<void> {
     '--out',
     at(run, 'symbols.json'),
   ]);
+  const linkedNote = parsed(symbols.stdout)['linkedNote'];
+  if (typeof linkedNote === 'string') run.notes.push(linkedNote);
   const followUps = branch ? JSON.stringify({ followUps: [] }) : (await must(run, ['follow-ups', ...pr])).stdout;
   writeFileSync(at(run, 'follow-ups.json'), followUps);
   run.followUps = list(parsed(followUps)['followUps']).length > 0;

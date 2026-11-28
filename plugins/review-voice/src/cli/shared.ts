@@ -63,8 +63,8 @@ export function setInProcess(value: InProcess | null): void {
 }
 
 /** The read-only client every command builds, so an in-process run can inject its fetch. */
-export function githubClient(allowlist: string[]): GitHubClient {
-  return new GitHubClient({ allowlist, ...(inProcess?.fetchImpl === undefined ? {} : { fetchImpl: inProcess.fetchImpl }) });
+export function githubClient(allowlist: string[], allowGlobs = false): GitHubClient {
+  return new GitHubClient({ allowlist, allowGlobs, ...(inProcess?.fetchImpl === undefined ? {} : { fetchImpl: inProcess.fetchImpl }) });
 }
 
 export function readStdin(): string {
