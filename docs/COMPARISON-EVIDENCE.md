@@ -33,4 +33,4 @@ Use the following entry inside the same envelope. Populate each side from indepe
 }]}
 ```
 
-Use `higher` for throughput and `lower` for latency. Each side needs 3–100 positive finite samples with the same name, metric, unit and runner. A lead requires disjoint sample ranges and a median degradation at or above the supplied percentage. This noise filter makes no statistical significance claim. A regression without a changed source location stays in the local notes. The verifier must connect the measured workload to the proposed cause.
+Use `higher` for throughput and `lower` for latency. Each side needs 3 to 100 positive finite samples with the same name, metric, unit and runner. A lead requires disjoint sample ranges and a median degradation at or above the supplied percentage. This noise filter makes no statistical significance claim. A regression without a changed source location stays in the local notes. The verifier must connect the measured workload to the proposed cause.

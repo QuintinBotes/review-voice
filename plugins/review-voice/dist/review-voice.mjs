@@ -22733,7 +22733,7 @@ function clone(pair, ctx) {
 function measurement(input) {
   const m = row(input);
   if (!Array.isArray(m.samples) || m.samples.length < 3 || m.samples.length > 100 || !m.samples.every((v) => typeof v === "number" && Number.isFinite(v) && v > 0)) {
-    throw new Error("Each benchmark side needs 3\u2013100 positive finite samples.");
+    throw new Error("Each benchmark side needs 3 to 100 positive finite samples.");
   }
   const values = m.samples.slice().sort((a, b) => a - b);
   const mid = Math.floor(values.length / 2);
