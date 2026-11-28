@@ -743,11 +743,10 @@ async function lanes(run: Run): Promise<void> {
     writeJson(at(run, 'candidates.json'), { candidates: merged() });
     return cli(run, args, JSON.stringify({ candidates: merged() }));
   };
-  let checked = await check();
-  if (checked.code === 1) {
-    const report = parsed(checked.stdout);
-    // Each failure goes back to the lane that produced it: by id, else by
-    // anchor, else to the diff lane with the failure itself.
+  // Each failure goes back to the lane that produced it: by id, else by
+  // anchor, else to the diff lane with the failure itself.
+  const failingIn = (stdout: string): Map<Json, { lane: Lane; reasons: string[] }> => {
+    const report = parsed(stdout);
     const produced = running.flatMap((lane) => (output.get(lane.name) ?? []).map((candidate) => ({ lane, candidate })));
     const failing = new Map<Json, { lane: Lane; reasons: string[] }>();
     for (const failure of [...list(report['anchorFailures']), ...list(report['laneFailures']), ...list(report['intentFailures'])]) {
@@ -759,6 +758,11 @@ async function lanes(run: Run): Promise<void> {
       entry.reasons.push(String(failure['reason']));
       failing.set(candidate, entry);
     }
+    return failing;
+  };
+  let checked = await check();
+  if (checked.code === 1) {
+    const failing = failingIn(checked.stdout);
     if (failing.size === 0) throw new Stop(7, `check-candidates refused the candidates without naming one: ${firstLines(checked.stderr || checked.stdout)}`);
     for (const lane of running) {
       const mine = [...failing].filter(([, entry]) => entry.lane === lane);
@@ -772,6 +776,27 @@ async function lanes(run: Run): Promise<void> {
       output.set(lane.name, [...kept, ...list(withoutCounts(result.output)['candidates'])]);
     }
     checked = await check();
+    // A candidate still refused after its lane re-anchored it is dropped and held,
+    // not the whole review (#553): the others are still checked and posted.
+    if (checked.code === 1) {
+      const still = failingIn(checked.stdout);
+      if (still.size === 0) throw new Stop(7, `check-candidates refused the candidates without naming one: ${firstLines(checked.stderr || checked.stdout)}`);
+      for (const [candidate, entry] of still) {
+        run.held.push({
+          path: String(candidate['path'] ?? ''),
+          line: Number(candidate['line'] ?? 0),
+          verdict: 'unverified',
+          source: 'check-candidates',
+          reason: `dropped after a retry: ${entry.reasons.join('; ')}`,
+          candidateId: idOf(candidate),
+          ...(typeof candidate['severity'] === 'string' ? { severity: candidate['severity'] } : {}),
+          ...(typeof candidate['claim'] === 'string' ? { text: candidate['claim'] } : {}),
+        });
+      }
+      for (const lane of running) output.set(lane.name, (output.get(lane.name) ?? []).filter((candidate) => !still.has(candidate)));
+      run.notes.push(`Dropped ${still.size} candidate(s) whose anchor still failed after a retry; the rest of the review went on.`);
+      checked = await check();
+    }
   }
   if (checked.code !== 0) throw new Stop(7, `check-candidates refused the candidates again: ${firstLines(checked.stderr || checked.stdout)}`);
   writeFileSync(at(run, 'checked.json'), checked.stdout);

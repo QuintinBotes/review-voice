@@ -204,13 +204,6 @@ runs:
           3) echo "Review Voice: the head moved during the review; a newer run covers it." | tee -a "$GITHUB_STEP_SUMMARY"; code=0 ;;
           4 | 6) echo "Review Voice: the review ran, but CI is pending or needs a rerun, so its verdict was not posted." | tee -a "$GITHUB_STEP_SUMMARY"; code=0 ;;
         esac
-        # The workflow token may not approve unless the repository allows it, and
-        # GitHub refuses with a 422, so nothing was sent. The review stood, so a
-        # clean change does not get a red check; the warning names the setting (#535).
-        if [ "$code" = 1 ] && jq -e 'type == "object" and (.notes | type) == "array" and any(.notes[]; type == "string" and startswith("post exited 1: GitHub returned 422") and contains("GitHub Actions is not permitted to approve pull requests"))' "$report" > /dev/null 2>&1; then
-          echo "::warning::Review Voice: the review approves, but this repository does not let GitHub Actions approve pull requests, so nothing was posted. Allow it under Settings, Actions, General, Workflow permissions, or pass a github-token that may approve."
-          code=0
-        fi
         # A refusal in the post stage leaves a note and no error, so without this
         # the log shows only the help hint for exit 2 (#507). Only when the job
         # still fails, and escaped like the reason above.
