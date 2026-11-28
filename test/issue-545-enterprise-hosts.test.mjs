@@ -12,13 +12,15 @@ import { ReviewWriter } from '../plugins/review-voice/src/github/writer.ts';
 import { githubToken } from '../plugins/review-voice/src/github/auth.ts';
 import { apiBaseUrl, remoteRepository, webHost } from '../plugins/review-voice/src/github/host.ts';
 
+import { closingReferences } from '../plugins/review-voice/src/diff/thread.ts';
+
 const REPO = 'acme/web';
 const SHA = 'a'.repeat(40);
 
 function fakeFetch(respond = () => ok({})) {
   const calls = [];
   const impl = async (url, init) => {
-    calls.push({ url: String(url), method: init?.method, authorization: init?.headers?.authorization });
+    calls.push({ url: String(url), method: init?.method, authorization: init?.headers?.authorization, redirect: init?.redirect });
     return respond(String(url), init);
   };
   impl.calls = calls;
@@ -80,7 +82,10 @@ for (const host of HOSTS) {
         ['POST', `${host.api}/repos/${REPO}/pulls/5/comments/9/replies`],
       ],
     );
-    for (const call of calls) assert.equal(call.authorization, 'Bearer tkn');
+    for (const call of calls) {
+      assert.equal(call.authorization, 'Bearer tkn');
+      assert.equal(call.redirect, 'manual');
+    }
   });
 
   test(`${host.name}: the web host follows, for origin matching and the clone`, async () => {
@@ -88,6 +93,9 @@ for (const host of HOSTS) {
       assert.equal(webHost(), host.web);
       assert.equal(remoteRepository(`https://${host.web}/${REPO}.git`), REPO);
       assert.equal(remoteRepository(`git@${host.web}:${REPO}.git`), REPO);
+      assert.equal(remoteRepository(`https://other-${host.web}/${REPO}.git`), null);
+      assert.equal(remoteRepository(`https://other.example/a/${host.web}/${REPO}.git`), null);
+      assert.deepEqual(closingReferences(`Fixes https://${host.web}/${REPO}/issues/2 and closes https://github.com/${REPO}/issues/3`, REPO).numbers, [2]);
       // A github.com remote is another host's repository, not this one.
       assert.equal(remoteRepository(`https://github.com/${REPO}.git`), null);
     });
@@ -103,7 +111,7 @@ test('with nothing configured, every request still goes to api.github.com', asyn
     `https://api.github.com/repos/${REPO}/pulls/5/comments/9/replies`,
   ]);
   assert.equal(webHost(), 'github.com');
-  assert.equal(remoteRepository(`git@github.com:${REPO}.git`), REPO);
+  assert.equal(remoteRepository(`git@${webHost()}:${REPO}.git`), REPO);
 });
 
 test('configured for Enterprise Server, the token is never sent to another host', async () => {

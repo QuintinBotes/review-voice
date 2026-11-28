@@ -10909,8 +10909,21 @@ function webHost(baseUrl = apiBaseUrl()) {
   return url.host;
 }
 function remoteRepository(url, host = webHost()) {
-  const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`${escaped}[:/]([^/]+/[^/]+?)(?:\\.git)?$`).exec(url)?.[1] ?? null;
+  let authority;
+  let path;
+  if (url.includes("://")) {
+    const remote = URL.parse(url);
+    if (!remote || !["https:", "http:", "git:", "ssh:"].includes(remote.protocol) || remote.search || remote.hash) return null;
+    authority = remote.host;
+    path = remote.pathname.slice(1);
+  } else {
+    const scp = /^(?:[\w.-]+@)?([\w.-]+):(.+)$/.exec(url);
+    if (!scp) return null;
+    authority = scp[1];
+    path = scp[2];
+  }
+  if (authority.toLowerCase() !== host.toLowerCase()) return null;
+  return /^([\w.-]+\/[\w.-]+?)(?:\.git)?$/.exec(path)?.[1] ?? null;
 }
 
 // plugins/review-voice/src/github/auth.ts
@@ -11121,8 +11134,8 @@ var GitHubClient = class {
   }
   /**
    * `retryRateLimits: false` fails at once on a rate limit instead of waiting
-   * it out, for a read the caller can do without. `followRedirects: false`
-   * makes a redirect fail the read: a transferred issue answers with a 301 to
+   * it out, for a read the caller can do without. The client
+   * refuses redirects: a transferred issue answers with a 301 to
    * another repository, and following it would send the credential to a read
    * the allowlist never checked.
    */
@@ -11133,17 +11146,17 @@ var GitHubClient = class {
       );
     }
     this.assertAllowed(path);
-    return this.request(path, init.retryRateLimits !== false, init.followRedirects !== false);
+    return this.request(path, init.retryRateLimits !== false);
   }
   /** The GET itself, once the caller has checked the path. */
-  async request(path, retryRateLimits, followRedirects = true) {
+  async request(path, retryRateLimits) {
     const { url: resolved, apiPath } = this.resolve(path);
     const url = resolved.href;
     for (let attempt = 0; ; attempt += 1) {
       const response = await this.doFetch(url, {
         method: "GET",
         // A 3xx then comes back as a non-ok response, which the check below refuses.
-        redirect: followRedirects ? "follow" : "manual",
+        redirect: "manual",
         headers: {
           accept: "application/vnd.github+json",
           authorization: this.authorization(),
@@ -11210,6 +11223,7 @@ var GitHubClient = class {
     this.assertAllowed(`/repos/${owner}/${name}`);
     const response = await this.doFetch(graphqlUrl(this.baseUrl), {
       method: "POST",
+      redirect: "manual",
       headers: {
         accept: "application/vnd.github+json",
         authorization: this.authorization(),
@@ -18734,6 +18748,7 @@ var ReviewWriter = class {
     }
     const response = await this.doFetch(`${this.baseUrl}${path}`, {
       method: "POST",
+      redirect: "manual",
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${this.token ??= githubToken()}`,
@@ -18813,13 +18828,14 @@ var cappedBody = (body) => {
   const sentence = [...cut4.matchAll(/[.!?](?=\s)/gu)].at(-1);
   return sentence === void 0 ? "" : cut4.slice(0, sentence.index + 1);
 };
-var CLOSING_REFERENCE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)|([\w.-]+\/[\w.-]+)#(\d+)|#(\d+))\b/giu;
+var CLOSING_REFERENCE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(https?:\/\/([^\s/?#@]+)\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)|([\w.-]+\/[\w.-]+)#(\d+)|#(\d+))\b/giu;
 function closingReferences(description, repository) {
   const numbers = [];
   const beyond = [];
   const skipped = [];
   for (const match of description.matchAll(CLOSING_REFERENCE)) {
-    const [, text5, urlRepository, urlNumber, shortRepository, shortNumber, bareNumber] = match;
+    const [, text5, urlHost, urlRepository, urlNumber, shortRepository, shortNumber, bareNumber] = match;
+    if (urlHost !== void 0 && urlHost.toLowerCase() !== webHost()) continue;
     const named = urlRepository ?? shortRepository;
     if (named !== void 0 && named.toLowerCase() !== repository.toLowerCase()) {
       skipped.push(text5);
@@ -18855,7 +18871,7 @@ async function readThread(options) {
     }
     for (const number of references.numbers) {
       try {
-        const { data } = await client.get(`/repos/${options.repository}/issues/${number}`, { retryRateLimits: false, followRedirects: false });
+        const { data } = await client.get(`/repos/${options.repository}/issues/${number}`, { retryRateLimits: false });
         if (data.number !== number || !(data.repository_url ?? "").toLowerCase().endsWith(`/repos/${options.repository}`.toLowerCase())) {
           warnings.push(`Could not read issue #${number} (GitHub answered for another issue or repository); continuing without it.`);
           continue;

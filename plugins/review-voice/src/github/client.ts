@@ -314,14 +314,14 @@ export class GitHubClient {
 
   /**
    * `retryRateLimits: false` fails at once on a rate limit instead of waiting
-   * it out, for a read the caller can do without. `followRedirects: false`
-   * makes a redirect fail the read: a transferred issue answers with a 301 to
+   * it out, for a read the caller can do without. The client
+   * refuses redirects: a transferred issue answers with a 301 to
    * another repository, and following it would send the credential to a read
    * the allowlist never checked.
    */
   async get<T>(
     path: string,
-    init: { method?: string; retryRateLimits?: boolean; followRedirects?: boolean } = {},
+    init: { method?: string; retryRateLimits?: boolean } = {},
   ): Promise<{ data: T; linkNext: string | null }> {
     if (init.method !== undefined && init.method.toUpperCase() !== 'GET') {
       throw new ReadOnlyViolation(
@@ -329,11 +329,11 @@ export class GitHubClient {
       );
     }
     this.assertAllowed(path);
-    return this.request<T>(path, init.retryRateLimits !== false, init.followRedirects !== false);
+    return this.request<T>(path, init.retryRateLimits !== false);
   }
 
   /** The GET itself, once the caller has checked the path. */
-  private async request<T>(path: string, retryRateLimits: boolean, followRedirects = true): Promise<{ data: T; linkNext: string | null }> {
+  private async request<T>(path: string, retryRateLimits: boolean): Promise<{ data: T; linkNext: string | null }> {
     const { url: resolved, apiPath } = this.resolve(path);
     const url = resolved.href;
 
@@ -352,7 +352,7 @@ export class GitHubClient {
       const response = await this.doFetch(url, {
         method: 'GET',
         // A 3xx then comes back as a non-ok response, which the check below refuses.
-        redirect: followRedirects ? 'follow' : 'manual',
+        redirect: 'manual',
         headers: {
           accept: 'application/vnd.github+json',
           authorization: this.authorization(),
@@ -361,7 +361,7 @@ export class GitHubClient {
         },
       });
 
-      // Fetch drops the token on a redirect to another origin; the answer from there is refused too.
+      // Also reject a redirected response returned by an injected fetch implementation.
       if (response.redirected && new URL(response.url).origin !== resolved.origin) {
         throw new NotAllowlisted(`Refused a redirect to ${new URL(response.url).origin}: only ${this.baseUrl} is read.`);
       }
@@ -431,6 +431,7 @@ export class GitHubClient {
 
     const response = await this.doFetch(graphqlUrl(this.baseUrl), {
       method: 'POST',
+      redirect: 'manual',
       headers: {
         accept: 'application/vnd.github+json',
         authorization: this.authorization(),

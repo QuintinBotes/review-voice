@@ -37,6 +37,19 @@ export function webHost(baseUrl: string = apiBaseUrl()): string {
 
 /** owner/repo of a git remote URL on that web host, or null. */
 export function remoteRepository(url: string, host: string = webHost()): string | null {
-  const escaped = host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`${escaped}[:/]([^/]+/[^/]+?)(?:\\.git)?$`).exec(url)?.[1] ?? null;
+  let authority: string;
+  let path: string;
+  if (url.includes('://')) {
+    const remote = URL.parse(url);
+    if (!remote || !['https:', 'http:', 'git:', 'ssh:'].includes(remote.protocol) || remote.search || remote.hash) return null;
+    authority = remote.host;
+    path = remote.pathname.slice(1);
+  } else {
+    const scp = /^(?:[\w.-]+@)?([\w.-]+):(.+)$/.exec(url);
+    if (!scp) return null;
+    authority = scp[1]!;
+    path = scp[2]!;
+  }
+  if (authority.toLowerCase() !== host.toLowerCase()) return null;
+  return /^([\w.-]+\/[\w.-]+?)(?:\.git)?$/.exec(path)?.[1] ?? null;
 }

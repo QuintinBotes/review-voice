@@ -140,6 +140,7 @@ export class ReviewWriter {
 
     const response = await this.doFetch(`${this.baseUrl}${path}`, {
       method: 'POST',
+      redirect: 'manual',
       headers: {
         accept: 'application/vnd.github+json',
         authorization: `Bearer ${(this.token ??= githubToken())}`,
