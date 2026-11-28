@@ -32,11 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and when CI was pending so the verdict was not posted. A green skip read as a
   review that ran, and a held review's one log line read as an approval that
   failed to post (#533).
-- An approval posted with a workflow token in a repository that does not let
-  GitHub Actions approve pull requests (GitHub's default) failed the job with a
-  422, so only clean changes got a red check. GitHub sends nothing in that case,
-  so the job now passes with a warning naming the setting, and docs/ACTION.md
-  says how to turn it on (#535).
+- The Action never approves. An approval from a workflow token was refused
+  with a 422 in a repository that does not let GitHub Actions approve pull
+  requests (GitHub's default), which failed the job and dropped the review's
+  findings, so only clean changes got a red check. A review that would approve
+  is now posted as a COMMENT with its findings and summary line, as
+  `verdict.never_approve` does, and a person approves (#535, #554).
 - A pull request whose largest source file GitHub sent no patch for (too large
   to diff) was approved with that file unread. On review-voice-scratch#3 a
   40,007-line source file went unread under "No problems found". A changed

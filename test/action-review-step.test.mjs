@@ -251,35 +251,6 @@ test('#533: a review whose head moved says so in the log', (t) => {
   assert.match(result.stdout, /^Review Voice: the head moved during the review; a newer run covers it\.$/m);
 });
 
-// The live note of run 46046452274 on review-voice-scratch#1, in a repository that does not let Actions approve.
-const NOT_PERMITTED =
-  'post exited 1: GitHub returned 422 for /repos/QuintinBotes/review-voice-scratch/pulls/1/reviews: {"message":"Unprocessable Entity","errors":["GitHub Actions is not permitted to approve pull requests."],"documentation_url":"https://docs.github.com/rest/pulls/reviews#create-a-review-for-a-pull-request","status":"422"}';
-
-test('#535: an approval the workflow token may not send passes the job with one warning naming the setting', (t) => {
-  const report = JSON.stringify({
-    exitCode: 1,
-    verdict: { event: 'APPROVE', action: 'post', reasons: [] },
-    findings: [],
-    held: [],
-    posted: false,
-    notes: ["Reviewed changes to this pull request's own diff since 8f50952; base-branch changes merged in were not reviewed.", NOT_PERMITTED],
-  });
-  const result = run(t, scratch(t), { post: 'true', report, code: 1 });
-  assert.equal(result.status, 0);
-  const annotations = result.stdout.split('\n').filter((line) => line.startsWith('::'));
-  assert.equal(annotations.length, 1);
-  assert.match(annotations[0], /^::warning::Review Voice: the review approves, but this repository does not let GitHub Actions approve pull requests/);
-  assert.match(annotations[0], /Workflow permissions/);
-});
-
-test('#535: any other failed post still fails the job', (t) => {
-  const other = NOT_PERMITTED.replace('GitHub Actions is not permitted to approve pull requests.', 'Review cannot be submitted.');
-  const report = JSON.stringify({ exitCode: 1, verdict: { event: 'APPROVE', action: 'post' }, notes: [other] });
-  const result = run(t, scratch(t), { post: 'true', report, code: 1 });
-  assert.equal(result.status, 1);
-  assert.match(result.stdout, /^::error::Review Voice: post exited 1: GitHub returned 422/m);
-});
-
 test('#508: a report that is not JSON adds no verdict line', (t) => {
   const result = run(t, scratch(t), { report: 'not json' });
   assert.equal(result.stdout.includes('Review Voice: verdict'), false);
