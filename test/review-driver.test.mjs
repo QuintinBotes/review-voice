@@ -295,6 +295,22 @@ test('a candidate off the diff goes back alone to be re-anchored, then passes', 
   assert.equal(JSON.parse(readFileSync(join(report.runDir, 'checked.json'), 'utf8')).kept.length, 0, 'withdrawn');
 });
 
+// #553: on QuintinBotes/memory#149 one candidate kept a bad anchor after its
+// retry, and the whole review stopped with exit 7, failing the job.
+test('#553: a candidate still off the diff after its retry is dropped and held, and the review finishes', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const offDiff = { ...CANDIDATE, line: 1 };
+  const fakeDir = fakes(t, { 'diff-analyst': [{ candidates: [offDiff] }, { candidates: [offDiff] }] });
+  const { report } = await review(t, repo, fakeDir, fakeGitHub(repo));
+  assert.equal(report.exitCode, 0, report.error);
+  const held = report.held.find((entry) => entry.source === 'check-candidates');
+  assert.ok(held, JSON.stringify(report.held));
+  assert.deepEqual([held.verdict, held.path, held.line, held.candidateId, held.severity], ['unverified', 'src/app.ts', 1, 'cand_001', 'minor']);
+  assert.match(held.reason, /^dropped after a retry: /);
+  assert.ok(report.notes.includes("Dropped 1 candidate(s) whose anchor still failed after a retry; the rest of the review went on."), JSON.stringify(report.notes));
+  assert.equal(JSON.parse(readFileSync(join(report.runDir, 'checked.json'), 'utf8')).kept.length, 0);
+});
+
 test('(e) an analyst that fails twice stops the run with exit 7 and records nothing', async (t) => {
   const repo = repository(t, { 'src/app.ts': APP_HEAD });
   const fakeDir = fakes(t, { 'diff-analyst': [new Error('model refused'), new Error('model refused again')] });
@@ -2485,5 +2501,36 @@ test('#525: outside Actions the same refusal still stops the post, with GitHub\'
     assert.ok(report.notes.some((note) => /^post exited 1: could not re-read the thread before sending: GitHub returned 403 for \/user/.test(note)), JSON.stringify(report.notes));
   } finally {
     if (saved !== undefined) process.env.GITHUB_ACTIONS = saved;
+  }
+});
+
+test('the PR driver exposes trusted comparisons, indexed definitions and co-change context with repository commands disabled', async t => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-comparisons-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const artifact = join(data, 'comparison.json');
+  const indexed = join(data, 'index.json');
+  writeFileSync(artifact, JSON.stringify({ base: repo.base, head: repo.head, reports: [
+    { format: 'jscpd', data: { duplicates: [{ isNew: true, firstFile: { name: 'src/app.ts', start: 3, end: 3 }, secondFile: { name: 'src/other.ts', start: 8, end: 8 } }] } },
+  ] }));
+  writeFileSync(indexed, JSON.stringify({ repository: REPO, revision: repo.head, repositoryRoot: 'file:///producer',
+    index: { metadata: { project_root: 'file:///producer' }, documents: [{ relative_path: 'src/app.ts', occurrences: [] }] } }));
+  const env = { REVIEW_VOICE_COMPARISON_REPORT: artifact, REVIEW_VOICE_SCIP_INDEX: indexed, REVIEW_VOICE_CO_CHANGE: '1', REVIEW_VOICE_NO_COMMANDS: '1' };
+  const previous = { ...process.env };
+  Object.assign(process.env, env);
+  try {
+    const fakeDir = fakes(t, fullRun());
+    const report = await reviewIn(repo, fakeDir, fakeGitHub(repo), data, {});
+    assert.equal(report.exitCode, 0, report.error);
+    const read = name => JSON.parse(readFileSync(join(report.runDir, name),'utf8'));
+    assert.equal(read('evidence.json').signals[0].kind, 'introduced_clone');
+    assert.equal(read('evidence.json').skipped, 'REVIEW_VOICE_NO_COMMANDS');
+    assert.equal(read('symbols.json').coChanges.base, repo.base);
+    assert.equal(read('symbols.json').scip.indexes[0].revision, repo.head);
+    assert.ok(callsOf(fakeDir, 'evidence-verifier').some(call => call.prompt.includes('evidence.json')));
+  } finally {
+    for (const key of Object.keys(env)) {
+      if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+    }
   }
 });

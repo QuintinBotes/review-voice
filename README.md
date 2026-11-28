@@ -97,6 +97,8 @@ the owner already dismissed the like of weighs against saying it again.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+Reviewers can also use local [API compatibility, benchmark and clone reports](docs/COMPARISON-EVIDENCE.md) for the commits under review.
+
 ## Install
 
 ```

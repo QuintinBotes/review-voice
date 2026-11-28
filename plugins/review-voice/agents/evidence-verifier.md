@@ -677,3 +677,5 @@ analyst asked for. Set `data-exposure` or `privilege-escalation` when you
 traced that one. They do not replace `impact_traced`: a `trust_boundary`
 finding rises above the analyst's tier only with the usual traced impact and
 0.85 confidence. Leave the field out when you are unsure.
+
+Check an indexed reference against its named revision, symbol, and source line. A base-side reference may already be fixed at the head. For a historical companion, read both current implementations and trace the consequence to the changed cause. Reject a candidate based solely on co-change frequency or on the absence of an indexed reference.

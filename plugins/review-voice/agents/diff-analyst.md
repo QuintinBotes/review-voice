@@ -655,3 +655,5 @@ on three separate runs a review produced nothing because of it. `path` and
 `line` locate the finding; `claim` and `failure_mode` are separate fields
 because the scorer reads only the claim when checking an assertion of absence.
 `suggestion` is not `suggested_fix`.
+
+When symbols.json includes SCIP context, use the indexed identity and its revision to locate callers, including aliased imports. Verify the behavior in source. Index coverage extends only to the documents the producer indexed. Historical co-change peers are optional places to read. A finding requires a present-day mismatch between the changed code and the companion. History and reference counts alone carry no severity or verdict.
