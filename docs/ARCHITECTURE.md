@@ -407,6 +407,21 @@ failed. Zero callers is `callerCount: 0`, a different fact. The driver passes
 flow passes it for a local head commit. The analyst treats `callerCount === 1`
 as a lead for one maintainability nit, never a verdict input.
 
+`review.linked_repositories` names other repositories that may consume this
+one's contracts (#548). When it is set, `symbols` adds a `linked` block: the
+removed declarations, schema keys and literal routes or event names, each looked up with GitHub code search in every linked
+repository that is also in `repositories.include` (docs/adr/0026). A linked
+repository outside the allowlist is listed in `skipped` and never read. Each
+hit in `consumers` gives the repository, path, line and redacted source from
+the matching blob. At most six requests (searches and blob reads) run under
+what is left of the time budget. A spent budget, a truncated result or a failed
+search (no credential, a token that cannot read the repository) sets
+`inconclusive` with a `reason`, and `note` is added to the review's notes; the
+review goes on. The hits are lexical leads on the default branch, not a symbol
+graph, and they never count toward reach (docs/adr/0009). A defect they show is
+anchored on the changed line, with the consumer's `repository/path:line` in the
+claim and evidence, and the verifier must trace it from the fragment.
+
 ### Structural evidence
 
 `diff --out` also writes a `structure` block to `files.json` and its summary:

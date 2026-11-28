@@ -147,6 +147,12 @@ export interface LoadedConfig {
    * a vendored dependency (issue 351). None by default.
    */
   firstPartyPaths: string[];
+  /**
+   * `review.linked_repositories`: other `owner/repo` repositories whose
+   * default branches `symbols` searches for consumers of a changed contract
+   * (#548). Only those also in `allowlist` are ever read.
+   */
+  linkedRepositories: string[];
   layers: PolicyLayer[];
   /**
    * The structured suppressions of every layer, as `resolvePolicy` resolves
@@ -190,6 +196,7 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
   review: [
     'human_review', 'structure', 'mode', 'models', 'confidence_threshold', 'minor_confidence_threshold', 'final_score_threshold',
     'lanes', 'suggestions', 'linked_issues', 'max_findings', 'max_words_per_finding', 'max_total_words', 'first_party_paths',
+    'linked_repositories',
   ],
   'review.human_review': [
     'max_decision_points', 'max_hunk_decision_points', 'sensitive_paths', 'sensitive_exempt_paths', 'test_paths',
@@ -1486,6 +1493,11 @@ export function readConfigDocument(value: unknown, repositoryRoot: string, resul
     if (typeof linkedIssues === 'boolean') result.linkedIssues = linkedIssues;
     else if (linkedIssues !== undefined) result.warnings.push('review.linked_issues must be true or false; using false.');
     result.firstPartyPaths = readFirstPartyPaths(review['first_party_paths'], result.warnings);
+    for (const entry of asStringArray(review['linked_repositories'])) {
+      const problem = allowlistEntryProblem(entry);
+      if (problem === null && !entry.includes('*')) result.linkedRepositories.push(entry);
+      else result.warnings.push(`review.linked_repositories: "${entry}" is not owner/repo. Skipping it.`);
+    }
     result.layers.push({
       scope: { type: 'repository', key: repositoryRoot },
       source: '.review-voice/config.yaml',
@@ -1579,6 +1591,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     thresholds: {},
     linkedIssues: false,
     firstPartyPaths: [],
+    linkedRepositories: [],
     layers: [],
     suppressions: [],
     activePolicyVersions: [],

@@ -49,6 +49,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorded, or with no finding comment, is skipped, so a second run records
   nothing twice. No reply is offered under a recovered thread
   (docs/adr/0042, #529).
+- A change to a contract another repository consumes is checked against that
+  repository. `review.linked_repositories` names them; `symbols` looks up each
+  declaration the change removes, renames or re-signs with GitHub code search
+  in the linked repositories that are also in `repositories.include`, at most
+  six searches per review, and lists the hits in `symbols.json` as `linked`
+  for the analyst and verifier, so a consumer broken next door can be raised
+  on the changed line. A linked repository outside the allowlist is never
+  read; no credential, a failed search or a spent budget leaves a note and the
+  review goes on. Linked consumers never count toward reach (docs/adr/0026,
+  docs/adr/0009) (#548).
 - A static evidence command can name the LCOV or Cobertura XML coverage
   report it writes, as `static_evidence.commands[].coverage`. Each line the
   change added or modified that the report lists as executable with no hits

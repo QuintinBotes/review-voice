@@ -1,9 +1,10 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { DEFAULT_TEST_PATHS } from '../diff/complexity.ts';
 import { collectSymbolContext, DEFAULT_MAX_MS } from '../diff/symbols.ts';
+import { linkedConsumers } from '../diff/linked.ts';
 import { coChanges } from '../diff/co-change.ts';
 import { scipContext } from '../diff/scip.ts';
-import { inferRepository, flag, resolveOutPath, repositoryConfig, refExists } from './shared.ts';
+import { flag, githubClient, inferRepository, resolveOutPath, repositoryConfig, refExists } from './shared.ts';
 
 /**
  * Gives the agents a bounded list of places worth reading after the diff.
@@ -71,7 +72,16 @@ export async function symbolsCommand(argv: string[]): Promise<number> {
   const scip = scipFile ? scipContext(scipFile, repository, argv.includes('--scip-head-only') ? null : base, head, diff, deadline) : undefined;
   const history = process.env['REVIEW_VOICE_CO_CHANGE'] === '1'
     ? await coChanges(process.cwd(), base, lexical.files.map(f => f.path), config?.firstPartyPaths ?? [], deadline) : undefined;
-  const result = { ...lexical, scip, coChanges: history };
+  // Consumers in linked repositories (#548), under what is left of the same budget.
+  const linked = config === null || config.linkedRepositories.length === 0
+    ? undefined
+    : await linkedConsumers({
+      diff,
+      linked: config.linkedRepositories,
+      client: githubClient(config.allowlist, true),
+      remaining: () => deadline - Date.now(),
+    });
+  const result = { ...lexical, scip, coChanges: history, linked };
   const contextNotes = [...(scip?.notes ?? []), ...(history?.reason ? [history.reason] : [])];
   const out = flag(argv, '--out');
   if (out === null) {
@@ -91,6 +101,7 @@ export async function symbolsCommand(argv: string[]): Promise<number> {
           downstreamFiles: result.downstreamFiles,
           inconclusiveFiles: result.files.filter((file) => file.inconclusive === true).length,
           budgetExhausted: result.budget.exhausted,
+          ...(linked === undefined ? {} : { linkedConsumers: linked.consumers.length, ...(linked.note === undefined ? {} : { linkedNote: linked.note }) }),
         },
         null,
         2,

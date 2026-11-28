@@ -518,7 +518,10 @@ async function prep(run: Run): Promise<void> {
     '--out',
     at(run, 'symbols.json'),
   ]);
-  const contextNotes = parsed(symbols.stdout).contextNotes;
+  const symbolSummary = parsed(symbols.stdout);
+  const linkedNote = symbolSummary['linkedNote'];
+  if (typeof linkedNote === 'string') run.notes.push(linkedNote);
+  const contextNotes = symbolSummary.contextNotes;
   if (Array.isArray(contextNotes)) for (const note of contextNotes) if (typeof note === 'string') run.notes.push(note);
   const followUps = branch ? JSON.stringify({ followUps: [] }) : (await must(run, ['follow-ups', ...pr])).stdout;
   writeFileSync(at(run, 'follow-ups.json'), followUps);

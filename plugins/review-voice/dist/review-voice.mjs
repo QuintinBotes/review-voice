@@ -11162,6 +11162,8 @@ function allowlistEntryProblem(entry) {
   if (parts.length !== 2 || parts[0] === "" || parts[1] === "") return `"${entry}" is not owner/repo or owner/*.`;
   return null;
 }
+var CODE_SEARCH_TERM = /^[/A-Za-z_$][A-Za-z0-9_$/.-]{2,99}$/;
+var CODE_SEARCH_PER_PAGE = 10;
 var SEARCH_BASE = "is:pr is:open draft:false";
 var SEARCH_PER_PAGE = 100;
 var SEARCH_MAX_PAGES = 5;
@@ -11333,7 +11335,7 @@ var GitHubClient = class {
     return this.request(path, init.retryRateLimits !== false);
   }
   /** The GET itself, once the caller has checked the path. */
-  async request(path, retryRateLimits) {
+  async request(path, retryRateLimits, accept = "application/vnd.github+json", signal2) {
     const { url: resolved, apiPath } = this.resolve(path);
     const url = resolved.href;
     for (let attempt = 0; ; attempt += 1) {
@@ -11341,8 +11343,9 @@ var GitHubClient = class {
         method: "GET",
         // A 3xx then comes back as a non-ok response, which the check below refuses.
         redirect: "manual",
+        signal: signal2,
         headers: {
-          accept: "application/vnd.github+json",
+          accept,
           authorization: this.authorization(),
           "x-github-api-version": "2022-11-28",
           "user-agent": "review-voice"
@@ -11478,6 +11481,63 @@ var GitHubClient = class {
       if (page === SEARCH_MAX_PAGES) truncated = true;
     }
     return { pullRequests, outsideAllowlist, truncated };
+  }
+  /**
+   * Files on the default branch of one allowlisted repository that mention
+   * `term`, from `GET /search/code` (docs/adr/0026, amended for #548). The
+   * query is built here from an identifier and the one repository, never from
+   * caller text, and a result from any other repository is dropped unread.
+   * One page of ten, no rate-limit retry: the caller can do without it.
+   */
+  async searchCode(term, repository, signal2) {
+    const [owner, name, ...rest] = repository.split("/");
+    if (owner === void 0 || name === void 0 || rest.length > 0 || !GITHUB_NAME.test(owner) || !REPOSITORY_NAME.test(name) || !this.allows(repository)) {
+      throw new NotAllowlisted(`${repository} is not in the allowlist, so it is never searched.`);
+    }
+    if (!CODE_SEARCH_TERM.test(term)) throw new NotAllowlisted(`Refused a code search for ${JSON.stringify(term)}: only an identifier is searched.`);
+    const q = encodeURIComponent(`"${term}" repo:${owner}/${name}`);
+    const { data } = await this.request(
+      `/search/code?q=${q}&per_page=${CODE_SEARCH_PER_PAGE}`,
+      false,
+      // Asks for `text_matches`, the fragment that names the term.
+      "application/vnd.github.text-match+json",
+      signal2
+    );
+    if (!Array.isArray(data?.items)) throw new Error("Code search returned no items array.");
+    const items = data.items;
+    const matches = [];
+    for (const item of items) {
+      const full2 = item?.["repository"]?.full_name;
+      const path = item?.["path"];
+      if (typeof full2 !== "string" || full2.toLowerCase() !== repository.toLowerCase() || typeof path !== "string") continue;
+      const fragments = (Array.isArray(item["text_matches"]) ? item["text_matches"] : []).map((match) => match?.fragment).filter((fragment) => typeof fragment === "string");
+      const blob = item["sha"];
+      if (typeof blob !== "string" || !/^[a-f0-9]{40}$/i.test(blob)) throw new Error("Code search returned no file revision.");
+      matches.push({ repository: full2, path, blob, fragments });
+    }
+    const total = typeof data?.total_count === "number" ? data.total_count : matches.length;
+    return { matches, truncated: data?.incomplete_results === true || total > items.length };
+  }
+  /** Read the exact blob returned by code search. A large or binary file supplies no line evidence. */
+  async readSearchBlob(repository, sha2, signal2) {
+    if (!this.allows(repository) || !/^[a-f0-9]{40}$/i.test(sha2)) throw new NotAllowlisted("Invalid search result.");
+    const path = `/repos/${repository}/git/blobs/${sha2}`;
+    this.assertAllowed(path);
+    const response = await this.doFetch(this.resolve(path).url, {
+      method: "GET",
+      redirect: "error",
+      signal: signal2,
+      headers: { accept: "application/vnd.github.raw+json", authorization: this.authorization() }
+    });
+    if (!response.ok || !response.body) throw new Error(`GitHub blob read returned ${response.status}.`);
+    let bytes = 0;
+    const chunks = [];
+    for await (const chunk of response.body) {
+      bytes += chunk.byteLength;
+      if (bytes > 256 * 1024 || chunk.includes(0)) throw new Error("Consumer file is binary or exceeds 256 KiB.");
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks).toString("utf8");
   }
   /** Follows pagination up to `limit` items, so a huge repository cannot run away. */
   async paginate(path, limit) {
@@ -17712,7 +17772,8 @@ var CONFIG_KEYS = {
     "max_findings",
     "max_words_per_finding",
     "max_total_words",
-    "first_party_paths"
+    "first_party_paths",
+    "linked_repositories"
   ],
   "review.human_review": [
     "max_decision_points",
@@ -18824,6 +18885,11 @@ function readConfigDocument(value, repositoryRoot2, result, honourRunners) {
     if (typeof linkedIssues === "boolean") result.linkedIssues = linkedIssues;
     else if (linkedIssues !== void 0) result.warnings.push("review.linked_issues must be true or false; using false.");
     result.firstPartyPaths = readFirstPartyPaths(review2["first_party_paths"], result.warnings);
+    for (const entry of asStringArray(review2["linked_repositories"])) {
+      const problem = allowlistEntryProblem(entry);
+      if (problem === null && !entry.includes("*")) result.linkedRepositories.push(entry);
+      else result.warnings.push(`review.linked_repositories: "${entry}" is not owner/repo. Skipping it.`);
+    }
     result.layers.push({
       scope: { type: "repository", key: repositoryRoot2 },
       source: ".review-voice/config.yaml",
@@ -18893,6 +18959,7 @@ function loadConfig(repositoryRoot2, baselinePath, path, db, source) {
     thresholds: {},
     linkedIssues: false,
     firstPartyPaths: [],
+    linkedRepositories: [],
     layers: [],
     suppressions: [],
     activePolicyVersions: [],
@@ -25804,7 +25871,10 @@ async function prep(run) {
     "--out",
     at(run, "symbols.json")
   ]);
-  const contextNotes = parsed(symbols.stdout).contextNotes;
+  const symbolSummary = parsed(symbols.stdout);
+  const linkedNote = symbolSummary["linkedNote"];
+  if (typeof linkedNote === "string") run.notes.push(linkedNote);
+  const contextNotes = symbolSummary.contextNotes;
   if (Array.isArray(contextNotes)) {
     for (const note of contextNotes) if (typeof note === "string") run.notes.push(note);
   }
@@ -26867,8 +26937,8 @@ function inProcessState() {
 function setInProcess(value) {
   inProcess = value;
 }
-function githubClient(allowlist) {
-  return new GitHubClient({ allowlist, ...inProcess?.fetchImpl === void 0 ? {} : { fetchImpl: inProcess.fetchImpl } });
+function githubClient(allowlist, allowGlobs = false) {
+  return new GitHubClient({ allowlist, allowGlobs, ...inProcess?.fetchImpl === void 0 ? {} : { fetchImpl: inProcess.fetchImpl } });
 }
 function readStdin() {
   if (inProcess !== null) return inProcess.stdin;
@@ -33745,6 +33815,67 @@ function collectSymbolContext(options) {
   };
 }
 
+// plugins/review-voice/src/diff/linked.ts
+var MAX_LINKED_REQUESTS = 6;
+var MAX_FRAGMENT = 300;
+function contractNames(diff) {
+  const names = new Set(declarationsFromDiff(diff).filter((declaration) => !declaration.added && declarationSearchTokens(declaration.name) !== null).map((declaration) => declaration.name));
+  for (const line3 of diff.split("\n")) {
+    if (!line3.startsWith("-") || line3.startsWith("---")) continue;
+    const literal = /^-\s*["']([A-Za-z_$][\w$.-]{2,99})["']\s*:/.exec(line3) ?? /\b(?:get|post|put|patch|delete|publish|subscribe|emit)\(\s*["']([/A-Za-z_$][\w$/.-]{2,99})["']/i.exec(line3);
+    if (literal?.[1]) names.add(literal[1]);
+  }
+  return [...names];
+}
+async function linkedConsumers(options) {
+  const searched = options.linked.filter((repository) => options.client.allows(repository));
+  const skipped = options.linked.filter((repository) => !options.client.allows(repository));
+  const symbols = contractNames(options.diff);
+  const result = { searched, skipped, symbols, consumers: [] };
+  const maxRequests = options.maxRequests ?? MAX_LINKED_REQUESTS;
+  let requests = 0;
+  function reserve() {
+    const ms = options.remaining();
+    if (ms <= 0 || requests >= maxRequests) {
+      result.reason = ms <= 0 ? "time-budget" : "request-budget";
+      throw new Error(ms <= 0 ? "the time budget ran out" : `the budget of ${maxRequests} GitHub requests ran out`);
+    }
+    requests += 1;
+    return AbortSignal.timeout(Math.min(ms, 2147483647));
+  }
+  try {
+    for (const symbol of symbols) {
+      for (const repository of searched) {
+        const found2 = await options.client.searchCode(symbol, repository, reserve());
+        if (found2.truncated) {
+          result.inconclusive = true;
+          result.note = "Linked consumers were only partly checked because GitHub truncated its search results.";
+        }
+        for (const match of found2.matches) {
+          const source = await options.client.readSearchBlob(repository, match.blob, reserve());
+          const lines2 = source.split(/\r?\n/);
+          const snippets = new Set(match.fragments.flatMap((fragment2) => fragment2.split(/\r?\n/)).filter((line4) => line4.includes(symbol)).map((line4) => line4.trim()));
+          const line3 = lines2.findIndex((text5) => snippets.has(text5.trim()));
+          if (line3 < 0) throw new Error("The consumer fragment could not be located in its blob.");
+          const fragment = redact(lines2[line3]).text.slice(0, MAX_FRAGMENT);
+          result.consumers.push({ symbol, repository: match.repository, path: match.path, line: line3 + 1, fragments: [fragment] });
+        }
+      }
+    }
+  } catch (error) {
+    result.inconclusive = true;
+    const timedOut = error instanceof Error && error.name === "TimeoutError";
+    result.reason ??= timedOut ? "time-budget" : "search-failed";
+    const message = timedOut ? "the time budget ran out" : redact(error instanceof Error ? error.message : String(error)).text.slice(0, 160);
+    result.note = `Linked consumers were not fully checked: ${message}.`;
+  }
+  if (skipped.length > 0) {
+    const outside = `${skipped.join(", ")} ${skipped.length === 1 ? "is" : "are"} linked but not in repositories.include, so never read.`;
+    result.note = result.note === void 0 ? outside : `${result.note} ${outside}`;
+  }
+  return result;
+}
+
 // plugins/review-voice/src/diff/co-change.ts
 var safeRepoPath = (path) => path.length <= 2048 && !/[:\\\x00-\x1f]/.test(path) && !path.split("/").some((p2) => p2 === "" || p2 === "." || p2 === "..");
 async function coChanges(cwd, base, changed, firstPartyPaths, deadline) {
@@ -33993,7 +34124,13 @@ async function symbolsCommand(argv) {
   const repository = flag2(argv, "--repository") ?? (scipFile ? inferRepository(process.cwd()) : null);
   const scip = scipFile ? scipContext(scipFile, repository, argv.includes("--scip-head-only") ? null : base, head, diff, deadline) : void 0;
   const history = process.env["REVIEW_VOICE_CO_CHANGE"] === "1" ? await coChanges(process.cwd(), base, lexical.files.map((f) => f.path), config2?.firstPartyPaths ?? [], deadline) : void 0;
-  const result = { ...lexical, scip, coChanges: history };
+  const linked = config2 === null || config2.linkedRepositories.length === 0 ? void 0 : await linkedConsumers({
+    diff,
+    linked: config2.linkedRepositories,
+    client: githubClient(config2.allowlist, true),
+    remaining: () => deadline - Date.now()
+  });
+  const result = { ...lexical, scip, coChanges: history, linked };
   const contextNotes = [...scip?.notes ?? [], ...history?.reason ? [history.reason] : []];
   const out = flag2(argv, "--out");
   if (out === null) {
@@ -34011,7 +34148,8 @@ async function symbolsCommand(argv) {
           files: result.files.length,
           downstreamFiles: result.downstreamFiles,
           inconclusiveFiles: result.files.filter((file2) => file2.inconclusive === true).length,
-          budgetExhausted: result.budget.exhausted
+          budgetExhausted: result.budget.exhausted,
+          ...linked === void 0 ? {} : { linkedConsumers: linked.consumers.length, ...linked.note === void 0 ? {} : { linkedNote: linked.note } }
         },
         null,
         2
