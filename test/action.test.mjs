@@ -9,10 +9,11 @@ const steps = action.runs.steps;
 
 test('declares the inputs with their defaults', () => {
   const { inputs } = action;
-  for (const name of ['mode', 'post', 'anthropic-api-key', 'github-token', 'claude-code-version', 'config', 'fail-open']) {
+  for (const name of ['mode', 'post', 'anthropic-api-key', 'claude-code-oauth-token', 'provider', 'github-token', 'claude-code-version', 'config', 'fail-open']) {
     assert.ok(inputs[name], name);
   }
   assert.equal(inputs.mode.default, 'auto');
+  assert.equal(inputs.provider.default, 'anthropic', 'a workflow that sets no provider keeps the Anthropic API');
   assert.equal(String(inputs.post.default), 'false');
   assert.equal(String(inputs['fail-open'].default), 'false', 'a review that could not run fails the job unless the workflow opts in');
   assert.equal(inputs.config.default, '.review-voice/config.yaml');
@@ -48,7 +49,7 @@ test('secrets reach the review step only through env', () => {
   const review = steps.find((s) => s.id === 'review');
   assert.match(review.run, /\$GITHUB_ACTION_PATH\/plugins\/review-voice\/dist\/review-voice\.mjs/);
   assert.doesNotMatch(review.run, /\$\{\{/);
-  assert.ok(review.env.ANTHROPIC_API_KEY && review.env.GITHUB_TOKEN);
+  assert.ok(review.env.ANTHROPIC_API_KEY && review.env.CLAUDE_CODE_OAUTH_TOKEN && review.env.GITHUB_TOKEN);
 });
 
 // Two pull requests reviewed at once must not restore, then overwrite, each

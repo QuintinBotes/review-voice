@@ -516,7 +516,7 @@ test('evaluate --json prints the EvaluationReport shape, with every key equal to
     const result = cli(['evaluate', '--json'], dir);
     assert.equal(result.code, 0, result.stderr);
     const parsed = JSON.parse(result.stdout);
-    assert.deepEqual(Object.keys(parsed), ['generated_at', 'window_days', 'metrics', 'posted_breakdown', 'precision_breakdown', 'stage_seconds', 'rule_effectiveness', 'by_family', 'approval_breakdown']);
+    assert.deepEqual(Object.keys(parsed), ['generated_at', 'window_days', 'metrics', 'posted_breakdown', 'precision_breakdown', 'stage_seconds', 'rule_effectiveness', 'by_family', 'approval_breakdown', 'missed_breakdown']);
     assert.match(parsed.generated_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     assert.equal(parsed.window_days, 30);
     assert.equal(JSON.parse(cli(['evaluate', '--json', '--since', '7d'], dir).stdout).window_days, 7);

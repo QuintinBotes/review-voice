@@ -426,3 +426,16 @@ test('the review_run_recorded audit row carries the origin', (t) => {
     assert.equal(JSON.parse(audit[0].metadata_json).origin, 'action');
   });
 });
+
+test('an Action invocation records its fixed trigger across a store round trip', t => {
+  const data = dataDir(t);
+  const old = process.env.REVIEW_VOICE_ACTION_TRIGGER;
+  try {
+    for (const trigger of ['workflow_dispatch','pull_request','pull_request_target','unrecognized']) {
+      process.env.REVIEW_VOICE_ACTION_TRIGGER = trigger;
+      assert.equal(recordedBy(data,['--origin','action']).provenance.trigger, trigger === 'unrecognized' ? undefined : trigger);
+    }
+  } finally {
+    if (old === undefined) delete process.env.REVIEW_VOICE_ACTION_TRIGGER; else process.env.REVIEW_VOICE_ACTION_TRIGGER = old;
+  }
+});

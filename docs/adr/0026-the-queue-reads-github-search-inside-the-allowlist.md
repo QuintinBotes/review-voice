@@ -57,3 +57,29 @@ was never asked to review.
 
 **Accept a raw search query.** Rejected. A query is the easiest place to reach
 outside the allowlist by accident.
+
+## Amendment 2026-11-28 - code search for linked consumers (#548)
+
+A change can break a consumer in another repository, which neither this
+repository's tree nor its CI can show. The client may now also send
+`GET /search/code`, through `searchCode` only, under the same rules as
+`/search/issues`:
+
+- The query is built by the client from one bounded identifier, schema key, event name or route
+  and one repository, `"<name>" repo:<owner>/<repo>`. A repository outside the
+  allowlist, or any other term, is refused before a request is sent.
+- A result whose `repository.full_name` is not the searched repository is
+  dropped unread. One page of ten results, no rate-limit retry.
+- Only `review.linked_repositories` are searched, and only those also in
+  `repositories.include`; the rest are skipped with a note. `symbols` searches
+  the names of declarations on removed lines (a removal, a rename or a new
+  signature leaves one) and selected literal contract names. Searches and exact blob
+  reads share a six-request limit and the remaining time budget.
+- A failed search (no credential, a token that cannot read the repository, a
+  rate limit) or a spent budget marks the result inconclusive and adds a note
+  to the review. It never fails the review.
+
+The hits are lexical leads, as `symbols` references are: no symbol graph or
+index is built (docs/adr/0009). Text from another repository is redacted and
+is evidence, never instructions. Linked consumers do not count toward reach;
+see the amendment to docs/adr/0009.

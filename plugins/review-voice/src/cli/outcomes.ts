@@ -34,11 +34,14 @@ export async function outcomesCommand(argv: string[]): Promise<number> {
   // The config is read even with --repository: the owner's login decides whose
   // reply is an owner signal, whichever repository is named.
   let ownerReviewer: string | null = null;
+  // Whose later comments are read as reviewer findings (#550): the owner and `identity.reviewers`.
+  let reviewers: string[] = [];
   let windowDays = DEFAULT_OUTCOMES.approvalWindowDays;
   let recoverFrom: string[] = [...DEFAULT_OUTCOMES.recoverFrom];
   try {
     const config = loadConfig(repositoryRoot(process.cwd()));
     ownerReviewer = config.ownerReviewer;
+    reviewers = config.reviewers;
     windowDays = config.outcomes.approvalWindowDays;
     recoverFrom = config.outcomes.recoverFrom;
     if (repository === null) allowlist = config.allowlist;
@@ -80,6 +83,7 @@ export async function outcomesCommand(argv: string[]): Promise<number> {
       repository: repository ?? undefined,
       since,
       ownerReviewer,
+      reviewers,
     });
     for (const warning of result.warnings) console.error(warning);
     for (const skipped of result.skipped) {
@@ -112,11 +116,17 @@ export async function outcomesCommand(argv: string[]): Promise<number> {
       console.log(`${o.repository}#${o.pullNumber} ${o.findingId} ${o.path}:${o.line} ${o.outcome} (${o.strength}): ${o.evidence}`);
     }
     for (const question of result.questions) console.log(pendingQuestionLine(question));
+    for (const r of result.reviewerFindings) {
+      const stage = r.stage === null ? '' : ` at ${r.stage}`;
+      console.log(`${r.repository}#${r.pullNumber} reviewer ${r.author} ${r.path}:${r.line} ${r.class}${stage}, ${r.outcome} (${r.strength}): ${r.evidence}`);
+    }
     const count = (name: string): number => result.outcomes.filter((o) => o.outcome === name).length;
     console.log(
       `${result.outcomes.length} finding(s) tracked: ${count('fixed')} fixed, ${count('dismissed')} dismissed, ` +
         `${count('resolved')} resolved, ${count('outdated')} outdated, ${count('open')} open, ${count('unknown')} unknown`,
     );
+    const missed = result.reviewerFindings.filter((r) => r.outcome === 'fixed' && r.strength === 'strong' && r.class !== 'also_posted').length;
+    console.log(`${result.reviewerFindings.length} reviewer comment(s) after a review followed: ${missed} fixed and not posted (missed)`);
     return 0;
   } finally {
     db.close();

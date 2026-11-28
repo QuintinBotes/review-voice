@@ -1,5 +1,6 @@
 import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGit } from '../git-exec.ts';
 import { GitHubClient } from '../github/client.ts';
+import { remoteRepository } from '../github/host.ts';
 import { classify, handEditedCandidates, hasDoNotEditHeader, firstPartyMatcher, isReviewable, languageOf } from './classify.ts';
 import { COVERED_EARLIER, excludedReason, FILE_DELETED, NO_PATCH, SAME_AS_BASE_TIP, summariseExclusions } from './exclusions.ts';
 import type { ChangedFile, DiffResult } from './acquire.ts';
@@ -115,7 +116,7 @@ async function mergeBaseOf(base: string, head: string, cwd: string): Promise<str
 export async function originRepository(cwd: string): Promise<string | null> {
   try {
     const url = (await git(['remote', 'get-url', 'origin'], cwd, 10_000)).trim();
-    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
+    return remoteRepository(url);
   } catch {
     return null;
   }

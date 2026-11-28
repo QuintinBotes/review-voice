@@ -46,11 +46,117 @@ Add one secret, `ANTHROPIC_API_KEY`, under your repository's Actions secrets. Th
 | --- | --- | --- |
 | `mode` | `auto` | Cost mode: `auto`, `fast`, `standard` or `thorough` |
 | `post` | `false` | Post the review to the pull request |
-| `anthropic-api-key` | none | Required for a review; empty means the action skips |
+| `provider` | `anthropic` | Where the model runs: `anthropic`, `bedrock`, `vertex` or `foundry`. See [Credentials](#credentials) |
+| `anthropic-api-key` | none | With `provider: anthropic`, the key a review runs on |
+| `claude-code-oauth-token` | none | With `provider: anthropic`, a token from `claude setup-token` in place of the key; with neither the action skips |
 | `github-token` | the workflow token | Reads the pull request and authors a posted review |
 | `claude-code-version` | pinned | Version of Claude Code to install |
 | `config` | `.review-voice/config.yaml` | A repository-relative path, read from the pull request's base commit |
 | `fail-open` | `false` | Pass the job when the review is unavailable on a low-risk change (`failed_open`) |
+
+## Credentials
+
+The workflow picks the provider with the `provider` input; nothing in the pull
+request or the repository config can change it. The agents' process gets the
+chosen provider's selection and the job's environment, and never
+`GITHUB_TOKEN`, `GH_TOKEN` or `REVIEW_VOICE_*`.
+
+| `provider` | Credential the gate looks for | Model host |
+| --- | --- | --- |
+| `anthropic` | `anthropic-api-key` or `claude-code-oauth-token` | `api.anthropic.com` |
+| `bedrock` | `AWS_ACCESS_KEY_ID`, `AWS_BEARER_TOKEN_BEDROCK`, `AWS_PROFILE` or `AWS_WEB_IDENTITY_TOKEN_FILE` | `bedrock-runtime.<region>.amazonaws.com` |
+| `vertex` | `GOOGLE_APPLICATION_CREDENTIALS` | `aiplatform.googleapis.com` or its regional host |
+| `foundry` | `ANTHROPIC_FOUNDRY_API_KEY` or `AZURE_CLIENT_ID` | `<resource>.services.ai.azure.com` |
+
+With a cloud provider, the provider's own login step runs first and exchanges
+the workflow's OIDC token for short-lived credentials, so no long-lived secret
+is stored; the job needs `id-token: write`. Grant the role only model
+invocation (docs: [Bedrock](https://code.claude.com/docs/en/amazon-bedrock#iam-configuration),
+[Google Cloud](https://code.claude.com/docs/en/google-vertex-ai#iam-configuration),
+[Foundry](https://code.claude.com/docs/en/microsoft-foundry)). The Anthropic
+key and token are not passed to a cloud provider's review.
+
+A review asks for the `haiku`, `sonnet` and `opus` aliases by cost mode, and
+Claude Code resolves each to the provider's own model ID. Pin them with
+`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL` and
+`ANTHROPIC_DEFAULT_OPUS_MODEL` in the job's `env` when your account offers
+other IDs, such as a Foundry deployment's names. The action sets
+`CLAUDE_CODE_DISABLE_MODEL_ACCESS_FALLBACK=1` for a cloud provider, so a model
+the account cannot use fails the review with the reason in the log instead of
+switching to another model mid-review. The `Cost` line is the figure Claude
+Code reports, or `n/a` when it reports none; the provider's bill is the
+authority.
+
+A Claude Code OAuth token runs on a Claude subscription:
+
+```yaml
+      - uses: QuintinBotes/review-voice@review-voice--v<version>
+        with:
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+```
+
+Amazon Bedrock, through OIDC (the login step exports the credentials and
+`AWS_REGION`):
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+# ...
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: us-west-2
+      - uses: QuintinBotes/review-voice@review-voice--v<version>
+        with:
+          provider: bedrock
+```
+
+Google Cloud's Agent Platform (Vertex AI), through Workload Identity
+Federation:
+
+```yaml
+      - id: gcp
+        if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      - uses: QuintinBotes/review-voice@review-voice--v<version>
+        env:
+          ANTHROPIC_VERTEX_PROJECT_ID: ${{ steps.gcp.outputs.project_id }}
+          CLOUD_ML_REGION: us-east5
+        with:
+          provider: vertex
+```
+
+Microsoft Foundry, through an Entra application with a federated credential.
+`azure/login` exports no variable, so set `AZURE_CLIENT_ID` on the step: a fork
+run gets no secret and skips.
+
+```yaml
+      - if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - uses: QuintinBotes/review-voice@review-voice--v<version>
+        env:
+          ANTHROPIC_FOUNDRY_RESOURCE: your-resource-name
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        with:
+          provider: foundry
+```
+
+The gate only sees variables, so a self-hosted runner whose cloud credentials
+come from instance metadata alone skips; set `AWS_PROFILE` (or the provider's
+variable above) in the job's `env`. Anthropic's own workload identity
+federation (`ANTHROPIC_FEDERATION_RULE_ID`) is not supported yet: Claude Code
+does not read it with `--bare`, and the review's parallel agents would each
+exchange the single-use GitHub OIDC token.
 
 ## Which configuration a review reads
 
@@ -109,14 +215,67 @@ and running it again records nothing twice (docs/adr/0042). A recovered run has
 no category or scores, since the posted text does not carry them, and no reply
 is offered under its threads.
 
+## Asking for a review
+
+A maintainer can ask for a review of a given pull request: a first review when
+the workflow does not run on every push, a full review after incremental ones,
+or a review of a pull request from a fork. Add a `workflow_dispatch` trigger
+with a `pr` input, and optionally `full`:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+      full:
+        description: Review the whole pull request, not only the commits since the last review
+        type: boolean
+        default: false
+
+concurrency:
+  group: review-voice-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+```
+
+Run it from the Actions tab, or with `gh workflow run review-voice.yml -f pr=42`.
+GitHub lets only people with write access dispatch a workflow, so the run
+carries a maintainer's request. No text from the request reaches a model: the
+only inputs are the number and `full`, and the gate refuses a `pr` that is not
+a pull request number. The pull request is read from the API, and the
+configuration is still read from its base commit.
+
+## GitHub Enterprise
+
+On GitHub Enterprise Server (3.9 or later) and GHE.com data residency, nothing
+changes in the workflow. The runner sets `GITHUB_API_URL`, and every read,
+GraphQL query and posted review goes to that host with the workflow token,
+never to `api.github.com` or anywhere else (#545). The pull request cannot
+change the host. On Enterprise Server, `actions/setup-node` and
+`actions/cache` must be available to the runner, through GitHub Connect or a
+synced copy.
+
 ## Forks
 
-Pull requests from forks get no secrets. The action sees an empty key, writes a
-skip line to the log and the job summary and exits 0, so the check does not fail.
+Automatic events skip fork pull requests even when the job has a credential. The gate compares GitHub’s head repository with the event repository. A missing or deleted head also needs a maintainer dispatch. Action runs record the event name in provenance.
+
+To review one, a maintainer dispatches the workflow with its number (above).
+The run has the repository's secrets, so a fork is reviewed from its diff and
+files only. `REVIEW_VOICE_NO_COMMANDS=1` is set, so no static-evidence command,
+reproduction, second-pass command or configured runner runs on its code, and
+the log says so. The agents read the fork's files with the same restricted
+tools as for any pull request, in safe mode, which ignores a CLAUDE.md, skills
+or agents the fork planted. `pull_request_target` with the head checked out is
+still refused.
+
+Guard the cloud login step too, so an automatic fork review can reach the skip without trying to authenticate. The examples above allow a maintainer dispatch or a same-repository pull request.
 
 ## Cost
 
-Each run is one review on your API key. `mode: auto` runs a cheap review when
+Each run is one review on your API key or your provider's account. `mode: auto` runs a cheap review when
 only tests, documentation or configuration changed and a deeper one for large
 or complex changes. The store is cached between runs, so earlier decisions
 carry over.

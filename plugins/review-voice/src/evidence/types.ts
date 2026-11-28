@@ -26,6 +26,12 @@ export interface CommandOutcome {
    * version a SARIF document states, and is absent when neither recorded one.
    */
   version?: string;
+  /**
+   * Why the command's configured coverage report could not be read (issue
+   * 547): missing, stale, unparsable, partial, or no diff to compare it with.
+   * Its lack of `uncovered_line` signals then says nothing about which lines ran.
+   */
+  coverageInconclusive?: string;
   signals: EvidenceSignal[];
 }
 

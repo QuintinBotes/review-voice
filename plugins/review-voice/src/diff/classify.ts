@@ -36,6 +36,18 @@ const LOCKFILES = new Set([
   'Gemfile.lock', 'go.sum', 'gradle.lockfile', 'packages.lock.json',
 ]);
 
+/** Manifests GitHub's dependency graph reads; with the lock files, the files that change dependencies (#546). */
+const MANIFESTS = new Set([
+  'package.json', 'requirements.txt', 'Pipfile', 'pyproject.toml', 'setup.py', 'go.mod', 'Cargo.toml',
+  'Gemfile', 'composer.json', 'pom.xml', 'build.gradle', 'build.gradle.kts', 'packages.config', 'pubspec.yaml',
+]);
+
+/** A lock file or dependency manifest, whose change the diff cannot judge (#546). */
+export function isDependencyFile(path: string): boolean {
+  const name = path.split('/').pop() ?? '';
+  return LOCKFILES.has(name) || MANIFESTS.has(name) || name.endsWith('.csproj');
+}
+
 const VENDOR_SEGMENTS = new Set([
   'node_modules', 'vendor', 'third_party', 'thirdparty', 'bower_components', '.yarn',
 ]);

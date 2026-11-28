@@ -72,7 +72,8 @@ no-findings string are all checked rather than requested.
 
 **It reads your repository's own rules.** `CLAUDE.md`, `AGENTS.md`,
 `CONTRIBUTING.md`, `.agents/rules/` and skill documents reach the analyst and
-the verifier, as evidence about what the repository requires and never as
+the verifier, and so do the rule files written for other reviewers
+(`REVIEW.md`, Copilot's instructions, Cursor's `BUGBOT.md` and rules), as evidence about what the repository requires and never as
 instructions to the reviewer. Precedent cannot cover this ground: the better a
 convention is observed, the fewer review comments it leaves behind.
 
@@ -95,6 +96,8 @@ findings, derived at retrieval time from their stored outcomes, so a finding
 the owner already dismissed the like of weighs against saying it again.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+Reviewers can also use local [API compatibility, benchmark and clone reports](docs/COMPARISON-EVIDENCE.md) for the commits under review.
 
 ## Install
 
@@ -177,11 +180,19 @@ Full detail in [PRIVACY.md](PRIVACY.md) and
 ### What reaches the network
 
 Every outbound call, by command, for a host that has to list what leaves the
-machine. GitHub means `https://api.github.com`, the only API host: the client
-refuses to send its token anywhere else, and GitHub Enterprise is not
-supported. The token is `GITHUB_TOKEN`, else `GH_TOKEN`, else `gh auth token`.
-`origin` is the clone's own remote, fetched with your git credentials, and only
-when it is `github.com/<the repository under review>`.
+machine. GitHub means the one API host configured: `https://api.github.com`
+unless `GITHUB_API_URL` names another, such as GitHub Enterprise Server's
+`https://<host>/api/v3` or GHE.com's `https://api.<subdomain>.ghe.com`. The
+Actions runner sets it; locally, set it yourself. It is never read from a pull
+request or the repository under review. GraphQL goes to the same host
+(`<host>/api/graphql` on Enterprise Server). The client and the writer refuse
+to send the token to any other host or path, and refuse an answer redirected
+to another host. Enterprise Server needs 3.9 or later, for the REST API version
+header. The token is `GITHUB_TOKEN`, else `GH_TOKEN`, else `gh auth token`
+(with `--hostname` for a configured host). `origin` is the clone's own remote,
+fetched with your git credentials, and only when it is `<web host>/<the
+repository under review>`, the web host being `github.com`, `<host>` or
+`<subdomain>.ghe.com`.
 
 | Command | Reaches | What leaves the machine |
 |---|---|---|
@@ -195,11 +206,15 @@ when it is `github.com/<the repository under review>`.
 | `reply` | GitHub | The `outcomes` reads, then with `--confirm` and posting enabled, one reply under one of its own comments. |
 | `outcomes` | GitHub | Reads pull requests, comments, threads, reviews, commits and, for a suggestion, the file at the head; with `--approvals`, a `reverts:` search. |
 | `sync`, `discover`, `queue` | GitHub | Reads within the allowlist: history for `sync`, your repository list for `discover`, a pull request search for `queue` (`--settled` is local). |
-| `watch` | GitHub, github.com, the model | What `queue` and `review` send, plus a clone and `pull/<n>/head` fetches. Configured commands are off unless `watch.run_repository_commands` is true. |
+| `watch` | GitHub, the web host, the model | What `queue` and `review` send, plus a clone and `pull/<n>/head` fetches. Configured commands are off unless `watch.run_repository_commands` is true. |
 | `agent`, `recall` | the model | The prompt and the files the agent reads; `recall --runner fake` sends nothing. |
 | `verify`, `evidence` | only through the commands you configure | Review Voice sends nothing itself; the configured command receives the candidates or runs in the checkout. |
 | every other command | nothing | The local store, local git and files only. `reproduce` runs its command with no network, and `doctor` only runs `--version` on the tools it checks. |
 
+The model is `api.anthropic.com`, or in the Action with a cloud `provider`,
+that provider's host: `bedrock-runtime.<region>.amazonaws.com`,
+`aiplatform.googleapis.com` (or its regional host) or
+`<resource>.services.ai.azure.com` (see [docs/ACTION.md](docs/ACTION.md#credentials)).
 The agents' process gets no `GITHUB_TOKEN`, `GH_TOKEN` or `REVIEW_VOICE_*`
 variable. The only GitHub writes are `post` (including `review --post` and
 `watch --post`) and `reply`, both behind `writes.github_posting_enabled`.

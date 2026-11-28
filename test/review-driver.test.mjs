@@ -2503,3 +2503,34 @@ test('#525: outside Actions the same refusal still stops the post, with GitHub\'
     if (saved !== undefined) process.env.GITHUB_ACTIONS = saved;
   }
 });
+
+test('the PR driver exposes trusted comparisons, indexed definitions and co-change context with repository commands disabled', async t => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const data = mkdtempSync(join(tmpdir(), 'rv-driver-comparisons-'));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const artifact = join(data, 'comparison.json');
+  const indexed = join(data, 'index.json');
+  writeFileSync(artifact, JSON.stringify({ base: repo.base, head: repo.head, reports: [
+    { format: 'jscpd', data: { duplicates: [{ isNew: true, firstFile: { name: 'src/app.ts', start: 3, end: 3 }, secondFile: { name: 'src/other.ts', start: 8, end: 8 } }] } },
+  ] }));
+  writeFileSync(indexed, JSON.stringify({ repository: REPO, revision: repo.head, repositoryRoot: 'file:///producer',
+    index: { metadata: { project_root: 'file:///producer' }, documents: [{ relative_path: 'src/app.ts', occurrences: [] }] } }));
+  const env = { REVIEW_VOICE_COMPARISON_REPORT: artifact, REVIEW_VOICE_SCIP_INDEX: indexed, REVIEW_VOICE_CO_CHANGE: '1', REVIEW_VOICE_NO_COMMANDS: '1' };
+  const previous = { ...process.env };
+  Object.assign(process.env, env);
+  try {
+    const fakeDir = fakes(t, fullRun());
+    const report = await reviewIn(repo, fakeDir, fakeGitHub(repo), data, {});
+    assert.equal(report.exitCode, 0, report.error);
+    const read = name => JSON.parse(readFileSync(join(report.runDir, name),'utf8'));
+    assert.equal(read('evidence.json').signals[0].kind, 'introduced_clone');
+    assert.equal(read('evidence.json').skipped, 'REVIEW_VOICE_NO_COMMANDS');
+    assert.equal(read('symbols.json').coChanges.base, repo.base);
+    assert.equal(read('symbols.json').scip.indexes[0].revision, repo.head);
+    assert.ok(callsOf(fakeDir, 'evidence-verifier').some(call => call.prompt.includes('evidence.json')));
+  } finally {
+    for (const key of Object.keys(env)) {
+      if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+    }
+  }
+});

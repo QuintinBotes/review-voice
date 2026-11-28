@@ -11,6 +11,7 @@ import { activePolicyRows } from './versions.ts';
 import { readSuppressions } from './rules.ts';
 import { BUILTIN_RERUN_SIGNATURES, type CiRules, type GateCheck } from '../publish/ci.ts';
 import { DEFAULT_HUMAN_REVIEW, type HumanReviewConfig } from '../diff/complexity.ts';
+import { DEPENDENCY_SEVERITIES, type DependencySeverity } from '../diff/dependencies.ts';
 import { DEFAULT_STRUCTURE, type StructureConfig } from '../diff/structure.ts';
 import { DEFAULT_VERDICT_POLICY, POSTED_TIERS, type VerdictPolicy } from '../publish/verdict.ts';
 import { globToRegExp } from '../conventions/globs.ts';
@@ -90,7 +91,7 @@ export interface LoadedConfig {
   evaluate: { stabilityMaxCalls: number };
   staticEvidence: {
     enabled: boolean;
-    commands: { name: string; run: string; timeoutSeconds?: number; version?: string }[];
+    commands: { name: string; run: string; timeoutSeconds?: number; version?: string; coverage?: string }[];
     /** The `env_passthrough` names the commands get beyond the minimal environment (issue 279). */
     envPassthrough: string[];
   };
@@ -146,6 +147,12 @@ export interface LoadedConfig {
    * a vendored dependency (issue 351). None by default.
    */
   firstPartyPaths: string[];
+  /**
+   * `review.linked_repositories`: other `owner/repo` repositories whose
+   * default branches `symbols` searches for consumers of a changed contract
+   * (#548). Only those also in `allowlist` are ever read.
+   */
+  linkedRepositories: string[];
   layers: PolicyLayer[];
   /**
    * The structured suppressions of every layer, as `resolvePolicy` resolves
@@ -189,10 +196,11 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
   review: [
     'human_review', 'structure', 'mode', 'models', 'confidence_threshold', 'minor_confidence_threshold', 'final_score_threshold',
     'lanes', 'suggestions', 'linked_issues', 'max_findings', 'max_words_per_finding', 'max_total_words', 'first_party_paths',
+    'linked_repositories',
   ],
   'review.human_review': [
     'max_decision_points', 'max_hunk_decision_points', 'sensitive_paths', 'sensitive_exempt_paths', 'test_paths',
-    'generated_paths', 'cap_approval', 'structure',
+    'generated_paths', 'cap_approval', 'structure', 'dependency_review',
   ],
   'review.human_review.structure': ['file_line_crossing', 'branch_growth', 'removed_controls'],
   'review.structure': ['max_file_lines', 'max_added_branches_per_function', 'simplify'],
@@ -209,7 +217,7 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
     'held_queue', 'min_posted_tier', 'reading_guide',
   ],
   static_evidence: ['enabled', 'env_passthrough', 'commands'],
-  'static_evidence.commands[]': ['name', 'run', 'timeout_seconds', 'version'],
+  'static_evidence.commands[]': ['name', 'run', 'timeout_seconds', 'version', 'coverage'],
   reproduction: ['enabled', 'runners', 'link_paths', 'memory_mb', 'cpu_seconds'],
   'reproduction.runners[]': ['name', 'run', 'extension', 'timeout_seconds'],
   runners: ['codex', 'gemini', 'use'],
@@ -276,6 +284,11 @@ function readHumanReview(block: Record<string, unknown> | null, result: LoadedCo
     if (typeof cap === 'boolean') result.verdictPolicy.capApproval = cap;
     else result.warnings.push('review.human_review.cap_approval must be true or false; using true.');
   }
+
+  const dependencyReview = block['dependency_review'];
+  if (dependencyReview === false) result.humanReview.dependencyReview = null;
+  else if (DEPENDENCY_SEVERITIES.includes(dependencyReview as DependencySeverity)) result.humanReview.dependencyReview = dependencyReview as DependencySeverity;
+  else if (dependencyReview !== undefined) result.warnings.push(`review.human_review.dependency_review must be false or one of ${DEPENDENCY_SEVERITIES.join(', ')}; leaving it off.`);
 
   const structure = block['structure'];
   if (structure === undefined) return;
@@ -1352,11 +1365,14 @@ export function readConfigDocument(value: unknown, repositoryRoot: string, resul
       const timeout = positiveInt(command['timeout_seconds']);
       // How to ask the tool for its version; only a non-blank string counts.
       const version = command['version'];
+      // The LCOV or Cobertura report the command writes (issue 547); only a non-blank string counts.
+      const coverage = command['coverage'];
       result.staticEvidence.commands.push({
         name,
         run,
         ...(timeout === undefined ? {} : { timeoutSeconds: timeout }),
         ...(typeof version === 'string' && version.trim() !== '' ? { version } : {}),
+        ...(typeof coverage === 'string' && coverage.trim() !== '' ? { coverage } : {}),
       });
     }
   }
@@ -1477,6 +1493,11 @@ export function readConfigDocument(value: unknown, repositoryRoot: string, resul
     if (typeof linkedIssues === 'boolean') result.linkedIssues = linkedIssues;
     else if (linkedIssues !== undefined) result.warnings.push('review.linked_issues must be true or false; using false.');
     result.firstPartyPaths = readFirstPartyPaths(review['first_party_paths'], result.warnings);
+    for (const entry of asStringArray(review['linked_repositories'])) {
+      const problem = allowlistEntryProblem(entry);
+      if (problem === null && !entry.includes('*')) result.linkedRepositories.push(entry);
+      else result.warnings.push(`review.linked_repositories: "${entry}" is not owner/repo. Skipping it.`);
+    }
     result.layers.push({
       scope: { type: 'repository', key: repositoryRoot },
       source: '.review-voice/config.yaml',
@@ -1570,6 +1591,7 @@ export function loadConfig(repositoryRoot: string, baselinePath?: string, path?:
     thresholds: {},
     linkedIssues: false,
     firstPartyPaths: [],
+    linkedRepositories: [],
     layers: [],
     suppressions: [],
     activePolicyVersions: [],

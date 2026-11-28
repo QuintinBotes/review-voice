@@ -20,7 +20,7 @@ function runGate(t, env) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const files = { GITHUB_OUTPUT: join(dir, 'output'), GITHUB_STEP_SUMMARY: join(dir, 'summary'), GITHUB_EVENT_PATH: join(dir, 'event.json') };
   for (const path of Object.values(files)) writeFileSync(path, '');
-  writeFileSync(files.GITHUB_EVENT_PATH, JSON.stringify({ pull_request: { number: 1 } }));
+  writeFileSync(files.GITHUB_EVENT_PATH, JSON.stringify({ repository: { full_name: 'acme/web' }, pull_request: { number: 1, head: { repo: { full_name: 'acme/web' } } } }));
   const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', gate], {
     encoding: 'utf8',
     env: { PATH: process.env.PATH, ...files, ...env },
@@ -32,7 +32,7 @@ test('#533: an empty key, as a fork pull request sees it, is a skip the log name
   const result = runGate(t, { EVENT_NAME: 'pull_request', API_KEY: '' });
   assert.equal(result.status, 0);
   assert.match(result.output, /^skip=true$/m);
-  const line = 'Review Voice skipped: no Anthropic API key is available (fork pull requests receive no secrets).';
+  const line = 'Review Voice skipped: no Anthropic API key or Claude Code OAuth token is available (fork pull requests receive no secrets).';
   assert.equal(result.stdout.trim(), line);
   assert.equal(result.summary.trim(), line);
 });

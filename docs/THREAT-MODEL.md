@@ -174,6 +174,21 @@ request is resolved against the API origin before the token is attached, and
 a path that could step out of a repository (a dot segment, an encoded dot or
 slash, or GitHub's `/repositories/{id}` form) is refused.
 
+There is one API origin per installation: `https://api.github.com`, or the
+Enterprise Server or GHE.com root in `GITHUB_API_URL` (#545). It is taken from
+the environment only, which the Actions runner sets and a workflow step cannot
+override (`GITHUB_*` variables are protected), and locally the operator sets;
+nothing in a pull request, its configuration or its base commit can name a
+host. It must be plain `https`, with no credentials, query or fragment. The
+reader, the GraphQL query and the writer all resolve against it, so the token
+goes to that origin and below its API path only: an absolute URL elsewhere is
+refused before the network, a pagination link keeps only its query, and an
+answer that a redirect brought from another origin is refused (fetch has
+already dropped the token on that hop). `gh auth token` is asked for that
+host's token by `--hostname`, so a configured Enterprise host never receives
+the github.com token from `gh`. A `GITHUB_TOKEN` in the environment is sent as
+set, so it must be one for the configured host.
+
 Since [adr/0010](adr/0010-review-verdict-posting.md) there is one write, and
 it is bounded the same way. A separate writer can only create a review on a
 pull request, and its allowlist is the repository of the recorded run being
@@ -216,6 +231,25 @@ the next argument as the pattern whatever it looks like, and the extractor
 refuses a token beginning with a dash. The command is invoked with an argument
 array and never a shell string, so quoting is not part of the trust boundary.
 
+### 3c. The model credential in CI
+
+**Attack.** The agents read untrusted code with the model credential in their
+environment. With a cloud provider (#544) that credential is the cloud
+identity the workflow's login step obtained, which can be broader than one
+model key.
+
+**Mitigations.** The provider is the workflow's `provider` input, never read
+from the pull request or the base commit, and the review step clears any other
+provider selection and, on a cloud provider, the Anthropic key and token. The
+agents' process still gets no `GITHUB_TOKEN`, `GH_TOKEN` or `REVIEW_VOICE_*`.
+docs/ACTION.md asks for an OIDC role whose only grant is model invocation, so
+the credential is short-lived and stores no secret; a fork run gets no secret
+and no OIDC token and skips.
+
+**Residual risk.** The rest of the job's environment reaches the agents as it
+did before, so a role granted more than model invocation is exposed to the
+same prompt injection as the API key is.
+
 ### 4. Arbitrary code execution through static analysis
 
 **Attack.** Review Voice auto-detects and runs a project script; the repository
@@ -224,6 +258,17 @@ is hostile, and the script is the payload.
 **Mitigation.** Static analysis commands are opt-in and config-declared.
 Detection suggests; configuration enables. Never both
 ([adr/0003](adr/0003-static-analysis-adapters.md)).
+
+**A fork's pull request reviewed on request.** A maintainer can dispatch the
+Action for a pull request from a fork (#543). That run holds the repository's
+secrets and the fork's commits are fetched into the clone, so the Action sets
+`REVIEW_VOICE_NO_COMMANDS=1` whenever the pull request's head repository is not
+the repository itself (as GET `/pulls/{n}` reports it, read before the review
+starts). No configured command, reproduction or runner runs on the fork's
+code. The agents read its files with their restricted tools in safe mode, as
+for any pull request. Only someone with write access can dispatch the
+workflow, and the only inputs are a pull request number, which the gate checks
+is one, and a boolean.
 
 **A configured runner is the same route.** `runners.<family>.command` runs an
 external agent CLI (`codex`, `gemini`) in the pull request's head worktree, as

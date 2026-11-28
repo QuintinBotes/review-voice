@@ -25,6 +25,7 @@ import {
 } from '../diff/pull-request.ts';
 import { firstPartyMatcher, isReviewable } from '../diff/classify.ts';
 import type { ExclusionSummary } from '../diff/exclusions.ts';
+import { checkDependencies, uncheckedDependencies, type DependencyCheck } from '../diff/dependencies.ts';
 import { planScope, type PlannedScope, type ReviewScope } from '../diff/incremental.ts';
 import { openDatabase } from '../store/db.ts';
 import { recordedRunsForPull, runDetail } from '../store/runs.ts';
@@ -161,7 +162,16 @@ export async function pullRequestDiffCommand(argv: string[]): Promise<number> {
   }
 
   const scoped = await applyReviewScope(result, pullNumber, planned.scope, process.cwd(), undefined, planned.interdiffPatch, planned.leftOutChanged);
-  return await emitDiff({ ...scoped, repository, prior: resolution }, flag(argv, '--out'));
+  // The whole pull request's dependencies, as the hold is sticky across its runs anyway (docs/adr/0012).
+  const dependencies = await checkDependencies({
+    client: githubClient([repository]),
+    repository,
+    base: result.refs.base.sha,
+    head: result.refs.head.sha,
+    files: result.files,
+    minSeverity: repositoryConfig()?.humanReview.dependencyReview ?? null,
+  });
+  return await emitDiff({ ...scoped, repository, prior: resolution, dependencies }, flag(argv, '--out'));
 }
 
 /** The paths a recorded run left out by its own rules, or null when it kept no such list or cannot be read. */
@@ -203,6 +213,10 @@ interface EmittedDiff {
   /** Added by `emitDiff`; see docs/adr/0012. */
   complexity?: ComplexityAssessment;
   humanReviewNote?: string | null;
+  /** On `--pr`: GitHub's dependency review, read before `emitDiff` (#546). Consumed there, never written out. */
+  dependencies?: DependencyCheck;
+  /** Added by `emitDiff`: dependency changes not checked, or the licences they add; local only (#546). */
+  dependencyNote?: string | null;
   /** Structural evidence for the analyst; enabled human-review settings may also cap an approval. */
   structure?: StructureSignals;
   refs?: {
@@ -247,6 +261,7 @@ export function diffSummary(result: EmittedDiff): {
   noLongerChanged: string[];
   complexity: ComplexityAssessment | null;
   humanReviewNote: string | null;
+  dependencyNote: string | null;
   structure: StructureSignals | null;
   truncated: boolean;
   truncationNote: string | null;
@@ -306,6 +321,7 @@ export function diffSummary(result: EmittedDiff): {
         : [],
     complexity: result.complexity ?? null,
     humanReviewNote: result.humanReviewNote ?? null,
+    dependencyNote: result.dependencyNote ?? null,
     structure: result.structure ?? null,
     truncated: result.truncated ?? false,
     truncationNote: result.truncationNote ?? null,
@@ -375,11 +391,19 @@ export async function emitDiff(acquired: EmittedDiff, outDir: string | null): Pr
     assessed.reasons.push("GitHub listed only part of the changed files, so the rest were not read");
     assessed.level = 'high';
   }
+  // An added runtime dependency with a known advisory: the diff cannot show it, so a person approves (#546).
+  const { dependencies, ...emitted } = acquired;
+  const dependencyCheck = dependencies ?? uncheckedDependencies(scopedFiles, 'only a pull request review reads GitHub\'s dependency review');
+  if (dependencyCheck.hold !== null) {
+    assessed.reasons.push(dependencyCheck.hold);
+    assessed.level = 'high';
+  }
   const complexity = applyStructureHumanReviewCap(assessed, structure, config?.humanReview);
   const result: EmittedDiff = {
-    ...acquired,
+    ...emitted,
     complexity,
     humanReviewNote: humanReviewNote(complexity),
+    dependencyNote: dependencyCheck.note,
     structure,
   };
 
