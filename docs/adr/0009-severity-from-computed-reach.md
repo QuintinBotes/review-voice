@@ -110,3 +110,7 @@ not), reach is absent, and absent reach keeps the category's own tier. It is not
 `local`: a wrong import path breaks the file's build, and that is the category's
 call to make, not an extent. Any other line in the file's hunks restores the
 measurement as before.
+
+### Optional local context
+
+An operator may supply SCIP symbol identities or enable historical companion paths. Both direct the reviewer to source for inspection. Neither contributes to computed reach or independently changes a verdict. See the optional symbol and history evidence section in ARCHITECTURE.md.

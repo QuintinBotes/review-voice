@@ -2,7 +2,7 @@ import { closeSync, constants, fstatSync, openSync, readFileSync, readSync } fro
 import { basename, isAbsolute, join } from 'node:path';
 import { linguistGeneratedPaths } from '../diff/acquire.ts';
 import { classify, firstPartyMatcher, type FirstParty } from '../diff/classify.ts';
-import { parseHunks, type FileHunks } from '../diff/hunks.ts';
+import { parseHunks, patchRenames, type FileHunks } from '../diff/hunks.ts';
 import { terminalSafe } from '../terminal.ts';
 import { cleaner } from './parsers.ts';
 import type { EvidenceReport, EvidenceSignal } from './types.ts';
@@ -66,6 +66,7 @@ interface Context {
   head: string;
   base: string;
   full: boolean;
+  renames: Map<string, string>;
 }
 
 function api(change: Row, ctx: Context): Lead | null {
@@ -75,7 +76,8 @@ function api(change: Row, ctx: Context): Lead | null {
   const source = row(change.revisionSource ?? change.baseSource);
   const ref = old ? ctx.base : ctx.head;
   const file = label(source.file);
-  const path = pathOf(file.startsWith(ref + ':') ? file.slice(ref.length + 1) : file);
+  const locationPath = pathOf(file.startsWith(ref + ':') ? file.slice(ref.length + 1) : file);
+  const path = old ? ctx.renames.get(locationPath) ?? locationPath : locationPath;
   const hunks = ctx.hunks.get(path);
   const line = old ? (ctx.full && positive(source.line) ? hunks?.removedToHead.get(source.line) : undefined) : source.line;
   if (!positive(line) || !(hunks?.added.has(line) || hunks?.deletionSites.has(line))) throw new Error('No changed head location for the API change.');
@@ -143,7 +145,8 @@ export async function withComparisons(report: EvidenceReport, artifact: string, 
     if (!['pull-request','base'].includes(files.mode) || !sha(input.base) || !sha(input.head) || input.base !== base || input.head !== files.head) throw new Error('Report does not match the reviewed base and head commits.');
     provenance.base = input.base;
     provenance.head = input.head;
-    const ctx: Context = { hunks: parseHunks(readFileSync(join(dir, 'diff.patch'), 'utf8')), head: input.head, base: input.base, full: !files.scope || files.scope.kind === 'full',
+    const patch = readFileSync(join(dir, 'diff.patch'), 'utf8');
+    const ctx: Context = { hunks: parseHunks(patch), renames: patchRenames(patch), head: input.head, base: input.base, full: !files.scope || files.scope.kind === 'full',
       excluded: new Set(files.files.filter((f: Row) => !f.reviewed || f.class !== 'source').map((f: Row) => f.path)),
       firstParty: firstPartyMatcher(firstPartyPaths) };
     for (const value of rows(input.reports)) {
@@ -173,7 +176,9 @@ export async function withComparisons(report: EvidenceReport, artifact: string, 
       }
     }
   } catch (error) {
-    notes.push(error instanceof SyntaxError ? 'Invalid JSON in the comparison inputs.' : error instanceof Error ? error.message : 'Comparison report unavailable.');
+    if (error instanceof SyntaxError) notes.push('Invalid JSON in the comparison inputs.');
+    else if (error instanceof Error && !('code' in error)) notes.push(error.message);
+    else notes.push('Comparison report or diff inputs could not be read.');
   }
   return { ...report, signals: [...report.signals, ...signals], comparison: { ...provenance, notes: notes.map(s => terminalSafe(clean(s))) } };
 }

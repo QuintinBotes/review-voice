@@ -418,6 +418,8 @@ Report anything in `warnings` the way step 1b reports its own.
 
 ## Step 1e - Collect changed-symbol context
 
+If a SCIP index is configured, include the reviewed repository with `--repository` and, for an incremental PR patch, `--scip-head-only`.
+
 Run `RV symbols --diff-file <tmpdir>/diff.patch --base <ref> [--head <head
 sha>] --out <tmpdir>/symbols.json`.
 

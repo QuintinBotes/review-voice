@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // plugins/review-voice/src/cli.ts
-import { fileURLToPath as fileURLToPath6 } from "node:url";
+import { fileURLToPath as fileURLToPath7 } from "node:url";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { format } from "node:util";
 
@@ -489,8 +489,8 @@ function sarifSignals(output, tool, root, cleaned = cleaner()) {
       const bases = run.originalUriBaseIds;
       const based = uri === void 0 || baseId === void 0 || typeof bases !== "object" || bases === null || !Object.hasOwn(bases, baseId) ? uri : underBase(uri, bases[baseId]);
       const { path, place } = uri === void 0 ? { path: null, place: 0 } : based === void 0 ? unfollowed(`${baseId}\0${uri}`) : placeOf(based);
-      const startLine = location?.region?.startLine;
-      const given = typeof startLine === "number" && Number.isInteger(startLine) && startLine > 0 ? startLine : null;
+      const startLine2 = location?.region?.startLine;
+      const given = typeof startLine2 === "number" && Number.isInteger(startLine2) && startLine2 > 0 ? startLine2 : null;
       const line3 = path === null ? null : given;
       const claim = message === void 0 || message === "" ? id : `${id}: ${message}`;
       const key2 = `${place}\0${given}\0${idDigest(ruleId)}\0${said?.digest ?? ""}`;
@@ -1087,16 +1087,16 @@ function scanFindings(output) {
   flush();
   return { blocks, stray };
 }
-function parseFinding(raw, startLine) {
+function parseFinding(raw, startLine2) {
   const joined2 = raw.replace(/\s*\n\s*/g, " ").trim();
   const match = FINDING.exec(joined2);
   if (!match) {
-    return { startLine, raw, severity: null, path: null, line: null, prose: "" };
+    return { startLine: startLine2, raw, severity: null, path: null, line: null, prose: "" };
   }
   const [, severityRaw, path, lineRaw, prose] = match;
   const severity = SEVERITIES.includes(severityRaw.toLowerCase()) ? severityRaw.toLowerCase() : null;
   return {
-    startLine,
+    startLine: startLine2,
     raw,
     severity,
     path: path ?? null,
@@ -4617,10 +4617,10 @@ var Pair = class _Pair {
 };
 
 // node_modules/yaml/browser/dist/stringify/stringifyCollection.js
-function stringifyCollection(collection, ctx, options) {
-  const flow = ctx.inFlow ?? collection.flow;
+function stringifyCollection(collection2, ctx, options) {
+  const flow = ctx.inFlow ?? collection2.flow;
   const stringify4 = flow ? stringifyFlowCollection : stringifyBlockCollection;
-  return stringify4(collection, ctx, options);
+  return stringify4(collection2, ctx, options);
 }
 function stringifyBlockCollection({ comment, items }, ctx, { blockItemPrefix, flowChars, itemIndent, onChompKeep, onComment }) {
   const { indent, options: { commentString } } = ctx;
@@ -15713,7 +15713,7 @@ async function ipcObjects(spawn3, cwd) {
 async function ipcLeft(spawn3, cwd, before) {
   const after = await ipcObjects(spawn3, cwd);
   if (typeof after === "string") return `could not list System V IPC objects after the run: ${after}`;
-  const made = [...after.mine].filter((object) => !before.has(object));
+  const made = [...after.mine].filter((object2) => !before.has(object2));
   return made.length === 0 ? null : `System V IPC objects appeared during the run and were left in place: ${made.join(", ")}`;
 }
 async function runReproduction(record3, content, runner, layout, ctx) {
@@ -22695,7 +22695,8 @@ function api(change, ctx) {
   const source = row(change.revisionSource ?? change.baseSource);
   const ref = old ? ctx.base : ctx.head;
   const file2 = label2(source.file);
-  const path = pathOf(file2.startsWith(ref + ":") ? file2.slice(ref.length + 1) : file2);
+  const locationPath = pathOf(file2.startsWith(ref + ":") ? file2.slice(ref.length + 1) : file2);
+  const path = old ? ctx.renames.get(locationPath) ?? locationPath : locationPath;
   const hunks = ctx.hunks.get(path);
   const line3 = old ? ctx.full && positive(source.line) ? hunks?.removedToHead.get(source.line) : void 0 : source.line;
   if (!positive(line3) || !(hunks?.added.has(line3) || hunks?.deletionSites.has(line3))) throw new Error("No changed head location for the API change.");
@@ -22779,8 +22780,10 @@ async function withComparisons(report, artifact, dir, firstPartyPaths = []) {
     if (!["pull-request", "base"].includes(files2.mode) || !sha(input.base) || !sha(input.head) || input.base !== base || input.head !== files2.head) throw new Error("Report does not match the reviewed base and head commits.");
     provenance.base = input.base;
     provenance.head = input.head;
+    const patch = readFileSync9(join13(dir, "diff.patch"), "utf8");
     const ctx = {
-      hunks: parseHunks(readFileSync9(join13(dir, "diff.patch"), "utf8")),
+      hunks: parseHunks(patch),
+      renames: patchRenames(patch),
       head: input.head,
       base: input.base,
       full: !files2.scope || files2.scope.kind === "full",
@@ -22821,7 +22824,9 @@ async function withComparisons(report, artifact, dir, firstPartyPaths = []) {
       }
     }
   } catch (error) {
-    notes.push(error instanceof SyntaxError ? "Invalid JSON in the comparison inputs." : error instanceof Error ? error.message : "Comparison report unavailable.");
+    if (error instanceof SyntaxError) notes.push("Invalid JSON in the comparison inputs.");
+    else if (error instanceof Error && !("code" in error)) notes.push(error.message);
+    else notes.push("Comparison report or diff inputs could not be read.");
   }
   return { ...report, signals: [...report.signals, ...signals], comparison: { ...provenance, notes: notes.map((s) => terminalSafe(clean2(s))) } };
 }
@@ -25391,8 +25396,9 @@ async function prep(run) {
     writeFileSync7(at(run, "conventions.json"), (await must(run, ["conventions", "--files", at(run, "files.json"), "--ref", run.base])).stdout);
   }
   const headReadable = isRecord5(refs["head"]) && refs["head"]["available"] === true;
-  await must(run, [
+  const symbols = await must(run, [
     "symbols",
+    ...process.env["REVIEW_VOICE_SCIP_INDEX"] ? ["--repository", repository, ...run.summary.scope && isRecord5(run.summary.scope) && run.summary.scope.kind !== "full" ? ["--scip-head-only"] : []] : [],
     "--diff-file",
     at(run, "diff.patch"),
     ...run.base === null ? [] : ["--base", run.base],
@@ -25400,6 +25406,10 @@ async function prep(run) {
     "--out",
     at(run, "symbols.json")
   ]);
+  const contextNotes = parsed(symbols.stdout).contextNotes;
+  if (Array.isArray(contextNotes)) {
+    for (const note of contextNotes) if (typeof note === "string") run.notes.push(note);
+  }
   const followUps = branch ? JSON.stringify({ followUps: [] }) : (await must(run, ["follow-ups", ...pr])).stdout;
   writeFileSync7(at(run, "follow-ups.json"), followUps);
   run.followUps = list2(parsed(followUps)["followUps"]).length > 0;
@@ -26947,6 +26957,11 @@ async function discoverCommand() {
 import { statSync as statSync4 } from "node:fs";
 import { resolve as resolve6 } from "node:path";
 async function evidenceCommand(argv) {
+  const dir = flag2(argv, "--review-dir");
+  if (argv.includes("--review-dir") && dir === null) {
+    console.error("--review-dir needs the directory from diff --out.");
+    return 2;
+  }
   const cwdFlag = flag2(argv, "--cwd");
   if (argv.includes("--cwd") && cwdFlag === null) {
     console.error("--cwd needs a directory.");
@@ -26970,7 +26985,6 @@ async function evidenceCommand(argv) {
     });
     const report = collected.enabled ? { ...collected, cwd } : collected;
     const artifact = process.env["REVIEW_VOICE_COMPARISON_REPORT"];
-    const dir = flag2(argv, "--review-dir");
     const output = artifact && dir ? await withComparisons(report, artifact, dir, config2.firstPartyPaths) : report;
     console.log(JSON.stringify(output, null, 2));
     return 0;
@@ -29904,10 +29918,10 @@ async function gitTreeReader(root, ref) {
   for (const record3 of listing.toString("utf8").split("\0")) {
     const tab = record3.indexOf("	");
     if (tab === -1) continue;
-    const [mode, type, object, size] = record3.slice(0, tab).split(/ +/);
-    if (type !== "blob" || mode === "120000" || object === void 0) continue;
+    const [mode, type, object2, size] = record3.slice(0, tab).split(/ +/);
+    if (type !== "blob" || mode === "120000" || object2 === void 0) continue;
     const path = record3.slice(tab + 1);
-    files2.set(path, { object, size: Number(size) });
+    files2.set(path, { object: object2, size: Number(size) });
     const parts = path.split("/");
     for (let depth = 0; depth < parts.length; depth += 1) {
       const directory = parts.slice(0, depth).join("/");
@@ -29917,8 +29931,8 @@ async function gitTreeReader(root, ref) {
     }
   }
   const key2 = (path) => {
-    const posix8 = path.split(sep2).join("/");
-    return posix8 === "." ? "" : posix8;
+    const posix9 = path.split(sep2).join("/");
+    return posix9 === "." ? "" : posix9;
   };
   const file2 = (path) => {
     const entry = files2.get(key2(path));
@@ -29936,14 +29950,14 @@ async function gitTreeReader(root, ref) {
       return [...names];
     },
     read: async (path) => {
-      const { object } = file2(path);
-      let blob = blobs.get(object);
+      const { object: object2 } = file2(path);
+      let blob = blobs.get(object2);
       if (blob === void 0) {
-        blob = await runGitCatFile(root, ["cat-file", "blob", object], {
+        blob = await runGitCatFile(root, ["cat-file", "blob", object2], {
           maxBuffer: GIT_BUFFER,
           timeoutMs: catFileBlobTimeoutMs()
         });
-        blobs.set(object, blob);
+        blobs.set(object2, blob);
       }
       return blob;
     }
@@ -30444,14 +30458,14 @@ function gatherReplies(text5, key2) {
     }
   });
   if (objects.length === 0) return void 0;
-  const list3 = objects.flatMap((object) => {
-    const inner = object?.[key2];
-    return Array.isArray(inner) ? inner : [object];
+  const list3 = objects.flatMap((object2) => {
+    const inner = object2?.[key2];
+    return Array.isArray(inner) ? inner : [object2];
   });
   const beside = Object.assign(
     {},
-    ...objects.map((object) => {
-      const record3 = typeof object === "object" && object !== null && !Array.isArray(object) ? object : {};
+    ...objects.map((object2) => {
+      const record3 = typeof object2 === "object" && object2 !== null && !Array.isArray(object2) ? object2 : {};
       if (!Array.isArray(record3[key2])) return {};
       const { [key2]: _list, ...rest } = record3;
       return rest;
@@ -33271,6 +33285,203 @@ function collectSymbolContext(options) {
   };
 }
 
+// plugins/review-voice/src/diff/co-change.ts
+var safeRepoPath = (path) => path.length <= 2048 && !/[:\\\x00-\x1f]/.test(path) && !path.split("/").some((p2) => p2 === "" || p2 === "." || p2 === "..");
+async function coChanges(cwd, base, changed, firstPartyPaths, deadline) {
+  const started = Date.now();
+  const window = 120;
+  const peers = [];
+  let commits = 0;
+  let shallow = false;
+  let reason2;
+  const git6 = async (args, input) => {
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw new Error("Time budget exhausted.");
+    return (await runGit(cwd, ["--no-lazy-fetch", "--literal-pathspecs", ...args], { input, maxBuffer: 4 * 1024 * 1024, timeoutMs: ms })).toString("utf8");
+  };
+  try {
+    if (!base || !/^[a-f0-9]{40}$/.test(base)) throw new Error("No resolved base commit.");
+    shallow = (await git6(["rev-parse", "--is-shallow-repository"])).trim() === "true";
+    const log = await git6([
+      "log",
+      "--no-show-signature",
+      "--no-textconv",
+      "-n",
+      String(window),
+      "--no-merges",
+      "--no-renames",
+      "--no-ext-diff",
+      "--format=%x00%x00%H",
+      "--name-status",
+      "-z",
+      base,
+      "--"
+    ]);
+    const firstParty = firstPartyMatcher(firstPartyPaths);
+    const tracked = new Set(changed);
+    const complete = /* @__PURE__ */ new Set();
+    const counts = /* @__PURE__ */ new Map();
+    const joint = /* @__PURE__ */ new Map();
+    for (const record3 of log.split(/\0\0(?=[0-9a-f]{40}\0)/).slice(1)) {
+      if (Date.now() >= deadline) throw new Error("Time budget exhausted.");
+      const fields = record3.slice(41).replace(/^\n/, "").split("\0");
+      const files2 = /* @__PURE__ */ new Map();
+      for (let i = 0; i + 1 < fields.length; i += 2) {
+        const path = fields[i + 1];
+        if (safeRepoPath(path) && classify(path, firstParty) === "source") files2.set(path, fields[i]);
+      }
+      commits++;
+      for (const path of files2.keys()) {
+        if (!tracked.has(path) || complete.has(path)) continue;
+        if (files2.get(path) === "A") complete.add(path);
+        if (fields.length > 42) continue;
+        counts.set(path, (counts.get(path) ?? 0) + 1);
+        const pairs2 = joint.get(path) ?? /* @__PURE__ */ new Map();
+        joint.set(path, pairs2);
+        for (const peer of files2.keys()) if (!tracked.has(peer) && files2.get(peer) !== "D") pairs2.set(peer, (pairs2.get(peer) ?? 0) + 1);
+      }
+    }
+    const ranked = [];
+    for (const [changed2, pairs2] of joint) {
+      for (const [peer, together] of pairs2) {
+        const changedCommits = counts.get(changed2);
+        if (together >= 3 && together / changedCommits >= 0.5) ranked.push({ changed: changed2, peer, together, changedCommits });
+      }
+    }
+    ranked.sort((a, b) => b.together / b.changedCommits - a.together / a.changedCommits || b.together - a.together || a.changed.localeCompare(b.changed) || a.peer.localeCompare(b.peer));
+    const candidates = ranked.slice(0, 64);
+    if (candidates.length) {
+      const paths = [...new Set(candidates.flatMap((pair) => [pair.peer, pair.changed]))];
+      const tree = await git6(["ls-tree", "-z", base, "--", ...paths]);
+      const available = new Set(tree.split("\0").filter((s) => /^100(?:644|755) blob /.test(s)).map((s) => s.split("	")[1]));
+      const attrs = (await git6(["check-attr", "--source", base, "-z", "--stdin", "linguist-generated"], paths.join("\0") + "\0")).split("\0");
+      for (let i = 0; i + 2 < attrs.length; i += 3) if (["set", "true"].includes(attrs[i + 2])) available.delete(attrs[i]);
+      peers.push(...candidates.filter((r) => available.has(r.peer) && available.has(r.changed)).slice(0, 12));
+    }
+    if (shallow) reason2 = "Shallow clone; only locally available history was examined.";
+  } catch (error) {
+    reason2 = error instanceof Error && ["Time budget exhausted.", "No resolved base commit."].includes(error.message) ? error.message : "Local history was unavailable within the time and size budgets.";
+  }
+  return { base, window, commits, shallow, elapsedMs: Date.now() - started, peers, ...reason2 ? { reason: reason2 } : {} };
+}
+
+// plugins/review-voice/src/diff/scip.ts
+import { closeSync as closeSync3, constants as constants5, fstatSync as fstatSync2, openSync as openSync3, readSync as readSync3 } from "node:fs";
+import { isAbsolute as isAbsolute9, posix as posix6 } from "node:path";
+import { fileURLToPath as fileURLToPath6 } from "node:url";
+function object(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("Malformed index.");
+  return v;
+}
+function collection(v) {
+  if (!Array.isArray(v)) throw new Error("Malformed index collection.");
+  return v;
+}
+function load(path) {
+  if (!isAbsolute9(path)) throw new Error("The index envelope must have an absolute path.");
+  const fd = openSync3(path, constants5.O_RDONLY | constants5.O_NOFOLLOW | constants5.O_NONBLOCK);
+  try {
+    const stat = fstatSync2(fd);
+    if (!stat.isFile() || stat.size > 16 * 1024 * 1024) throw new Error("SCIP input must be a regular file of at most 16 MiB.");
+    const bytes = Buffer.alloc(stat.size + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count4 = readSync3(fd, bytes, offset, bytes.length - offset, null);
+      if (!count4) break;
+      offset += count4;
+    }
+    if (offset !== stat.size) throw new Error("Index changed during the read.");
+    return object(JSON.parse(bytes.toString("utf8", 0, offset)));
+  } finally {
+    closeSync3(fd);
+  }
+}
+function reversePatch(diff) {
+  return diff.split("\n").map((line3) => {
+    if (line3.startsWith("--- ")) return "+++" + line3.slice(3);
+    if (line3.startsWith("+++ ")) return "---" + line3.slice(3);
+    if (line3.startsWith("+")) return "-" + line3.slice(1);
+    if (line3.startsWith("-")) return "+" + line3.slice(1);
+    return line3.replace(/^@@ -(\d+(?:,\d+)?) \+(\d+(?:,\d+)?) @@/, "@@ -$2 +$1 @@");
+  }).join("\n");
+}
+function startLine(o) {
+  const typed = o.TypedRange ? object(o.TypedRange) : o;
+  const selected = typed.SingleLineRange ?? typed.MultiLineRange ?? typed.singleLineRange ?? typed.multiLineRange;
+  const value = selected ? object(selected).start_line ?? object(selected).startLine ?? 0 : Array.isArray(o.range) ? o.range[0] : void 0;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error("Invalid SCIP source range.");
+  return value + 1;
+}
+function scipContext(path, repository, base, head, diff, deadline) {
+  const notes = [];
+  const indexes = [];
+  const checkTime = () => {
+    if (Date.now() >= deadline) throw new Error("SCIP time budget exhausted.");
+  };
+  try {
+    checkTime();
+    const envelope = load(path);
+    if (!repository || typeof envelope.repository !== "string" || envelope.repository.toLowerCase() !== repository.toLowerCase()) throw new Error("Index repository does not match the review.");
+    const index = object(envelope.index);
+    const metadata = object(index.metadata);
+    const root = metadata.project_root ?? metadata.projectRoot;
+    if (typeof root !== "string" || typeof envelope.repositoryRoot !== "string") throw new Error("Missing producer root metadata.");
+    const prefix = posix6.relative(fileURLToPath6(envelope.repositoryRoot), fileURLToPath6(root));
+    if (prefix && !safeRepoPath(prefix)) throw new Error("SCIP project root is outside the producer repository.");
+    const revision = envelope.revision;
+    if (typeof revision !== "string" || !/^[a-f0-9]{40}$/.test(revision) || revision !== head && revision !== base) throw new Error("Index revision does not match a reviewed side.");
+    const side = revision === head ? "head" : "base";
+    const hunks = parseHunks(side === "head" ? diff : reversePatch(diff));
+    const docs = collection(index.documents);
+    const wanted = /* @__PURE__ */ new Map();
+    const seen = /* @__PURE__ */ new Set();
+    let total = 0;
+    for (const definitions of [true, false]) {
+      for (const raw of docs) {
+        checkTime();
+        const d = object(raw);
+        const relative6 = d.relative_path ?? d.relativePath;
+        if (typeof relative6 !== "string" || !safeRepoPath(relative6)) throw new Error("Invalid SCIP document path.");
+        const file2 = prefix ? prefix + "/" + relative6 : relative6;
+        seen.add(file2);
+        const added = hunks.get(file2)?.added;
+        if (definitions && !added?.size) continue;
+        for (const rawOccurrence of collection(d.occurrences ?? [])) {
+          checkTime();
+          const o = object(rawOccurrence);
+          const roles = o.symbol_roles ?? o.symbolRoles ?? 0;
+          if (typeof roles !== "number" || !Number.isSafeInteger(roles)) throw new Error("Invalid SCIP symbol roles.");
+          if ((roles & 1) !== 0 !== definitions || typeof o.symbol !== "string" || !o.symbol) continue;
+          const key2 = o.symbol.startsWith("local ") ? file2 + "\0" + o.symbol : o.symbol;
+          if (!definitions && !wanted.has(key2)) continue;
+          const line3 = startLine(o);
+          if (definitions && added.has(line3)) {
+            if (++total > 100 || o.symbol.length > 2048) throw new Error("SCIP definition budget exhausted.");
+            const list3 = wanted.get(key2) ?? [];
+            list3.push({ path: file2, line: line3, symbol: redact(o.symbol).text, references: [] });
+            wanted.set(key2, list3);
+          } else if (!definitions) {
+            for (const def of wanted.get(key2)) {
+              if (def.references.length === 20) {
+                if (!notes.includes("Reference list truncated.")) notes.push("Reference list truncated.");
+                continue;
+              }
+              def.references.push({ path: file2, line: line3 });
+            }
+          }
+        }
+      }
+    }
+    if ([...hunks].some(([file2, h]) => h.added.size && !seen.has(file2))) notes.push("Some changed files are outside the index.");
+    if (!wanted.size) notes.push("No indexed definition matched a changed line.");
+    indexes.push({ revision, side, documents: seen.size, definitions: [...wanted.values()].flat() });
+  } catch (error) {
+    const systemError = error instanceof Error && "code" in error;
+    notes.push(systemError ? "The local index could not be read." : error instanceof SyntaxError ? "Invalid index JSON." : error instanceof Error ? error.message : "Index unavailable.");
+  }
+  return { source: "SCIP", coverage: "indexed documents only", indexes, notes };
+}
+
 // plugins/review-voice/src/cli/symbols.ts
 async function symbolsCommand(argv) {
   const diffFile = flag2(argv, "--diff-file");
@@ -33316,7 +33527,14 @@ async function symbolsCommand(argv) {
   }
   const config2 = repositoryConfig();
   const testPaths = config2?.humanReview.testPaths ?? DEFAULT_TEST_PATHS;
-  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, head, testPaths, firstPartyPaths: config2?.firstPartyPaths ?? [], maxMs });
+  const deadline = Date.now() + maxMs;
+  const lexical = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, head, testPaths, firstPartyPaths: config2?.firstPartyPaths ?? [], maxMs });
+  const scipFile = process.env["REVIEW_VOICE_SCIP_INDEX"];
+  const repository = flag2(argv, "--repository") ?? (scipFile ? inferRepository(process.cwd()) : null);
+  const scip = scipFile ? scipContext(scipFile, repository, argv.includes("--scip-head-only") ? null : base, head, diff, deadline) : void 0;
+  const history = process.env["REVIEW_VOICE_CO_CHANGE"] === "1" ? await coChanges(process.cwd(), base, lexical.files.map((f) => f.path), config2?.firstPartyPaths ?? [], deadline) : void 0;
+  const result = { ...lexical, scip, coChanges: history };
+  const contextNotes = [...scip?.notes ?? [], ...history?.reason ? [history.reason] : []];
   const out = flag2(argv, "--out");
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));
@@ -33329,6 +33547,7 @@ async function symbolsCommand(argv) {
       JSON.stringify(
         {
           path,
+          ...contextNotes.length ? { contextNotes } : {},
           files: result.files.length,
           downstreamFiles: result.downstreamFiles,
           inconclusiveFiles: result.files.filter((file2) => file2.inconclusive === true).length,
@@ -35995,11 +36214,11 @@ async function carryCandidatesCommand(argv) {
 // plugins/review-voice/src/cli/record.ts
 import { execFileSync as execFileSync20 } from "node:child_process";
 import { readFileSync as readFileSync41 } from "node:fs";
-import { join as join35, posix as posix7 } from "node:path";
+import { join as join35, posix as posix8 } from "node:path";
 
 // plugins/review-voice/src/cli/check-candidates.ts
 import { readFileSync as readFileSync40 } from "node:fs";
-import { isAbsolute as isAbsolute9, posix as posix6, relative as relative5 } from "node:path";
+import { isAbsolute as isAbsolute10, posix as posix7, relative as relative5 } from "node:path";
 
 // plugins/review-voice/src/cli/score.ts
 import { readFileSync as readFileSync39 } from "node:fs";
@@ -36867,8 +37086,8 @@ function readSignals(file2, root) {
     const s = entry;
     if (typeof s !== "object" || s === null || typeof s.path !== "string" || typeof s.line !== "number" || typeof s.claim !== "string") return [];
     const spelled = s.path.split("\\").join("/");
-    const path = isAbsolute9(spelled) ? relative5(realExistingPath(signalRoot), realExistingPath(spelled)) : posix6.normalize(spelled).replace(/^\.\//, "");
-    if (path === "" || path === "." || path.startsWith("..") || isAbsolute9(path)) return [];
+    const path = isAbsolute10(spelled) ? relative5(realExistingPath(signalRoot), realExistingPath(spelled)) : posix7.normalize(spelled).replace(/^\.\//, "");
+    if (path === "" || path === "." || path.startsWith("..") || isAbsolute10(path)) return [];
     return [
       {
         kind: typeof s.kind === "string" ? s.kind : "",
@@ -36899,7 +37118,7 @@ function matchSignal(candidate, signals) {
   if (isSuppressionExempt(candidate.category)) return null;
   const text5 = `${candidate.claim} ${candidate.failureMode}`;
   const mine = significantWords(text5);
-  const path = posix6.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
+  const path = posix7.normalize(candidate.path.split("\\").join("/")).replace(/^\.\//, "");
   for (const signal2 of signals) {
     if (signal2.path !== path || signal2.line === null || Math.abs(signal2.line - candidate.line) > 2) continue;
     const message = `${signal2.claim} ${signal2.evidence.join(" ")}`;
@@ -37245,7 +37464,7 @@ async function checkCandidatesCommand(argv) {
 }
 
 // plugins/review-voice/src/cli/record.ts
-var plainPath2 = (path) => posix7.normalize(path.split("\\").join("/")).replace(/^\.\//, "");
+var plainPath2 = (path) => posix8.normalize(path.split("\\").join("/")).replace(/^\.\//, "");
 function policyVersionRefs(value) {
   if (!Array.isArray(value)) return null;
   const refs = [];
@@ -37912,7 +38131,7 @@ ${topLevelHelp()}`);
         return 2;
       }
       const dataDir = dataDirectory();
-      const review2 = spawnReview(fileURLToPath6(import.meta.url), reviewSpawnOptions(dataDir, config2));
+      const review2 = spawnReview(fileURLToPath7(import.meta.url), reviewSpawnOptions(dataDir, config2));
       return await watchCommand(argv.slice(1), {
         configSource: config2?.path ?? null,
         // The copy keeps the source of the file it was taken from.
@@ -38100,7 +38319,7 @@ async function reviewCommand(argv) {
       command: (args, stdin) => runInProcess(args, { stdin }),
       client: githubClient([repository]),
       // The bundle `watch` spawns too; each promote command in the held queue names it.
-      cli: fileURLToPath6(import.meta.url)
+      cli: fileURLToPath7(import.meta.url)
     }
   );
   const summaryWarning = writeJobSummary(report, process.env);

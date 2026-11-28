@@ -508,8 +508,9 @@ async function prep(run: Run): Promise<void> {
   // New declarations are searched for callers at the head, which exists only
   // when the diff could read it; without it they stay inconclusive.
   const headReadable = isRecord(refs['head']) && refs['head']['available'] === true;
-  await must(run, [
+  const symbols = await must(run, [
     'symbols',
+    ...(process.env['REVIEW_VOICE_SCIP_INDEX'] ? ['--repository', repository, ...(run.summary.scope && isRecord(run.summary.scope) && run.summary.scope.kind !== 'full' ? ['--scip-head-only'] : [])] : []),
     '--diff-file',
     at(run, 'diff.patch'),
     ...(run.base === null ? [] : ['--base', run.base]),
@@ -517,6 +518,8 @@ async function prep(run: Run): Promise<void> {
     '--out',
     at(run, 'symbols.json'),
   ]);
+  const contextNotes = parsed(symbols.stdout).contextNotes;
+  if (Array.isArray(contextNotes)) for (const note of contextNotes) if (typeof note === 'string') run.notes.push(note);
   const followUps = branch ? JSON.stringify({ followUps: [] }) : (await must(run, ['follow-ups', ...pr])).stdout;
   writeFileSync(at(run, 'follow-ups.json'), followUps);
   run.followUps = list(parsed(followUps)['followUps']).length > 0;

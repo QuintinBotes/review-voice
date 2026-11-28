@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - A trusted local comparison report can supply revision-matched API compatibility, performance and clone-pair evidence (#567, #570, #571).
+- Optional local SCIP indexes resolve changed definitions to references by identity. Co-change history can suggest additional companion files for verification (#568, #569).
 
 - `outcomes --recover` records the reviews the Action posted as runs, read from
   GitHub, before the usual outcome check, so the owner's replies, resolutions
