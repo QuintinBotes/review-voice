@@ -236,7 +236,12 @@ saying nothing about it.
 **Every exclusion carries a reason.** Lock files, generated output, vendored
 code and binaries are dropped by default, and each one reports why. A silent
 omission is indistinguishable from a bug, and `--include-generated` brings them
-back for the case where the dependency change *is* the review. A binary is the
+back for the case where the dependency change *is* the review. What a lock file
+or manifest does to the dependencies is not read from the patch at all: with
+`review.human_review.dependency_review` set, `diff --pr` asks GitHub's
+dependency review, and an added runtime dependency with a known advisory holds
+an approval under ADR 0012; when the read fails, a local note says the
+dependency change was not checked (#546). A binary is the
 exception, because it has no lines to read. The local diff leaves out as
 `binary` every file git reports as binary, a tracked one by its `--numstat`
 line and an untracked one by asking git about it, whatever its name,
@@ -828,6 +833,31 @@ white space collapsed, so a value a tool wrapped at the end of that line goes
 whole. A scanner run over a vendored tree
 floods the analyst with leads; scoping it is the configuration's job.
 
+A command may name the coverage report it writes, as
+`static_evidence.commands[].coverage`, a path relative to the directory it
+runs in (issue 547). Once the command exits 0, `collectEvidence` reads that
+file as LCOV (`SF:`, `DA:<line>,<hits>`, `end_of_record`, as c8, nyc, jest
+and `node --test` write it) or Cobertura XML (`<class filename>` and
+`<line number hits>` under each `<source>`, as coverage.py and coverlet write
+it) and compares it with the change's added and modified lines, which
+`evidence --diff-file` reads from the patch and the driver passes. Each
+changed line the report lists as executable with 0 hits becomes an
+`uncovered_line` signal, whose evidence line names the report, so a finding's
+evidence block names the report it relied on. A line the report does not
+list, or a file it does not name, gives nothing, since absent is not zero,
+and a line any record of the report ran counts as run. A report that cannot
+say which lines ran gives no signal and sets the command's
+`coverageInconclusive` to the reason: no diff was given, the command exited
+non-zero (the report may be partial), the path or a link in it leaves the
+directory, the file is missing, larger than 16 MiB, older than the command's
+start (committed to the head or left by another run, so it may describe
+another commit) or neither format. A signal is a lead the analyst may cite and
+the verifier may check a "not tested" claim against, never a finding on its
+own; a candidate that only restates one is held as `restates-tool`. The
+report is read only after a configured command ran, so
+`REVIEW_VOICE_NO_COMMANDS` and every other rule above for a configured command
+apply to it unchanged.
+
 A configured command, its `version` command and the second-pass verification
 command run with a minimal environment, never the review process's own
 (`commandEnvironment` in `src/evidence/run.ts`, issue 279). They get `PATH`,
@@ -1195,6 +1225,20 @@ a recent start is not yet evidence of anything.
 `RV conventions` collects the repository's own `CLAUDE.md`, `AGENTS.md`,
 `CONTRIBUTING.md` and `.claude/skills/*/SKILL.md`, and both the analyst and the
 verifier receive them.
+
+It also collects the rule files a repository keeps for another reviewer:
+`REVIEW.md` at the root and nested (Claude Code Review),
+`.github/copilot-instructions.md` and `.github/instructions/*.instructions.md`
+(GitHub Copilot), `.cursor/BUGBOT.md` at the root and nested, `.cursor/rules/`
+and `.cursorrules` (Cursor). A team that runs two reviewers, or moves from one,
+should not have to copy its rules into a second file. A nested `REVIEW.md` or
+`BUGBOT.md` is directory-scoped like a nested `CLAUDE.md`. A Copilot or Cursor
+rule whose `applyTo` or `globs` match no changed path is listed under
+`skipped` rather than offered, because the tool it was written for would not
+apply it either, unless it says `alwaysApply: true`. These files stay evidence.
+Their instructions to lower severity, exclude paths or cap counts are not
+applied, an exclusion still needs an approved policy (ADR 0032), and the
+`warnings` say so for each one returned.
 
 Precedent cannot reach this. Retrieval learns what the owner values from the
 comments they wrote, and the better a convention is observed the fewer comments
@@ -2021,3 +2065,18 @@ The authoritative inputs are the owner-approved policy and the plugin's own
 prompts. Nothing else.
 
 See [THREAT-MODEL.md](THREAT-MODEL.md).
+
+### Optional symbol and history evidence
+
+Set `REVIEW_VOICE_CO_CHANGE=1` to look for historical companions in up to 120 local non-merge commits reachable from the review base. Commits touching over 20 paths are excluded. Pairs need at least three joint commits and half the changed path’s eligible commits. The report records both counts, the actual window, shallow history, and elapsed time. A rename starts a new pathname history. The collector reads no author identities or commit messages. Use a full base SHA with the standalone symbols command.
+
+Set `REVIEW_VOICE_SCIP_INDEX` to an absolute path to a trusted local JSON envelope containing the index exported by `scip print --json index.scip`. Create it in the producer checkout at indexing time. In the following example `repository` is the reviewed GitHub slug and `root_uri` is the producer repository’s absolute file URI.
+
+```sh
+scip print --json index.scip > scip.json
+jq -n --arg repository "$repository" --arg revision "$(git rev-parse HEAD)" \
+  --arg repositoryRoot "$root_uri" --slurpfile index scip.json \
+  '{repository:$repository,revision:$revision,repositoryRoot:$repositoryRoot,index:$index[0]}' > context.json
+```
+
+The local review needs only the envelope. The CLI checks the repository and revision against the review, maps an indexed subproject back to its repository-relative path and joins occurrence identities on changed definition lines. For standalone use, pass `symbols --repository owner/repo --base <sha> --head <sha>`; pass `--scip-head-only` for incremental patches whose old side differs from the PR base. The report retains lexical context, names its indexed side, and bounds input to 16 MiB, 100 changed definitions, 20 references per definition and the remaining symbol time budget. Missing and partial indexes provide no evidence of absent callers. Neither context source changes computed reach.

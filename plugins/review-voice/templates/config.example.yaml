@@ -263,6 +263,17 @@ static_evidence:
   #     run: semgrep scan --config .semgrep --metrics=off --sarif --quiet .
   #   - name: ruff
   #     run: ruff check --output-format sarif .
+  # A test command can name the LCOV or Cobertura XML coverage report it
+  # writes. Each changed line the report lists with 0 hits becomes an
+  # uncovered_line signal, evidence for a finding and never one by itself. A
+  # report that is missing, older than the run, unparsable or from a failed
+  # run is recorded as coverageInconclusive, never as zero coverage (#547).
+  #   - name: test
+  #     run: npx c8 --reporter=lcovonly npm test
+  #     coverage: coverage/lcov.info
+  #   - name: pytest
+  #     run: python -m pytest --cov --cov-report=xml
+  #     coverage: coverage.xml
   # Commands get only PATH, HOME, LANG, LC_ALL, TMPDIR, CI and TERM, never the
   # reviewer's GITHUB_TOKEN, ANTHROPIC_API_KEY or REVIEW_VOICE_* settings. List
   # any other variable a command needs by name (issue 279). Example:

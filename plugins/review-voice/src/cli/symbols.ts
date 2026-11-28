@@ -2,7 +2,9 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { DEFAULT_TEST_PATHS } from '../diff/complexity.ts';
 import { collectSymbolContext, DEFAULT_MAX_MS } from '../diff/symbols.ts';
 import { linkedConsumers } from '../diff/linked.ts';
-import { flag, githubClient, resolveOutPath, repositoryConfig, refExists } from './shared.ts';
+import { coChanges } from '../diff/co-change.ts';
+import { scipContext } from '../diff/scip.ts';
+import { flag, githubClient, inferRepository, resolveOutPath, repositoryConfig, refExists } from './shared.ts';
 
 /**
  * Gives the agents a bounded list of places worth reading after the diff.
@@ -63,8 +65,13 @@ export async function symbolsCommand(argv: string[]): Promise<number> {
   // names its tests differently gets the same split here.
   const config = repositoryConfig();
   const testPaths = config?.humanReview.testPaths ?? DEFAULT_TEST_PATHS;
-  const started = Date.now();
-  const result = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, head, testPaths, firstPartyPaths: config?.firstPartyPaths ?? [], maxMs });
+  const deadline = Date.now() + maxMs;
+  const lexical = collectSymbolContext({ diff, cwd: process.cwd(), ref: base, head, testPaths, firstPartyPaths: config?.firstPartyPaths ?? [], maxMs });
+  const scipFile = process.env['REVIEW_VOICE_SCIP_INDEX'];
+  const repository = flag(argv, '--repository') ?? (scipFile ? inferRepository(process.cwd()) : null);
+  const scip = scipFile ? scipContext(scipFile, repository, argv.includes('--scip-head-only') ? null : base, head, diff, deadline) : undefined;
+  const history = process.env['REVIEW_VOICE_CO_CHANGE'] === '1'
+    ? await coChanges(process.cwd(), base, lexical.files.map(f => f.path), config?.firstPartyPaths ?? [], deadline) : undefined;
   // Consumers in linked repositories (#548), under what is left of the same budget.
   const linked = config === null || config.linkedRepositories.length === 0
     ? undefined
@@ -72,9 +79,10 @@ export async function symbolsCommand(argv: string[]): Promise<number> {
       diff,
       linked: config.linkedRepositories,
       client: githubClient(config.allowlist, true),
-      remaining: () => maxMs - (Date.now() - started),
+      remaining: () => deadline - Date.now(),
     });
-  if (linked !== undefined) result.linked = linked;
+  const result = { ...lexical, scip, coChanges: history, linked };
+  const contextNotes = [...(scip?.notes ?? []), ...(history?.reason ? [history.reason] : [])];
   const out = flag(argv, '--out');
   if (out === null) {
     console.log(JSON.stringify(result, null, 2));
@@ -88,6 +96,7 @@ export async function symbolsCommand(argv: string[]): Promise<number> {
       JSON.stringify(
         {
           path,
+          ...(contextNotes.length ? { contextNotes } : {}),
           files: result.files.length,
           downstreamFiles: result.downstreamFiles,
           inconclusiveFiles: result.files.filter((file) => file.inconclusive === true).length,

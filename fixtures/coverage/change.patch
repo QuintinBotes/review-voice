@@ -1,0 +1,43 @@
+diff --git a/shop/cart.py b/shop/cart.py
+index a04779b..b69741d 100644
+--- a/shop/cart.py
++++ b/shop/cart.py
+@@ -1,7 +1,14 @@
+ def add_item(cart, item):
+     for entry in cart["items"]:
+         if entry["sku"] == item["sku"]:
+-            entry["quantity"] = entry["quantity"] + 1
++            entry["quantity"] += item["quantity"]
+             return cart
+     cart["items"].append(dict(item))
+     return cart
++
++
++def apply_coupon(cart, coupon, now):
++    if coupon["expires_at"] < now:
++        raise ValueError("coupon expired")
++    cart["discount"] = coupon["percent"]
++    return cart
+diff --git a/src/cart.js b/src/cart.js
+index 8a1f56c..4450914 100644
+--- a/src/cart.js
++++ b/src/cart.js
+@@ -1,9 +1,17 @@
+ export function addItem(cart, item) {
+   const existing = cart.items.find((entry) => entry.sku === item.sku);
+   if (existing) {
+-    existing.quantity = existing.quantity + 1;
++    existing.quantity += item.quantity;
+     return cart;
+   }
+   cart.items.push({ ...item });
+   return cart;
+ }
++
++export function applyCoupon(cart, coupon) {
++  if (coupon.expiresAt < Date.now()) {
++    throw new Error('coupon expired');
++  }
++  cart.discount = coupon.percent;
++  return cart;
++}

@@ -11,6 +11,9 @@
  * applies. Ranking by directory proximity instead sent a 14 KB semaphore guide
  * and a 9.6 KB routing guide to a pull request with neither, while every rule
  * whose glob matched the changed files was dropped for budget.
+ *
+ * GitHub Copilot writes the same declaration as `applyTo: "**\/*.ts,**\/*.tsx"`
+ * and Cursor as `globs:`, so those keys are read too, comma-separated inline.
  */
 export function frontmatterPaths(content: string): string[] {
   const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
@@ -22,12 +25,14 @@ export function frontmatterPaths(content: string): string[] {
 
   for (const raw of block.split(/\r?\n/)) {
     const line = raw.trimEnd();
-    if (/^paths\s*:/.test(line)) {
+    if (/^(?:paths|applyTo|globs)\s*:/.test(line)) {
       inPaths = true;
-      // Inline form: `paths: ["a", "b"]`.
+      // Inline form: `paths: ["a", "b"]`, or `applyTo: "a,b"`.
       const inline = line.slice(line.indexOf(':') + 1).trim();
-      if (inline.startsWith('[')) {
-        for (const item of inline.slice(1, -1).split(',')) paths.push(unquote(item));
+      if (inline.length > 0) {
+        const list = inline.startsWith('[') ? inline.slice(1, -1) : unquote(inline);
+        // A comma inside `{ts,tsx}` belongs to the glob, not the list.
+        for (const item of list.split(/,(?![^{]*\})/)) paths.push(unquote(item));
         inPaths = false;
       }
       continue;
@@ -91,6 +96,32 @@ export function globToRegExp(glob: string): RegExp {
 }
 
 /**
+ * `**\/*.{ts,tsx}` as `**\/*.ts` and `**\/*.tsx`, which is how Copilot and
+ * Cursor rules usually name a language. Here rather than in `globToRegExp`,
+ * whose callers (policy, verdict paths) treat a brace as a literal.
+ */
+function expandBraces(glob: string): string[] {
+  const out: string[] = [];
+  const pending = [glob];
+  // Bounded, because the glob is repository text: twenty `{a,b}` groups would
+  // otherwise expand to a million patterns.
+  while (pending.length > 0 && out.length + pending.length <= MAX_BRACE_EXPANSIONS) {
+    const next = pending.pop() as string;
+    const match = /\{([^{}]*)\}/.exec(next);
+    if (match === null) {
+      out.push(next);
+      continue;
+    }
+    const head = next.slice(0, match.index);
+    const tail = next.slice(match.index + match[0].length);
+    for (const option of (match[1] ?? '').split(',')) pending.push(`${head}${option}${tail}`);
+  }
+  return out;
+}
+
+const MAX_BRACE_EXPANSIONS = 64;
+
+/**
  * How many changed paths a document's globs govern.
  *
  * Coverage rather than a yes or no, because it decides which rule is read when
@@ -103,7 +134,7 @@ export function governsCount(globs: readonly string[], changedPaths: readonly st
   if (globs.length === 0 || changedPaths.length === 0) return 0;
 
   const normalised = changedPaths.map((path) => path.split('\\').join('/'));
-  const compiled = globs.flatMap((glob) => {
+  const compiled = globs.flatMap(expandBraces).flatMap((glob) => {
     try {
       const exact = globToRegExp(glob);
       // A bare `*.tsx` is meant to match anywhere, the way these files use it.
@@ -121,7 +152,7 @@ export function governsAny(globs: readonly string[], changedPaths: readonly stri
   if (globs.length === 0 || changedPaths.length === 0) return false;
 
   const normalised = changedPaths.map((path) => path.split('\\').join('/'));
-  return globs.some((glob) => {
+  return globs.flatMap(expandBraces).some((glob) => {
     let pattern: RegExp;
     try {
       pattern = globToRegExp(glob);

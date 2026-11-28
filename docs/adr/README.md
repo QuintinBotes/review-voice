@@ -14,7 +14,7 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 |---|---|---|
 | [0001](0001-embedding-implementation.md) | Embedding and retrieval implementation | Accepted |
 | [0002](0002-github-auth-model.md) | GitHub authentication model | Accepted, amended 2026-10-06 by 0018 and 2026-10-25 by 0026 |
-| [0003](0003-static-analysis-adapters.md) | Static analysis adapter strategy | Accepted, amended 2026-11-08, amended 2026-11-09 (reproductions), amended 2026-11-09 (SARIF), amended 2026-11-10 (configured runners), amended 2026-11-10 (macOS reproductions) |
+| [0003](0003-static-analysis-adapters.md) | Static analysis adapter strategy | Accepted, amended 2026-11-08, amended 2026-11-09 (reproductions), amended 2026-11-09 (SARIF), amended 2026-11-10 (configured runners), amended 2026-11-10 (macOS reproductions), amended 2026-11-28 (coverage reports) |
 | [0004](0004-outcome-inference-limits.md) | Outcome inference limits | Accepted, amended by 0029, amended 2026-11-08 |
 | [0005](0005-data-encryption.md) | Data encryption at rest | Accepted |
 | [0006](0006-team-governance.md) | Team and policy governance | Accepted |
@@ -23,7 +23,7 @@ after that gate. 0021 to 0031 make Review Voice a watcher; see
 | [0009](0009-severity-from-computed-reach.md) | Severity from category and computed reach | Accepted, amended 2026-10-06 and 2026-11-28 |
 | [0010](0010-review-verdict-posting.md) | Posting a review with its verdict | Accepted, amended by 0012, 0013, 0017, 0018 and 0028, amended 2026-11-09 by 0035 (a second checked write path, the reply) |
 | [0011](0011-severity-escalation-needs-traced-impact.md) | Severity escalation needs traced impact | Accepted |
-| [0012](0012-complex-changes-need-human-approval.md) | Complex changes are raised for a human's approval | Accepted, amended 2026-10-06 (posted body; production-source count; would-have verdict and stale request for changes), amended 2026-11-07 (config read from the base commit), amended 2026-11-11 (`review.first_party_paths`), amended 2026-11-12 (the slash commands read it too, the verdict and the post included), and by 0020 and 0028 |
+| [0012](0012-complex-changes-need-human-approval.md) | Complex changes are raised for a human's approval | Accepted, amended 2026-10-06 (posted body; production-source count; would-have verdict and stale request for changes), amended 2026-11-07 (config read from the base commit), amended 2026-11-11 (`review.first_party_paths`), amended 2026-11-12 (the slash commands read it too, the verdict and the post included), amended 2026-11-28 (an added dependency with an advisory, #546), and by 0020 and 0028 |
 | [0013](0013-ci-needs-rerun.md) | CI that needs a rerun holds every event | Accepted, amended 2026-10-06 and by 0028 |
 | [0014](0014-verifier-tie-break.md) | A tie-break settles a disputed traced impact | Accepted, amended 2026-10-06 and by 0019 |
 | [0015](0015-untraced-document-consumers.md) | A stale document may be reported untraced at nit | Accepted |

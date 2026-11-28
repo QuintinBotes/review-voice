@@ -200,3 +200,26 @@ test('a pending GitHub request is aborted at the time budget', async () => {
   assert.equal(result.reason, 'time-budget');
   assert.equal(github.requests.length, 1);
 });
+
+test('linked search and the matching blob both use the configured enterprise API root', async () => {
+  const api = 'https://enterprise.example/api/v3';
+  const symbol = 'parseOrderTotal';
+  const use = 'const total = parseOrderTotal(order);';
+  const item = codeSearchItem('acme/billing', 'src/invoice.ts', use, symbol);
+  const github = fakeGitHub((url, init) => {
+    assert.equal(url.origin, 'https://enterprise.example');
+    if (url.pathname === '/api/v3/search/code') {
+      assert.equal(init.redirect, 'manual');
+      return json({ total_count: 1, items: [item] });
+    }
+    assert.equal(url.pathname, '/api/v3/repos/acme/billing/git/blobs/' + item.sha);
+    assert.equal(init.redirect, 'error');
+    return new Response('// consumer\n' + use);
+  });
+  const client = new GitHubClient({ baseUrl: api, allowlist: ['acme/billing'], token: 't', fetchImpl: github.fetchImpl });
+  const abort = new AbortController();
+  const found = await client.searchCode(symbol, 'acme/billing', abort.signal);
+  assert.equal(found.matches.length, 1);
+  assert.equal(await client.readSearchBlob(found.matches[0].repository, found.matches[0].blob, abort.signal), '// consumer\n' + use);
+  assert.equal(github.requests.length, 2);
+});

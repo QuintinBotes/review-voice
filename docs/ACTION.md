@@ -82,13 +82,14 @@ job's `env` and leave `config` at its default.
 
 Posting needs both `post: true` in the workflow and
 `writes.github_posting_enabled: true` in the repository config, plus
-`pull-requests: write`. To post an approval with the default workflow token,
-the repository must also allow it: Settings, Actions, General, Workflow
-permissions, "Allow GitHub Actions to create and approve pull requests". That
-setting is off by default. Without it GitHub refuses the approval, so nothing
-is posted, the job passes, and the log carries a warning naming the setting.
-Comments and requests for changes post either way. The review is authored by
-the token's identity. With
+`pull-requests: write`. The Action never approves. A review that would
+approve is posted as a COMMENT, with its findings and the summary line ("No
+problems found.", or the count of nits), as `verdict.never_approve` does. An
+approval is left to a person, and the repository needs no "Allow GitHub
+Actions to create and approve pull requests" setting. Because a COMMENT does
+not replace a request for changes, a request the Action made earlier stands
+until a maintainer dismisses it or the pull request merges. The review is
+authored by the token's identity. With
 `post: false` the review is computed and written to the job summary only.
 With `post: true` and posting off in the config the review reads (the base
 commit's), the review still runs and the job passes: nothing is posted, and
@@ -107,6 +108,16 @@ the lines becomes an outcome. It reads GitHub and writes only your local store,
 and running it again records nothing twice (docs/adr/0042). A recovered run has
 no category or scores, since the posted text does not carry them, and no reply
 is offered under its threads.
+
+## GitHub Enterprise
+
+On GitHub Enterprise Server (3.9 or later) and GHE.com data residency, nothing
+changes in the workflow. The runner sets `GITHUB_API_URL`, and every read,
+GraphQL query and posted review goes to that host with the workflow token,
+never to `api.github.com` or anywhere else (#545). The pull request cannot
+change the host. On Enterprise Server, `actions/setup-node` and
+`actions/cache` must be available to the runner, through GitHub Connect or a
+synced copy.
 
 ## Forks
 
