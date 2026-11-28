@@ -240,7 +240,8 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   evidence: {
     summary: 'Run the configured static checks and emit structured signals',
     body: lines(
-      'review-voice evidence [--cwd <dir>] [--diff-file <patch>]',
+      'review-voice evidence [--cwd <dir>] [--diff-file <patch>] [--review-dir <dir>]',
+      '  --review-dir <dir>     Match REVIEW_VOICE_COMPARISON_REPORT to the commits and patch from diff --out.',
       '  Run the configured static checks and emit structured signals.',
       '  --diff-file <patch>    The change, whose added and modified lines a command\'s coverage report is read',
       '                         against; without it every coverage report is coverageInconclusive.',
@@ -842,6 +843,11 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '                                          "Heads up: <checks> need a rerun."',
       '  review.human_review.cap_approval: true  false lets a clean complex change approve;',
       '                                          the local note stays',
+      '  review.human_review.dependency_review: false',
+      '                                          low|moderate|high|critical: on --pr, an added runtime',
+      '                                          dependency with a GitHub advisory at or above it holds',
+      '                                          an approval (dependency-graph/compare); licences and',
+      '                                          an unchecked dependency change are a local note',
       '  verdict.never_approve: false            true turns every APPROVE into COMMENT;',
       '                                          approval is left to a person',
       '  verdict.never_approve_paths: []         globs; a pull request changing a matching path',

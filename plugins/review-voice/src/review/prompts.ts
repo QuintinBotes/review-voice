@@ -155,6 +155,7 @@ export function verifierPrompt(run: RunFiles): string {
     'Verify every candidate in the kept list of checked.json against the code at the head.',
     '',
     ...context(run, [
+      file(run, 'evidence.json', 'check comparison provenance, both clone ranges or benchmark workload and the changed cause before accepting a claim'),
       file(run, 'checked.json', 'the candidates; verify each entry of kept'),
       file(run, 'evidence.json', 'static evidence; an uncovered_line signal is a changed line no test ran, and a coverageInconclusive command says nothing either way'),
       ...(run.followUps

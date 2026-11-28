@@ -3,7 +3,9 @@ import { GitHubClient, REVIEW_THREADS_QUERY } from '../github/client.ts';
 import { overlap, significantWords, suggestedPatchOf } from '../scoring/score.ts';
 import { fileAtRef, suggestionApplied } from '../publish/suggestion.ts';
 import { ruleIdFor } from '../policy/rules.ts';
-import { runDetail, type StoredFinding } from './runs.ts';
+import { runDetail, type RunDetail, type StoredFinding } from './runs.ts';
+import { AGREEMENT_LINE_TOLERANCE } from '../evaluate/metrics.ts';
+import type { ScoreBreakdown } from '../scoring/score.ts';
 import { stripEvidenceBlock } from '../publish/evidence-block.ts';
 import { parseFinding } from '../contract/parse.ts';
 import { terminalSafeDeep } from '../terminal.ts';
@@ -91,6 +93,8 @@ export interface RawComment {
   original_start_line?: number | null;
   body?: string;
   created_at?: string;
+  /** The commit the comment was made on; on the pull request's comment list. */
+  original_commit_id?: string;
   in_reply_to_id?: number | null;
   /** On the pull request's comment list only; the list per review carries neither this nor a line. */
   pull_request_review_id?: number | null;
@@ -357,6 +361,11 @@ export interface CheckOptions {
   ownerReviewer?: string | null | undefined;
   /** False reads the outcomes without storing them, for the read-only verdict (#534). */
   store?: boolean | undefined;
+  /**
+   * Logins whose inline comments after a run are followed as reviewer findings
+   * (#550): the owner and `identity.reviewers`. Absent or empty, none are.
+   */
+  reviewers?: readonly string[] | undefined;
 }
 
 export interface CheckResult {
@@ -365,6 +374,8 @@ export interface CheckResult {
   warnings: string[];
   /** Threads awaiting this tool's one reply, found from the same reads as the outcomes. */
   questions: PendingQuestion[];
+  /** Reviewers' comments after a run on lines it covered, from the same reads (#550). */
+  reviewerFindings: ReviewerFinding[];
 }
 
 interface PullContext {
@@ -384,7 +395,7 @@ interface PullContext {
  */
 export async function checkOutcomes(options: CheckOptions): Promise<CheckResult> {
   const allowed = new Set(options.allowlist.map((name) => name.toLowerCase()));
-  const result: CheckResult = { outcomes: [], skipped: [], warnings: [], questions: [] };
+  const result: CheckResult = { outcomes: [], skipped: [], warnings: [], questions: [], reviewerFindings: [] };
   const byPull = new Map<string, SentRun[]>();
   for (const run of sentRuns(options.db, { since: options.since, repository: options.repository })) {
     if (options.pullNumber !== undefined && run.pullNumber !== options.pullNumber) continue;
@@ -417,11 +428,14 @@ export async function checkOutcomes(options: CheckOptions): Promise<CheckResult>
       // it is told; the watcher and `outcomes` never offer one here.
       const cut = context.replies.length >= READ_LIMIT;
       if (cut && options.pullNumber !== undefined) result.warnings.push(`${repository}#${pullNumber}: only the first ${READ_LIMIT} inline comments were read, so no reply is offered on it`);
+      const own = new Set<number>();
       for (const run of runs) {
         const followed = await followRun(options, context, run, viewerLogin);
         result.outcomes.push(...followed.outcomes);
         if (!cut) result.questions.push(...followed.questions);
+        for (const id of followed.reviewIds) own.add(id);
       }
+      result.reviewerFindings.push(...(await followReviewers(options, context, runs, own)));
     } catch (error) {
       result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
     }
@@ -553,9 +567,9 @@ async function followRun(
   context: PullContext,
   run: SentRun,
   viewerLogin: () => Promise<string | null>,
-): Promise<{ outcomes: FindingOutcome[]; questions: PendingQuestion[] }> {
+): Promise<{ outcomes: FindingOutcome[]; questions: PendingQuestion[]; reviewIds: number[] }> {
   const detail = runDetail(options.db, run.runId);
-  if (detail === null) return { outcomes: [], questions: [] };
+  if (detail === null) return { outcomes: [], questions: [], reviewIds: [] };
   const { ids, source } = await reviewIdsOf(options, run, viewerLogin);
   const comments: RawComment[] = [];
   for (const id of ids) {
@@ -618,7 +632,148 @@ async function followRun(
     }
     outcomes.push(outcome);
   }
-  return { outcomes, questions };
+  return { outcomes, questions, reviewIds: ids };
+}
+
+/** Where a reviewer's comment sits against a run: posted there, held, scored and turned away, or never raised (#550). */
+export type ReviewerClass = 'also_posted' | 'held' | 'rejected' | 'never_raised';
+
+export interface ReviewerFinding {
+  reviewRunId: string;
+  repository: string;
+  pullNumber: number;
+  commentId: number;
+  author: string;
+  path: string;
+  /** The comment's line at the head the run reviewed. */
+  line: number;
+  class: ReviewerClass;
+  /** The hold verdict, or the score gate that turned it away; null for `also_posted` and `never_raised`. */
+  stage: string | null;
+  /** The lane of the candidate held or turned away there; null with none. */
+  lane: string | null;
+  /** The comment's own outcome, by the rules `decide` applies to posted findings. */
+  outcome: Outcome;
+  strength: Strength;
+  evidence: string;
+  checkedAt: string;
+}
+
+/** Whether the run read `path`: not left out, and inside an incremental scope's files. */
+function covers(detail: RunDetail, path: string): boolean {
+  if (detail.leftOut?.includes(path) === true) return false;
+  const scope = detail.scope;
+  if (scope === null || scope.kind === 'full') return true;
+  return scope.kind !== 'unchanged' && scope.files.includes(path);
+}
+
+/** What the run did within the agreement tolerance of `path:line`, the first that applies of posted, held, scored. */
+export function classifyReviewerComment(detail: RunDetail, path: string, line: number): Pick<ReviewerFinding, 'class' | 'stage' | 'lane'> {
+  const near = (at: { path?: unknown; line?: unknown }): boolean => at.path === path && typeof at.line === 'number' && Math.abs(at.line - line) <= AGREEMENT_LINE_TOLERANCE;
+  if (detail.findings.some(near)) return { class: 'also_posted', stage: null, lane: null };
+  const scores = Array.isArray(detail.scores) ? (detail.scores as Partial<ScoreBreakdown>[]) : [];
+  const held = detail.held.find(near);
+  if (held !== undefined) return { class: 'held', stage: held.verdict, lane: scores.find((score) => score.candidateId === held.candidateId)?.lane ?? null };
+  const score = scores.find(near);
+  if (score !== undefined) return { class: 'rejected', stage: score.gate ?? (score.eligible === true ? 'not-posted' : 'score'), lane: score.lane ?? null };
+  return { class: 'never_raised', stage: null, lane: null };
+}
+
+/**
+ * Each root inline comment by a listed reviewer, made after a run on the head
+ * it reviewed and on a file it read, classed against that run and followed to
+ * an outcome with `decide`, from the comments, thread states and compares the
+ * posted findings already read. This tool's own reviews are left out by id,
+ * and bots always are. A strong `fixed` the run did not post is a defect it
+ * missed; anything else is reported and proves nothing (docs/adr/0004).
+ */
+async function followReviewers(options: CheckOptions, context: PullContext, runs: SentRun[], own: Set<number>): Promise<ReviewerFinding[]> {
+  const reviewers = new Set((options.reviewers ?? []).map((login) => login.toLowerCase()));
+  if (reviewers.size === 0) return [];
+  const recorded = runs.flatMap((run) => {
+    const detail = runDetail(options.db, run.runId);
+    return detail === null || run.headRef === null ? [] : [{ run, detail, at: Date.parse(detail.createdAt) }];
+  });
+  const checkedAt = (options.now?.() ?? new Date()).toISOString();
+  const found: ReviewerFinding[] = [];
+  for (const comment of context.replies) {
+    const author = comment.user?.login;
+    const line = comment.original_line ?? comment.line;
+    const madeOn = comment.original_commit_id;
+    if (typeof comment.id !== 'number' || comment.in_reply_to_id != null || isBot(comment.user) || author === undefined || !reviewers.has(author.toLowerCase())) continue;
+    if (typeof comment.pull_request_review_id === 'number' && own.has(comment.pull_request_review_id)) continue;
+    if (typeof comment.path !== 'string' || typeof line !== 'number' || typeof madeOn !== 'string') continue;
+    const made = Date.parse(comment.created_at ?? '');
+    // The newest run on the head the comment was made on, recorded before it.
+    const latest = recorded.filter(({ run, at }) => sameHead(run.headRef!, madeOn) && at <= made).at(-1);
+    if (latest === undefined || !covers(latest.detail, comment.path)) continue;
+    const as: StoredFinding = { findingId: `reviewer-comment-${comment.id}`, severity: '', path: comment.path, line, text: '' };
+    const decided = await decide(options, context, latest.run, as, comment);
+    const finding: ReviewerFinding = {
+      reviewRunId: latest.run.runId,
+      repository: latest.run.repository,
+      pullNumber: latest.run.pullNumber,
+      commentId: comment.id,
+      author,
+      path: comment.path,
+      line,
+      ...classifyReviewerComment(latest.detail, comment.path, line),
+      outcome: decided.outcome,
+      strength: decided.strength,
+      evidence: decided.evidence,
+      checkedAt,
+    };
+    if (options.store !== false) saveReviewerFinding(options.db, finding);
+    found.push(finding);
+  }
+  return found;
+}
+
+function saveReviewerFinding(db: Database, finding: ReviewerFinding): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO reviewer_findings
+       (review_run_id, comment_id, repository, pull_number, author, path, line, class, stage, lane, outcome, strength, evidence, checked_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    finding.reviewRunId,
+    finding.commentId,
+    finding.repository,
+    finding.pullNumber,
+    finding.author,
+    finding.path,
+    finding.line,
+    finding.class,
+    finding.stage,
+    finding.lane,
+    finding.outcome,
+    finding.strength,
+    finding.evidence,
+    finding.checkedAt,
+  );
+}
+
+export interface MissedStats {
+  /** Reviewer comments followed, any outcome. */
+  tracked: number;
+  /** Strong `fixed` reviewer comments the run did not post. */
+  missed: number;
+  /** The missed ones by class, and by lane where a candidate was there. */
+  byClass: Record<string, number>;
+  byLane: Record<string, number>;
+}
+
+/** Defects a reviewer raised after a run and the author fixed, which the run did not post (#550). */
+export function missedStats(db: Database): MissedStats {
+  const tracked = (db.prepare('SELECT COUNT(*) AS n FROM reviewer_findings').get() as { n: number }).n;
+  const rows = db
+    .prepare(`SELECT class, lane FROM reviewer_findings WHERE outcome = 'fixed' AND strength = 'strong' AND class <> 'also_posted'`)
+    .all() as { class: string; lane: string | null }[];
+  const count = (keys: string[]): Record<string, number> => {
+    const counts: Record<string, number> = {};
+    for (const key of keys.sort()) counts[key] = (counts[key] ?? 0) + 1;
+    return counts;
+  };
+  return { tracked, missed: rows.length, byClass: count(rows.map((row) => row.class)), byLane: count(rows.flatMap((row) => (row.lane === null ? [] : [row.lane]))) };
 }
 
 /** Whether the anchored lines changed between the run's head and the current one; null when that cannot be told. */

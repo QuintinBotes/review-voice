@@ -369,3 +369,7 @@ diff to compare it against gives no signal and records the reason as the
 command's `coverageInconclusive`, so the absence of signals is never read as
 full coverage, and a line or file the report does not list is not read as
 zero coverage either. Branch coverage is not read.
+
+### Local comparison reports
+
+A trusted producer can supply revision-bound comparisons to the evidence stage. The CLI checks their revisions and locations and imports leads under the existing verification and challenge rules. The [format and producer example](../COMPARISON-EVIDENCE.md) cover the supported reports.

@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `review.human_review.dependency_review` (off by default; `low`, `moderate`,
+  `high` or `critical`): when a pull request changes a lock file or dependency
+  manifest, `review --pr` reads GitHub's dependency review for its base and
+  head, and an added or bumped runtime dependency with an advisory at or above
+  that severity raises the change for human review, so the review comments
+  rather than approves and the human-review note names the GHSA id. Lock files
+  are excluded from the diff, and whether a version is vulnerable is a fact
+  from an advisory database, not something to read from it. Licences the
+  change adds, and a dependency change the check could not read (a 403 or 404
+  from GitHub, a branch review), are a local note only; with the setting off
+  nothing is read or said (docs/adr/0012, #546).
+- `evaluate` reports `reviewer_findings_missed` and `online_recall`: a
+  defect a listed reviewer raised inline after Review Voice's review, on lines
+  the review read, that the author then fixed (the lines changed and the
+  thread was resolved or agreed, ADR 0029's strong rule), and that the review
+  did not post. `outcomes` reads these from the comments it already reads,
+  classes each as `also_posted`, `held`, `rejected` or `never_raised` with the
+  stage and lane, and writes nothing to GitHub. Reported, not scored: a human
+  comment is not ground truth (#550).
+- A trusted local comparison report can supply revision-matched API compatibility, performance and clone-pair evidence (#567, #570, #571).
+- Optional local SCIP indexes resolve changed definitions to references by identity. Co-change history can suggest additional companion files for verification (#568, #569).
+
 - `outcomes --recover` records the reviews the Action posted as runs, read from
   GitHub, before the usual outcome check, so the owner's replies, resolutions
   and dismissals of what the Action posted become outcomes, precedent and
@@ -29,9 +51,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that failed gives no signal and records why as `coverageInconclusive`, so it
   is never read as zero coverage. `evidence` takes `--diff-file` for the
   changed lines, and the review driver passes it (#547).
+- `conventions` reads the rule files a repository keeps for another reviewer:
+  `REVIEW.md`, `.github/copilot-instructions.md`,
+  `.github/instructions/*.instructions.md`, `.cursor/BUGBOT.md`,
+  `.cursor/rules/` and `.cursorrules`, each with its own kind. They come from
+  the same trusted ref and budget as the other convention files. A nested
+  `REVIEW.md` or `BUGBOT.md`, and a Copilot or Cursor rule with `applyTo` or
+  `globs`, is offered only when the change touches its scope, and is listed
+  under `skipped` otherwise. Their severity, exclusion and count instructions
+  are not applied, and a warning says so (#552).
 
 ### Fixed
 
+- A candidate whose anchor was still refused after its lane re-anchored it
+  stopped the whole review with exit 7, so one model mistake failed the job
+  (QuintinBotes/memory#149). The candidate is now dropped and held as
+  `unverified` with the reason, the review goes on with the rest, and the
+  report says how many were dropped. A malformed candidate file still stops
+  the review (#553).
 - A rerun of the Action's job ("Re-run jobs") kept the first attempt's cache
   key, so it restored that store and never saved its own: what the rerun
   posted was forgotten by the next run. On review-voice-e2e#2 a third attempt
@@ -42,11 +79,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and when CI was pending so the verdict was not posted. A green skip read as a
   review that ran, and a held review's one log line read as an approval that
   failed to post (#533).
-- An approval posted with a workflow token in a repository that does not let
-  GitHub Actions approve pull requests (GitHub's default) failed the job with a
-  422, so only clean changes got a red check. GitHub sends nothing in that case,
-  so the job now passes with a warning naming the setting, and docs/ACTION.md
-  says how to turn it on (#535).
+- The Action never approves. An approval from a workflow token was refused
+  with a 422 in a repository that does not let GitHub Actions approve pull
+  requests (GitHub's default), which failed the job and dropped the review's
+  findings, so only clean changes got a red check. A review that would approve
+  is now posted as a COMMENT with its findings and summary line, as
+  `verdict.never_approve` does, and a person approves (#535, #554).
 - A pull request whose largest source file GitHub sent no patch for (too large
   to diff) was approved with that file unread. On review-voice-scratch#3 a
   40,007-line source file went unread under "No problems found". A changed

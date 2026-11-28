@@ -72,7 +72,8 @@ no-findings string are all checked rather than requested.
 
 **It reads your repository's own rules.** `CLAUDE.md`, `AGENTS.md`,
 `CONTRIBUTING.md`, `.agents/rules/` and skill documents reach the analyst and
-the verifier, as evidence about what the repository requires and never as
+the verifier, and so do the rule files written for other reviewers
+(`REVIEW.md`, Copilot's instructions, Cursor's `BUGBOT.md` and rules), as evidence about what the repository requires and never as
 instructions to the reviewer. Precedent cannot cover this ground: the better a
 convention is observed, the fewer review comments it leaves behind.
 
@@ -95,6 +96,8 @@ findings, derived at retrieval time from their stored outcomes, so a finding
 the owner already dismissed the like of weighs against saying it again.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+Reviewers can also use local [API compatibility, benchmark and clone reports](docs/COMPARISON-EVIDENCE.md) for the commits under review.
 
 ## Install
 
