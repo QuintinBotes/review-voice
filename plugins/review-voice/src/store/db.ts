@@ -291,6 +291,31 @@ const MIGRATIONS: string[] = [
     checked_at TEXT NOT NULL
   );
   `,
+
+  // v15 - a human reviewer's inline comment after a run, and what the run did there (#550).
+  //
+  // One row per run and comment, replaced by a newer check, as finding_outcomes
+  // is. The outcome is the comment's, read with the same rules; a strong `fixed`
+  // the run did not post is a defect it missed.
+  `
+  CREATE TABLE IF NOT EXISTS reviewer_findings (
+    review_run_id TEXT NOT NULL,
+    comment_id INTEGER NOT NULL,
+    repository TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    author TEXT NOT NULL,
+    path TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    class TEXT NOT NULL,
+    stage TEXT,
+    lane TEXT,
+    outcome TEXT NOT NULL,
+    strength TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (review_run_id, comment_id)
+  );
+  `,
 ];
 
 function migrate(db: Database): void {

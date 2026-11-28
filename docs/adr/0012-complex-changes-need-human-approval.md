@@ -41,6 +41,20 @@ review says so, and why, so a human picks it up.**
     file list cut at GitHub's limit. Nothing read that code, so "nothing
     found" says nothing about it. A binary has no patch either, and GitHub
     counts no lines for it, so it does not raise the change.
+  - *Vulnerable dependency* (amended 2026-11-28, #546): opt-in with
+    `review.human_review.dependency_review: <severity>`. When a pull request
+    changes a lock file or dependency manifest, `diff --pr` reads
+    `GET /repos/{owner}/{repo}/dependency-graph/compare/{base}...{head}`, a GET
+    on the repository under review. An `added` row (a new package, or the new
+    version of a bumped one) that is not a development dependency and carries
+    an advisory at or above that severity raises the change; the reason names
+    the package and the GHSA id. Lock files are excluded from the diff, and an
+    advisory is a fact from a database, not something to read from a patch,
+    so it is not made into a finding. Licences the change adds, and a
+    dependency change the check could not read (a 403 or 404 when the
+    dependency graph or GitHub Advanced Security is off, a review that is not
+    of a pull request), go in a local `dependencyNote` and raise nothing. With
+    the setting off, the default, nothing is read and nothing is said.
 - **Configured, with defaults.** `review.human_review` sets
   `max_decision_points`, `max_hunk_decision_points` and `sensitive_paths`.
   Built-in sensitive paths are `.github/workflows/**`, `**/migrations/**`,
