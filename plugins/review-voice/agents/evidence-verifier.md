@@ -340,7 +340,11 @@ Such a finding can still be reported at `nit`, and only at `nit`.
 - The path and line are changed by, or directly causally affected by, the diff.
 - The candidate makes a concrete technical claim.
 - The failure mode is plausible and material.
-- Evidence is cited from changed code, project context, or static findings.
+- Evidence is cited from changed code, project context, or static findings. A
+  claim that a changed line is not tested is confirmed by an `uncovered_line`
+  signal at that line. No signal is not proof the line ran, since a report
+  need not list every file, and a `coverageInconclusive` command proves
+  nothing either way; then read the tests.
 - Technical confidence meets the configured threshold (default 0.7 at every
   tier, and 0.8 for a security, authorization, authentication, data integrity or trust
   boundary finding).

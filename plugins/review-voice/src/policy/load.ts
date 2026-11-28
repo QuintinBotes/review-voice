@@ -90,7 +90,7 @@ export interface LoadedConfig {
   evaluate: { stabilityMaxCalls: number };
   staticEvidence: {
     enabled: boolean;
-    commands: { name: string; run: string; timeoutSeconds?: number; version?: string }[];
+    commands: { name: string; run: string; timeoutSeconds?: number; version?: string; coverage?: string }[];
     /** The `env_passthrough` names the commands get beyond the minimal environment (issue 279). */
     envPassthrough: string[];
   };
@@ -209,7 +209,7 @@ export const CONFIG_KEYS: Readonly<Record<string, readonly string[]>> = {
     'held_queue', 'min_posted_tier', 'reading_guide',
   ],
   static_evidence: ['enabled', 'env_passthrough', 'commands'],
-  'static_evidence.commands[]': ['name', 'run', 'timeout_seconds', 'version'],
+  'static_evidence.commands[]': ['name', 'run', 'timeout_seconds', 'version', 'coverage'],
   reproduction: ['enabled', 'runners', 'link_paths', 'memory_mb', 'cpu_seconds'],
   'reproduction.runners[]': ['name', 'run', 'extension', 'timeout_seconds'],
   runners: ['codex', 'gemini', 'use'],
@@ -1352,11 +1352,14 @@ export function readConfigDocument(value: unknown, repositoryRoot: string, resul
       const timeout = positiveInt(command['timeout_seconds']);
       // How to ask the tool for its version; only a non-blank string counts.
       const version = command['version'];
+      // The LCOV or Cobertura report the command writes (issue 547); only a non-blank string counts.
+      const coverage = command['coverage'];
       result.staticEvidence.commands.push({
         name,
         run,
         ...(timeout === undefined ? {} : { timeoutSeconds: timeout }),
         ...(typeof version === 'string' && version.trim() !== '' ? { version } : {}),
+        ...(typeof coverage === 'string' && coverage.trim() !== '' ? { coverage } : {}),
       });
     }
   }

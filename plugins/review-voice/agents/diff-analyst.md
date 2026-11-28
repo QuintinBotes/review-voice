@@ -281,6 +281,11 @@ A candidate is valid only if it has all four:
 - evidence drawn from the diff or the supplied static analysis;
 - a plausible, material impact.
 
+An `uncovered_line` signal in the static evidence is a changed line the
+command's coverage report lists with 0 hits. It is a fact a candidate may cite,
+for instance that a new error branch never ran, never a candidate on its own.
+A command with `coverageInconclusive` set says nothing about which lines ran.
+
 **Test adequacy.** For each added or changed test, name the smallest production
 mutation that should turn it red; if none does, raise a `test_coverage`
 candidate at the test line and name the assertion or setup that leaves it

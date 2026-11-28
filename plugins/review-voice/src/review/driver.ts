@@ -480,7 +480,7 @@ async function prep(run: Run): Promise<void> {
     const staticEvidence = isRecord(context) && isRecord(context['staticEvidence']) ? context['staticEvidence'] : {};
     const willRun = staticEvidence['enabled'] === true && list(staticEvidence['commands']).length > 0;
     const where = willRun ? ['--cwd', prepareWorkspace(run)] : [];
-    writeFileSync(at(run, 'evidence.json'), (await must(run, ['evidence', ...where])).stdout);
+    writeFileSync(at(run, 'evidence.json'), (await must(run, ['evidence', ...where, '--diff-file', at(run, 'diff.patch')])).stdout);
   }
   // Conventions come from the base, the trusted side, as the configuration does
   // (issue 275). The caller's checkout may be the head, whose CLAUDE.md is part

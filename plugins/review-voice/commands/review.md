@@ -356,11 +356,11 @@ Keep `claudeCodeVersion` for step 6.
 true, run `RV worktree add --dir <tmpdir> --head <refs.head.sha>`. It checks
 the pull request's head out at `<tmpdir>/head` with hooks, LFS filters,
 fsmonitor and submodule recursion off, the same checkout the review driver
-makes. Then run `RV evidence --cwd <tmpdir>/head > <tmpdir>/evidence.json`, so
+makes. Then run `RV evidence --cwd <tmpdir>/head --diff-file <tmpdir>/diff.patch > <tmpdir>/evidence.json`, so
 the checks describe the code under review rather than whatever this checkout
 holds. The configuration that names the checks is the one step 0 resolved,
 never the head's. On any other run, or when the head is not readable, run
-`RV evidence > <tmpdir>/evidence.json`; the `refs.note` you print already says
+`RV evidence --diff-file <tmpdir>/diff.patch > <tmpdir>/evidence.json`; the `refs.note` you print already says
 the head was missing.
 
 Keep the file for step 6, which records what the checks did; it is written
@@ -373,6 +373,12 @@ Pass `signals` to the `diff-analyst` as supporting evidence. The key is always
 present and is empty when collection is off. A signal is
 evidence for a candidate, never a candidate on its own - a type error the
 compiler already reports does not need a review comment repeating it.
+
+An `uncovered_line` signal is a changed line the command's coverage report
+lists with 0 hits; a command with `coverageInconclusive` set says nothing
+about which lines ran, so claim neither that its lines were tested nor that
+they were not. Pass `evidence.json` to the `evidence-verifier` too, so it can
+check a "not tested" claim against the report.
 
 `didNotRun` lists checks that could not execute. **Never imply a check passed
 when it did not run.** Lower your confidence in claims that depended on it, and

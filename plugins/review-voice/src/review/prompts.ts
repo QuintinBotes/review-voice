@@ -156,6 +156,7 @@ export function verifierPrompt(run: RunFiles): string {
     '',
     ...context(run, [
       file(run, 'checked.json', 'the candidates; verify each entry of kept'),
+      file(run, 'evidence.json', 'static evidence; an uncovered_line signal is a changed line no test ran, and a coverageInconclusive command says nothing either way'),
       ...(run.followUps
         ? [file(run, 'follow-ups.json', "open follow-ups; check each one's remaining points at the head and return follow_ups")]
         : []),
