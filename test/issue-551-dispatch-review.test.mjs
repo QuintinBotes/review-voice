@@ -29,7 +29,7 @@ function runGate(t, eventName, payload, apiKey = 'set') {
 }
 
 // The payload GitHub sends for workflow_dispatch: the inputs, the ref, no pull request.
-const dispatch = (inputs) => ({ inputs, ref: 'refs/heads/main', repository: { full_name: 'QuintinBotes/review-voice-e2e' } });
+const dispatch = (inputs) => ({ inputs, ref: 'refs/heads/main', repository: { full_name: 'acme/web' } });
 
 test('#551: a dispatch with a pr input runs a review of that pull request', (t) => {
   const result = runGate(t, 'workflow_dispatch', dispatch({ pr: '4' }));

@@ -2,6 +2,7 @@
 
 **Status:** Accepted · **Date:** 2026-09-17
 **Amended:** 2026-10-06 - an import-only change has no reach (see the end).
+**Amended:** 2026-11-28 - a linked consumer has no reach (see the end).
 
 ## Context
 
@@ -110,3 +111,18 @@ not), reach is absent, and absent reach keeps the category's own tier. It is not
 `local`: a wrong import path breaks the file's build, and that is the category's
 call to make, not an extent. Any other line in the file's hunks restores the
 measurement as before.
+
+## Amendment 2026-11-28 - a linked consumer has no reach
+
+`symbols` may list consumers of a changed declaration in other allowlisted
+repositories, from GitHub code search (#548, docs/adr/0026). They are evidence
+for the verifier to trace, never an input to reach: reach is still computed
+from the reviewed tree alone. A code search hit is a fuzzy, rate-limited,
+default-branch answer, so letting it move a tier would bring back the
+instability this decision removed. A finding whose impact is traced to a
+linked consumer is anchored on the changed line and derives its tier as any
+other; the owner can raise it with `score --severity` as before.
+
+### Optional local context
+
+An operator may supply SCIP symbol identities or enable historical companion paths. Both direct the reviewer to source for inspection. Neither contributes to computed reach or independently changes a verdict. See the optional symbol and history evidence section in ARCHITECTURE.md.

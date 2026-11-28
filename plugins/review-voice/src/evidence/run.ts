@@ -1,8 +1,10 @@
 import { spawn as spawnChild, spawnSync } from 'node:child_process';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import { cleaner, cut, isSarif, memo, parseOutput, replaced } from './parsers.ts';
+import { cleaner, coverageFiles, cut, isSarif, memo, parseOutput, replaced, uncoveredSignals } from './parsers.ts';
 import { terminalSafe } from '../terminal.ts';
-import type { CommandOutcome, EvidenceReport } from './types.ts';
+import type { CommandOutcome, EvidenceReport, EvidenceSignal } from './types.ts';
 
 export interface ConfiguredCommand {
   name: string;
@@ -13,9 +15,61 @@ export interface ConfiguredCommand {
    * so running it keeps "detection suggests, configuration enables".
    */
   version?: string;
+  /** The LCOV or Cobertura report the command writes, relative to where it runs (issue 547). */
+  coverage?: string;
 }
 
 const DEFAULT_TIMEOUT_SECONDS = 120;
+/** The most of a coverage report read, as much as one stream of a command's output can hold. */
+const MAX_REPORT_BYTES = 16 * 1024 * 1024;
+/** Linux stamps a file from a clock up to one tick behind the one Date.now reads. */
+const FILE_CLOCK_SLACK_MS = 20;
+
+/**
+ * The `uncovered_line` signals of a command's coverage report, or why it was
+ * inconclusive (issue 547). A report that is missing, outside the directory the
+ * command ran in, older than the run, too large, unparsable or written by a
+ * run that failed is never read as zero coverage. The age check is what ties
+ * the report to the head: a fresh worktree holds no untracked file, so a
+ * report not written during the run is one committed or left from another.
+ */
+function coverageOf(
+  report: string,
+  cwd: string,
+  startedAt: number,
+  status: number | null,
+  tool: string,
+  changed: ReadonlyMap<string, ReadonlySet<number>> | undefined,
+): { signals: EvidenceSignal[]; inconclusive?: string } {
+  const not = (why: string): { signals: EvidenceSignal[]; inconclusive: string } => ({ signals: [], inconclusive: `${report} ${why}` });
+  if (changed === undefined) return not('was not read: no diff was given, so the changed lines are unknown');
+  if (status !== 0) return not(`was not read: the command exited ${status}, so the report may be partial`);
+  const outside = (path: string): boolean => path === '' || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path);
+  if (outside(relative(cwd, resolve(cwd, report)))) return not('is outside the directory the command ran in');
+  let file: string;
+  try {
+    file = realpathSync(resolve(cwd, report));
+  } catch {
+    return not('was not written by the command');
+  }
+  // Again through every link, so the head cannot point the report at another file of the reviewer's.
+  if (outside(relative(realpathSync(cwd), file))) return not('is outside the directory the command ran in');
+  const stat = statSync(file, { throwIfNoEntry: false });
+  if (stat?.isFile() !== true) return not('is not a file');
+  if (stat.size > MAX_REPORT_BYTES) return not('is larger than 16 MiB');
+  if (stat.mtimeMs < startedAt - FILE_CLOCK_SLACK_MS) return not('was not written during this run, so it may describe another commit');
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return not('could not be read');
+  }
+  const files = coverageFiles(text);
+  if (files === undefined) return not('is neither LCOV nor Cobertura XML');
+  if (files.length === 0) return not('names no source file');
+  return { signals: uncoveredSignals(files, report, tool, [cwd, realpathSync(cwd)], changed) };
+}
+
 const MAX_VERSION_POINTS = 80;
 /** A signal's claim and each evidence line, so one diagnostic cannot fill the report. */
 const MAX_SIGNAL_TEXT_POINTS = 4096;
@@ -151,7 +205,14 @@ function sanitisedVersion(stdout: string, clean: (text: string) => string): stri
  */
 export async function collectEvidence(
   commands: ConfiguredCommand[],
-  options: { cwd: string; enabled: boolean; envPassthrough?: readonly string[]; spawn?: CommandSpawner },
+  options: {
+    cwd: string;
+    enabled: boolean;
+    envPassthrough?: readonly string[];
+    spawn?: CommandSpawner;
+    /** The lines the change added or modified, by repository path, which a coverage report is read against. */
+    changed?: ReadonlyMap<string, ReadonlySet<number>>;
+  },
 ): Promise<EvidenceReport> {
   if (!options.enabled || commands.length === 0) {
     return notRunReport(commands.map((command) => command.name));
@@ -244,6 +305,11 @@ export async function collectEvidence(
       claim: cleanCut(signal.claim),
       evidence: signal.evidence.map(cleanCut),
     }));
+    const coverage = command.coverage === undefined ? undefined : coverageOf(command.coverage, options.cwd, startedAt, result.status, command.name, options.changed);
+    // A line with no file is no lead, so an uncovered line whose path cleaning would change is left out, not kept without it.
+    for (const signal of coverage?.signals ?? []) {
+      if (clean(signal.path!) === signal.path && terminalSafe(signal.path!) === signal.path) signals.push({ ...signal, claim: cleanCut(signal.claim), evidence: signal.evidence.map(cleanCut) });
+    }
     // A version the output itself states (a SARIF document names its producer)
     // is recorded like a version command's line; a command the user wrote wins.
     const version = configuredVersion ?? (parsed.version === undefined ? undefined : sanitisedVersion(parsed.version, clean));
@@ -253,6 +319,7 @@ export async function collectEvidence(
       exitCode: result.status,
       durationMs,
       ...(version === undefined ? {} : { version }),
+      ...(coverage?.inconclusive === undefined ? {} : { coverageInconclusive: coverage.inconclusive }),
       signals,
     });
   }

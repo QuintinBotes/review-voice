@@ -142,6 +142,16 @@ only inputs are the number and `full`, and the gate refuses a `pr` that is not
 a pull request number. The pull request is read from the API, and the
 configuration is still read from its base commit.
 
+## GitHub Enterprise
+
+On GitHub Enterprise Server (3.9 or later) and GHE.com data residency, nothing
+changes in the workflow. The runner sets `GITHUB_API_URL`, and every read,
+GraphQL query and posted review goes to that host with the workflow token,
+never to `api.github.com` or anywhere else (#545). The pull request cannot
+change the host. On Enterprise Server, `actions/setup-node` and
+`actions/cache` must be available to the runner, through GitHub Connect or a
+synced copy.
+
 ## Forks
 
 Automatic events skip fork pull requests even when the job has a credential. The gate compares GitHub’s head repository with the event repository. A missing or deleted head also needs a maintainer dispatch. Action runs record the event name in provenance.
