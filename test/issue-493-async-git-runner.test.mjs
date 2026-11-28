@@ -1,3 +1,4 @@
+import { useLocalGitHubMirror } from './support/github-mirror.mjs';
 /**
  * Issue #493: git runs through the async runner of `evidence/run.ts`, and the
  * timer ends git's process group (the tree on Windows) while git is still
@@ -204,7 +205,6 @@ test('a git that never answers is killed at the bound, and the event loop keeps 
 
 test('ensureRefs gives refs that a fetch made available their real merge base', async (t) => {
   const { ensureRefs } = await import('../plugins/review-voice/src/diff/pull-request.ts');
-  // An origin whose path reads as github.com/o/r, so the remote check accepts it without a rewrite rule (get-url applies those).
   const origin = join(scratch(t, 'rv-493-origin-'), 'github.com', 'o', 'r');
   mkdirSync(origin, { recursive: true });
   const git = (cwd, ...args) => execFileSync(realGit, args, { cwd, encoding: 'utf8' }).trim();
@@ -226,6 +226,7 @@ test('ensureRefs gives refs that a fetch made available their real merge base', 
   const clone = scratch(t, 'rv-493-clone-');
   git(clone, 'init', '-q', '-b', 'main');
   git(clone, 'remote', 'add', 'origin', origin);
+  useLocalGitHubMirror(clone, 'o/r', origin);
   const result = await ensureRefs({ repository: 'o/r', pullNumber: 7, base: fork, head, cwd: clone });
   assert.equal(result.base.available && result.head.available, true);
   assert.equal(result.mergeBase, fork);

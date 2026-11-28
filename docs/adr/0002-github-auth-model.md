@@ -1,6 +1,6 @@
 # 0002 - GitHub authentication model
 
-**Status:** Accepted, amended 2026-10-06 by [0018](0018-read-only-graphql-thread-state.md) · **Date:** 2026-09-16
+**Status:** Accepted, amended 2026-10-06 by [0018](0018-read-only-graphql-thread-state.md) and 2026-11-28 for #545 · **Date:** 2026-09-16
 
 ## Context
 
@@ -65,3 +65,29 @@ fixed set of queries (today one), with only the variables that query declares;
 `owner` and `name` always come from the allowlisted repository. Anything else
 is refused in code before it is sent. Every REST request is still GET-only,
 and the test that a non-GET REST request throws is unchanged.
+
+## Amendment - 2026-11-28
+
+#545: the API host is configurable, one per installation, so GitHub Enterprise
+Server (`https://<host>/api/v3`, GraphQL at `<host>/api/graphql`) and GHE.com
+data residency (`https://api.<subdomain>.ghe.com`) work. "GitHub only" still
+holds: these are GitHub.
+
+- The host comes from `GITHUB_API_URL`, which the Actions runner sets and a
+  step cannot override, and which an operator sets locally. Unset, it is
+  `https://api.github.com`. No pull request, repository configuration or base
+  commit can name it, because the host decides where the token goes.
+- It must be plain `https` with no credentials, query or fragment.
+- The single-host rule is unchanged, only its host is: the reader, its GraphQL
+  query and the writer send the token to that origin and API path only, and
+  refuse anything else before the network, as they refuse a non-GET or a third
+  write. A redirected answer from another origin is refused.
+- `gh auth token --hostname <host>` is used for a configured host, so `gh`
+  never hands over its github.com token for one.
+- `origin` matching and the watcher's clone use the matching web host.
+  `GITHUB_GRAPHQL_URL` is not read: GraphQL is derived from the API root, so
+  it cannot name a second host.
+- Enterprise Server 3.9 or later is required, for the
+  `X-GitHub-Api-Version: 2022-11-28` header every REST request sends. The one
+  GraphQL query is optional to every caller already, so a server that refuses
+  it degrades the same way github.com does.

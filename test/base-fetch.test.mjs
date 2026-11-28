@@ -1,3 +1,4 @@
+import { useLocalGitHubMirror } from './support/github-mirror.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -51,6 +52,7 @@ function scenario() {
   run(author, 'commit', '-q', '-m', 'main moves on');
   const base = run(author, 'rev-parse', 'HEAD');
   run(author, 'push', '-q', 'origin', 'main');
+  useLocalGitHubMirror(work, 'org/a', origin);
   return { top, work, base, head };
 }
 

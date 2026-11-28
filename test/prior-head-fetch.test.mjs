@@ -1,3 +1,4 @@
+import { useLocalGitHubMirror } from './support/github-mirror.mjs';
 /**
  * A previous head this clone does not have is fetched by sha before the
  * follow-up gives up on a narrower read.
@@ -66,6 +67,7 @@ function scenario() {
   run(top, 'clone', '-q', '--no-local', origin, work);
   identity(work);
   run(work, 'fetch', '-q', 'origin', 'refs/pull/7/head:refs/review-voice/pr/7/head');
+  useLocalGitHubMirror(work, 'org/a', origin);
   return { top, work, base, reviewed, head };
 }
 

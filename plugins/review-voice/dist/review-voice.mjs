@@ -11070,13 +11070,55 @@ function listPolicies(db, scope) {
 
 // plugins/review-voice/src/github/auth.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
+
+// plugins/review-voice/src/github/host.ts
+function apiBaseUrl(env = process.env) {
+  const value = env["GITHUB_API_URL"];
+  if (value === void 0 || value === "") return "https://api.github.com";
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("GITHUB_API_URL is not a URL.");
+  }
+  if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
+    throw new Error(`GITHUB_API_URL must be a plain https URL such as https://ghe.example.com/api/v3.`);
+  }
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+function webHost(baseUrl = apiBaseUrl()) {
+  const url = new URL(baseUrl);
+  if (url.hostname === "api.github.com") return "github.com";
+  if (/^api\.[^.]+\.ghe\.com$/.test(url.hostname)) return url.host.slice("api.".length);
+  return url.host;
+}
+function remoteRepository(url, host = webHost()) {
+  let authority;
+  let path;
+  if (url.includes("://")) {
+    const remote = URL.parse(url);
+    if (!remote || !["https:", "http:", "git:", "ssh:"].includes(remote.protocol) || remote.search || remote.hash) return null;
+    authority = remote.host;
+    path = remote.pathname.slice(1);
+  } else {
+    const scp = /^(?:[\w.-]+@)?([\w.-]+):(.+)$/.exec(url);
+    if (!scp) return null;
+    authority = scp[1];
+    path = scp[2];
+  }
+  if (authority.toLowerCase() !== host.toLowerCase()) return null;
+  return /^([\w.-]+\/[\w.-]+?)(?:\.git)?$/.exec(path)?.[1] ?? null;
+}
+
+// plugins/review-voice/src/github/auth.ts
 var AuthError = class extends Error {
 };
 function githubToken(env = process.env) {
   const fromEnv = env["GITHUB_TOKEN"] ?? env["GH_TOKEN"];
   if (fromEnv !== void 0 && fromEnv.length > 0) return fromEnv;
   try {
-    const token = execFileSync3("gh", ["auth", "token"], {
+    const host = webHost(apiBaseUrl(env));
+    const token = execFileSync3("gh", host === "github.com" ? ["auth", "token"] : ["auth", "token", "--hostname", host], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       ...boundedGit(GIT_CHECK_TIMEOUT_MS, 1024 * 1024)
@@ -11213,7 +11255,7 @@ var GitHubClient = class {
         this.entries.push(entry.toLowerCase());
       }
     }
-    this.baseUrl = options.baseUrl ?? "https://api.github.com";
+    this.baseUrl = options.baseUrl ?? apiBaseUrl();
     this.doFetch = options.fetchImpl ?? fetch;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve18) => setTimeout(resolve18, ms)));
     this.token = options.token ?? null;
@@ -11276,8 +11318,8 @@ var GitHubClient = class {
   }
   /**
    * `retryRateLimits: false` fails at once on a rate limit instead of waiting
-   * it out, for a read the caller can do without. `followRedirects: false`
-   * makes a redirect fail the read: a transferred issue answers with a 301 to
+   * it out, for a read the caller can do without. The client
+   * refuses redirects: a transferred issue answers with a 301 to
    * another repository, and following it would send the credential to a read
    * the allowlist never checked.
    */
@@ -11288,17 +11330,17 @@ var GitHubClient = class {
       );
     }
     this.assertAllowed(path);
-    return this.request(path, init.retryRateLimits !== false, init.followRedirects !== false);
+    return this.request(path, init.retryRateLimits !== false);
   }
   /** The GET itself, once the caller has checked the path. */
-  async request(path, retryRateLimits, followRedirects = true) {
+  async request(path, retryRateLimits) {
     const { url: resolved, apiPath } = this.resolve(path);
     const url = resolved.href;
     for (let attempt = 0; ; attempt += 1) {
       const response = await this.doFetch(url, {
         method: "GET",
         // A 3xx then comes back as a non-ok response, which the check below refuses.
-        redirect: followRedirects ? "follow" : "manual",
+        redirect: "manual",
         headers: {
           accept: "application/vnd.github+json",
           authorization: this.authorization(),
@@ -11306,6 +11348,9 @@ var GitHubClient = class {
           "user-agent": "review-voice"
         }
       });
+      if (response.redirected && new URL(response.url).origin !== resolved.origin) {
+        throw new NotAllowlisted(`Refused a redirect to ${new URL(response.url).origin}: only ${this.baseUrl} is read.`);
+      }
       if (response.status === 403 || response.status === 429) {
         const retryAfter = Number(response.headers.get("retry-after") ?? "0");
         const remaining = response.headers.get("x-ratelimit-remaining");
@@ -11362,6 +11407,7 @@ var GitHubClient = class {
     this.assertAllowed(`/repos/${owner}/${name}`);
     const response = await this.doFetch(graphqlUrl(this.baseUrl), {
       method: "POST",
+      redirect: "manual",
       headers: {
         accept: "application/vnd.github+json",
         authorization: this.authorization(),
@@ -19619,7 +19665,7 @@ var ReviewWriter = class {
   token;
   constructor(options) {
     this.allowlist = new Set(options.allowlist.map((name) => name.toLowerCase()));
-    this.baseUrl = options.baseUrl ?? "https://api.github.com";
+    this.baseUrl = options.baseUrl ?? apiBaseUrl();
     this.doFetch = options.fetchImpl ?? fetch;
     this.token = options.token ?? null;
   }
@@ -19671,6 +19717,7 @@ var ReviewWriter = class {
     }
     const response = await this.doFetch(`${this.baseUrl}${path}`, {
       method: "POST",
+      redirect: "manual",
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${this.token ??= githubToken()}`,
@@ -19750,13 +19797,14 @@ var cappedBody = (body) => {
   const sentence = [...cut4.matchAll(/[.!?](?=\s)/gu)].at(-1);
   return sentence === void 0 ? "" : cut4.slice(0, sentence.index + 1);
 };
-var CLOSING_REFERENCE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)|([\w.-]+\/[\w.-]+)#(\d+)|#(\d+))\b/giu;
+var CLOSING_REFERENCE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(https?:\/\/([^\s/?#@]+)\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)|([\w.-]+\/[\w.-]+)#(\d+)|#(\d+))\b/giu;
 function closingReferences(description, repository) {
   const numbers = [];
   const beyond = [];
   const skipped = [];
   for (const match of description.matchAll(CLOSING_REFERENCE)) {
-    const [, text5, urlRepository, urlNumber, shortRepository, shortNumber, bareNumber] = match;
+    const [, text5, urlHost, urlRepository, urlNumber, shortRepository, shortNumber, bareNumber] = match;
+    if (urlHost !== void 0 && urlHost.toLowerCase() !== webHost()) continue;
     const named = urlRepository ?? shortRepository;
     if (named !== void 0 && named.toLowerCase() !== repository.toLowerCase()) {
       skipped.push(text5);
@@ -19792,7 +19840,7 @@ async function readThread(options) {
     }
     for (const number of references.numbers) {
       try {
-        const { data } = await client.get(`/repos/${options.repository}/issues/${number}`, { retryRateLimits: false, followRedirects: false });
+        const { data } = await client.get(`/repos/${options.repository}/issues/${number}`, { retryRateLimits: false });
         if (data.number !== number || !(data.repository_url ?? "").toLowerCase().endsWith(`/repos/${options.repository}`.toLowerCase())) {
           warnings.push(`Could not read issue #${number} (GitHub answered for another issue or repository); continuing without it.`);
           continue;
@@ -20863,11 +20911,12 @@ function gitPrepareClone(run = runQuietly) {
   return (repository, pull, dir) => {
     if (!existsSync6(join11(dir, ".git"))) {
       mkdirSync3(dirname7(dir), { recursive: true });
+      const host = webHost();
       try {
-        run("gh", ["repo", "clone", repository, dir, "--", "--filter=blob:none"]);
+        run("gh", ["repo", "clone", host === "github.com" ? repository : `${host}/${repository}`, dir, "--", "--filter=blob:none"]);
       } catch (error) {
         if (error.code !== "ENOENT") throw error;
-        run("git", ["clone", "--filter=blob:none", `https://github.com/${repository}.git`, dir]);
+        run("git", ["clone", "--filter=blob:none", `https://${host}/${repository}.git`, dir]);
       }
     }
     removeStaleGitLocks(dir);
@@ -25196,7 +25245,7 @@ async function mergeBaseOf(base, head, cwd) {
 async function originRepository(cwd) {
   try {
     const url = (await git2(["remote", "get-url", "origin"], cwd, 1e4)).trim();
-    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
+    return remoteRepository(url);
   } catch {
     return null;
   }
@@ -26866,8 +26915,7 @@ function inferRepository(cwd) {
       timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS),
       killSignal: "SIGKILL"
     }).trim();
-    const match = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url);
-    return match?.[1] ?? null;
+    return remoteRepository(url);
   } catch {
     return null;
   }
@@ -26887,10 +26935,11 @@ function remoteRepositories(cwd) {
   }
   const slugs = [];
   for (const line3 of out.split("\n")) {
-    const match = /^remote\.(.+)\.url\s+.*github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(line3.trim());
-    if (match === null) continue;
-    if (match[1] === "origin") slugs.unshift(match[2]);
-    else slugs.push(match[2]);
+    const match = /^remote\.(.+)\.url\s+(.*)$/.exec(line3.trim());
+    const slug = match === null ? null : remoteRepository(match[2]);
+    if (match === null || slug === null) continue;
+    if (match[1] === "origin") slugs.unshift(slug);
+    else slugs.push(slug);
   }
   return slugs;
 }
@@ -32363,7 +32412,7 @@ async function resolveCommit(ref, cwd) {
 async function originRepository2(cwd) {
   try {
     const url = (await git4(["remote", "get-url", "origin"], cwd)).trim();
-    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
+    return remoteRepository(url);
   } catch {
     return null;
   }
