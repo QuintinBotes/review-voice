@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `evaluate` reports `reviewer_findings_missed` and `online_recall`: a
+  defect a listed reviewer raised inline after Review Voice's review, on lines
+  the review read, that the author then fixed (the lines changed and the
+  thread was resolved or agreed, ADR 0029's strong rule), and that the review
+  did not post. `outcomes` reads these from the comments it already reads,
+  classes each as `also_posted`, `held`, `rejected` or `never_raised` with the
+  stage and lane, and writes nothing to GitHub. Reported, not scored: a human
+  comment is not ground truth (#550).
 - A trusted local comparison report can supply revision-matched API compatibility, performance and clone-pair evidence (#567, #570, #571).
 - Optional local SCIP indexes resolve changed definitions to references by identity. Co-change history can suggest additional companion files for verification (#568, #569).
 
