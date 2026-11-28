@@ -22,6 +22,7 @@ const HEAD_CONFIG = 'review:\n  mode: thorough\n';
 const STUB = `import { copyFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 writeFileSync(process.env.FAKE_ARGS, JSON.stringify(args));
+writeFileSync(process.env.FAKE_ARGS + '.env', JSON.stringify({ noCommands: process.env.REVIEW_VOICE_NO_COMMANDS ?? null }));
 const at = args.indexOf('--config');
 if (at !== -1) copyFileSync(args[at + 1], process.env.FAKE_CONFIG_COPY);
 process.stdout.write(process.env.FAKE_REPORT ?? '{}');
@@ -55,21 +56,23 @@ function scratch(t) {
   return { dir, workspace, actionPath, temp, base };
 }
 
-function run(t, s, { config = '.review-voice/config.yaml', post = 'false', failOpen = 'false', report = '{}', code = 0, baseSha, workspace = s.workspace } = {}) {
+function run(t, s, { config = '.review-voice/config.yaml', post = 'false', failOpen = 'false', report = '{}', code = 0, baseSha, workspace = s.workspace, eventName = 'pull_request', payload, path = process.env.PATH } = {}) {
   const event = join(s.dir, 'event.json');
-  writeFileSync(event, JSON.stringify({ pull_request: { number: 7, base: { sha: baseSha ?? s.base } } }));
+  writeFileSync(event, JSON.stringify(payload ?? { pull_request: { number: 7, base: { sha: baseSha ?? s.base } } }));
   const summary = join(s.dir, `summary-${Math.random().toString(36).slice(2)}.md`);
   writeFileSync(summary, '');
   const args = join(s.dir, 'args.json');
   const copy = join(s.dir, 'config-copy.yaml');
   rmSync(args, { force: true });
+  rmSync(`${args}.env`, { force: true });
   rmSync(copy, { force: true });
   const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script], {
     cwd: s.workspace,
     encoding: 'utf8',
     env: {
-      PATH: process.env.PATH,
+      PATH: path,
       HOME: process.env.HOME,
+      EVENT_NAME: eventName,
       GITHUB_ACTION_PATH: s.actionPath,
       GITHUB_WORKSPACE: workspace,
       GITHUB_EVENT_PATH: event,
@@ -94,6 +97,7 @@ function run(t, s, { config = '.review-voice/config.yaml', post = 'false', failO
     status: result.status,
     stdout: result.stdout,
     argv: existsSync(args) ? JSON.parse(readFileSync(args, 'utf8')) : null,
+    env: existsSync(`${args}.env`) ? JSON.parse(readFileSync(`${args}.env`, 'utf8')) : null,
     config: existsSync(copy) ? readFileSync(copy, 'utf8') : null,
     summary: readFileSync(summary, 'utf8'),
   };
@@ -278,6 +282,59 @@ test('#535: any other failed post still fails the job', (t) => {
   const result = run(t, scratch(t), { post: 'true', report, code: 1 });
   assert.equal(result.status, 1);
   assert.match(result.stdout, /^::error::Review Voice: post exited 1: GitHub returned 422/m);
+});
+
+// #543, #551: a dispatched review reads its pull request from the API. The
+// shape is GET /pulls/4 on review-voice-e2e, cut to the fields the step reads.
+function fakeCurl(t, s, pull) {
+  const bin = join(s.dir, 'bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'curl'), `#!/bin/sh\necho "$@" >> "${join(s.dir, 'curl-args')}"\ncat <<'JSON'\n${JSON.stringify(pull)}\nJSON\n`, { mode: 0o755 });
+  return `${bin}:${process.env.PATH}`;
+}
+const PULL_4 = (headRepo) => ({
+  number: 4,
+  base: { sha: '5458ad971e7af5fe6a94c0e326309efc36f030a5', repo: { full_name: 'acme/api' } },
+  head: { sha: 'c893d40dcb34953ba69d929ecc2c7600a0f29ac5', ref: 'is-empty', repo: headRepo === null ? null : { full_name: headRepo, fork: headRepo !== 'acme/api' } },
+});
+const DISPATCH = (inputs) => ({ inputs, ref: 'refs/heads/main' });
+
+test('#543: a dispatched review of a fork pull request runs no configured command', (t) => {
+  const s = scratch(t);
+  for (const headRepo of ['someone/api', null]) {
+    const result = run(t, s, { eventName: 'workflow_dispatch', payload: DISPATCH({ pr: '4' }), path: fakeCurl(t, s, PULL_4(headRepo)) });
+    assert.equal(result.status, 0);
+    assert.deepEqual(result.env, { noCommands: '1' }, `head repo ${headRepo}`);
+    assert.match(result.stdout, /^Review Voice: pull request 7 comes from a fork, so no configured command runs on its code\.$/m);
+  }
+  assert.match(readFileSync(join(s.dir, 'curl-args'), 'utf8'), /\/repos\/acme\/api\/pulls\/7/);
+});
+
+test('#551: a dispatched review of a same-repository pull request runs as a pull request event does, and full asks for --full', (t) => {
+  const s = scratch(t);
+  const same = run(t, s, { eventName: 'workflow_dispatch', payload: DISPATCH({ pr: '4' }), path: fakeCurl(t, s, PULL_4('ACME/api')) });
+  assert.deepEqual(same.env, { noCommands: null });
+  assert.equal(same.argv.includes('--full'), false);
+  const full = run(t, s, { eventName: 'workflow_dispatch', payload: DISPATCH({ pr: '4', full: 'true' }), path: fakeCurl(t, s, PULL_4('acme/api')) });
+  assert.ok(full.argv.includes('--full'));
+});
+
+test('#551: a dispatched review reads a config input from the base commit the API names', (t) => {
+  const s = scratch(t);
+  const result = run(t, s, { eventName: 'workflow_dispatch', payload: DISPATCH({ pr: '4' }), config: 'ci/review.yaml', path: fakeCurl(t, s, { ...PULL_4('acme/api'), base: { sha: s.base } }) });
+  assert.equal(result.status, 0, result.stdout);
+  assert.equal(result.config, BASE_CONFIG);
+});
+
+test('#543: a dispatched review whose pull request cannot be read stops with an error', (t) => {
+  const s = scratch(t);
+  const bin = join(s.dir, 'bin-fail');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'curl'), '#!/bin/sh\nexit 22\n', { mode: 0o755 });
+  const result = run(t, s, { eventName: 'workflow_dispatch', payload: DISPATCH({ pr: '4' }), path: `${bin}:${process.env.PATH}` });
+  assert.equal(result.status, 2);
+  assert.match(result.stdout, /^::error::Review Voice: could not read pull request 7 of acme\/api\.$/m);
+  assert.equal(result.argv, null, 'no review ran');
 });
 
 test('#508: a report that is not JSON adds no verdict line', (t) => {

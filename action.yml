@@ -56,10 +56,22 @@ runs:
           echo "Review Voice skipped: $1" | tee -a "$GITHUB_STEP_SUMMARY"
           exit 0
         }
-        case "$EVENT_NAME" in pull_request | pull_request_target) ;; *) skip "not a pull request event." ;; esac
+        case "$EVENT_NAME" in
+          pull_request | pull_request_target) pr=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH") ;;
+          # A review asked for by someone who may dispatch the workflow, which
+          # GitHub allows only with write access (#551, #543).
+          workflow_dispatch)
+            pr=$(jq -r '.inputs.pr // empty' "$GITHUB_EVENT_PATH")
+            if ! [[ "$pr" =~ ^[1-9][0-9]{0,9}$ ]]; then
+              echo "::error::Review Voice: a workflow_dispatch review needs a pr input holding the pull request number."
+              exit 2
+            fi
+            ;;
+          *) skip "not a pull request event." ;;
+        esac
         [ -n "$API_KEY" ] || skip "no Anthropic API key is available (fork pull requests receive no secrets)."
         echo "skip=false" >> "$GITHUB_OUTPUT"
-        echo "pr=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")" >> "$GITHUB_OUTPUT"
+        echo "pr=$pr" >> "$GITHUB_OUTPUT"
 
     - if: steps.gate.outputs.skip != 'true'
       uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -96,6 +108,7 @@ runs:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         REVIEW_VOICE_DATA_DIR: ${{ runner.temp }}/review-voice
         PR: ${{ steps.gate.outputs.pr }}
+        EVENT_NAME: ${{ github.event_name }}
         MODE: ${{ inputs.mode }}
         POST: ${{ inputs.post }}
         CONFIG: ${{ inputs.config }}
@@ -108,6 +121,25 @@ runs:
         mkdir -p "$REVIEW_VOICE_DATA_DIR"
         args=(review --pr "$PR" --repository "$GITHUB_REPOSITORY" --mode "$MODE" --origin action --json)
         [ "$POST" = "true" ] && args+=(--post)
+        base_sha=$(jq -r '.pull_request.base.sha // empty' "$GITHUB_EVENT_PATH")
+        # A dispatched review has no pull request in its event, so the pull
+        # request is read from the API. One from a fork is reviewed from its
+        # diff and files with no configured command run, so no code the fork
+        # wrote runs with this job's secrets (#543).
+        if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+          if ! pull=$(curl -fsS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "${GITHUB_API_URL:-https://api.github.com}/repos/$GITHUB_REPOSITORY/pulls/$PR"); then
+            echo "::error::Review Voice: could not read pull request $PR of $GITHUB_REPOSITORY."
+            exit 2
+          fi
+          base_sha=$(jq -r '.base.sha // empty' <<<"$pull")
+          head_repo=$(jq -r '.head.repo.full_name // empty' <<<"$pull")
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+          if [ "$(lower "$head_repo")" != "$(lower "$GITHUB_REPOSITORY")" ]; then
+            export REVIEW_VOICE_NO_COMMANDS=1
+            echo "Review Voice: pull request $PR comes from a fork, so no configured command runs on its code." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          [ "$(jq -r '.inputs.full // empty' "$GITHUB_EVENT_PATH")" = "true" ] && args+=(--full)
+        fi
         # The default path needs nothing here: review --pr reads it from the base
         # commit itself. Another path is read from the base commit too, never from
         # the checked-out head, which the pull request's author controls (S01,
@@ -125,7 +157,6 @@ runs:
             echo "::error::The config input must be a repository-relative path such as ci/review-voice.yaml, with no . or .. component. For a file outside the repository, set REVIEW_VOICE_CONFIG to its absolute path in the job's env."
             exit 2
           fi
-          base_sha=$(jq -r '.pull_request.base.sha // empty' "$GITHUB_EVENT_PATH")
           if [ -z "$base_sha" ] || ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
             echo "::error::The pull request's base commit is not in the clone, so the config input cannot be read from it. Check out with fetch-depth: 0."
             exit 2
