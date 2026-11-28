@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A candidate whose anchor was still refused after its lane re-anchored it
+  stopped the whole review with exit 7, so one model mistake failed the job
+  (QuintinBotes/memory#149). The candidate is now dropped and held as
+  `unverified` with the reason, the review goes on with the rest, and the
+  report says how many were dropped. A malformed candidate file still stops
+  the review (#553).
 - A rerun of the Action's job ("Re-run jobs") kept the first attempt's cache
   key, so it restored that store and never saved its own: what the rerun
   posted was forgotten by the next run. On review-voice-e2e#2 a third attempt
