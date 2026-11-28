@@ -1251,6 +1251,26 @@ var LOCKFILES = /* @__PURE__ */ new Set([
   "gradle.lockfile",
   "packages.lock.json"
 ]);
+var MANIFESTS = /* @__PURE__ */ new Set([
+  "package.json",
+  "requirements.txt",
+  "Pipfile",
+  "pyproject.toml",
+  "setup.py",
+  "go.mod",
+  "Cargo.toml",
+  "Gemfile",
+  "composer.json",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "packages.config",
+  "pubspec.yaml"
+]);
+function isDependencyFile(path) {
+  const name = path.split("/").pop() ?? "";
+  return LOCKFILES.has(name) || MANIFESTS.has(name) || name.endsWith(".csproj");
+}
 var VENDOR_SEGMENTS = /* @__PURE__ */ new Set([
   "node_modules",
   "vendor",
@@ -11531,6 +11551,47 @@ async function readCi(client, repository, sha2, gates = [], now = Date.now(), ru
   }, rules);
 }
 
+// plugins/review-voice/src/diff/dependencies.ts
+var DEPENDENCY_SEVERITIES = ["low", "moderate", "high", "critical"];
+function uncheckedDependencies(files2, why) {
+  const paths = files2.map((file2) => file2.path).filter(isDependencyFile);
+  if (paths.length === 0) return { hold: null, note: null };
+  const shown = paths.slice(0, 3).join(", ") + (paths.length > 3 ? ` and ${paths.length - 3} more` : "");
+  return { hold: null, note: `Dependency changes were not checked for advisories or licences (${shown}): ${why}.` };
+}
+async function checkDependencies(options) {
+  const { files: files2, minSeverity } = options;
+  if (minSeverity === null) return { hold: null, note: null };
+  if (!files2.some((file2) => isDependencyFile(file2.path))) return { hold: null, note: null };
+  let rows2;
+  try {
+    rows2 = (await options.client.get(
+      `/repos/${options.repository}/dependency-graph/compare/${options.base}...${options.head}`,
+      { retryRateLimits: false }
+    )).data;
+    if (!Array.isArray(rows2)) throw new Error("the answer was not a list");
+  } catch (error) {
+    const why = error instanceof GitHubError ? `GitHub's dependency review answered ${error.status}` : `GitHub's dependency review could not be read (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`;
+    return uncheckedDependencies(files2, why);
+  }
+  const rank2 = (severity) => DEPENDENCY_SEVERITIES.indexOf(severity.toLowerCase());
+  const added = rows2.filter((row2) => row2.change_type === "added");
+  const vulnerable = added.flatMap((row2) => {
+    if (row2.scope === "development") return [];
+    const advisories = (row2.vulnerabilities ?? []).filter((advisory) => rank2(String(advisory.severity)) >= rank2(minSeverity));
+    return advisories.length === 0 ? [] : [`${row2.name}@${row2.version} (${advisories.map((advisory) => `${advisory.advisory_ghsa_id} ${advisory.severity}`).join(", ")})`];
+  });
+  const removed = rows2.filter((row2) => row2.change_type === "removed");
+  const licences = added.flatMap((row2) => {
+    const before = removed.find((old) => old.name === row2.name && old.ecosystem === row2.ecosystem && old.manifest === row2.manifest);
+    return before !== void 0 && before.license === row2.license ? [] : [`${row2.name}@${row2.version} (${row2.license ?? "no licence detected"})`];
+  });
+  return {
+    hold: vulnerable.length === 0 ? null : `${vulnerable.length} added dependency(ies) with an advisory at or above ${minSeverity}: ${vulnerable.join("; ")}`,
+    note: licences.length === 0 ? null : `Dependency licences added by this change: ${licences.join(", ")}.`
+  };
+}
+
 // plugins/review-voice/src/diff/structure.ts
 import { readFileSync as readFileSync4 } from "node:fs";
 import { join as join6 } from "node:path";
@@ -17503,7 +17564,8 @@ var CONFIG_KEYS = {
     "test_paths",
     "generated_paths",
     "cap_approval",
-    "structure"
+    "structure",
+    "dependency_review"
   ],
   "review.human_review.structure": ["file_line_crossing", "branch_growth", "removed_controls"],
   "review.structure": ["max_file_lines", "max_added_branches_per_function", "simplify"],
@@ -17587,6 +17649,10 @@ function readHumanReview(block, result) {
     if (typeof cap === "boolean") result.verdictPolicy.capApproval = cap;
     else result.warnings.push("review.human_review.cap_approval must be true or false; using true.");
   }
+  const dependencyReview = block["dependency_review"];
+  if (dependencyReview === false) result.humanReview.dependencyReview = null;
+  else if (DEPENDENCY_SEVERITIES.includes(dependencyReview)) result.humanReview.dependencyReview = dependencyReview;
+  else if (dependencyReview !== void 0) result.warnings.push(`review.human_review.dependency_review must be false or one of ${DEPENDENCY_SEVERITIES.join(", ")}; leaving it off.`);
   const structure = block["structure"];
   if (structure === void 0) return;
   const signals = section(structure, "review.human_review.structure", result.warnings);
@@ -22104,6 +22170,11 @@ var COMMAND_HELP = {
       '                                          "Heads up: <checks> need a rerun."',
       "  review.human_review.cap_approval: true  false lets a clean complex change approve;",
       "                                          the local note stays",
+      "  review.human_review.dependency_review: false",
+      "                                          low|moderate|high|critical: on --pr, an added runtime",
+      "                                          dependency with a GitHub advisory at or above it holds",
+      "                                          an approval (dependency-graph/compare); licences and",
+      "                                          an unchecked dependency change are a local note",
       "  verdict.never_approve: false            true turns every APPROVE into COMMENT;",
       "                                          approval is left to a person",
       "  verdict.never_approve_paths: []         globs; a pull request changing a matching path",
@@ -25509,7 +25580,7 @@ async function prep(run) {
   const refs = isRecord5(run.summary["refs"]) ? run.summary["refs"] : {};
   const baseReadable = isRecord5(refs["base"]) && refs["base"]["available"] === true;
   run.base = typeof run.summary["mergeBase"] === "string" ? run.summary["mergeBase"] : baseReadable ? String(run.summary["base"]) : null;
-  for (const key2 of ["truncationNote", "scopeNote", "humanReviewNote"]) {
+  for (const key2 of ["truncationNote", "scopeNote", "humanReviewNote", "dependencyNote"]) {
     if (typeof run.summary[key2] === "string") run.notes.push(run.summary[key2]);
   }
   noteConfigChange(run);
@@ -32339,7 +32410,15 @@ async function pullRequestDiffCommand(argv) {
     };
   }
   const scoped = await applyReviewScope(result, pullNumber, planned.scope, process.cwd(), void 0, planned.interdiffPatch, planned.leftOutChanged);
-  return await emitDiff({ ...scoped, repository, prior: resolution }, flag2(argv, "--out"));
+  const dependencies = await checkDependencies({
+    client: githubClient([repository]),
+    repository,
+    base: result.refs.base.sha,
+    head: result.refs.head.sha,
+    files: result.files,
+    minSeverity: repositoryConfig()?.humanReview.dependencyReview ?? null
+  });
+  return await emitDiff({ ...scoped, repository, prior: resolution, dependencies }, flag2(argv, "--out"));
 }
 function leftOutBy(runId) {
   try {
@@ -32373,6 +32452,7 @@ function diffSummary(result) {
     noLongerChanged: result.scope !== void 0 && (result.scope.kind === "unchanged" || result.scope.kind === "interdiff") ? result.scope.noLongerChanged ?? [] : [],
     complexity: result.complexity ?? null,
     humanReviewNote: result.humanReviewNote ?? null,
+    dependencyNote: result.dependencyNote ?? null,
     structure: result.structure ?? null,
     truncated: result.truncated ?? false,
     truncationNote: result.truncationNote ?? null,
@@ -32417,11 +32497,18 @@ async function emitDiff(acquired, outDir) {
     assessed.reasons.push("GitHub listed only part of the changed files, so the rest were not read");
     assessed.level = "high";
   }
+  const { dependencies, ...emitted } = acquired;
+  const dependencyCheck = dependencies ?? uncheckedDependencies(scopedFiles, "only a pull request review reads GitHub's dependency review");
+  if (dependencyCheck.hold !== null) {
+    assessed.reasons.push(dependencyCheck.hold);
+    assessed.level = "high";
+  }
   const complexity = applyStructureHumanReviewCap(assessed, structure, config2?.humanReview);
   const result = {
-    ...acquired,
+    ...emitted,
     complexity,
     humanReviewNote: humanReviewNote(complexity),
+    dependencyNote: dependencyCheck.note,
     structure
   };
   if (outDir === null) {

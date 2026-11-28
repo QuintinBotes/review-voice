@@ -236,7 +236,12 @@ saying nothing about it.
 **Every exclusion carries a reason.** Lock files, generated output, vendored
 code and binaries are dropped by default, and each one reports why. A silent
 omission is indistinguishable from a bug, and `--include-generated` brings them
-back for the case where the dependency change *is* the review. A binary is the
+back for the case where the dependency change *is* the review. What a lock file
+or manifest does to the dependencies is not read from the patch at all: with
+`review.human_review.dependency_review` set, `diff --pr` asks GitHub's
+dependency review, and an added runtime dependency with a known advisory holds
+an approval under ADR 0012; when the read fails, a local note says the
+dependency change was not checked (#546). A binary is the
 exception, because it has no lines to read. The local diff leaves out as
 `binary` every file git reports as binary, a tracked one by its `--numstat`
 line and an untracked one by asking git about it, whatever its name,

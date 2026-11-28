@@ -273,6 +273,13 @@ patch leaves them out rather than show the replay's conflict markers. Do not
 call either a bad merge resolution. Findings of the earlier review in those
 files no longer carry.
 
+**If `dependencyNote` is not null, print it on its own line after the findings,
+the same way.** It says a lock file or manifest changed and its dependencies
+were not checked for advisories or licences, or names the licences the change
+adds. It is local only: do not post it or comment on the dependencies. A
+dependency with an advisory that holds the approval is named in
+`humanReviewNote` instead.
+
 **If `humanReviewNote` is not null, print it on its own line after the
 findings, the same way, including after `No actionable findings.`.** It is
 computed by `diff` from the diff and is not part of the validated text. It
