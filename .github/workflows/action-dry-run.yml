@@ -22,7 +22,7 @@ jobs:
       # placeholder that only passes the gate, and the agents answer from a fixed
       # file, so the cache, the review step's script and its environment, the
       # driver and the verdict all run. Nothing is posted and no secret is used,
-      # so it also runs for fork pull requests.
+      # so same-repository PRs exercise the full review. Fork PRs exercise the skip.
       - uses: ./
         env:
           REVIEW_VOICE_FAKE_AGENTS: ${{ github.workspace }}/.github/action-dry-run
@@ -32,6 +32,7 @@ jobs:
           anthropic-api-key: placeholder-no-model-is-called
 
       - name: The review ran to a verdict
+        if: github.event.pull_request.head.repo.full_name == github.repository
         run: |
           report="$RUNNER_TEMP/review-voice/report.json"
           # A verdict, not an analyst stage: an unchanged diff carries the earlier review, which runs no agent.

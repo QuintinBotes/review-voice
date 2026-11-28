@@ -13663,6 +13663,9 @@ var PROVENANCE_MODES = ["fast", "standard", "thorough"];
 function independenceOf(origin) {
   return origin === "interactive" ? "not-independent" : "independent";
 }
+function actionTrigger(value) {
+  return value === "pull_request" || value === "pull_request_target" || value === "workflow_dispatch" ? value : void 0;
+}
 var isFamily = (value) => FAMILIES.includes(value);
 function describeFamilies(families) {
   if (families === null) return "Families not recorded";
@@ -13763,6 +13766,7 @@ function storedProvenance(raw, reviewRunId) {
   }
   return {
     origin,
+    ...actionTrigger(v["trigger"]) ? { trigger: actionTrigger(v["trigger"]) } : {},
     // Recomputed, never read back, so a hand-edited row cannot claim independence.
     independence: independenceOf(origin),
     pluginVersion: v["pluginVersion"],
@@ -14115,6 +14119,7 @@ function recordRun(db, input) {
   const policyVersions = input.provenance?.policyVersions ?? activePolicyVersions(db);
   const provenance = input.provenance === void 0 ? null : {
     origin: input.provenance.origin,
+    ...input.provenance.trigger ? { trigger: input.provenance.trigger } : {},
     independence: independenceOf(input.provenance.origin),
     pluginVersion: input.provenance.pluginVersion,
     claudeVersion: input.provenance.claudeVersion,
@@ -38555,6 +38560,7 @@ async function recordCommand(argv) {
       toolSignals,
       conventions,
       provenance: {
+        ...origin === "action" ? { trigger: actionTrigger(process.env["REVIEW_VOICE_ACTION_TRIGGER"]) } : {},
         ...carriedProvenance === null ? { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode } : { origin: carriedProvenance.origin, pluginVersion: carriedProvenance.pluginVersion, claudeVersion: carriedProvenance.claudeVersion, mode: carriedProvenance.mode },
         // The versions this run was held to: the ones `score` loaded when there
         // is a scores file; else the carried run's, since an unchanged scope is

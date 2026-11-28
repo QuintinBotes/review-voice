@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A maintainer can ask the Action for a review of a given pull request with a
+  `workflow_dispatch` trigger and a `pr` input (and `full` for a full review),
+  including a pull request from a fork, which its own event leaves unreviewed
+  because forks get no secrets. A fork's pull request is reviewed from its diff
+  and files with `REVIEW_VOICE_NO_COMMANDS=1`, so none of its code runs with the
+  job's secrets. See docs/ACTION.md, "Asking for a review" (#551, #543).
 - GitHub Enterprise Server (3.9 or later) and GHE.com data-residency hosts. The
   API host is `GITHUB_API_URL`, which the Actions runner sets and an operator
   sets locally, never anything from the pull request; unset, it is still

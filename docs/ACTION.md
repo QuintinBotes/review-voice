@@ -109,6 +109,39 @@ and running it again records nothing twice (docs/adr/0042). A recovered run has
 no category or scores, since the posted text does not carry them, and no reply
 is offered under its threads.
 
+## Asking for a review
+
+A maintainer can ask for a review of a given pull request: a first review when
+the workflow does not run on every push, a full review after incremental ones,
+or a review of a pull request from a fork. Add a `workflow_dispatch` trigger
+with a `pr` input, and optionally `full`:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+      full:
+        description: Review the whole pull request, not only the commits since the last review
+        type: boolean
+        default: false
+
+concurrency:
+  group: review-voice-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+```
+
+Run it from the Actions tab, or with `gh workflow run review-voice.yml -f pr=42`.
+GitHub lets only people with write access dispatch a workflow, so the run
+carries a maintainer's request. No text from the request reaches a model: the
+only inputs are the number and `full`, and the gate refuses a `pr` that is not
+a pull request number. The pull request is read from the API, and the
+configuration is still read from its base commit.
+
 ## GitHub Enterprise
 
 On GitHub Enterprise Server (3.9 or later) and GHE.com data residency, nothing
@@ -121,8 +154,16 @@ synced copy.
 
 ## Forks
 
-Pull requests from forks get no secrets. The action sees an empty key, writes a
-skip line to the log and the job summary and exits 0, so the check does not fail.
+Automatic events skip fork pull requests even when the job has a credential. The gate compares GitHub’s head repository with the event repository. A missing or deleted head also needs a maintainer dispatch. Action runs record the event name in provenance.
+
+To review one, a maintainer dispatches the workflow with its number (above).
+The run has the repository's secrets, so a fork is reviewed from its diff and
+files only. `REVIEW_VOICE_NO_COMMANDS=1` is set, so no static-evidence command,
+reproduction, second-pass command or configured runner runs on its code, and
+the log says so. The agents read the fork's files with the same restricted
+tools as for any pull request, in safe mode, which ignores a CLAUDE.md, skills
+or agents the fork planted. `pull_request_target` with the head checked out is
+still refused.
 
 ## Cost
 

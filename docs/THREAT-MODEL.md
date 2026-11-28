@@ -240,6 +240,17 @@ is hostile, and the script is the payload.
 Detection suggests; configuration enables. Never both
 ([adr/0003](adr/0003-static-analysis-adapters.md)).
 
+**A fork's pull request reviewed on request.** A maintainer can dispatch the
+Action for a pull request from a fork (#543). That run holds the repository's
+secrets and the fork's commits are fetched into the clone, so the Action sets
+`REVIEW_VOICE_NO_COMMANDS=1` whenever the pull request's head repository is not
+the repository itself (as GET `/pulls/{n}` reports it, read before the review
+starts). No configured command, reproduction or runner runs on the fork's
+code. The agents read its files with their restricted tools in safe mode, as
+for any pull request. Only someone with write access can dispatch the
+workflow, and the only inputs are a pull request number, which the gate checks
+is one, and a boolean.
+
 **A configured runner is the same route.** `runners.<family>.command` runs an
 external agent CLI (`codex`, `gemini`) in the pull request's head worktree, as
 the second pass or the challenger. It is gated as a configured command (ADR
