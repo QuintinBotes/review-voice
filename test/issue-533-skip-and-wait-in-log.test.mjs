@@ -20,7 +20,7 @@ function runGate(t, env) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const files = { GITHUB_OUTPUT: join(dir, 'output'), GITHUB_STEP_SUMMARY: join(dir, 'summary'), GITHUB_EVENT_PATH: join(dir, 'event.json') };
   for (const path of Object.values(files)) writeFileSync(path, '');
-  writeFileSync(files.GITHUB_EVENT_PATH, JSON.stringify({ pull_request: { number: 1 } }));
+  writeFileSync(files.GITHUB_EVENT_PATH, JSON.stringify({ repository: { full_name: 'acme/web' }, pull_request: { number: 1, head: { repo: { full_name: 'acme/web' } } } }));
   const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', gate], {
     encoding: 'utf8',
     env: { PATH: process.env.PATH, ...files, ...env },

@@ -58,3 +58,14 @@ test('#551: any other event is still skipped', (t) => {
   assert.match(result.output, /^skip=true$/m);
   assert.match(result.stdout, /not a pull request event/);
 });
+
+test('a credential cannot start an automatic fork review, even on pull_request_target', t => {
+  for (const event of ['pull_request','pull_request_target']) {
+    for (const name of ['other/web', undefined, 'ACME/web']) {
+      const payload = { repository: { full_name: 'acme/web' }, pull_request: { number: 4, head: { repo: { full_name: name } } } };
+      const result = runGate(t,event,payload);
+      assert.equal(result.status,0);
+      assert.match(result.output,name === 'ACME/web' ? /skip=false/ : /skip=true/);
+    }
+  }
+});

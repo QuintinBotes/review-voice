@@ -70,6 +70,13 @@ runs:
           *) skip "not a pull request event." ;;
         esac
         [ -n "$API_KEY" ] || skip "no Anthropic API key is available (fork pull requests receive no secrets)."
+        if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+          if ! jq -e '(.pull_request.head.repo.full_name // "" | ascii_downcase) as $head
+            | (.repository.full_name // "" | ascii_downcase) as $base
+            | $head != "" and $head == $base' "$GITHUB_EVENT_PATH" >/dev/null; then
+            skip "a fork or unavailable head repository needs a maintainer workflow dispatch."
+          fi
+        fi
         echo "skip=false" >> "$GITHUB_OUTPUT"
         echo "pr=$pr" >> "$GITHUB_OUTPUT"
 
@@ -118,6 +125,7 @@ runs:
         # where GitHub does not give the job its check run id.
         REVIEW_VOICE_OWN_CHECK_RUN: ${{ job.check_run_id }}
       run: |
+        export REVIEW_VOICE_ACTION_TRIGGER="$EVENT_NAME"
         mkdir -p "$REVIEW_VOICE_DATA_DIR"
         args=(review --pr "$PR" --repository "$GITHUB_REPOSITORY" --mode "$MODE" --origin action --json)
         [ "$POST" = "true" ] && args+=(--post)

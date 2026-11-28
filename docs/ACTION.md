@@ -144,9 +144,7 @@ configuration is still read from its base commit.
 
 ## Forks
 
-Pull requests from forks get no secrets. On their own `pull_request` event,
-the action sees an empty key, writes a skip line to the log and the job summary
-and exits 0, so the check does not fail.
+Automatic events skip fork pull requests even when the job has a credential. The gate compares GitHub’s head repository with the event repository. A missing or deleted head also needs a maintainer dispatch. Action runs record the event name in provenance.
 
 To review one, a maintainer dispatches the workflow with its number (above).
 The run has the repository's secrets, so a fork is reviewed from its diff and
