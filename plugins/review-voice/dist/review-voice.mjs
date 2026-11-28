@@ -19909,7 +19909,8 @@ async function computeVerdict(options) {
   if (!SHA2.test(head)) return refusal(options.head, "--head must be the full commit sha the review read");
   const run = recordedRun(options, head);
   if (typeof run === "string") return refusal(head, run);
-  const policy = verdictPolicy(options.policy);
+  const fromAction = run.provenance?.origin === "action";
+  const policy = verdictPolicy(fromAction ? { ...options.policy, neverApprove: true } : options.policy);
   const planned = planFindings(options.review, run, (id) => runDetail(options.db, id), policy.minPostedTier);
   const actual = await readHead(options.client, options.repository, options.pullNumber);
   const headMoved = actual !== head;
