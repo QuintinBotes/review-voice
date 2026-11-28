@@ -17,6 +17,7 @@ export interface FileHunks {
   addedText: Map<number, string>;
   context: Set<number>;
   deletionSites: Set<number>;
+  removedToHead: Map<number, number>;
   ranges: HunkRange[];
   patchLines: Map<number, number>;
 }
@@ -71,6 +72,8 @@ interface ActiveHunk {
   nextRightLine: number;
   lastRightLine: number | null;
   deleting: boolean;
+  nextOldLine: number;
+  deletionStart: number;
   remainingOld: number;
   remainingRight: number;
 }
@@ -85,6 +88,7 @@ function blankFileHunks(): FileHunks {
     addedText: new Map<number, string>(),
     context: new Set<number>(),
     deletionSites: new Set<number>(),
+    removedToHead: new Map(),
     ranges: [],
     patchLines: new Map<number, number>(),
   };
@@ -147,22 +151,23 @@ function diffGitPath(line: string): string | null {
   return match === null ? null : headerPath(match[2]!);
 }
 
-function hunkHeader(line: string): { oldCount: number; start: number; count: number } | null {
-  const match = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+function hunkHeader(line: string): { oldStart: number; oldCount: number; start: number; count: number } | null {
+  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
   if (match === null) return null;
 
-  const oldCount = match[1] === undefined ? 1 : Number(match[1]);
-  const start = Number(match[2]);
-  const count = match[3] === undefined ? 1 : Number(match[3]);
+  const oldStart = Number(match[1]);
+  const oldCount = match[2] === undefined ? 1 : Number(match[2]);
+  const start = Number(match[3]);
+  const count = match[4] === undefined ? 1 : Number(match[4]);
   if (
-    !Number.isSafeInteger(oldCount) ||
+    !Number.isSafeInteger(oldStart) || !Number.isSafeInteger(oldStart + oldCount) || !Number.isSafeInteger(oldCount) ||
     !Number.isSafeInteger(start) ||
     !Number.isSafeInteger(count) ||
     oldCount < 0 ||
     start < 0 ||
     count < 0
   ) return null;
-  return { oldCount, start, count };
+  return { oldStart, oldCount, start, count };
 }
 
 /** Marks a run of removed lines at its surviving right-side location. */
@@ -172,7 +177,10 @@ function settleDeletion(hunk: ActiveHunk, nextRightLine: number | null): void {
   // An existing file can be emptied by a hunk with no right-side line at all.
   // There is no head-side line to anchor in that shape, so it deliberately has
   // no deletion site rather than inventing a line number the file does not own.
-  if (site !== null && site > 0) hunk.file.deletionSites.add(site);
+  if (site !== null && site > 0) {
+    hunk.file.deletionSites.add(site);
+    for (let line = hunk.deletionStart; line < hunk.nextOldLine; line++) hunk.file.removedToHead.set(line, site);
+  }
   hunk.deleting = false;
 }
 
@@ -232,6 +240,8 @@ export function parseHunks(diff: string): Map<string, FileHunks> {
           nextRightLine: header.start,
           lastRightLine: null,
           deleting: false,
+          nextOldLine: header.oldStart,
+          deletionStart: header.oldStart,
           remainingOld: header.oldCount,
           remainingRight: header.count,
         };
@@ -256,7 +266,9 @@ export function parseHunks(diff: string): Map<string, FileHunks> {
         continue;
       }
       if (line.startsWith('-')) {
+        if (!active.deleting) active.deletionStart = active.nextOldLine;
         active.deleting = true;
+        active.nextOldLine++;
         active.remainingOld -= 1;
         finishWhenCounted();
         continue;
@@ -267,6 +279,7 @@ export function parseHunks(diff: string): Map<string, FileHunks> {
       // it is read as the context line it was.
       if (line.startsWith(' ') || (line === '' && active.remainingRight > 0 && active.remainingOld > 0)) {
         settleDeletion(active, active.nextRightLine);
+        active.nextOldLine++;
         active.file.context.add(active.nextRightLine);
         active.file.patchLines.set(patchLine, active.nextRightLine);
         active.lastRightLine = active.nextRightLine;

@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { GitError, repositoryRoot } from '../diff/acquire.ts';
 import { loadConfig } from '../policy/load.ts';
 import { collectEvidence, notRunReport } from '../evidence/run.ts';
+import { withComparisons } from '../evidence/comparisons.ts';
 import { flag } from './shared.ts';
 
 export async function evidenceCommand(argv: string[]): Promise<number> {
@@ -10,6 +11,11 @@ export async function evidenceCommand(argv: string[]): Promise<number> {
   // REVIEW_VOICE_CONFIG; --cwd is only where they run. So a review of a pull
   // request runs the checks on the head tree without ever reading the head's
   // own config (issue 262, ADR 0003).
+  const dir = flag(argv, '--review-dir');
+  if (argv.includes('--review-dir') && dir === null) {
+    console.error('--review-dir needs the directory from diff --out.');
+    return 2;
+  }
   const cwdFlag = flag(argv, '--cwd');
   if (argv.includes('--cwd') && cwdFlag === null) {
     console.error('--cwd needs a directory.');
@@ -40,7 +46,9 @@ export async function evidenceCommand(argv: string[]): Promise<number> {
             envPassthrough: config.staticEvidence.envPassthrough,
           });
     const report = collected.enabled ? { ...collected, cwd } : collected;
-    console.log(JSON.stringify(report, null, 2));
+    const artifact = process.env['REVIEW_VOICE_COMPARISON_REPORT'];
+    const output = artifact && dir ? await withComparisons(report, artifact, dir, config.firstPartyPaths) : report;
+    console.log(JSON.stringify(output, null, 2));
     // A failing check is evidence, not an error in collecting it.
     return 0;
   } catch (error) {
