@@ -1,4 +1,5 @@
 import { GitHubClient, REVIEW_THREADS_QUERY } from '../github/client.ts';
+import { webHost } from '../github/host.ts';
 import { redact } from '../redact/redact.ts';
 import { stripEvidenceBlock } from '../publish/evidence-block.ts';
 
@@ -152,7 +153,7 @@ const cappedBody = (body: string): string => {
 };
 // GitHub's closing keywords, an optional colon, whitespace, then `#N`, `owner/repo#N` or an issue URL.
 const CLOSING_REFERENCE =
-  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)|([\w.-]+\/[\w.-]+)#(\d+)|#(\d+))\b/giu;
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+(https?:\/\/([^\s/?#@]+)\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)|([\w.-]+\/[\w.-]+)#(\d+)|#(\d+))\b/giu;
 
 /**
  * The issues the description closes with a GitHub closing keyword, in first
@@ -168,7 +169,8 @@ export function closingReferences(description: string, repository: string): { nu
   const beyond: number[] = [];
   const skipped: string[] = [];
   for (const match of description.matchAll(CLOSING_REFERENCE)) {
-    const [, text, urlRepository, urlNumber, shortRepository, shortNumber, bareNumber] = match;
+    const [, text, urlHost, urlRepository, urlNumber, shortRepository, shortNumber, bareNumber] = match;
+    if (urlHost !== undefined && urlHost.toLowerCase() !== webHost()) continue;
     const named = urlRepository ?? shortRepository;
     if (named !== undefined && named.toLowerCase() !== repository.toLowerCase()) {
       skipped.push(text!);
@@ -241,7 +243,7 @@ export async function readThread(options: {
     for (const number of references.numbers) {
       try {
         // Optional: the review goes on without an issue it cannot read.
-        const { data } = await client.get<RawIssue>(`/repos/${options.repository}/issues/${number}`, { retryRateLimits: false, followRedirects: false });
+        const { data } = await client.get<RawIssue>(`/repos/${options.repository}/issues/${number}`, { retryRateLimits: false });
         // A transferred issue answers with a 301 that fetch follows after the allowlist check, so only the issue asked for counts.
         if (data.number !== number || !(data.repository_url ?? '').toLowerCase().endsWith(`/repos/${options.repository}`.toLowerCase())) {
           warnings.push(`Could not read issue #${number} (GitHub answered for another issue or repository); continuing without it.`);

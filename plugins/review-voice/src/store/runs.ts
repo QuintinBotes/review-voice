@@ -356,7 +356,12 @@ export interface PolicyVersionRef {
 }
 
 /** What produced a run: where it came from, with which versions, under which policy. */
+export function actionTrigger(value: unknown) {
+  return value === 'pull_request' || value === 'pull_request_target' || value === 'workflow_dispatch' ? value : undefined;
+}
+
 export interface RunProvenance {
+  trigger?: ReturnType<typeof actionTrigger>;
   origin: RunOrigin;
   independence: Independence;
   pluginVersion: string;
@@ -530,6 +535,7 @@ function storedProvenance(raw: unknown, reviewRunId: string): RunProvenance | nu
   }
   return {
     origin,
+    ...(actionTrigger(v['trigger']) ? { trigger: actionTrigger(v['trigger']) } : {}),
     // Recomputed, never read back, so a hand-edited row cannot claim independence.
     independence: independenceOf(origin),
     pluginVersion: v['pluginVersion'],
@@ -1216,6 +1222,7 @@ export function recordRun(
       ? null
       : {
           origin: input.provenance.origin,
+          ...(input.provenance.trigger ? { trigger: input.provenance.trigger } : {}),
           independence: independenceOf(input.provenance.origin),
           pluginVersion: input.provenance.pluginVersion,
           claudeVersion: input.provenance.claudeVersion,

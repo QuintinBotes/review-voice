@@ -30,6 +30,7 @@ import {
   type CandidateHint,
   type HeldFinding,
   type StageTiming,
+  actionTrigger,
   type RunProvenance,
   type RecordedChecks,
   type RecordedReproduction,
@@ -704,6 +705,7 @@ export async function recordCommand(argv: string[]): Promise<number> {
       toolSignals,
       conventions,
       provenance: {
+        ...(origin === 'action' ? { trigger: actionTrigger(process.env['REVIEW_VOICE_ACTION_TRIGGER']) } : {}),
         ...(carriedProvenance === null
           ? { origin, pluginVersion: pluginVersion(), claudeVersion, mode: provenanceMode }
           : { origin: carriedProvenance.origin, pluginVersion: carriedProvenance.pluginVersion, claudeVersion: carriedProvenance.claudeVersion, mode: carriedProvenance.mode }),

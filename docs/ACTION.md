@@ -105,7 +105,7 @@ permissions:
   id-token: write
 # ...
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        if: github.event.pull_request.head.repo.full_name == github.repository
+        if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: us-west-2
@@ -119,7 +119,7 @@ Federation:
 
 ```yaml
       - id: gcp
-        if: github.event.pull_request.head.repo.full_name == github.repository
+        if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -137,7 +137,7 @@ Microsoft Foundry, through an Entra application with a federated credential.
 run gets no secret and skips.
 
 ```yaml
-      - if: github.event.pull_request.head.repo.full_name == github.repository
+      - if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -188,13 +188,14 @@ job's `env` and leave `config` at its default.
 
 Posting needs both `post: true` in the workflow and
 `writes.github_posting_enabled: true` in the repository config, plus
-`pull-requests: write`. To post an approval with the default workflow token,
-the repository must also allow it: Settings, Actions, General, Workflow
-permissions, "Allow GitHub Actions to create and approve pull requests". That
-setting is off by default. Without it GitHub refuses the approval, so nothing
-is posted, the job passes, and the log carries a warning naming the setting.
-Comments and requests for changes post either way. The review is authored by
-the token's identity. With
+`pull-requests: write`. The Action never approves. A review that would
+approve is posted as a COMMENT, with its findings and the summary line ("No
+problems found.", or the count of nits), as `verdict.never_approve` does. An
+approval is left to a person, and the repository needs no "Allow GitHub
+Actions to create and approve pull requests" setting. Because a COMMENT does
+not replace a request for changes, a request the Action made earlier stands
+until a maintainer dismisses it or the pull request merges. The review is
+authored by the token's identity. With
 `post: false` the review is computed and written to the job summary only.
 With `post: true` and posting off in the config the review reads (the base
 commit's), the review still runs and the job passes: nothing is posted, and
@@ -214,14 +215,63 @@ and running it again records nothing twice (docs/adr/0042). A recovered run has
 no category or scores, since the posted text does not carry them, and no reply
 is offered under its threads.
 
+## Asking for a review
+
+A maintainer can ask for a review of a given pull request: a first review when
+the workflow does not run on every push, a full review after incremental ones,
+or a review of a pull request from a fork. Add a `workflow_dispatch` trigger
+with a `pr` input, and optionally `full`:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+      full:
+        description: Review the whole pull request, not only the commits since the last review
+        type: boolean
+        default: false
+
+concurrency:
+  group: review-voice-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+```
+
+Run it from the Actions tab, or with `gh workflow run review-voice.yml -f pr=42`.
+GitHub lets only people with write access dispatch a workflow, so the run
+carries a maintainer's request. No text from the request reaches a model: the
+only inputs are the number and `full`, and the gate refuses a `pr` that is not
+a pull request number. The pull request is read from the API, and the
+configuration is still read from its base commit.
+
+## GitHub Enterprise
+
+On GitHub Enterprise Server (3.9 or later) and GHE.com data residency, nothing
+changes in the workflow. The runner sets `GITHUB_API_URL`, and every read,
+GraphQL query and posted review goes to that host with the workflow token,
+never to `api.github.com` or anywhere else (#545). The pull request cannot
+change the host. On Enterprise Server, `actions/setup-node` and
+`actions/cache` must be available to the runner, through GitHub Connect or a
+synced copy.
+
 ## Forks
 
-Pull requests from forks get no secrets and no OIDC token. The action sees no
-credential for the chosen provider, writes a skip line naming what it looked
-for to the log and the job summary and exits 0, so the check does not fail.
-Guard a cloud login step with
-`if: github.event.pull_request.head.repo.full_name == github.repository`, as
-the examples above do, or it fails the job before the action can skip.
+Automatic events skip fork pull requests even when the job has a credential. The gate compares GitHub’s head repository with the event repository. A missing or deleted head also needs a maintainer dispatch. Action runs record the event name in provenance.
+
+To review one, a maintainer dispatches the workflow with its number (above).
+The run has the repository's secrets, so a fork is reviewed from its diff and
+files only. `REVIEW_VOICE_NO_COMMANDS=1` is set, so no static-evidence command,
+reproduction, second-pass command or configured runner runs on its code, and
+the log says so. The agents read the fork's files with the same restricted
+tools as for any pull request, in safe mode, which ignores a CLAUDE.md, skills
+or agents the fork planted. `pull_request_target` with the head checked out is
+still refused.
+
+Guard the cloud login step too, so an automatic fork review can reach the skip without trying to authenticate. The examples above allow a maintainer dispatch or a same-repository pull request.
 
 ## Cost
 

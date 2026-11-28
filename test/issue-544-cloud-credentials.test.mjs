@@ -39,12 +39,12 @@ writeFileSync(process.env.FAKE_ENV, JSON.stringify(seen));
 process.stdout.write('{}');
 `;
 
-function scratch(t) {
+function scratch(t, headRepository = 'acme/api') {
   const dir = mkdtempSync(join(tmpdir(), 'rv-544-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, 'action/plugins/review-voice/dist'), { recursive: true });
   writeFileSync(join(dir, 'action/plugins/review-voice/dist/review-voice.mjs'), STUB);
-  writeFileSync(join(dir, 'event.json'), JSON.stringify({ pull_request: { number: 7 } }));
+  writeFileSync(join(dir, 'event.json'), JSON.stringify({ repository: { full_name: 'acme/api' }, pull_request: { number: 7, head: { repo: { full_name: headRepository } } }, inputs: { pr: '7' } }));
   return dir;
 }
 
@@ -60,9 +60,9 @@ function bash(dir, script, env) {
 }
 
 /** The gate with the inputs at their defaults, unless named, plus what the job's env holds. */
-function runGate(t, { inputs = {}, jobEnv = {} } = {}) {
+function runGate(t, { inputs = {}, jobEnv = {}, headRepository } = {}) {
   const env = { EVENT_NAME: 'pull_request', API_KEY: '', OAUTH_TOKEN: '', PROVIDER: 'anthropic', ...inputs, ...jobEnv };
-  return bash(scratch(t), gate.run, env);
+  return bash(scratch(t, headRepository), gate.run, env);
 }
 
 /** The review step, returning the credential variables its bundle was started with. */
@@ -80,6 +80,7 @@ function runReview(t, { inputs = {}, jobEnv = {} } = {}) {
     RUNNER_TEMP: dir,
     REVIEW_VOICE_DATA_DIR: join(dir, 'data'),
     PR: '7',
+    EVENT_NAME: 'pull_request',
     MODE: 'auto',
     POST: 'false',
     CONFIG: '.review-voice/config.yaml',
@@ -95,6 +96,17 @@ function runReview(t, { inputs = {}, jobEnv = {} } = {}) {
 const AWS = { AWS_ACCESS_KEY_ID: 'AKIA', AWS_SECRET_ACCESS_KEY: 's', AWS_SESSION_TOKEN: 't', AWS_REGION: 'us-west-2' };
 const GCP = { GOOGLE_APPLICATION_CREDENTIALS: '/tmp/gha-creds.json', ANTHROPIC_VERTEX_PROJECT_ID: 'p', CLOUD_ML_REGION: 'us-east5' };
 const AZURE = { AZURE_CLIENT_ID: 'c', ANTHROPIC_FOUNDRY_RESOURCE: 'r' };
+
+test('a cloud credential allows a maintainer dispatch and still skips an automatic fork', t => {
+  const cloud = { PROVIDER: 'bedrock' };
+  const automatic = runGate(t, { inputs: { ...cloud, EVENT_NAME: 'pull_request_target' }, jobEnv: AWS, headRepository: 'fork/api' });
+  assert.equal(automatic.status, 0);
+  assert.match(automatic.output, /^skip=true$/m);
+  const dispatch = runGate(t, { inputs: { ...cloud, EVENT_NAME: 'workflow_dispatch' }, jobEnv: AWS });
+  assert.equal(dispatch.status, 0);
+  assert.match(dispatch.output, /^skip=false$/m);
+  assert.match(dispatch.output, /^pr=7$/m);
+});
 
 test('#544: the new inputs default to today\'s behaviour', () => {
   assert.equal(action.inputs.provider.default, 'anthropic');

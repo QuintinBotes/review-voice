@@ -36,6 +36,11 @@ review:
   # generated output or a binary under it still is. `review --pr` reads this
   # from the base commit, so a pull request cannot set it for itself.
   first_party_paths: []
+  # Other repositories whose default branches are searched, through GitHub code
+  # search, for consumers of a declaration the change removes, renames or
+  # re-signs. Each must also be in repositories.include; one that is not is
+  # skipped with a note and never read. At most six searches per review.
+  # linked_repositories: [your-org/consumer-service]
   # Set the model for a stage in every mode; an override never turns a stage
   # on or off. Keys: intent, analyst (the diff lane), lanes, verify, tie-break,
   # challenge, edit. Defaults are sonnet, or opus where the mode calls for it.
@@ -258,6 +263,17 @@ static_evidence:
   #     run: semgrep scan --config .semgrep --metrics=off --sarif --quiet .
   #   - name: ruff
   #     run: ruff check --output-format sarif .
+  # A test command can name the LCOV or Cobertura XML coverage report it
+  # writes. Each changed line the report lists with 0 hits becomes an
+  # uncovered_line signal, evidence for a finding and never one by itself. A
+  # report that is missing, older than the run, unparsable or from a failed
+  # run is recorded as coverageInconclusive, never as zero coverage (#547).
+  #   - name: test
+  #     run: npx c8 --reporter=lcovonly npm test
+  #     coverage: coverage/lcov.info
+  #   - name: pytest
+  #     run: python -m pytest --cov --cov-report=xml
+  #     coverage: coverage.xml
   # Commands get only PATH, HOME, LANG, LC_ALL, TMPDIR, CI and TERM, never the
   # reviewer's GITHUB_TOKEN, ANTHROPIC_API_KEY or REVIEW_VOICE_* settings. List
   # any other variable a command needs by name (issue 279). Example:

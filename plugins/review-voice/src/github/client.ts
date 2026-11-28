@@ -1,4 +1,5 @@
 import { githubToken } from './auth.ts';
+import { apiBaseUrl } from './host.ts';
 
 export class ReadOnlyViolation extends Error {}
 export class NotAllowlisted extends Error {}
@@ -89,6 +90,17 @@ export interface SearchResult {
   /** True when more results exist than the five pages read. */
   truncated: boolean;
 }
+
+export interface CodeSearchResult {
+  /** Files in the searched repository only, with the `text_matches` fragments GitHub returned. */
+  matches: { repository: string; path: string; blob: string; fragments: string[] }[];
+  /** True when GitHub has more files than the one page read, or said its results are incomplete. */
+  truncated: boolean;
+}
+
+/** An identifier, the only code search term the client builds a query from. */
+const CODE_SEARCH_TERM = /^[/A-Za-z_$][A-Za-z0-9_$/.-]{2,99}$/;
+const CODE_SEARCH_PER_PAGE = 10;
 
 const SEARCH_BASE = 'is:pr is:open draft:false';
 const SEARCH_PER_PAGE = 100;
@@ -202,7 +214,8 @@ function graphqlUrl(baseUrl: string): string {
  *      a fixed set, checked by exact text before they are sent (`graphql`).
  *   2. Only allowlisted repositories are ever addressed. A search is the one
  *      read that can name any repository, and every result outside the
- *      allowlist is dropped before anything else is read (`searchPullRequests`).
+ *      allowlist is dropped before anything else is read (`searchPullRequests`,
+ *      `searchCode`).
  *
  * The second matters more than it looks. The credential comes from `gh` and
  * carries whatever scopes the user already had, which is almost always broader
@@ -238,7 +251,7 @@ export class GitHubClient {
         this.entries.push(entry.toLowerCase());
       }
     }
-    this.baseUrl = options.baseUrl ?? 'https://api.github.com';
+    this.baseUrl = options.baseUrl ?? apiBaseUrl();
     this.doFetch = options.fetchImpl ?? fetch;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.token = options.token ?? null;
@@ -313,14 +326,14 @@ export class GitHubClient {
 
   /**
    * `retryRateLimits: false` fails at once on a rate limit instead of waiting
-   * it out, for a read the caller can do without. `followRedirects: false`
-   * makes a redirect fail the read: a transferred issue answers with a 301 to
+   * it out, for a read the caller can do without. The client
+   * refuses redirects: a transferred issue answers with a 301 to
    * another repository, and following it would send the credential to a read
    * the allowlist never checked.
    */
   async get<T>(
     path: string,
-    init: { method?: string; retryRateLimits?: boolean; followRedirects?: boolean } = {},
+    init: { method?: string; retryRateLimits?: boolean } = {},
   ): Promise<{ data: T; linkNext: string | null }> {
     if (init.method !== undefined && init.method.toUpperCase() !== 'GET') {
       throw new ReadOnlyViolation(
@@ -328,11 +341,16 @@ export class GitHubClient {
       );
     }
     this.assertAllowed(path);
-    return this.request<T>(path, init.retryRateLimits !== false, init.followRedirects !== false);
+    return this.request<T>(path, init.retryRateLimits !== false);
   }
 
   /** The GET itself, once the caller has checked the path. */
-  private async request<T>(path: string, retryRateLimits: boolean, followRedirects = true): Promise<{ data: T; linkNext: string | null }> {
+  private async request<T>(
+    path: string,
+    retryRateLimits: boolean,
+    accept = 'application/vnd.github+json',
+    signal?: AbortSignal,
+  ): Promise<{ data: T; linkNext: string | null }> {
     const { url: resolved, apiPath } = this.resolve(path);
     const url = resolved.href;
 
@@ -351,14 +369,20 @@ export class GitHubClient {
       const response = await this.doFetch(url, {
         method: 'GET',
         // A 3xx then comes back as a non-ok response, which the check below refuses.
-        redirect: followRedirects ? 'follow' : 'manual',
+        redirect: 'manual',
+        signal,
         headers: {
-          accept: 'application/vnd.github+json',
+          accept,
           authorization: this.authorization(),
           'x-github-api-version': '2022-11-28',
           'user-agent': 'review-voice',
         },
       });
+
+      // Also reject a redirected response returned by an injected fetch implementation.
+      if (response.redirected && new URL(response.url).origin !== resolved.origin) {
+        throw new NotAllowlisted(`Refused a redirect to ${new URL(response.url).origin}: only ${this.baseUrl} is read.`);
+      }
 
       if (response.status === 403 || response.status === 429) {
         const retryAfter = Number(response.headers.get('retry-after') ?? '0');
@@ -425,6 +449,7 @@ export class GitHubClient {
 
     const response = await this.doFetch(graphqlUrl(this.baseUrl), {
       method: 'POST',
+      redirect: 'manual',
       headers: {
         accept: 'application/vnd.github+json',
         authorization: this.authorization(),
@@ -502,6 +527,65 @@ export class GitHubClient {
     }
 
     return { pullRequests, outsideAllowlist, truncated };
+  }
+
+  /**
+   * Files on the default branch of one allowlisted repository that mention
+   * `term`, from `GET /search/code` (docs/adr/0026, amended for #548). The
+   * query is built here from an identifier and the one repository, never from
+   * caller text, and a result from any other repository is dropped unread.
+   * One page of ten, no rate-limit retry: the caller can do without it.
+   */
+  async searchCode(term: string, repository: string, signal?: AbortSignal): Promise<CodeSearchResult> {
+    const [owner, name, ...rest] = repository.split('/');
+    if (owner === undefined || name === undefined || rest.length > 0 || !GITHUB_NAME.test(owner) || !REPOSITORY_NAME.test(name) || !this.allows(repository)) {
+      throw new NotAllowlisted(`${repository} is not in the allowlist, so it is never searched.`);
+    }
+    if (!CODE_SEARCH_TERM.test(term)) throw new NotAllowlisted(`Refused a code search for ${JSON.stringify(term)}: only an identifier is searched.`);
+    const q = encodeURIComponent(`"${term}" repo:${owner}/${name}`);
+    const { data } = await this.request<{ incomplete_results?: unknown; total_count?: unknown; items?: unknown }>(
+      `/search/code?q=${q}&per_page=${CODE_SEARCH_PER_PAGE}`,
+      false,
+      // Asks for `text_matches`, the fragment that names the term.
+      'application/vnd.github.text-match+json',
+      signal,
+    );
+    if (!Array.isArray(data?.items)) throw new Error('Code search returned no items array.');
+    const items = data.items as Record<string, unknown>[];
+    const matches: CodeSearchResult['matches'] = [];
+    for (const item of items) {
+      const full = (item?.['repository'] as { full_name?: unknown } | undefined)?.full_name;
+      const path = item?.['path'];
+      if (typeof full !== 'string' || full.toLowerCase() !== repository.toLowerCase() || typeof path !== 'string') continue;
+      const fragments = (Array.isArray(item['text_matches']) ? (item['text_matches'] as { fragment?: unknown }[]) : [])
+        .map((match) => match?.fragment)
+        .filter((fragment): fragment is string => typeof fragment === 'string');
+      const blob = item['sha'];
+      if (typeof blob !== 'string' || !/^[a-f0-9]{40}$/i.test(blob)) throw new Error('Code search returned no file revision.');
+      matches.push({ repository: full, path, blob, fragments });
+    }
+    const total = typeof data?.total_count === 'number' ? data.total_count : matches.length;
+    return { matches, truncated: data?.incomplete_results === true || total > items.length };
+  }
+
+  /** Read the exact blob returned by code search. A large or binary file supplies no line evidence. */
+  async readSearchBlob(repository: string, sha: string, signal: AbortSignal): Promise<string> {
+    if (!this.allows(repository) || !/^[a-f0-9]{40}$/i.test(sha)) throw new NotAllowlisted('Invalid search result.');
+    const path = `/repos/${repository}/git/blobs/${sha}`;
+    this.assertAllowed(path);
+    const response = await this.doFetch(this.resolve(path).url, {
+      method: 'GET', redirect: 'error', signal,
+      headers: { accept: 'application/vnd.github.raw+json', authorization: this.authorization() },
+    });
+    if (!response.ok || !response.body) throw new Error(`GitHub blob read returned ${response.status}.`);
+    let bytes = 0;
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of response.body) {
+      bytes += chunk.byteLength;
+      if (bytes > 256 * 1024 || chunk.includes(0)) throw new Error('Consumer file is binary or exceeds 256 KiB.');
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks).toString('utf8');
   }
 
   /** Follows pagination up to `limit` items, so a huge repository cannot run away. */

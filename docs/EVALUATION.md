@@ -261,6 +261,41 @@ Both are `no data` with none. Reply counts never appear on the pull request.
 The scope block takes no reply input, so a reply changes neither the posted body
 nor the review's idempotency key.
 
+#### Reviewer findings not posted
+
+Fixture recall says what the pipeline loses on seeded defects. On real pull
+requests the defects it missed are the ones a person then had to raise (#550).
+`RV outcomes` reads them from the pull request's inline comment list it already
+reads for the posted findings, so it adds no request path, and writes nothing
+to GitHub. A comment is followed when all of these hold:
+
+- it is a root comment by the owner or a login in `identity.reviewers`, not a
+  bot, and not in one of the run's own reviews;
+- it was made on the head the run reviewed (`original_commit_id`), after the
+  run was recorded, on a file the run read (not left out, and inside an
+  incremental scope's files).
+
+Each is classed against that run within the agreement tolerance of 3 lines:
+`also_posted` (a finding of the run is there), `held` (a held entry, with its
+verdict as the stage), `rejected` (a scored candidate, with its gate as the
+stage), or `never_raised`. The comment's own outcome is decided by the posted
+findings' rules above, so only a strong `fixed`, the lines changed after the
+comment and the thread resolved or the author agreed, counts. A comment the run
+also posted is a hit, not a miss.
+
+```
+reviewer_findings_missed = strong fixed reviewer comments not also_posted
+online_recall            = posted fixed / (posted fixed + reviewer_findings_missed)
+```
+
+Both are reported, not scored, and both are `no data` until a reviewer comment
+has been followed. The basis of the first names the count by class and how
+many comments were followed. `RV evaluate --json` adds `missed_breakdown` by
+class and by the lane of the candidate that was there. ADR 0004's limits hold:
+a human comment is not ground truth, a nit the owner would never post is not a
+defect, and an unanswered or unchanged comment counts for nothing. The watcher
+does not follow reviewer comments; `RV outcomes` does.
+
 #### Approval outcomes
 
 An approval is the one write that can unblock a merge, so ADR 0036 follows

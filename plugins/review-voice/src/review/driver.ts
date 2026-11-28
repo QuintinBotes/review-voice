@@ -1,3 +1,5 @@
+import { withComparisons } from '../evidence/comparisons.ts';
+import type { EvidenceReport } from '../evidence/types.ts';
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
@@ -440,7 +442,7 @@ async function prep(run: Run): Promise<void> {
   const refs = isRecord(run.summary['refs']) ? run.summary['refs'] : {};
   const baseReadable = isRecord(refs['base']) && refs['base']['available'] === true;
   run.base = typeof run.summary['mergeBase'] === 'string' ? run.summary['mergeBase'] : baseReadable ? String(run.summary['base']) : null;
-  for (const key of ['truncationNote', 'scopeNote', 'humanReviewNote'] as const) {
+  for (const key of ['truncationNote', 'scopeNote', 'humanReviewNote', 'dependencyNote'] as const) {
     if (typeof run.summary[key] === 'string') run.notes.push(run.summary[key] as string);
   }
   noteConfigChange(run);
@@ -453,12 +455,13 @@ async function prep(run: Run): Promise<void> {
   if (branch) writeJson(at(run, 'thread.json'), { repository, pullNumber: null, comments: [], reviews: [] });
   else await must(run, ['thread', ...pr, '--out', at(run, 'thread.json')]);
   writeFileSync(at(run, 'context.json'), (await must(run, ['context'])).stdout);
+  const comparison = (run.deps.env ?? process.env)['REVIEW_VOICE_COMPARISON_REPORT'];
+  const context = readJson(at(run, 'context.json'));
   if (noCommands(run)) {
     run.notes.push('REVIEW_VOICE_NO_COMMANDS=1, so the static evidence commands were not run.');
     // The `evidence` command is never called here, so the configured names come
     // from the context just written; a watcher-run review can then say which
     // checks it skipped instead of implying there were none.
-    const context = readJson(at(run, 'context.json'));
     const configured = isRecord(context) && isRecord(context['staticEvidence']) ? list(context['staticEvidence']['commands']) : [];
     writeJson(at(run, 'evidence.json'), {
       enabled: false,
@@ -476,11 +479,18 @@ async function prep(run: Run): Promise<void> {
     // clone stops here; otherwise it waits for the first agent as before. A
     // run that later carries an earlier one pays for the worktree too, since
     // the checks must read the head whether or not the review is new.
-    const context = readJson(at(run, 'context.json'));
     const staticEvidence = isRecord(context) && isRecord(context['staticEvidence']) ? context['staticEvidence'] : {};
     const willRun = staticEvidence['enabled'] === true && list(staticEvidence['commands']).length > 0;
     const where = willRun ? ['--cwd', prepareWorkspace(run)] : [];
-    writeFileSync(at(run, 'evidence.json'), (await must(run, ['evidence', ...where])).stdout);
+    writeFileSync(at(run, 'evidence.json'), (await must(run, ['evidence', ...where, '--diff-file', at(run, 'diff.patch')])).stdout);
+  }
+  if (comparison) {
+    const path = at(run, 'evidence.json');
+    const overrides = isRecord(context) && Array.isArray(context.firstPartyPaths)
+      ? context.firstPartyPaths.filter((value): value is string => typeof value === 'string') : [];
+    const report = await withComparisons(readJson(path) as EvidenceReport, comparison, run.dir, overrides);
+    writeJson(path, report);
+    for (const note of report.comparison.notes) run.notes.push('Comparison evidence: ' + note);
   }
   // Conventions come from the base, the trusted side, as the configuration does
   // (issue 275). The caller's checkout may be the head, whose CLAUDE.md is part
@@ -498,8 +508,9 @@ async function prep(run: Run): Promise<void> {
   // New declarations are searched for callers at the head, which exists only
   // when the diff could read it; without it they stay inconclusive.
   const headReadable = isRecord(refs['head']) && refs['head']['available'] === true;
-  await must(run, [
+  const symbols = await must(run, [
     'symbols',
+    ...(process.env['REVIEW_VOICE_SCIP_INDEX'] ? ['--repository', repository, ...(run.summary.scope && isRecord(run.summary.scope) && run.summary.scope.kind !== 'full' ? ['--scip-head-only'] : [])] : []),
     '--diff-file',
     at(run, 'diff.patch'),
     ...(run.base === null ? [] : ['--base', run.base]),
@@ -507,6 +518,11 @@ async function prep(run: Run): Promise<void> {
     '--out',
     at(run, 'symbols.json'),
   ]);
+  const symbolSummary = parsed(symbols.stdout);
+  const linkedNote = symbolSummary['linkedNote'];
+  if (typeof linkedNote === 'string') run.notes.push(linkedNote);
+  const contextNotes = symbolSummary.contextNotes;
+  if (Array.isArray(contextNotes)) for (const note of contextNotes) if (typeof note === 'string') run.notes.push(note);
   const followUps = branch ? JSON.stringify({ followUps: [] }) : (await must(run, ['follow-ups', ...pr])).stdout;
   writeFileSync(at(run, 'follow-ups.json'), followUps);
   run.followUps = list(parsed(followUps)['followUps']).length > 0;
@@ -743,11 +759,10 @@ async function lanes(run: Run): Promise<void> {
     writeJson(at(run, 'candidates.json'), { candidates: merged() });
     return cli(run, args, JSON.stringify({ candidates: merged() }));
   };
-  let checked = await check();
-  if (checked.code === 1) {
-    const report = parsed(checked.stdout);
-    // Each failure goes back to the lane that produced it: by id, else by
-    // anchor, else to the diff lane with the failure itself.
+  // Each failure goes back to the lane that produced it: by id, else by
+  // anchor, else to the diff lane with the failure itself.
+  const failingIn = (stdout: string): Map<Json, { lane: Lane; reasons: string[] }> => {
+    const report = parsed(stdout);
     const produced = running.flatMap((lane) => (output.get(lane.name) ?? []).map((candidate) => ({ lane, candidate })));
     const failing = new Map<Json, { lane: Lane; reasons: string[] }>();
     for (const failure of [...list(report['anchorFailures']), ...list(report['laneFailures']), ...list(report['intentFailures'])]) {
@@ -759,6 +774,11 @@ async function lanes(run: Run): Promise<void> {
       entry.reasons.push(String(failure['reason']));
       failing.set(candidate, entry);
     }
+    return failing;
+  };
+  let checked = await check();
+  if (checked.code === 1) {
+    const failing = failingIn(checked.stdout);
     if (failing.size === 0) throw new Stop(7, `check-candidates refused the candidates without naming one: ${firstLines(checked.stderr || checked.stdout)}`);
     for (const lane of running) {
       const mine = [...failing].filter(([, entry]) => entry.lane === lane);
@@ -772,6 +792,27 @@ async function lanes(run: Run): Promise<void> {
       output.set(lane.name, [...kept, ...list(withoutCounts(result.output)['candidates'])]);
     }
     checked = await check();
+    // A candidate still refused after its lane re-anchored it is dropped and held,
+    // not the whole review (#553): the others are still checked and posted.
+    if (checked.code === 1) {
+      const still = failingIn(checked.stdout);
+      if (still.size === 0) throw new Stop(7, `check-candidates refused the candidates without naming one: ${firstLines(checked.stderr || checked.stdout)}`);
+      for (const [candidate, entry] of still) {
+        run.held.push({
+          path: String(candidate['path'] ?? ''),
+          line: Number(candidate['line'] ?? 0),
+          verdict: 'unverified',
+          source: 'check-candidates',
+          reason: `dropped after a retry: ${entry.reasons.join('; ')}`,
+          candidateId: idOf(candidate),
+          ...(typeof candidate['severity'] === 'string' ? { severity: candidate['severity'] } : {}),
+          ...(typeof candidate['claim'] === 'string' ? { text: candidate['claim'] } : {}),
+        });
+      }
+      for (const lane of running) output.set(lane.name, (output.get(lane.name) ?? []).filter((candidate) => !still.has(candidate)));
+      run.notes.push(`Dropped ${still.size} candidate(s) whose anchor still failed after a retry; the rest of the review went on.`);
+      checked = await check();
+    }
   }
   if (checked.code !== 0) throw new Stop(7, `check-candidates refused the candidates again: ${firstLines(checked.stderr || checked.stdout)}`);
   writeFileSync(at(run, 'checked.json'), checked.stdout);

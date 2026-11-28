@@ -1,6 +1,7 @@
 import { GIT_CHECK_TIMEOUT_MS, GIT_READ_TIMEOUT_MS, gitTimeoutMs, runGit } from '../git-exec.ts';
 import type { GitHubClient } from '../github/client.ts';
 import { tokenLogin } from '../github/identity.ts';
+import { remoteRepository } from '../github/host.ts';
 import { gitFailure, type PriorPullReview } from './incremental.ts';
 
 /**
@@ -56,7 +57,7 @@ export async function resolveCommit(ref: string, cwd: string): Promise<string | 
 async function originRepository(cwd: string): Promise<string | null> {
   try {
     const url = (await git(['remote', 'get-url', 'origin'], cwd)).trim();
-    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? null;
+    return remoteRepository(url);
   } catch {
     return null;
   }

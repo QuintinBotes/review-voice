@@ -2,7 +2,24 @@ import { dirname, join, sep } from 'node:path';
 import { frontmatterPaths, governsAny, governsCount, pointerTargets } from './globs.ts';
 import { filesystemReader, type TreeReader } from './tree.ts';
 
-export type ConventionKind = 'claude' | 'agents' | 'contributing' | 'skill' | 'rule';
+export type ConventionKind =
+  | 'claude'
+  | 'agents'
+  | 'contributing'
+  | 'skill'
+  | 'rule'
+  // Written for another reviewer: Claude Code Review, GitHub Copilot, Cursor.
+  | 'review'
+  | 'copilot'
+  | 'bugbot'
+  | 'cursor';
+
+/**
+ * Kinds written to steer another code reviewer. Their severity, exclusion and
+ * count instructions are not applied here; an exclusion needs an approved
+ * policy (ADR 0032), so the report says so whenever one is returned.
+ */
+const OTHER_REVIEWER_KINDS: ReadonlySet<ConventionKind> = new Set(['review', 'copilot', 'bugbot', 'cursor']);
 
 export interface ConventionDocument {
   /** Repository-relative, so it means the same thing on any machine. */
@@ -55,11 +72,18 @@ const REPOSITORY_FILES: { path: string; kind: ConventionKind }[] = [
   { path: 'AGENTS.md', kind: 'agents' },
   { path: 'CONTRIBUTING.md', kind: 'contributing' },
   { path: '.github/CONTRIBUTING.md', kind: 'contributing' },
+  // Rule files a repository may already keep for another reviewer (#552).
+  { path: 'REVIEW.md', kind: 'review' },
+  { path: '.github/copilot-instructions.md', kind: 'copilot' },
+  { path: join('.cursor', 'BUGBOT.md'), kind: 'bugbot' },
+  { path: '.cursorrules', kind: 'cursor' },
 ];
 
 const NESTED_FILES: { name: string; kind: ConventionKind }[] = [
   { name: 'CLAUDE.md', kind: 'claude' },
   { name: 'AGENTS.md', kind: 'agents' },
+  { name: 'REVIEW.md', kind: 'review' },
+  { name: join('.cursor', 'BUGBOT.md'), kind: 'bugbot' },
 ];
 
 /**
@@ -69,11 +93,21 @@ const NESTED_FILES: { name: string; kind: ConventionKind }[] = [
  * skills under `packages/storefront/.claude/skills` never appeared in
  * `documents` or in `skipped`.
  */
-const RULE_DIRECTORIES: { path: string; kind: ConventionKind }[] = [
+const RULE_DIRECTORIES: { path: string; kind: ConventionKind; rootOnly?: true }[] = [
   { path: join('.claude', 'skills'), kind: 'skill' },
   { path: join('.agents', 'rules'), kind: 'rule' },
   { path: join('.claude', 'rules'), kind: 'rule' },
+  // Copilot reads `.github/instructions/` at the root only.
+  { path: join('.github', 'instructions'), kind: 'copilot', rootOnly: true },
+  { path: join('.cursor', 'rules'), kind: 'cursor' },
 ];
+
+/**
+ * Kinds whose declared globs (`applyTo`, `globs`) are the only time the tool
+ * that reads them applies them, so a file whose globs govern nothing in the
+ * change is skipped rather than offered on the remaining budget.
+ */
+const STRICTLY_SCOPED_KINDS: ReadonlySet<ConventionKind> = new Set(['copilot', 'cursor']);
 
 /**
  * Every place the search looks, so an empty result can say where it looked:
@@ -82,7 +116,7 @@ const RULE_DIRECTORIES: { path: string; kind: ConventionKind }[] = [
 export const SEARCHED_PLACES: string[] = [
   ...REPOSITORY_FILES.map((file) => file.path),
   ...NESTED_FILES.map((file) => `<directory the change touches>/${file.name}`),
-  ...RULE_DIRECTORIES.map((directory) => `<any directory>/${directory.path}/`),
+  ...RULE_DIRECTORIES.map((directory) => `${directory.rootOnly ? '' : '<any directory>/'}${directory.path}/`),
 ];
 
 /**
@@ -364,14 +398,16 @@ function resolvePointer(tree: TreeReader, pointerPath: string, target: string): 
 /** Rule and skill documents under one directory of the tree. */
 function listRuleDocuments(tree: TreeReader, directory: string): { path: string; kind: ConventionKind }[] {
   const out: { path: string; kind: ConventionKind }[] = [];
-  for (const { path: relative, kind } of RULE_DIRECTORIES) {
+  for (const { path: relative, kind, rootOnly } of RULE_DIRECTORIES) {
+    if (rootOnly && directory !== '') continue;
     const base = join(directory, relative);
     if (!tree.exists(base)) continue;
     try {
       for (const entry of tree.list(base).sort()) {
-        // A skill is a directory holding SKILL.md; a rule is a markdown file.
+        // A skill is a directory holding SKILL.md; a rule is a markdown file,
+        // or Cursor's `.mdc`.
         for (const candidate of [join(directory, relative, entry, 'SKILL.md'), join(directory, relative, entry)]) {
-          if (!candidate.endsWith('.md')) continue;
+          if (!/\.mdc?$/.test(candidate)) continue;
           if (!tree.exists(candidate)) continue;
           out.push({ path: candidate, kind });
           break;
@@ -391,7 +427,7 @@ function listRuleDocuments(tree: TreeReader, directory: string): { path: string;
 function nameTokens(path: string): string[] {
   const base = path.split(/[\\/]/).filter((part) => part !== 'SKILL.md').pop() ?? path;
   return base
-    .replace(/\.md$/i, '')
+    .replace(/(?:\.instructions)?\.mdc?$/i, '')
     .split(/[^a-z0-9]+/i)
     .filter((token) => token.length > 2)
     .map((token) => token.toLowerCase());
@@ -434,14 +470,14 @@ export async function discoverConventions(
   const seen = new Set<string>();
   let totalBytes = 0;
 
-  const governed = new Map<string, string[]>();
+  const governed = new Map<string, { kind: ConventionKind; appliesTo: string[] }>();
   for (const changed of changedPaths) {
     for (const directory of ancestors(changed)) {
-      for (const { name } of NESTED_FILES) {
+      for (const { name, kind } of NESTED_FILES) {
         const candidate = join(directory, name);
         const existing = governed.get(candidate);
-        if (existing === undefined) governed.set(candidate, [changed]);
-        else existing.push(changed);
+        if (existing === undefined) governed.set(candidate, { kind, appliesTo: [changed] });
+        else existing.appliesTo.push(changed);
       }
     }
   }
@@ -483,9 +519,9 @@ export async function discoverConventions(
   const ordered: Entry[] = [
     ...[...governed.entries()]
       .sort((a, b) => b[0].split(sep).length - a[0].split(sep).length)
-      .map(([path, appliesTo]) => ({
+      .map(([path, { kind, appliesTo }]) => ({
         path,
-        kind: (path.endsWith('AGENTS.md') ? 'agents' : 'claude') as ConventionKind,
+        kind,
         scope: 'directory' as const,
         appliesTo,
         reason: 'directory scope' as const,
@@ -534,6 +570,7 @@ export async function discoverConventions(
     let bytes = Number.POSITIVE_INFINITY;
     let governs: string[] = [];
     let followed: string[] = [];
+    let alwaysApply = false;
 
     try {
       bytes = tree.size(entry.path);
@@ -553,6 +590,8 @@ export async function discoverConventions(
       {
         const head = await readHead(tree, entry.path, CHEAP_BYTES);
         governs = frontmatterPaths(head);
+        // A Cursor rule may declare globs and still apply everywhere.
+        alwaysApply = /^alwaysApply\s*:\s*true\b/m.test(head);
 
         // A stub may point at several documents. Following only the first was
         // a silent loss: on a live run a 179-byte stub declaring
@@ -588,6 +627,18 @@ export async function discoverConventions(
         ? { ...base, reason: 'governs the changed paths' }
         : base;
     };
+
+    // Never silent: the file was found, its scope just is not this change.
+    if (STRICTLY_SCOPED_KINDS.has(entry.kind) && governs.length > 0 && covers === 0 && !alwaysApply) {
+      if (tree.isFile(entry.path) && !seen.has(entry.path)) {
+        seen.add(entry.path);
+        skipped.push({
+          path: entry.path,
+          reason: `declares it applies to ${governs.join(', ')}, and no changed path matches`,
+        });
+      }
+      continue;
+    }
 
     if (followed.length === 0) {
       sized.push({ entry: withPath(entry.path), bytes });
@@ -733,6 +784,13 @@ export async function discoverConventions(
             'keeping the sections that match the paths under review.'
           : `${entry.path} is ${read.bytes} bytes and was truncated to ${read.includedBytes}. ` +
             'The document itself says so where it was cut.',
+      );
+    }
+    if (OTHER_REVIEWER_KINDS.has(entry.kind)) {
+      warnings.push(
+        `${entry.path} was written for another code reviewer. It is read as evidence about the repository: ` +
+          'its instructions to lower severity, skip paths or cap the number of comments are not applied, ' +
+          'and an exclusion still needs an approved policy.',
       );
     }
     for (const pattern of ADDRESSES_THE_REVIEWER) {

@@ -7,6 +7,7 @@ import { loadConfig } from '../policy/load.ts';
 import { repositoryRoot } from '../diff/acquire.ts';
 import { GIT_CHECK_TIMEOUT_MS, gitTimeoutMs, runGit } from '../git-exec.ts';
 import { GitHubClient } from '../github/client.ts';
+import { remoteRepository } from '../github/host.ts';
 import {
   partlyAddressedProblem,
   EVIDENCE_QUALITIES,
@@ -63,8 +64,8 @@ export function setInProcess(value: InProcess | null): void {
 }
 
 /** The read-only client every command builds, so an in-process run can inject its fetch. */
-export function githubClient(allowlist: string[]): GitHubClient {
-  return new GitHubClient({ allowlist, ...(inProcess?.fetchImpl === undefined ? {} : { fetchImpl: inProcess.fetchImpl }) });
+export function githubClient(allowlist: string[], allowGlobs = false): GitHubClient {
+  return new GitHubClient({ allowlist, allowGlobs, ...(inProcess?.fetchImpl === undefined ? {} : { fetchImpl: inProcess.fetchImpl }) });
 }
 
 export function readStdin(): string {
@@ -119,8 +120,7 @@ export function inferRepository(cwd: string): string | null {
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: gitTimeoutMs(GIT_CHECK_TIMEOUT_MS), killSignal: 'SIGKILL',
     }).trim();
-    const match = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url);
-    return match?.[1] ?? null;
+    return remoteRepository(url);
   } catch {
     return null;
   }
@@ -141,10 +141,11 @@ export function remoteRepositories(cwd: string): string[] {
   }
   const slugs: string[] = [];
   for (const line of out.split('\n')) {
-    const match = /^remote\.(.+)\.url\s+.*github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(line.trim());
-    if (match === null) continue;
-    if (match[1] === 'origin') slugs.unshift(match[2]!);
-    else slugs.push(match[2]!);
+    const match = /^remote\.(.+)\.url\s+(.*)$/.exec(line.trim());
+    const slug = match === null ? null : remoteRepository(match[2]!);
+    if (match === null || slug === null) continue;
+    if (match[1] === 'origin') slugs.unshift(slug);
+    else slugs.push(slug);
   }
   return slugs;
 }

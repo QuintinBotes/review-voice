@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { GIT_CHECK_TIMEOUT_MS, boundedGit } from '../git-exec.ts';
+import { apiBaseUrl, webHost } from './host.ts';
 
 export class AuthError extends Error {}
 
@@ -13,7 +14,9 @@ export function githubToken(env: NodeJS.ProcessEnv = process.env): string {
   if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
 
   try {
-    const token = execFileSync('gh', ['auth', 'token'], {
+    // `gh` holds one token per host; ask for the configured host's, never github.com's by default.
+    const host = webHost(apiBaseUrl(env));
+    const token = execFileSync('gh', host === 'github.com' ? ['auth', 'token'] : ['auth', 'token', '--hostname', host], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       ...boundedGit(GIT_CHECK_TIMEOUT_MS, 1024 * 1024),
