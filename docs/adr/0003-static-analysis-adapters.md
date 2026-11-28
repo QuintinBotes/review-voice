@@ -342,3 +342,7 @@ user's. Every process and System V IPC object a run leaves behind then belongs
 to that identity alone, so the CLI can list and remove them whole, which also
 closes the two System V IPC limits above. Until then `probeSandbox` keeps
 reporting macOS as `none`.
+
+### Local comparison reports
+
+A trusted producer can supply revision-bound comparisons to the evidence stage. The CLI checks their revisions and locations and imports leads under the existing verification and challenge rules. The [format and producer example](../COMPARISON-EVIDENCE.md) cover the supported reports.

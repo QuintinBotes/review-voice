@@ -240,7 +240,8 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   evidence: {
     summary: 'Run the configured static checks and emit structured signals',
     body: lines(
-      'review-voice evidence [--cwd <dir>]',
+      'review-voice evidence [--cwd <dir>] [--review-dir <dir>]',
+      '  --review-dir <dir>     Match REVIEW_VOICE_COMPARISON_REPORT to the commits and patch from diff --out.',
       '  Run the configured static checks and emit structured signals.',
       '  --cwd <dir>            Run the commands in <dir>; the driver passes the pull request\'s head worktree.',
       '                         The configuration still comes from this checkout or REVIEW_VOICE_CONFIG, never',

@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { GitError, repositoryRoot } from '../diff/acquire.ts';
 import { loadConfig } from '../policy/load.ts';
 import { collectEvidence, notRunReport } from '../evidence/run.ts';
+import { withComparisons } from '../evidence/comparisons.ts';
 import { flag } from './shared.ts';
 
 export async function evidenceCommand(argv: string[]): Promise<number> {
@@ -40,7 +41,10 @@ export async function evidenceCommand(argv: string[]): Promise<number> {
             envPassthrough: config.staticEvidence.envPassthrough,
           });
     const report = collected.enabled ? { ...collected, cwd } : collected;
-    console.log(JSON.stringify(report, null, 2));
+    const artifact = process.env['REVIEW_VOICE_COMPARISON_REPORT'];
+    const dir = flag(argv, '--review-dir');
+    const output = artifact && dir ? await withComparisons(report, artifact, dir, config.firstPartyPaths) : report;
+    console.log(JSON.stringify(output, null, 2));
     // A failing check is evidence, not an error in collecting it.
     return 0;
   } catch (error) {

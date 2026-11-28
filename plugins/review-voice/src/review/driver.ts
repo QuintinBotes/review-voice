@@ -1,3 +1,5 @@
+import { withComparisons } from '../evidence/comparisons.ts';
+import type { EvidenceReport } from '../evidence/types.ts';
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
@@ -453,12 +455,13 @@ async function prep(run: Run): Promise<void> {
   if (branch) writeJson(at(run, 'thread.json'), { repository, pullNumber: null, comments: [], reviews: [] });
   else await must(run, ['thread', ...pr, '--out', at(run, 'thread.json')]);
   writeFileSync(at(run, 'context.json'), (await must(run, ['context'])).stdout);
+  const comparison = (run.deps.env ?? process.env)['REVIEW_VOICE_COMPARISON_REPORT'];
+  const context = readJson(at(run, 'context.json'));
   if (noCommands(run)) {
     run.notes.push('REVIEW_VOICE_NO_COMMANDS=1, so the static evidence commands were not run.');
     // The `evidence` command is never called here, so the configured names come
     // from the context just written; a watcher-run review can then say which
     // checks it skipped instead of implying there were none.
-    const context = readJson(at(run, 'context.json'));
     const configured = isRecord(context) && isRecord(context['staticEvidence']) ? list(context['staticEvidence']['commands']) : [];
     writeJson(at(run, 'evidence.json'), {
       enabled: false,
@@ -476,11 +479,18 @@ async function prep(run: Run): Promise<void> {
     // clone stops here; otherwise it waits for the first agent as before. A
     // run that later carries an earlier one pays for the worktree too, since
     // the checks must read the head whether or not the review is new.
-    const context = readJson(at(run, 'context.json'));
     const staticEvidence = isRecord(context) && isRecord(context['staticEvidence']) ? context['staticEvidence'] : {};
     const willRun = staticEvidence['enabled'] === true && list(staticEvidence['commands']).length > 0;
     const where = willRun ? ['--cwd', prepareWorkspace(run)] : [];
     writeFileSync(at(run, 'evidence.json'), (await must(run, ['evidence', ...where])).stdout);
+  }
+  if (comparison) {
+    const path = at(run, 'evidence.json');
+    const overrides = isRecord(context) && Array.isArray(context.firstPartyPaths)
+      ? context.firstPartyPaths.filter((value): value is string => typeof value === 'string') : [];
+    const report = await withComparisons(readJson(path) as EvidenceReport, comparison, run.dir, overrides);
+    writeJson(path, report);
+    for (const note of report.comparison.notes) run.notes.push('Comparison evidence: ' + note);
   }
   // Conventions come from the base, the trusted side, as the configuration does
   // (issue 275). The caller's checkout may be the head, whose CLAUDE.md is part
