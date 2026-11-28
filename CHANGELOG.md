@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Action runs a review on credentials other than an Anthropic API key: a
+  Claude Code OAuth token (`claude-code-oauth-token`), or Amazon Bedrock,
+  Google Cloud's Agent Platform or Microsoft Foundry through the new `provider`
+  input, with the short-lived credentials the provider's own OIDC login step
+  exports. The gate skips with a reason naming what it looked for when the
+  chosen provider has no credential, as a fork run has none. The provider is
+  the input alone: the review step clears any other selection, passes no
+  Anthropic credential to a cloud provider, and fails a model the account
+  cannot use instead of switching models. A cloud provider's agents run with
+  `--bare`, as an API key's do. Defaults are unchanged (#544).
 - A maintainer can ask the Action for a review of a given pull request with a
   `workflow_dispatch` trigger and a `pr` input (and `full` for a full review),
   including a pull request from a fork, which its own event leaves unreviewed

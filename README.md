@@ -211,6 +211,10 @@ repository under review>`, the web host being `github.com`, `<host>` or
 | `verify`, `evidence` | only through the commands you configure | Review Voice sends nothing itself; the configured command receives the candidates or runs in the checkout. |
 | every other command | nothing | The local store, local git and files only. `reproduce` runs its command with no network, and `doctor` only runs `--version` on the tools it checks. |
 
+The model is `api.anthropic.com`, or in the Action with a cloud `provider`,
+that provider's host: `bedrock-runtime.<region>.amazonaws.com`,
+`aiplatform.googleapis.com` (or its regional host) or
+`<resource>.services.ai.azure.com` (see [docs/ACTION.md](docs/ACTION.md#credentials)).
 The agents' process gets no `GITHUB_TOKEN`, `GH_TOKEN` or `REVIEW_VOICE_*`
 variable. The only GitHub writes are `post` (including `review --post` and
 `watch --post`) and `reply`, both behind `writes.github_posting_enabled`.

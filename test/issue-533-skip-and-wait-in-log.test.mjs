@@ -32,7 +32,7 @@ test('#533: an empty key, as a fork pull request sees it, is a skip the log name
   const result = runGate(t, { EVENT_NAME: 'pull_request', API_KEY: '' });
   assert.equal(result.status, 0);
   assert.match(result.output, /^skip=true$/m);
-  const line = 'Review Voice skipped: no Anthropic API key is available (fork pull requests receive no secrets).';
+  const line = 'Review Voice skipped: no Anthropic API key or Claude Code OAuth token is available (fork pull requests receive no secrets).';
   assert.equal(result.stdout.trim(), line);
   assert.equal(result.summary.trim(), line);
 });
