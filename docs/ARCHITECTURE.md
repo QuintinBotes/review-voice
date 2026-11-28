@@ -1186,6 +1186,20 @@ a recent start is not yet evidence of anything.
 `CONTRIBUTING.md` and `.claude/skills/*/SKILL.md`, and both the analyst and the
 verifier receive them.
 
+It also collects the rule files a repository keeps for another reviewer:
+`REVIEW.md` at the root and nested (Claude Code Review),
+`.github/copilot-instructions.md` and `.github/instructions/*.instructions.md`
+(GitHub Copilot), `.cursor/BUGBOT.md` at the root and nested, `.cursor/rules/`
+and `.cursorrules` (Cursor). A team that runs two reviewers, or moves from one,
+should not have to copy its rules into a second file. A nested `REVIEW.md` or
+`BUGBOT.md` is directory-scoped like a nested `CLAUDE.md`. A Copilot or Cursor
+rule whose `applyTo` or `globs` match no changed path is listed under
+`skipped` rather than offered, because the tool it was written for would not
+apply it either, unless it says `alwaysApply: true`. These files stay evidence.
+Their instructions to lower severity, exclude paths or cap counts are not
+applied, an exclusion still needs an approved policy (ADR 0032), and the
+`warnings` say so for each one returned.
+
 Precedent cannot reach this. Retrieval learns what the owner values from the
 comments they wrote, and the better a convention is observed the fewer comments
 it generates, so the rules a team has genuinely internalised leave the least
@@ -2011,3 +2025,18 @@ The authoritative inputs are the owner-approved policy and the plugin's own
 prompts. Nothing else.
 
 See [THREAT-MODEL.md](THREAT-MODEL.md).
+
+### Optional symbol and history evidence
+
+Set `REVIEW_VOICE_CO_CHANGE=1` to look for historical companions in up to 120 local non-merge commits reachable from the review base. Commits touching over 20 paths are excluded. Pairs need at least three joint commits and half the changed path’s eligible commits. The report records both counts, the actual window, shallow history, and elapsed time. A rename starts a new pathname history. The collector reads no author identities or commit messages. Use a full base SHA with the standalone symbols command.
+
+Set `REVIEW_VOICE_SCIP_INDEX` to an absolute path to a trusted local JSON envelope containing the index exported by `scip print --json index.scip`. Create it in the producer checkout at indexing time. In the following example `repository` is the reviewed GitHub slug and `root_uri` is the producer repository’s absolute file URI.
+
+```sh
+scip print --json index.scip > scip.json
+jq -n --arg repository "$repository" --arg revision "$(git rev-parse HEAD)" \
+  --arg repositoryRoot "$root_uri" --slurpfile index scip.json \
+  '{repository:$repository,revision:$revision,repositoryRoot:$repositoryRoot,index:$index[0]}' > context.json
+```
+
+The local review needs only the envelope. The CLI checks the repository and revision against the review, maps an indexed subproject back to its repository-relative path and joins occurrence identities on changed definition lines. For standalone use, pass `symbols --repository owner/repo --base <sha> --head <sha>`; pass `--scip-head-only` for incremental patches whose old side differs from the PR base. The report retains lexical context, names its indexed side, and bounds input to 16 MiB, 100 changed definitions, 20 references per definition and the remaining symbol time budget. Missing and partial indexes provide no evidence of absent callers. Neither context source changes computed reach.

@@ -107,3 +107,16 @@ counts the replied findings, and `replied_fixed_rate` is fixed over fixed or
 dismissed among them, strong outcomes only. Both are `no data` with none. Calibration reads
 feedback and outcomes, never audit rows, so a reply is not a policy signal by
 itself. The watcher never replies.
+
+## Amendment - 2026-11-28 (reviewer findings, #550)
+
+The same rules now follow a human reviewer's inline comment made after a run,
+on the head it reviewed and a file it read, by the owner or a login in
+`identity.reviewers` and never a bot. `outcomes` reads them from the comment
+list and thread states it already reads, classes each against the run as
+`also_posted`, `held`, `rejected` or `never_raised`, and stores it in a
+`reviewer_findings` table with the same replace-on-recheck rule. A strong
+`fixed` the run did not post is a defect it missed, and `evaluate` reports
+`reviewer_findings_missed` and `online_recall`, never as a gate. A weak outcome
+counts for nothing, and the rows are not calibration evidence. Nothing is
+written to GitHub.

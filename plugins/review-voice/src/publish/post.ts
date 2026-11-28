@@ -575,7 +575,10 @@ export async function computeVerdict(
   const run = recordedRun(options, head);
   if (typeof run === 'string') return refusal(head, run);
 
-  const policy = verdictPolicy(options.policy);
+  // The Action never approves (#554): its token may not, by GitHub's default, and an
+  // approval from a workflow is no person's. Its approval posts as a COMMENT with the findings.
+  const fromAction = run.provenance?.origin === 'action';
+  const policy = verdictPolicy(fromAction ? { ...options.policy, neverApprove: true } : options.policy);
   const planned = planFindings(options.review, run, (id) => runDetail(options.db, id), policy.minPostedTier);
 
   const actual = await readHead(options.client, options.repository, options.pullNumber);
