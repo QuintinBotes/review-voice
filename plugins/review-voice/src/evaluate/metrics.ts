@@ -5,7 +5,7 @@ import { countWords } from '../contract/words.ts';
 import { splitFindings, parseFinding } from '../contract/parse.ts';
 import { hashDiff, storedFamilies } from '../store/runs.ts';
 import { FAMILIES } from '../agents/types.ts';
-import { postedBreakdown, postedStats, precisionBreakdown, replyStats, type PostedStats, type PrecisionStats } from '../store/outcomes.ts';
+import { missedStats, postedBreakdown, postedStats, precisionBreakdown, replyStats, type PostedStats, type PrecisionStats } from '../store/outcomes.ts';
 import { approvalBasis, approvalBreakdown, approvalStats, type ApprovalStats } from '../store/approvals.ts';
 import { activeSuppressions } from '../policy/versions.ts';
 import { POLICY_SUPPRESSED_PREFIX } from '../scoring/score.ts';
@@ -487,6 +487,8 @@ export interface EvaluationReport {
     by_independence: Record<string, ApprovalStats>;
     by_origin: Record<string, ApprovalStats>;
   };
+  /** Fixed reviewer comments the run did not post (#550), by class and by the lane of the candidate there. */
+  missed_breakdown: { by_class: Record<string, number>; by_lane: Record<string, number> };
 }
 
 /** The caller passes `metrics` so the recall figures ride along when `--recall` is given. */
@@ -494,6 +496,7 @@ export function evaluationReport(db: Database, metrics: Metric[], options: Compu
   const { bySeverity, byLane, byRule, byEvidenceBlock } = postedBreakdown(db);
   const precision = precisionBreakdown(db);
   const approvals = approvalBreakdown(db);
+  const missed = missedStats(db);
   return {
     generated_at: (options.now ?? (() => new Date()))().toISOString(),
     window_days: options.windowDays ?? DEFAULT_WINDOW_DAYS,
@@ -509,6 +512,7 @@ export function evaluationReport(db: Database, metrics: Metric[], options: Compu
       by_independence: approvals.byIndependence,
       by_origin: approvals.byOrigin,
     },
+    missed_breakdown: { by_class: missed.byClass, by_lane: missed.byLane },
   };
 }
 
@@ -624,6 +628,9 @@ export function computeMetrics(db: Database, options: ComputeOptions = {}): Metr
   const recentDecided = recent.fixed + recent.dismissed;
   const replies = replyStats(db);
   const approvals = approvalStats(db);
+  const missed = missedStats(db);
+  const missedBy = Object.entries(missed.byClass).map(([name, n]) => `${n} ${name}`).join(', ');
+  const found = posted.fixed + missed.missed;
 
   const metric = (
     name: string,
@@ -839,6 +846,25 @@ export function computeMetrics(db: Database, options: ComputeOptions = {}): Metr
       'goal',
     ),
     metric('approval_escape_rate', approvals.rate, 'no target', () => true, approvalBasis(approvals), 'goal'),
+    // What a listed reviewer raised after a run, on lines it read, that the
+    // author fixed and the run did not post (#550). A human comment is not
+    // ground truth, so it is reported, never scored.
+    metric(
+      'reviewer_findings_missed',
+      missed.tracked === 0 ? null : missed.missed,
+      'no target',
+      () => true,
+      `${missed.missed} fixed reviewer comment(s) not posted${missedBy === '' ? '' : ` (${missedBy})`} of ${missed.tracked} followed; strong fixes only; run \`review-voice outcomes\` to check`,
+      'goal',
+    ),
+    metric(
+      'online_recall',
+      missed.tracked === 0 || found === 0 ? null : posted.fixed / found,
+      'no target',
+      () => true,
+      `${posted.fixed} posted and fixed / (${posted.fixed} + ${missed.missed} fixed reviewer comment(s) not posted); strong fixes only, a proxy and not ground truth`,
+      'goal',
+    ),
   ];
 }
 

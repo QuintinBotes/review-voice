@@ -2331,6 +2331,30 @@ var MIGRATIONS = [
     evidence_json TEXT NOT NULL,
     checked_at TEXT NOT NULL
   );
+  `,
+  // v15 - a human reviewer's inline comment after a run, and what the run did there (#550).
+  //
+  // One row per run and comment, replaced by a newer check, as finding_outcomes
+  // is. The outcome is the comment's, read with the same rules; a strong `fixed`
+  // the run did not post is a defect it missed.
+  `
+  CREATE TABLE IF NOT EXISTS reviewer_findings (
+    review_run_id TEXT NOT NULL,
+    comment_id INTEGER NOT NULL,
+    repository TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    author TEXT NOT NULL,
+    path TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    class TEXT NOT NULL,
+    stage TEXT,
+    lane TEXT,
+    outcome TEXT NOT NULL,
+    strength TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (review_run_id, comment_id)
+  );
   `
 ];
 function migrate(db) {
@@ -15344,10 +15368,10 @@ function linuxSetup(layout) {
     const stat = statSync(path, { throwIfNoEntry: false });
     return stat === void 0 ? null : stat.isDirectory() ? "dir" : "file";
   };
-  const covers = [];
+  const covers2 = [];
   for (const path of [...layout.hiddenDirs, ...layout.hiddenFiles].sort((a, b) => a.length - b.length)) {
     const found2 = kind(path);
-    if (found2 !== null && !covers.some((cover) => cover.dir && inside(path, cover.path))) covers.push({ path, dir: found2 === "dir" });
+    if (found2 !== null && !covers2.some((cover) => cover.dir && inside(path, cover.path))) covers2.push({ path, dir: found2 === "dir" });
   }
   const lines2 = [
     "set -e",
@@ -15359,7 +15383,7 @@ function linuxSetup(layout) {
     `mount --rbind / ${q(root)}`,
     `while read -r _ _ _ _ p o _; do p=$(printf '%b' "$p"); case "$p" in ${q(root)}|${q(root)}/*) o=\${o#rw}; o=\${o#ro}; mount -o "remount,bind,ro$o" "$p" ;; esac; done < /proc/self/mountinfo`
   ];
-  for (const cover of covers) {
+  for (const cover of covers2) {
     if (!cover.dir) {
       lines2.push(`mount --bind /dev/null ${at2(cover.path)}`);
       continue;
@@ -15892,6 +15916,652 @@ function unixLines(text5) {
   return text5.split("\n").map((line3) => line3.endsWith("\r") ? line3.slice(0, -1) : line3).join("\n");
 }
 
+// plugins/review-voice/src/evaluate/metrics.ts
+function formatMetricValue(metric) {
+  if (metric.value === null) return "no data";
+  return Number.isInteger(metric.value) && metric.name.endsWith("_tracked") ? String(metric.value) : metric.value.toFixed(2);
+}
+function metricMark(metric) {
+  if (metric.meets === null || metric.target === "no target") return "-";
+  if (metric.meets) return "ok";
+  return metric.kind === "goal" ? "over" : "FAIL";
+}
+function metricTarget(metric) {
+  if (metric.target === "no target") return "reported, not scored";
+  return `${metric.kind === "goal" ? "goal" : "target"} ${metric.target}`;
+}
+function percentile(values, p2) {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.floor(p2 / 100 * sorted.length));
+  return sorted[index] ?? null;
+}
+function median(values) {
+  return percentile(values, 50);
+}
+var DEFAULT_WINDOW_DAYS = 30;
+var DISMISSED_RATE_WARNING_THRESHOLD = 0.2;
+var DISMISSED_RATE_WARNING_MIN_STRONG = 10;
+function dismissedRateWarning(input) {
+  const { dismissed, strong, windowDays } = input;
+  if (strong < DISMISSED_RATE_WARNING_MIN_STRONG) return null;
+  const rate2 = dismissed / strong;
+  if (!(rate2 > DISMISSED_RATE_WARNING_THRESHOLD)) return null;
+  return `Warning: ${dismissed} of ${strong} posted findings in the last ${windowDays} days were dismissed (${(rate2 * 100).toFixed(0)}%); run \`review-voice explain\` on the dismissed ones and consider /review-voice:feedback.`;
+}
+function windowStart(days, now = () => /* @__PURE__ */ new Date()) {
+  return new Date(now().getTime() - days * 864e5).toISOString();
+}
+function parseStages(raw) {
+  if (raw === null) return [];
+  let parsed2;
+  try {
+    parsed2 = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed2)) return null;
+  return parsed2.map((stage) => {
+    const record3 = typeof stage === "object" && stage !== null ? stage : {};
+    const seconds = record3["seconds"];
+    const cost = record3["costUsd"];
+    return {
+      name: typeof record3["name"] === "string" ? record3["name"] : null,
+      seconds: typeof seconds === "number" && Number.isFinite(seconds) ? seconds : null,
+      cost: typeof cost === "number" && Number.isFinite(cost) ? cost : null
+    };
+  });
+}
+function storedStages(db) {
+  const rows = db.prepare("SELECT stages_json FROM review_runs").all();
+  return rows.map((row) => parseStages(row.stages_json));
+}
+function stageSeconds(db) {
+  const byName = /* @__PURE__ */ new Map();
+  for (const stages of storedStages(db)) {
+    if (stages === null) continue;
+    const inRun = /* @__PURE__ */ new Map();
+    for (const stage of stages) {
+      if (stage.name === null) continue;
+      const before = inRun.get(stage.name);
+      inRun.set(stage.name, stage.seconds === null || before === null ? null : (before ?? 0) + stage.seconds);
+    }
+    for (const [name, total] of inRun) {
+      if (total !== null && total <= 0) continue;
+      const entry = byName.get(name) ?? { values: [], unmeasured: 0 };
+      if (total === null) entry.unmeasured += 1;
+      else entry.values.push(total);
+      byName.set(name, entry);
+    }
+  }
+  return Object.fromEntries(
+    [...byName.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, { values, unmeasured }]) => [name, { median: median(values), p95: percentile(values, 95), runs: values.length, unmeasured }])
+  );
+}
+function runCosts(db) {
+  const costs = [];
+  let excluded = 0;
+  for (const stages of storedStages(db)) {
+    if (stages === null || stages.length === 0 || stages.some((stage) => stage.cost === null)) {
+      excluded += 1;
+      continue;
+    }
+    costs.push(stages.reduce((sum, stage) => sum + stage.cost, 0));
+  }
+  return { costs, excluded };
+}
+function challengeCounts(db) {
+  const rows = db.prepare("SELECT output_json FROM review_runs").all();
+  let held = 0;
+  let judged = 0;
+  let runs = 0;
+  for (const row of rows) {
+    const counts = challengeOf(row.output_json);
+    if (counts.judged === 0) continue;
+    held += counts.held;
+    judged += counts.judged;
+    runs += 1;
+  }
+  return { held, judged, runs };
+}
+function challengeOf(outputJson) {
+  let scores;
+  try {
+    scores = JSON.parse(outputJson)?.scores;
+  } catch {
+    return { held: 0, judged: 0 };
+  }
+  let held = 0;
+  let judged = 0;
+  for (const entry of Array.isArray(scores) ? scores : []) {
+    if (typeof entry !== "object" || entry === null || !Object.hasOwn(entry, "challenge")) continue;
+    judged += 1;
+    const { gate, rejectedBecause: because } = entry;
+    if (typeof gate === "string" ? gate.startsWith("challenge-") : typeof because === "string" && because.startsWith("challenge-")) held += 1;
+  }
+  return { held, judged };
+}
+function byFamily(db) {
+  const rows = db.prepare("SELECT review_run_id, output_json, provenance_json FROM review_runs").all();
+  const second = /* @__PURE__ */ new Map();
+  const challenge2 = /* @__PURE__ */ new Map();
+  let without = 0;
+  const entries = (value) => Array.isArray(value) ? value.filter((entry) => typeof entry === "object" && entry !== null) : [];
+  for (const row of rows) {
+    const families = storedFamilies(row.provenance_json, row.review_run_id);
+    if (families === null) {
+      without += 1;
+      continue;
+    }
+    if (families.secondPass !== null) {
+      let output = {};
+      try {
+        output = JSON.parse(row.output_json) ?? {};
+      } catch {
+      }
+      const verdicts = entries(output.verdicts);
+      const sum = second.get(families.secondPass) ?? { verdicts: 0, dropped: 0, downgraded: 0, tie_breaks: 0, runs: 0 };
+      sum.verdicts += verdicts.length;
+      sum.dropped += verdicts.filter((verdict2) => verdict2["outcome"] === "dropped").length;
+      sum.downgraded += verdicts.filter((verdict2) => verdict2["outcome"] === "downgraded").length;
+      sum.tie_breaks += entries(output.tieBreaks).filter((ruling) => ruling["applied"] === true).length;
+      sum.runs += 1;
+      second.set(families.secondPass, sum);
+    }
+    if (families.challenge !== null) {
+      const counts = challengeOf(row.output_json);
+      if (counts.judged > 0) {
+        const sum = challenge2.get(families.challenge) ?? { judged: 0, held: 0, runs: 0 };
+        sum.judged += counts.judged;
+        sum.held += counts.held;
+        sum.runs += 1;
+        challenge2.set(families.challenge, sum);
+      }
+    }
+  }
+  const rate2 = (count4, over) => over === 0 ? null : count4 / over;
+  const listed = [...FAMILIES, "unknown"].filter((name) => second.has(name) || challenge2.has(name));
+  return {
+    families: Object.fromEntries(
+      listed.map((name) => {
+        const pass = second.get(name);
+        const judged = challenge2.get(name);
+        const figures = {
+          second_pass: pass === void 0 ? null : {
+            ...pass,
+            drop_rate: rate2(pass.dropped, pass.verdicts),
+            downgrade_rate: rate2(pass.downgraded, pass.verdicts),
+            tie_break_rate: rate2(pass.tie_breaks, pass.verdicts)
+          },
+          challenge: judged === void 0 ? null : { ...judged, hold_rate: rate2(judged.held, judged.judged) }
+        };
+        return [name, figures];
+      })
+    ),
+    runs_without_families: without
+  };
+}
+function describeByFamily(figures) {
+  const names = Object.keys(figures.families);
+  const before = figures.runs_without_families > 0 ? ` (${figures.runs_without_families} run(s) recorded before families were stored)` : "";
+  if (names.length === 0) return [`by family  no data${before}`];
+  const fixed = (value) => value === null ? "no data" : value.toFixed(2);
+  return [
+    `by family${before}`,
+    ...names.map((name) => {
+      const { second_pass: pass, challenge: challenge2 } = figures.families[name];
+      const second = pass === null ? "second pass no data" : `second pass ${pass.verdicts} verdicts, drop ${fixed(pass.drop_rate)}, downgrade ${fixed(pass.downgrade_rate)}, tie-break ${fixed(pass.tie_break_rate)}, ${pass.runs} run(s)`;
+      const challenged = challenge2 === null ? "challenge no data" : `challenge ${challenge2.judged} judged, hold ${fixed(challenge2.hold_rate)}, ${challenge2.runs} run(s)`;
+      return `  ${name.padEnd(8)}${second}; ${challenged}`;
+    })
+  ];
+}
+function ruleEffectiveness(db) {
+  const byRule = /* @__PURE__ */ new Map();
+  for (const suppression of activeSuppressions(db)) {
+    byRule.set(suppression.ruleId, [...byRule.get(suppression.ruleId) ?? [], suppression]);
+  }
+  return [...byRule.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([ruleId, list3]) => {
+    const suppressions = list3.map((s) => ({ glob: s.glob, policy_version: s.policyVersion }));
+    const approvedAt = list3.map((s) => s.approvedAt).filter((at2) => at2 !== null).sort()[0] ?? null;
+    if (approvedAt === null) {
+      return {
+        rule_id: ruleId,
+        suppressions,
+        approved_at: null,
+        held: null,
+        runs: null,
+        posted: null,
+        feedback: null,
+        basis: `no approval time recorded for policy version ${list3[0]?.policyVersion ?? "unknown"}; nothing counted`
+      };
+    }
+    const rows = db.prepare("SELECT output_json FROM review_runs WHERE created_at >= ?").all(approvedAt);
+    let held = 0;
+    let runs = 0;
+    for (const row of rows) {
+      let scores;
+      try {
+        scores = JSON.parse(row.output_json)?.scores;
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(scores)) continue;
+      runs += 1;
+      held += scores.filter((entry) => entry?.rejectedBecause === `${POLICY_SUPPRESSED_PREFIX}${ruleId}`).length;
+    }
+    const posted = postedBreakdown(db, { since: approvedAt }).byRule;
+    const feedback = precisionBreakdown(db, { since: approvedAt }).byRule;
+    const postedStats2 = Object.hasOwn(posted, ruleId) ? posted[ruleId] ?? null : null;
+    return {
+      rule_id: ruleId,
+      suppressions,
+      approved_at: approvedAt,
+      // A count over no run is no data, not zero.
+      held: runs === 0 ? null : held,
+      runs,
+      // Weak outcomes alone measure nothing, and their fixed and dismissed would read as measured zeros.
+      posted: postedStats2 !== null && postedStats2.fixed + postedStats2.dismissed > 0 ? postedStats2 : null,
+      feedback: Object.hasOwn(feedback, ruleId) ? feedback[ruleId] ?? null : null,
+      basis: runs === 0 ? `no run recorded since ${approvedAt}` : `${held} held in ${runs} run(s) since ${approvedAt}; posted outcomes count strong ones only`
+    };
+  });
+}
+function evaluationReport(db, metrics, options = {}) {
+  const { bySeverity, byLane, byRule, byEvidenceBlock } = postedBreakdown(db);
+  const precision = precisionBreakdown(db);
+  const approvals = approvalBreakdown(db);
+  const missed = missedStats(db);
+  return {
+    generated_at: (options.now ?? (() => /* @__PURE__ */ new Date()))().toISOString(),
+    window_days: options.windowDays ?? DEFAULT_WINDOW_DAYS,
+    metrics,
+    posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule, by_evidence_block: byEvidenceBlock },
+    precision_breakdown: { by_lane: precision.byLane, by_rule: precision.byRule },
+    stage_seconds: stageSeconds(db),
+    rule_effectiveness: ruleEffectiveness(db),
+    by_family: byFamily(db),
+    approval_breakdown: {
+      by_mode: approvals.byMode,
+      by_complexity: approvals.byComplexity,
+      by_independence: approvals.byIndependence,
+      by_origin: approvals.byOrigin
+    },
+    missed_breakdown: { by_class: missed.byClass, by_lane: missed.byLane }
+  };
+}
+function reproductionCounts(db) {
+  const rows = db.prepare("SELECT output_json FROM review_runs").all();
+  const counts = { held: 0, completed: 0, didNotRun: 0, runs: 0 };
+  for (const row of rows) {
+    let parsed2;
+    try {
+      parsed2 = JSON.parse(row.output_json);
+    } catch {
+      continue;
+    }
+    const records = Array.isArray(parsed2?.reproductions) ? parsed2.reproductions : [];
+    if (records.length === 0) continue;
+    counts.runs += 1;
+    const outcome = (entry) => typeof entry === "object" && entry !== null ? entry.outcome : void 0;
+    counts.completed += records.filter((entry) => outcome(entry) === "reproduced" || outcome(entry) === "did-not-fail").length;
+    counts.didNotRun += records.filter((entry) => outcome(entry) === "did-not-run").length;
+    counts.held += records.filter((entry) => outcome(entry) === "did-not-fail" && entry.held === true).length;
+  }
+  return counts;
+}
+function computeMetrics(db, options = {}) {
+  const runs = db.prepare("SELECT output_json FROM review_runs").all();
+  const windowDays = options.windowDays ?? DEFAULT_WINDOW_DAYS;
+  const runSeconds = [];
+  let untimed = 0;
+  for (const stages of storedStages(db)) {
+    if (stages === null) continue;
+    const total = stages.reduce((sum, stage) => sum === null || stage.seconds === null ? null : sum + stage.seconds, 0);
+    if (total === null) untimed += 1;
+    else if (total > 0) runSeconds.push(total);
+  }
+  const secondsBasis = runSeconds.length === 0 && untimed === 0 ? "no run has recorded stage timings; pass `record --stages`" : `${runSeconds.length} run(s) with recorded stages${untimed === 0 ? "" : `, ${untimed} excluded (a stage not measured)`}`;
+  const { costs, excluded: uncosted } = runCosts(db);
+  const costBasis = `${costs.length} costed run(s), ${uncosted} excluded (no cost recorded)`;
+  const challenge2 = challengeCounts(db);
+  const reproduction = reproductionCounts(db);
+  const agreement = candidateSetAgreement(db);
+  const findingsPerRun = [];
+  const wordsPerFinding = [];
+  let compliantOutputs = 0;
+  let noFindingsRuns = 0;
+  let exactNoFindings = 0;
+  for (const run of runs) {
+    let output = "";
+    try {
+      output = JSON.parse(run.output_json).output ?? "";
+    } catch {
+      continue;
+    }
+    const parsed2 = splitFindings(output).map((block) => parseFinding(block.raw, block.startLine));
+    findingsPerRun.push(parsed2.length);
+    for (const finding of parsed2) {
+      if (finding.prose.length > 0) wordsPerFinding.push(countWords(finding.prose));
+    }
+    if (validateOutput(output).valid) compliantOutputs += 1;
+    if (parsed2.length === 0) {
+      noFindingsRuns += 1;
+      if (output.trim() === DEFAULT_LIMITS.noFindingsResponse) exactNoFindings += 1;
+    }
+  }
+  const feedback = db.prepare("SELECT action, COUNT(*) AS n FROM feedback GROUP BY action").all();
+  const by = Object.fromEntries(feedback.map((row) => [row.action, row.n]));
+  const kept = (by["keep"] ?? 0) + (by["rewrite"] ?? 0);
+  const dismissed = by["dismiss"] ?? 0;
+  const labelled = kept + dismissed;
+  const ratio2 = (numerator, denominator) => denominator === 0 ? null : numerator / denominator;
+  const posted = postedStats(db);
+  const recent = postedStats(db, { since: windowStart(windowDays, options.now) });
+  const recentDecided = recent.fixed + recent.dismissed;
+  const replies = replyStats(db);
+  const approvals = approvalStats(db);
+  const missed = missedStats(db);
+  const missedBy = Object.entries(missed.byClass).map(([name, n]) => `${n} ${name}`).join(", ");
+  const found2 = posted.fixed + missed.missed;
+  const metric = (name, value, target, meets, basis, kind = "gate") => ({
+    name,
+    value,
+    target,
+    meets: value === null ? null : meets(value),
+    basis,
+    kind
+  });
+  return [
+    metric(
+      "owner_accepted_precision",
+      ratio2(kept, labelled),
+      ">= 0.80",
+      (v) => v >= 0.8,
+      // Unlabelled findings are excluded: counting silence as a dismissal
+      // would make the reviewer look worse the quieter its user is.
+      `(${kept} kept or rewritten) / (${labelled} labelled); unlabelled excluded`
+    ),
+    // Counts are a property of the pull requests reviewed, not of the
+    // reviewer. Since the output contract stopped capping findings, a run that
+    // correctly reports nine defects in a large diff was failing a target that
+    // asked it to report two.
+    metric(
+      "median_review_seconds",
+      median(runSeconds),
+      "no target",
+      () => true,
+      secondsBasis,
+      "goal"
+    ),
+    metric(
+      "p95_review_seconds",
+      percentile(runSeconds, 95),
+      "no target",
+      () => true,
+      secondsBasis,
+      "goal"
+    ),
+    metric(
+      "median_review_cost_usd",
+      median(costs),
+      "no target",
+      () => true,
+      costBasis,
+      "goal"
+    ),
+    metric(
+      "p95_review_cost_usd",
+      percentile(costs, 95),
+      "no target",
+      () => true,
+      costBasis,
+      "goal"
+    ),
+    metric(
+      "challenge_hold_rate",
+      challenge2.judged === 0 ? null : challenge2.held / challenge2.judged,
+      "no target",
+      () => true,
+      `${challenge2.held} held / ${challenge2.judged} judged over ${challenge2.runs} run(s)`,
+      "goal"
+    ),
+    // How often a reproduction removed a finding that would otherwise have
+    // posted. Not recall, since a did-not-run says nothing either way.
+    metric(
+      "reproduction_hold_rate",
+      reproduction.completed === 0 ? null : reproduction.held / reproduction.completed,
+      "no target",
+      () => true,
+      `${reproduction.held} held / ${reproduction.completed} completed, ${reproduction.didNotRun} did not run, over ${reproduction.runs} run(s)`,
+      "goal"
+    ),
+    metric(
+      "median_findings_per_review",
+      median(findingsPerRun),
+      "no target",
+      () => true,
+      `${runs.length} runs; a count reflects the diff, not the reviewer`,
+      "goal"
+    ),
+    metric(
+      "p95_findings_per_review",
+      percentile(findingsPerRun, 95),
+      "no target",
+      () => true,
+      `${runs.length} runs; a count reflects the diff, not the reviewer`,
+      "goal"
+    ),
+    metric(
+      "median_words_per_finding",
+      median(wordsPerFinding),
+      "<= 28",
+      (v) => v <= 28,
+      `${wordsPerFinding.length} findings; the contract ceiling is 40, this is the brevity to aim for`,
+      "goal"
+    ),
+    metric(
+      "p95_words_per_finding",
+      percentile(wordsPerFinding, 95),
+      "<= 40",
+      (v) => v <= 40,
+      `${wordsPerFinding.length} findings; this is the contract ceiling the validator enforces`
+    ),
+    // The variance nobody was tracking. Severity stability was measured for
+    // three releases while which findings exist at all was not, and on one
+    // pull request reviewed twice the two runs agreed on two candidates of
+    // eight. For a reviewer that is the more consequential variance: a single
+    // run is a sample, not the answer.
+    metric(
+      "candidate_set_agreement",
+      agreement.value,
+      "no target",
+      () => true,
+      agreement.basis,
+      "goal"
+    ),
+    metric(
+      "contract_compliance",
+      ratio2(compliantOutputs, runs.length),
+      "= 1.00",
+      (v) => v >= 1,
+      `${compliantOutputs}/${runs.length} recorded outputs pass validate-output`
+    ),
+    metric(
+      "exact_no_findings_compliance",
+      ratio2(exactNoFindings, noFindingsRuns),
+      "= 1.00",
+      (v) => v >= 1,
+      `${exactNoFindings}/${noFindingsRuns} empty reviews used the exact string`
+    ),
+    // What GitHub shows happened to the comments this tool posted (docs/adr/0029).
+    // Rates count strong outcomes only, so an unanswered comment is neither
+    // fixed nor dismissed, and are reported rather than gated.
+    metric(
+      "posted_findings_tracked",
+      posted.tracked === 0 ? null : posted.tracked,
+      "no target",
+      () => true,
+      "posted findings with any recorded outcome; run `review-voice outcomes` to check",
+      "goal"
+    ),
+    metric(
+      "posted_fixed_rate",
+      posted.fixedRate,
+      "no target",
+      () => true,
+      `${posted.fixed} fixed / (${posted.fixed + posted.dismissed} fixed or dismissed); weak outcomes excluded`,
+      "goal"
+    ),
+    metric(
+      "posted_dismissed_rate",
+      posted.dismissedRate,
+      "no target",
+      () => true,
+      `${posted.dismissed} dismissed / (${posted.fixed + posted.dismissed} fixed or dismissed); weak outcomes excluded`,
+      "goal"
+    ),
+    // The same rates over a rolling window, so a change to the reviewer shows
+    // up before the all-time figure moves. The window is by the run's creation
+    // time, which is when the finding was posted.
+    metric(
+      "posted_fixed_rate_recent",
+      recent.fixedRate,
+      "no target",
+      () => true,
+      `${recent.fixed} fixed / ${recentDecided} fixed or dismissed from runs created in the last ${windowDays} days; weak outcomes excluded`,
+      "goal"
+    ),
+    metric(
+      "posted_dismissed_rate_recent",
+      recent.dismissedRate,
+      "no target",
+      () => true,
+      `${recent.dismissed} dismissed / ${recentDecided} fixed or dismissed from runs created in the last ${windowDays} days; weak outcomes excluded`,
+      "goal"
+    ),
+    // The one reply per thread (docs/adr/0035), and what the author did after it.
+    metric(
+      "posted_replies",
+      replies.replied === 0 ? null : replies.replied,
+      "no target",
+      () => true,
+      "findings this tool replied under once; run `review-voice reply --pr N` to answer a pending question",
+      "goal"
+    ),
+    metric(
+      "replied_fixed_rate",
+      replies.fixedRate,
+      "no target",
+      () => true,
+      `${replies.fixed} fixed / (${replies.fixed + replies.dismissed} fixed or dismissed) of ${replies.replied} replied finding(s); weak outcomes excluded`,
+      "goal"
+    ),
+    // What became of the approvals this tool sent (docs/adr/0036). Settled
+    // means strong: a revert or a request for changes against a merge that
+    // outlived the window. Pending and weak rows are counted and left out, so a
+    // merge the window has not closed on is never a survival.
+    metric(
+      "approvals_tracked",
+      approvals.tracked === 0 ? null : approvals.tracked,
+      "no target",
+      () => true,
+      "sent approvals with a recorded outcome; run `review-voice outcomes --approvals` to check",
+      "goal"
+    ),
+    metric("approval_escape_rate", approvals.rate, "no target", () => true, approvalBasis(approvals), "goal"),
+    // What a listed reviewer raised after a run, on lines it read, that the
+    // author fixed and the run did not post (#550). A human comment is not
+    // ground truth, so it is reported, never scored.
+    metric(
+      "reviewer_findings_missed",
+      missed.tracked === 0 ? null : missed.missed,
+      "no target",
+      () => true,
+      `${missed.missed} fixed reviewer comment(s) not posted${missedBy === "" ? "" : ` (${missedBy})`} of ${missed.tracked} followed; strong fixes only; run \`review-voice outcomes\` to check`,
+      "goal"
+    ),
+    metric(
+      "online_recall",
+      missed.tracked === 0 || found2 === 0 ? null : posted.fixed / found2,
+      "no target",
+      () => true,
+      `${posted.fixed} posted and fixed / (${posted.fixed} + ${missed.missed} fixed reviewer comment(s) not posted); strong fixes only, a proxy and not ground truth`,
+      "goal"
+    )
+  ];
+}
+var AGREEMENT_LINE_TOLERANCE = 3;
+function sharedLocations(a, b) {
+  const taken = /* @__PURE__ */ new Set();
+  let shared = 0;
+  for (const left of a) {
+    for (let i = 0; i < b.length; i += 1) {
+      if (taken.has(i)) continue;
+      const right = b[i];
+      if (right.path !== left.path) continue;
+      const near = left.line === null || right.line === null ? left.line === right.line : Math.abs(left.line - right.line) <= AGREEMENT_LINE_TOLERANCE;
+      if (!near) continue;
+      taken.add(i);
+      shared += 1;
+      break;
+    }
+  }
+  return shared;
+}
+function candidateSetAgreement(db) {
+  const EMPTY_DIFF = hashDiff("");
+  const rows = db.prepare("SELECT diff_hash, candidates_json FROM review_runs WHERE diff_hash IS NOT NULL AND diff_hash != ?").all(EMPTY_DIFF);
+  const byDiff = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    let parsed2;
+    try {
+      parsed2 = JSON.parse(row.candidates_json ?? "[]");
+    } catch {
+      continue;
+    }
+    const list3 = Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? [];
+    const located = list3.filter((candidate) => candidate["held"] !== true).map((candidate) => {
+      const line3 = Number(candidate["line"]);
+      return {
+        path: String(candidate["path"] ?? ""),
+        line: Number.isFinite(line3) ? line3 : null
+      };
+    }).filter((entry) => entry.path !== "");
+    if (located.length === 0) continue;
+    const existing = byDiff.get(row.diff_hash);
+    if (existing === void 0) byDiff.set(row.diff_hash, [located]);
+    else existing.push(located);
+  }
+  const scores = [];
+  let pairs2 = 0;
+  for (const sets of byDiff.values()) {
+    if (sets.length < 2) continue;
+    for (let i = 0; i < sets.length; i += 1) {
+      for (let j = i + 1; j < sets.length; j += 1) {
+        const a = sets[i];
+        const b = sets[j];
+        const shared = sharedLocations(a, b);
+        const union = a.length + b.length - shared;
+        if (union === 0) continue;
+        scores.push(shared / union);
+        pairs2 += 1;
+      }
+    }
+  }
+  if (pairs2 === 0) {
+    const unhashed = db.prepare("SELECT COUNT(*) AS n FROM review_runs WHERE diff_hash = ?").get(EMPTY_DIFF).n;
+    return {
+      value: null,
+      basis: unhashed > 0 ? `not measurable: ${unhashed} run(s) recorded without --diff-file, so they carry no diff identity` : "no diff has been reviewed twice; record two runs of one diff to measure this"
+    };
+  }
+  return {
+    value: median(scores),
+    basis: `${pairs2} pair(s) of runs over the same diff, by path and line within ${AGREEMENT_LINE_TOLERANCE}`
+  };
+}
+
 // plugins/review-voice/src/store/outcomes.ts
 var NEGATED_ACK = /\bnot (?:yet )?(?:fixed|done|addressed|changed|updated)\b/i;
 var REJECT = /\b(?:won'?t fix|wontfix|not a (?:bug|issue|problem)|false positive|by design|intentional(?:ly)?|working as (?:intended|designed)|disagree|(?:does not|doesn'?t) apply|not applicable|not needed|unnecessary|incorrect|this is wrong|that'?s wrong)\b/i;
@@ -16050,7 +16720,7 @@ function sameHead(a, b) {
 }
 async function checkOutcomes(options) {
   const allowed = new Set(options.allowlist.map((name) => name.toLowerCase()));
-  const result = { outcomes: [], skipped: [], warnings: [], questions: [] };
+  const result = { outcomes: [], skipped: [], warnings: [], questions: [], reviewerFindings: [] };
   const byPull = /* @__PURE__ */ new Map();
   for (const run of sentRuns(options.db, { since: options.since, repository: options.repository })) {
     if (options.pullNumber !== void 0 && run.pullNumber !== options.pullNumber) continue;
@@ -16073,11 +16743,14 @@ async function checkOutcomes(options) {
       const context2 = await readPull(options.client, repository, pullNumber, result.warnings);
       const cut4 = context2.replies.length >= READ_LIMIT;
       if (cut4 && options.pullNumber !== void 0) result.warnings.push(`${repository}#${pullNumber}: only the first ${READ_LIMIT} inline comments were read, so no reply is offered on it`);
+      const own = /* @__PURE__ */ new Set();
       for (const run of runs) {
         const followed = await followRun(options, context2, run, viewerLogin);
         result.outcomes.push(...followed.outcomes);
         if (!cut4) result.questions.push(...followed.questions);
+        for (const id of followed.reviewIds) own.add(id);
       }
+      result.reviewerFindings.push(...await followReviewers(options, context2, runs, own));
     } catch (error) {
       result.warnings.push(`${repository}#${pullNumber}: not checked (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
     }
@@ -16166,7 +16839,7 @@ function matchComments(findings, comments) {
 }
 async function followRun(options, context2, run, viewerLogin) {
   const detail = runDetail(options.db, run.runId);
-  if (detail === null) return { outcomes: [], questions: [] };
+  if (detail === null) return { outcomes: [], questions: [], reviewIds: [] };
   const { ids, source } = await reviewIdsOf(options, run, viewerLogin);
   const comments = [];
   for (const id of ids) {
@@ -16217,7 +16890,95 @@ async function followRun(options, context2, run, viewerLogin) {
     }
     outcomes.push(outcome);
   }
-  return { outcomes, questions };
+  return { outcomes, questions, reviewIds: ids };
+}
+function covers(detail, path) {
+  if (detail.leftOut?.includes(path) === true) return false;
+  const scope = detail.scope;
+  if (scope === null || scope.kind === "full") return true;
+  return scope.kind !== "unchanged" && scope.files.includes(path);
+}
+function classifyReviewerComment(detail, path, line3) {
+  const near = (at2) => at2.path === path && typeof at2.line === "number" && Math.abs(at2.line - line3) <= AGREEMENT_LINE_TOLERANCE;
+  if (detail.findings.some(near)) return { class: "also_posted", stage: null, lane: null };
+  const scores = Array.isArray(detail.scores) ? detail.scores : [];
+  const held = detail.held.find(near);
+  if (held !== void 0) return { class: "held", stage: held.verdict, lane: scores.find((score3) => score3.candidateId === held.candidateId)?.lane ?? null };
+  const score2 = scores.find(near);
+  if (score2 !== void 0) return { class: "rejected", stage: score2.gate ?? (score2.eligible === true ? "not-posted" : "score"), lane: score2.lane ?? null };
+  return { class: "never_raised", stage: null, lane: null };
+}
+async function followReviewers(options, context2, runs, own) {
+  const reviewers = new Set((options.reviewers ?? []).map((login) => login.toLowerCase()));
+  if (reviewers.size === 0) return [];
+  const recorded2 = runs.flatMap((run) => {
+    const detail = runDetail(options.db, run.runId);
+    return detail === null || run.headRef === null ? [] : [{ run, detail, at: Date.parse(detail.createdAt) }];
+  });
+  const checkedAt = (options.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
+  const found2 = [];
+  for (const comment of context2.replies) {
+    const author = comment.user?.login;
+    const line3 = comment.original_line ?? comment.line;
+    const madeOn = comment.original_commit_id;
+    if (typeof comment.id !== "number" || comment.in_reply_to_id != null || isBot(comment.user) || author === void 0 || !reviewers.has(author.toLowerCase())) continue;
+    if (typeof comment.pull_request_review_id === "number" && own.has(comment.pull_request_review_id)) continue;
+    if (typeof comment.path !== "string" || typeof line3 !== "number" || typeof madeOn !== "string") continue;
+    const made = Date.parse(comment.created_at ?? "");
+    const latest = recorded2.filter(({ run, at: at2 }) => sameHead(run.headRef, madeOn) && at2 <= made).at(-1);
+    if (latest === void 0 || !covers(latest.detail, comment.path)) continue;
+    const as = { findingId: `reviewer-comment-${comment.id}`, severity: "", path: comment.path, line: line3, text: "" };
+    const decided = await decide2(options, context2, latest.run, as, comment);
+    const finding = {
+      reviewRunId: latest.run.runId,
+      repository: latest.run.repository,
+      pullNumber: latest.run.pullNumber,
+      commentId: comment.id,
+      author,
+      path: comment.path,
+      line: line3,
+      ...classifyReviewerComment(latest.detail, comment.path, line3),
+      outcome: decided.outcome,
+      strength: decided.strength,
+      evidence: decided.evidence,
+      checkedAt
+    };
+    if (options.store !== false) saveReviewerFinding(options.db, finding);
+    found2.push(finding);
+  }
+  return found2;
+}
+function saveReviewerFinding(db, finding) {
+  db.prepare(
+    `INSERT OR REPLACE INTO reviewer_findings
+       (review_run_id, comment_id, repository, pull_number, author, path, line, class, stage, lane, outcome, strength, evidence, checked_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    finding.reviewRunId,
+    finding.commentId,
+    finding.repository,
+    finding.pullNumber,
+    finding.author,
+    finding.path,
+    finding.line,
+    finding.class,
+    finding.stage,
+    finding.lane,
+    finding.outcome,
+    finding.strength,
+    finding.evidence,
+    finding.checkedAt
+  );
+}
+function missedStats(db) {
+  const tracked = db.prepare("SELECT COUNT(*) AS n FROM reviewer_findings").get().n;
+  const rows = db.prepare(`SELECT class, lane FROM reviewer_findings WHERE outcome = 'fixed' AND strength = 'strong' AND class <> 'also_posted'`).all();
+  const count4 = (keys) => {
+    const counts = {};
+    for (const key2 of keys.sort()) counts[key2] = (counts[key2] ?? 0) + 1;
+    return counts;
+  };
+  return { tracked, missed: rows.length, byClass: count4(rows.map((row) => row.class)), byLane: count4(rows.flatMap((row) => row.lane === null ? [] : [row.lane])) };
 }
 async function linesChanged(options, context2, run, comment, finding) {
   if (run.headRef === null || context2.currentHead === null) return null;
@@ -18975,628 +19736,6 @@ async function readThreadStates(client, repository, pullNumber) {
     cursor = threads.pageInfo.endCursor;
   }
   return states;
-}
-
-// plugins/review-voice/src/evaluate/metrics.ts
-function formatMetricValue(metric) {
-  if (metric.value === null) return "no data";
-  return Number.isInteger(metric.value) && metric.name.endsWith("_tracked") ? String(metric.value) : metric.value.toFixed(2);
-}
-function metricMark(metric) {
-  if (metric.meets === null || metric.target === "no target") return "-";
-  if (metric.meets) return "ok";
-  return metric.kind === "goal" ? "over" : "FAIL";
-}
-function metricTarget(metric) {
-  if (metric.target === "no target") return "reported, not scored";
-  return `${metric.kind === "goal" ? "goal" : "target"} ${metric.target}`;
-}
-function percentile(values, p2) {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const index = Math.min(sorted.length - 1, Math.floor(p2 / 100 * sorted.length));
-  return sorted[index] ?? null;
-}
-function median(values) {
-  return percentile(values, 50);
-}
-var DEFAULT_WINDOW_DAYS = 30;
-var DISMISSED_RATE_WARNING_THRESHOLD = 0.2;
-var DISMISSED_RATE_WARNING_MIN_STRONG = 10;
-function dismissedRateWarning(input) {
-  const { dismissed, strong, windowDays } = input;
-  if (strong < DISMISSED_RATE_WARNING_MIN_STRONG) return null;
-  const rate2 = dismissed / strong;
-  if (!(rate2 > DISMISSED_RATE_WARNING_THRESHOLD)) return null;
-  return `Warning: ${dismissed} of ${strong} posted findings in the last ${windowDays} days were dismissed (${(rate2 * 100).toFixed(0)}%); run \`review-voice explain\` on the dismissed ones and consider /review-voice:feedback.`;
-}
-function windowStart(days, now = () => /* @__PURE__ */ new Date()) {
-  return new Date(now().getTime() - days * 864e5).toISOString();
-}
-function parseStages(raw) {
-  if (raw === null) return [];
-  let parsed2;
-  try {
-    parsed2 = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(parsed2)) return null;
-  return parsed2.map((stage) => {
-    const record3 = typeof stage === "object" && stage !== null ? stage : {};
-    const seconds = record3["seconds"];
-    const cost = record3["costUsd"];
-    return {
-      name: typeof record3["name"] === "string" ? record3["name"] : null,
-      seconds: typeof seconds === "number" && Number.isFinite(seconds) ? seconds : null,
-      cost: typeof cost === "number" && Number.isFinite(cost) ? cost : null
-    };
-  });
-}
-function storedStages(db) {
-  const rows = db.prepare("SELECT stages_json FROM review_runs").all();
-  return rows.map((row) => parseStages(row.stages_json));
-}
-function stageSeconds(db) {
-  const byName = /* @__PURE__ */ new Map();
-  for (const stages of storedStages(db)) {
-    if (stages === null) continue;
-    const inRun = /* @__PURE__ */ new Map();
-    for (const stage of stages) {
-      if (stage.name === null) continue;
-      const before = inRun.get(stage.name);
-      inRun.set(stage.name, stage.seconds === null || before === null ? null : (before ?? 0) + stage.seconds);
-    }
-    for (const [name, total] of inRun) {
-      if (total !== null && total <= 0) continue;
-      const entry = byName.get(name) ?? { values: [], unmeasured: 0 };
-      if (total === null) entry.unmeasured += 1;
-      else entry.values.push(total);
-      byName.set(name, entry);
-    }
-  }
-  return Object.fromEntries(
-    [...byName.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, { values, unmeasured }]) => [name, { median: median(values), p95: percentile(values, 95), runs: values.length, unmeasured }])
-  );
-}
-function runCosts(db) {
-  const costs = [];
-  let excluded = 0;
-  for (const stages of storedStages(db)) {
-    if (stages === null || stages.length === 0 || stages.some((stage) => stage.cost === null)) {
-      excluded += 1;
-      continue;
-    }
-    costs.push(stages.reduce((sum, stage) => sum + stage.cost, 0));
-  }
-  return { costs, excluded };
-}
-function challengeCounts(db) {
-  const rows = db.prepare("SELECT output_json FROM review_runs").all();
-  let held = 0;
-  let judged = 0;
-  let runs = 0;
-  for (const row of rows) {
-    const counts = challengeOf(row.output_json);
-    if (counts.judged === 0) continue;
-    held += counts.held;
-    judged += counts.judged;
-    runs += 1;
-  }
-  return { held, judged, runs };
-}
-function challengeOf(outputJson) {
-  let scores;
-  try {
-    scores = JSON.parse(outputJson)?.scores;
-  } catch {
-    return { held: 0, judged: 0 };
-  }
-  let held = 0;
-  let judged = 0;
-  for (const entry of Array.isArray(scores) ? scores : []) {
-    if (typeof entry !== "object" || entry === null || !Object.hasOwn(entry, "challenge")) continue;
-    judged += 1;
-    const { gate, rejectedBecause: because } = entry;
-    if (typeof gate === "string" ? gate.startsWith("challenge-") : typeof because === "string" && because.startsWith("challenge-")) held += 1;
-  }
-  return { held, judged };
-}
-function byFamily(db) {
-  const rows = db.prepare("SELECT review_run_id, output_json, provenance_json FROM review_runs").all();
-  const second = /* @__PURE__ */ new Map();
-  const challenge2 = /* @__PURE__ */ new Map();
-  let without = 0;
-  const entries = (value) => Array.isArray(value) ? value.filter((entry) => typeof entry === "object" && entry !== null) : [];
-  for (const row of rows) {
-    const families = storedFamilies(row.provenance_json, row.review_run_id);
-    if (families === null) {
-      without += 1;
-      continue;
-    }
-    if (families.secondPass !== null) {
-      let output = {};
-      try {
-        output = JSON.parse(row.output_json) ?? {};
-      } catch {
-      }
-      const verdicts = entries(output.verdicts);
-      const sum = second.get(families.secondPass) ?? { verdicts: 0, dropped: 0, downgraded: 0, tie_breaks: 0, runs: 0 };
-      sum.verdicts += verdicts.length;
-      sum.dropped += verdicts.filter((verdict2) => verdict2["outcome"] === "dropped").length;
-      sum.downgraded += verdicts.filter((verdict2) => verdict2["outcome"] === "downgraded").length;
-      sum.tie_breaks += entries(output.tieBreaks).filter((ruling) => ruling["applied"] === true).length;
-      sum.runs += 1;
-      second.set(families.secondPass, sum);
-    }
-    if (families.challenge !== null) {
-      const counts = challengeOf(row.output_json);
-      if (counts.judged > 0) {
-        const sum = challenge2.get(families.challenge) ?? { judged: 0, held: 0, runs: 0 };
-        sum.judged += counts.judged;
-        sum.held += counts.held;
-        sum.runs += 1;
-        challenge2.set(families.challenge, sum);
-      }
-    }
-  }
-  const rate2 = (count4, over) => over === 0 ? null : count4 / over;
-  const listed = [...FAMILIES, "unknown"].filter((name) => second.has(name) || challenge2.has(name));
-  return {
-    families: Object.fromEntries(
-      listed.map((name) => {
-        const pass = second.get(name);
-        const judged = challenge2.get(name);
-        const figures = {
-          second_pass: pass === void 0 ? null : {
-            ...pass,
-            drop_rate: rate2(pass.dropped, pass.verdicts),
-            downgrade_rate: rate2(pass.downgraded, pass.verdicts),
-            tie_break_rate: rate2(pass.tie_breaks, pass.verdicts)
-          },
-          challenge: judged === void 0 ? null : { ...judged, hold_rate: rate2(judged.held, judged.judged) }
-        };
-        return [name, figures];
-      })
-    ),
-    runs_without_families: without
-  };
-}
-function describeByFamily(figures) {
-  const names = Object.keys(figures.families);
-  const before = figures.runs_without_families > 0 ? ` (${figures.runs_without_families} run(s) recorded before families were stored)` : "";
-  if (names.length === 0) return [`by family  no data${before}`];
-  const fixed = (value) => value === null ? "no data" : value.toFixed(2);
-  return [
-    `by family${before}`,
-    ...names.map((name) => {
-      const { second_pass: pass, challenge: challenge2 } = figures.families[name];
-      const second = pass === null ? "second pass no data" : `second pass ${pass.verdicts} verdicts, drop ${fixed(pass.drop_rate)}, downgrade ${fixed(pass.downgrade_rate)}, tie-break ${fixed(pass.tie_break_rate)}, ${pass.runs} run(s)`;
-      const challenged = challenge2 === null ? "challenge no data" : `challenge ${challenge2.judged} judged, hold ${fixed(challenge2.hold_rate)}, ${challenge2.runs} run(s)`;
-      return `  ${name.padEnd(8)}${second}; ${challenged}`;
-    })
-  ];
-}
-function ruleEffectiveness(db) {
-  const byRule = /* @__PURE__ */ new Map();
-  for (const suppression of activeSuppressions(db)) {
-    byRule.set(suppression.ruleId, [...byRule.get(suppression.ruleId) ?? [], suppression]);
-  }
-  return [...byRule.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([ruleId, list3]) => {
-    const suppressions = list3.map((s) => ({ glob: s.glob, policy_version: s.policyVersion }));
-    const approvedAt = list3.map((s) => s.approvedAt).filter((at2) => at2 !== null).sort()[0] ?? null;
-    if (approvedAt === null) {
-      return {
-        rule_id: ruleId,
-        suppressions,
-        approved_at: null,
-        held: null,
-        runs: null,
-        posted: null,
-        feedback: null,
-        basis: `no approval time recorded for policy version ${list3[0]?.policyVersion ?? "unknown"}; nothing counted`
-      };
-    }
-    const rows = db.prepare("SELECT output_json FROM review_runs WHERE created_at >= ?").all(approvedAt);
-    let held = 0;
-    let runs = 0;
-    for (const row of rows) {
-      let scores;
-      try {
-        scores = JSON.parse(row.output_json)?.scores;
-      } catch {
-        continue;
-      }
-      if (!Array.isArray(scores)) continue;
-      runs += 1;
-      held += scores.filter((entry) => entry?.rejectedBecause === `${POLICY_SUPPRESSED_PREFIX}${ruleId}`).length;
-    }
-    const posted = postedBreakdown(db, { since: approvedAt }).byRule;
-    const feedback = precisionBreakdown(db, { since: approvedAt }).byRule;
-    const postedStats2 = Object.hasOwn(posted, ruleId) ? posted[ruleId] ?? null : null;
-    return {
-      rule_id: ruleId,
-      suppressions,
-      approved_at: approvedAt,
-      // A count over no run is no data, not zero.
-      held: runs === 0 ? null : held,
-      runs,
-      // Weak outcomes alone measure nothing, and their fixed and dismissed would read as measured zeros.
-      posted: postedStats2 !== null && postedStats2.fixed + postedStats2.dismissed > 0 ? postedStats2 : null,
-      feedback: Object.hasOwn(feedback, ruleId) ? feedback[ruleId] ?? null : null,
-      basis: runs === 0 ? `no run recorded since ${approvedAt}` : `${held} held in ${runs} run(s) since ${approvedAt}; posted outcomes count strong ones only`
-    };
-  });
-}
-function evaluationReport(db, metrics, options = {}) {
-  const { bySeverity, byLane, byRule, byEvidenceBlock } = postedBreakdown(db);
-  const precision = precisionBreakdown(db);
-  const approvals = approvalBreakdown(db);
-  return {
-    generated_at: (options.now ?? (() => /* @__PURE__ */ new Date()))().toISOString(),
-    window_days: options.windowDays ?? DEFAULT_WINDOW_DAYS,
-    metrics,
-    posted_breakdown: { by_severity: bySeverity, by_lane: byLane, by_rule: byRule, by_evidence_block: byEvidenceBlock },
-    precision_breakdown: { by_lane: precision.byLane, by_rule: precision.byRule },
-    stage_seconds: stageSeconds(db),
-    rule_effectiveness: ruleEffectiveness(db),
-    by_family: byFamily(db),
-    approval_breakdown: {
-      by_mode: approvals.byMode,
-      by_complexity: approvals.byComplexity,
-      by_independence: approvals.byIndependence,
-      by_origin: approvals.byOrigin
-    }
-  };
-}
-function reproductionCounts(db) {
-  const rows = db.prepare("SELECT output_json FROM review_runs").all();
-  const counts = { held: 0, completed: 0, didNotRun: 0, runs: 0 };
-  for (const row of rows) {
-    let parsed2;
-    try {
-      parsed2 = JSON.parse(row.output_json);
-    } catch {
-      continue;
-    }
-    const records = Array.isArray(parsed2?.reproductions) ? parsed2.reproductions : [];
-    if (records.length === 0) continue;
-    counts.runs += 1;
-    const outcome = (entry) => typeof entry === "object" && entry !== null ? entry.outcome : void 0;
-    counts.completed += records.filter((entry) => outcome(entry) === "reproduced" || outcome(entry) === "did-not-fail").length;
-    counts.didNotRun += records.filter((entry) => outcome(entry) === "did-not-run").length;
-    counts.held += records.filter((entry) => outcome(entry) === "did-not-fail" && entry.held === true).length;
-  }
-  return counts;
-}
-function computeMetrics(db, options = {}) {
-  const runs = db.prepare("SELECT output_json FROM review_runs").all();
-  const windowDays = options.windowDays ?? DEFAULT_WINDOW_DAYS;
-  const runSeconds = [];
-  let untimed = 0;
-  for (const stages of storedStages(db)) {
-    if (stages === null) continue;
-    const total = stages.reduce((sum, stage) => sum === null || stage.seconds === null ? null : sum + stage.seconds, 0);
-    if (total === null) untimed += 1;
-    else if (total > 0) runSeconds.push(total);
-  }
-  const secondsBasis = runSeconds.length === 0 && untimed === 0 ? "no run has recorded stage timings; pass `record --stages`" : `${runSeconds.length} run(s) with recorded stages${untimed === 0 ? "" : `, ${untimed} excluded (a stage not measured)`}`;
-  const { costs, excluded: uncosted } = runCosts(db);
-  const costBasis = `${costs.length} costed run(s), ${uncosted} excluded (no cost recorded)`;
-  const challenge2 = challengeCounts(db);
-  const reproduction = reproductionCounts(db);
-  const agreement = candidateSetAgreement(db);
-  const findingsPerRun = [];
-  const wordsPerFinding = [];
-  let compliantOutputs = 0;
-  let noFindingsRuns = 0;
-  let exactNoFindings = 0;
-  for (const run of runs) {
-    let output = "";
-    try {
-      output = JSON.parse(run.output_json).output ?? "";
-    } catch {
-      continue;
-    }
-    const parsed2 = splitFindings(output).map((block) => parseFinding(block.raw, block.startLine));
-    findingsPerRun.push(parsed2.length);
-    for (const finding of parsed2) {
-      if (finding.prose.length > 0) wordsPerFinding.push(countWords(finding.prose));
-    }
-    if (validateOutput(output).valid) compliantOutputs += 1;
-    if (parsed2.length === 0) {
-      noFindingsRuns += 1;
-      if (output.trim() === DEFAULT_LIMITS.noFindingsResponse) exactNoFindings += 1;
-    }
-  }
-  const feedback = db.prepare("SELECT action, COUNT(*) AS n FROM feedback GROUP BY action").all();
-  const by = Object.fromEntries(feedback.map((row) => [row.action, row.n]));
-  const kept = (by["keep"] ?? 0) + (by["rewrite"] ?? 0);
-  const dismissed = by["dismiss"] ?? 0;
-  const labelled = kept + dismissed;
-  const ratio2 = (numerator, denominator) => denominator === 0 ? null : numerator / denominator;
-  const posted = postedStats(db);
-  const recent = postedStats(db, { since: windowStart(windowDays, options.now) });
-  const recentDecided = recent.fixed + recent.dismissed;
-  const replies = replyStats(db);
-  const approvals = approvalStats(db);
-  const metric = (name, value, target, meets, basis, kind = "gate") => ({
-    name,
-    value,
-    target,
-    meets: value === null ? null : meets(value),
-    basis,
-    kind
-  });
-  return [
-    metric(
-      "owner_accepted_precision",
-      ratio2(kept, labelled),
-      ">= 0.80",
-      (v) => v >= 0.8,
-      // Unlabelled findings are excluded: counting silence as a dismissal
-      // would make the reviewer look worse the quieter its user is.
-      `(${kept} kept or rewritten) / (${labelled} labelled); unlabelled excluded`
-    ),
-    // Counts are a property of the pull requests reviewed, not of the
-    // reviewer. Since the output contract stopped capping findings, a run that
-    // correctly reports nine defects in a large diff was failing a target that
-    // asked it to report two.
-    metric(
-      "median_review_seconds",
-      median(runSeconds),
-      "no target",
-      () => true,
-      secondsBasis,
-      "goal"
-    ),
-    metric(
-      "p95_review_seconds",
-      percentile(runSeconds, 95),
-      "no target",
-      () => true,
-      secondsBasis,
-      "goal"
-    ),
-    metric(
-      "median_review_cost_usd",
-      median(costs),
-      "no target",
-      () => true,
-      costBasis,
-      "goal"
-    ),
-    metric(
-      "p95_review_cost_usd",
-      percentile(costs, 95),
-      "no target",
-      () => true,
-      costBasis,
-      "goal"
-    ),
-    metric(
-      "challenge_hold_rate",
-      challenge2.judged === 0 ? null : challenge2.held / challenge2.judged,
-      "no target",
-      () => true,
-      `${challenge2.held} held / ${challenge2.judged} judged over ${challenge2.runs} run(s)`,
-      "goal"
-    ),
-    // How often a reproduction removed a finding that would otherwise have
-    // posted. Not recall, since a did-not-run says nothing either way.
-    metric(
-      "reproduction_hold_rate",
-      reproduction.completed === 0 ? null : reproduction.held / reproduction.completed,
-      "no target",
-      () => true,
-      `${reproduction.held} held / ${reproduction.completed} completed, ${reproduction.didNotRun} did not run, over ${reproduction.runs} run(s)`,
-      "goal"
-    ),
-    metric(
-      "median_findings_per_review",
-      median(findingsPerRun),
-      "no target",
-      () => true,
-      `${runs.length} runs; a count reflects the diff, not the reviewer`,
-      "goal"
-    ),
-    metric(
-      "p95_findings_per_review",
-      percentile(findingsPerRun, 95),
-      "no target",
-      () => true,
-      `${runs.length} runs; a count reflects the diff, not the reviewer`,
-      "goal"
-    ),
-    metric(
-      "median_words_per_finding",
-      median(wordsPerFinding),
-      "<= 28",
-      (v) => v <= 28,
-      `${wordsPerFinding.length} findings; the contract ceiling is 40, this is the brevity to aim for`,
-      "goal"
-    ),
-    metric(
-      "p95_words_per_finding",
-      percentile(wordsPerFinding, 95),
-      "<= 40",
-      (v) => v <= 40,
-      `${wordsPerFinding.length} findings; this is the contract ceiling the validator enforces`
-    ),
-    // The variance nobody was tracking. Severity stability was measured for
-    // three releases while which findings exist at all was not, and on one
-    // pull request reviewed twice the two runs agreed on two candidates of
-    // eight. For a reviewer that is the more consequential variance: a single
-    // run is a sample, not the answer.
-    metric(
-      "candidate_set_agreement",
-      agreement.value,
-      "no target",
-      () => true,
-      agreement.basis,
-      "goal"
-    ),
-    metric(
-      "contract_compliance",
-      ratio2(compliantOutputs, runs.length),
-      "= 1.00",
-      (v) => v >= 1,
-      `${compliantOutputs}/${runs.length} recorded outputs pass validate-output`
-    ),
-    metric(
-      "exact_no_findings_compliance",
-      ratio2(exactNoFindings, noFindingsRuns),
-      "= 1.00",
-      (v) => v >= 1,
-      `${exactNoFindings}/${noFindingsRuns} empty reviews used the exact string`
-    ),
-    // What GitHub shows happened to the comments this tool posted (docs/adr/0029).
-    // Rates count strong outcomes only, so an unanswered comment is neither
-    // fixed nor dismissed, and are reported rather than gated.
-    metric(
-      "posted_findings_tracked",
-      posted.tracked === 0 ? null : posted.tracked,
-      "no target",
-      () => true,
-      "posted findings with any recorded outcome; run `review-voice outcomes` to check",
-      "goal"
-    ),
-    metric(
-      "posted_fixed_rate",
-      posted.fixedRate,
-      "no target",
-      () => true,
-      `${posted.fixed} fixed / (${posted.fixed + posted.dismissed} fixed or dismissed); weak outcomes excluded`,
-      "goal"
-    ),
-    metric(
-      "posted_dismissed_rate",
-      posted.dismissedRate,
-      "no target",
-      () => true,
-      `${posted.dismissed} dismissed / (${posted.fixed + posted.dismissed} fixed or dismissed); weak outcomes excluded`,
-      "goal"
-    ),
-    // The same rates over a rolling window, so a change to the reviewer shows
-    // up before the all-time figure moves. The window is by the run's creation
-    // time, which is when the finding was posted.
-    metric(
-      "posted_fixed_rate_recent",
-      recent.fixedRate,
-      "no target",
-      () => true,
-      `${recent.fixed} fixed / ${recentDecided} fixed or dismissed from runs created in the last ${windowDays} days; weak outcomes excluded`,
-      "goal"
-    ),
-    metric(
-      "posted_dismissed_rate_recent",
-      recent.dismissedRate,
-      "no target",
-      () => true,
-      `${recent.dismissed} dismissed / ${recentDecided} fixed or dismissed from runs created in the last ${windowDays} days; weak outcomes excluded`,
-      "goal"
-    ),
-    // The one reply per thread (docs/adr/0035), and what the author did after it.
-    metric(
-      "posted_replies",
-      replies.replied === 0 ? null : replies.replied,
-      "no target",
-      () => true,
-      "findings this tool replied under once; run `review-voice reply --pr N` to answer a pending question",
-      "goal"
-    ),
-    metric(
-      "replied_fixed_rate",
-      replies.fixedRate,
-      "no target",
-      () => true,
-      `${replies.fixed} fixed / (${replies.fixed + replies.dismissed} fixed or dismissed) of ${replies.replied} replied finding(s); weak outcomes excluded`,
-      "goal"
-    ),
-    // What became of the approvals this tool sent (docs/adr/0036). Settled
-    // means strong: a revert or a request for changes against a merge that
-    // outlived the window. Pending and weak rows are counted and left out, so a
-    // merge the window has not closed on is never a survival.
-    metric(
-      "approvals_tracked",
-      approvals.tracked === 0 ? null : approvals.tracked,
-      "no target",
-      () => true,
-      "sent approvals with a recorded outcome; run `review-voice outcomes --approvals` to check",
-      "goal"
-    ),
-    metric("approval_escape_rate", approvals.rate, "no target", () => true, approvalBasis(approvals), "goal")
-  ];
-}
-var AGREEMENT_LINE_TOLERANCE = 3;
-function sharedLocations(a, b) {
-  const taken = /* @__PURE__ */ new Set();
-  let shared = 0;
-  for (const left of a) {
-    for (let i = 0; i < b.length; i += 1) {
-      if (taken.has(i)) continue;
-      const right = b[i];
-      if (right.path !== left.path) continue;
-      const near = left.line === null || right.line === null ? left.line === right.line : Math.abs(left.line - right.line) <= AGREEMENT_LINE_TOLERANCE;
-      if (!near) continue;
-      taken.add(i);
-      shared += 1;
-      break;
-    }
-  }
-  return shared;
-}
-function candidateSetAgreement(db) {
-  const EMPTY_DIFF = hashDiff("");
-  const rows = db.prepare("SELECT diff_hash, candidates_json FROM review_runs WHERE diff_hash IS NOT NULL AND diff_hash != ?").all(EMPTY_DIFF);
-  const byDiff = /* @__PURE__ */ new Map();
-  for (const row of rows) {
-    let parsed2;
-    try {
-      parsed2 = JSON.parse(row.candidates_json ?? "[]");
-    } catch {
-      continue;
-    }
-    const list3 = Array.isArray(parsed2) ? parsed2 : parsed2.candidates ?? [];
-    const located = list3.filter((candidate) => candidate["held"] !== true).map((candidate) => {
-      const line3 = Number(candidate["line"]);
-      return {
-        path: String(candidate["path"] ?? ""),
-        line: Number.isFinite(line3) ? line3 : null
-      };
-    }).filter((entry) => entry.path !== "");
-    if (located.length === 0) continue;
-    const existing = byDiff.get(row.diff_hash);
-    if (existing === void 0) byDiff.set(row.diff_hash, [located]);
-    else existing.push(located);
-  }
-  const scores = [];
-  let pairs2 = 0;
-  for (const sets of byDiff.values()) {
-    if (sets.length < 2) continue;
-    for (let i = 0; i < sets.length; i += 1) {
-      for (let j = i + 1; j < sets.length; j += 1) {
-        const a = sets[i];
-        const b = sets[j];
-        const shared = sharedLocations(a, b);
-        const union = a.length + b.length - shared;
-        if (union === 0) continue;
-        scores.push(shared / union);
-        pairs2 += 1;
-      }
-    }
-  }
-  if (pairs2 === 0) {
-    const unhashed = db.prepare("SELECT COUNT(*) AS n FROM review_runs WHERE diff_hash = ?").get(EMPTY_DIFF).n;
-    return {
-      value: null,
-      basis: unhashed > 0 ? `not measurable: ${unhashed} run(s) recorded without --diff-file, so they carry no diff identity` : "no diff has been reviewed twice; record two runs of one diff to measure this"
-    };
-  }
-  return {
-    value: median(scores),
-    basis: `${pairs2} pair(s) of runs over the same diff, by path and line within ${AGREEMENT_LINE_TOLERANCE}`
-  };
 }
 
 // plugins/review-voice/src/publish/gate.ts
@@ -28002,6 +28141,7 @@ function executePurge(db, scope, runDirectories) {
       db.prepare("DELETE FROM feedback").run();
       db.prepare("DELETE FROM finding_outcomes").run();
       db.prepare("DELETE FROM approval_outcomes").run();
+      db.prepare("DELETE FROM reviewer_findings").run();
     } else if (scope.repository !== void 0) {
       db.prepare("DELETE FROM sync_watermarks WHERE repository = ?").run(scope.repository);
     }
@@ -30019,9 +30159,9 @@ async function discoverConventions(root, changedPaths = [], tree = filesystemRea
       }
     } catch {
     }
-    const covers = governsCount(governs, changedPaths);
+    const covers2 = governsCount(governs, changedPaths);
     const withPath = (path) => {
-      const base = { ...entry, path, governs, governsPaths: covers };
+      const base = { ...entry, path, governs, governsPaths: covers2 };
       return governsAny(governs, changedPaths) && entry.reason !== "directory scope" ? { ...base, reason: "governs the changed paths" } : base;
     };
     if (followed.length === 0) {
@@ -34009,11 +34149,13 @@ async function outcomesCommand(argv) {
   const since = new Date(Date.now() - Number(days) * 864e5).toISOString();
   let allowlist = repository === null ? [] : [repository];
   let ownerReviewer = null;
+  let reviewers = [];
   let windowDays = DEFAULT_OUTCOMES.approvalWindowDays;
   let recoverFrom = [...DEFAULT_OUTCOMES.recoverFrom];
   try {
     const config2 = loadConfig(repositoryRoot(process.cwd()));
     ownerReviewer = config2.ownerReviewer;
+    reviewers = config2.reviewers;
     windowDays = config2.outcomes.approvalWindowDays;
     recoverFrom = config2.outcomes.recoverFrom;
     if (repository === null) allowlist = config2.allowlist;
@@ -34048,7 +34190,8 @@ async function outcomesCommand(argv) {
       allowlist,
       repository: repository ?? void 0,
       since,
-      ownerReviewer
+      ownerReviewer,
+      reviewers
     });
     for (const warning of result.warnings) console.error(warning);
     for (const skipped of result.skipped) {
@@ -34081,10 +34224,16 @@ async function outcomesCommand(argv) {
       console.log(`${o.repository}#${o.pullNumber} ${o.findingId} ${o.path}:${o.line} ${o.outcome} (${o.strength}): ${o.evidence}`);
     }
     for (const question of result.questions) console.log(pendingQuestionLine(question));
+    for (const r of result.reviewerFindings) {
+      const stage = r.stage === null ? "" : ` at ${r.stage}`;
+      console.log(`${r.repository}#${r.pullNumber} reviewer ${r.author} ${r.path}:${r.line} ${r.class}${stage}, ${r.outcome} (${r.strength}): ${r.evidence}`);
+    }
     const count4 = (name) => result.outcomes.filter((o) => o.outcome === name).length;
     console.log(
       `${result.outcomes.length} finding(s) tracked: ${count4("fixed")} fixed, ${count4("dismissed")} dismissed, ${count4("resolved")} resolved, ${count4("outdated")} outdated, ${count4("open")} open, ${count4("unknown")} unknown`
     );
+    const missed = result.reviewerFindings.filter((r) => r.outcome === "fixed" && r.strength === "strong" && r.class !== "also_posted").length;
+    console.log(`${result.reviewerFindings.length} reviewer comment(s) after a review followed: ${missed} fixed and not posted (missed)`);
     return 0;
   } finally {
     db.close();
