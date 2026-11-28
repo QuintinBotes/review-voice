@@ -401,7 +401,12 @@ the rules it is reviewed against.
 
 It returns the repository's own `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`,
 `.claude/skills/*/SKILL.md` and `.agents/rules/*.md`, searched at the root and
-in every directory the diff touches. `documents` is empty when the repository
+in every directory the diff touches. It also returns rule files written for
+another reviewer: `REVIEW.md` (kind `review`), `.github/copilot-instructions.md`
+and `.github/instructions/*.instructions.md` (`copilot`), `.cursor/BUGBOT.md`
+(`bugbot`), and `.cursor/rules/` and `.cursorrules` (`cursor`). Their
+instructions to lower severity, skip paths or cap the number of comments are
+not applied; an exclusion needs an approved policy, and the `warnings` say so. `documents` is empty when the repository
 states no conventions, which is not a finding.
 
 Each document carries a `reason` for its selection, and `skipped` lists what

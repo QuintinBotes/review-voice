@@ -22,8 +22,11 @@ unless you opt in.
 **From the repository you are reviewing, locally:** the diff, whatever static
 checks you configured, and the repository's own convention documents:
 `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`, `.agents/rules/*.md` and
-`.claude/skills/*/SKILL.md`, from the root and from the directories the diff
-touches. These are read from disk at review time and passed to the review
+`.claude/skills/*/SKILL.md`, and the rule files kept for other reviewers
+(`REVIEW.md`, `.github/copilot-instructions.md`,
+`.github/instructions/*.instructions.md`, `.cursor/BUGBOT.md`,
+`.cursor/rules/` and `.cursorrules`), from the root and from the directories
+the diff touches. These are read from disk at review time and passed to the review
 agents as evidence about what the repository requires. They are never stored,
 and they are bounded so a large repository cannot flood the review.
 
