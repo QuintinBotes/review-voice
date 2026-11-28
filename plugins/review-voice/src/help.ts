@@ -240,9 +240,11 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
   evidence: {
     summary: 'Run the configured static checks and emit structured signals',
     body: lines(
-      'review-voice evidence [--cwd <dir>] [--review-dir <dir>]',
+      'review-voice evidence [--cwd <dir>] [--diff-file <patch>] [--review-dir <dir>]',
       '  --review-dir <dir>     Match REVIEW_VOICE_COMPARISON_REPORT to the commits and patch from diff --out.',
       '  Run the configured static checks and emit structured signals.',
+      '  --diff-file <patch>    The change, whose added and modified lines a command\'s coverage report is read',
+      '                         against; without it every coverage report is coverageInconclusive.',
       '  --cwd <dir>            Run the commands in <dir>; the driver passes the pull request\'s head worktree.',
       '                         The configuration still comes from this checkout or REVIEW_VOICE_CONFIG, never',
       '                         from <dir>. The commands get only PATH, HOME, LANG, LC_ALL, TMPDIR, CI and TERM',
@@ -256,8 +258,12 @@ export const COMMAND_HELP: Record<string, CommandHelp> = {
       '  document\'s own tool name and version are recorded when the version command is not set or failed;',
       '  other output needs a known adapter (tsc, dotnet, mypy, ruff, eslint). REVIEW_VOICE_NO_COMMANDS=1 skips',
       '  all commands, listing their names in didNotRun with skipped: REVIEW_VOICE_NO_COMMANDS.',
+      '  A command may set coverage to the LCOV or Cobertura XML report it writes, relative to its cwd. Each',
+      '  changed line the report lists as executable with 0 hits becomes an uncovered_line signal. A report',
+      '  that is missing, outside the cwd, older than the run, unparsable or from a command that exited non-zero',
+      '  gives none and sets coverageInconclusive with the reason, never read as zero coverage.',
       '  The report records the directory the commands ran in as cwd.',
-      'Exit codes: 0 ok (a failing check is evidence, not an error), 2 not in a repository or --cwd is not a directory.',
+      'Exit codes: 0 ok (a failing check is evidence, not an error), 2 not in a repository, --cwd is not a directory or --diff-file cannot be read.',
     ),
   },
   reproduce: {

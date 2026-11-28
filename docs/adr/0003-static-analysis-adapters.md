@@ -343,6 +343,33 @@ to that identity alone, so the CLI can list and remove them whole, which also
 closes the two System V IPC limits above. Until then `probeSandbox` keeps
 reporting macOS as `none`.
 
+## Amendment - 2026-11-28
+
+A coverage report is read as a configured command's output is (issue 547).
+`static_evidence.commands[].coverage` names the LCOV or Cobertura XML file
+the command writes, relative to the directory it runs in, and is
+configuration like `run`: detection suggests no report path, and nothing is
+read for a command that did not run, so `REVIEW_VOICE_NO_COMMANDS` and every
+rule for when a configured command may run cover it. The
+command keeps its environment, timeout and working directory. The file is
+the head's to shape, so it is read only when it lies inside that directory
+through every link, is a regular file of at most 16 MiB and was written
+after the command started, which ties it to the head: a fresh worktree holds
+no untracked file, so an older one was committed or left by another run.
+Only line numbers, hit counts and file names are read from it, and a file
+name whose cleaning would change it gives no signal.
+
+Each line the change added or modified that the report lists as executable
+with 0 hits becomes an `uncovered_line` signal. It is evidence, never a
+finding: the analyst may cite it, the verifier may confirm or reject a "not
+tested" claim with it, and a candidate that only restates it is held as
+`restates-tool`. A report that is missing, stale, too large, unparsable,
+outside the directory, from a command that exited non-zero, or read with no
+diff to compare it against gives no signal and records the reason as the
+command's `coverageInconclusive`, so the absence of signals is never read as
+full coverage, and a line or file the report does not list is not read as
+zero coverage either. Branch coverage is not read.
+
 ### Local comparison reports
 
 A trusted producer can supply revision-bound comparisons to the evidence stage. The CLI checks their revisions and locations and imports leads under the existing verification and challenge rules. The [format and producer example](../COMPARISON-EVIDENCE.md) cover the supported reports.

@@ -818,6 +818,31 @@ white space collapsed, so a value a tool wrapped at the end of that line goes
 whole. A scanner run over a vendored tree
 floods the analyst with leads; scoping it is the configuration's job.
 
+A command may name the coverage report it writes, as
+`static_evidence.commands[].coverage`, a path relative to the directory it
+runs in (issue 547). Once the command exits 0, `collectEvidence` reads that
+file as LCOV (`SF:`, `DA:<line>,<hits>`, `end_of_record`, as c8, nyc, jest
+and `node --test` write it) or Cobertura XML (`<class filename>` and
+`<line number hits>` under each `<source>`, as coverage.py and coverlet write
+it) and compares it with the change's added and modified lines, which
+`evidence --diff-file` reads from the patch and the driver passes. Each
+changed line the report lists as executable with 0 hits becomes an
+`uncovered_line` signal, whose evidence line names the report, so a finding's
+evidence block names the report it relied on. A line the report does not
+list, or a file it does not name, gives nothing, since absent is not zero,
+and a line any record of the report ran counts as run. A report that cannot
+say which lines ran gives no signal and sets the command's
+`coverageInconclusive` to the reason: no diff was given, the command exited
+non-zero (the report may be partial), the path or a link in it leaves the
+directory, the file is missing, larger than 16 MiB, older than the command's
+start (committed to the head or left by another run, so it may describe
+another commit) or neither format. A signal is a lead the analyst may cite and
+the verifier may check a "not tested" claim against, never a finding on its
+own; a candidate that only restates one is held as `restates-tool`. The
+report is read only after a configured command ran, so
+`REVIEW_VOICE_NO_COMMANDS` and every other rule above for a configured command
+apply to it unchanged.
+
 A configured command, its `version` command and the second-pass verification
 command run with a minimal environment, never the review process's own
 (`commandEnvironment` in `src/evidence/run.ts`, issue 279). They get `PATH`,

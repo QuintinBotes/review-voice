@@ -136,7 +136,7 @@ test('the slash command checks the head out for evidence and the second pass, an
   };
   const evidence = section('Step 1c');
   assert.match(evidence, /When `refs\.head\.available` is\ntrue, run `RV worktree add --dir <tmpdir> --head <refs\.head\.sha>`/);
-  assert.match(evidence, /`RV evidence --cwd <tmpdir>\/head > <tmpdir>\/evidence\.json`/);
+  assert.match(evidence, /`RV evidence --cwd <tmpdir>\/head --diff-file <tmpdir>\/diff\.patch > <tmpdir>\/evidence\.json`/);
   assert.match(section('Step 3b'), /add `--cwd <tmpdir>\/head` too/);
   const validate = section('Step 6');
   assert.match(validate, /`RV worktree remove --dir <tmpdir>` once the review is recorded, and on every\nother way out too/);

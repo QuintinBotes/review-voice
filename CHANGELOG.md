@@ -41,6 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorded, or with no finding comment, is skipped, so a second run records
   nothing twice. No reply is offered under a recovered thread
   (docs/adr/0042, #529).
+- A static evidence command can name the LCOV or Cobertura XML coverage
+  report it writes, as `static_evidence.commands[].coverage`. Each line the
+  change added or modified that the report lists as executable with no hits
+  becomes an `uncovered_line` signal, which the analyst may cite and the
+  verifier may check a "not tested" claim against, and which is never a
+  finding on its own. A report that is missing, older than the run,
+  unparsable, outside the directory the command ran in, or from a command
+  that failed gives no signal and records why as `coverageInconclusive`, so it
+  is never read as zero coverage. `evidence` takes `--diff-file` for the
+  changed lines, and the review driver passes it (#547).
 - `conventions` reads the rule files a repository keeps for another reviewer:
   `REVIEW.md`, `.github/copilot-instructions.md`,
   `.github/instructions/*.instructions.md`, `.cursor/BUGBOT.md`,

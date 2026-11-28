@@ -482,7 +482,7 @@ async function prep(run: Run): Promise<void> {
     const staticEvidence = isRecord(context) && isRecord(context['staticEvidence']) ? context['staticEvidence'] : {};
     const willRun = staticEvidence['enabled'] === true && list(staticEvidence['commands']).length > 0;
     const where = willRun ? ['--cwd', prepareWorkspace(run)] : [];
-    writeFileSync(at(run, 'evidence.json'), (await must(run, ['evidence', ...where])).stdout);
+    writeFileSync(at(run, 'evidence.json'), (await must(run, ['evidence', ...where, '--diff-file', at(run, 'diff.patch')])).stdout);
   }
   if (comparison) {
     const path = at(run, 'evidence.json');

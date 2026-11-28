@@ -700,3 +700,118 @@ export function parseOutput(
   const version = adapter.version?.(output);
   return { signals: adapter.parse(output, name, root, clean), ...(version === undefined ? {} : { version }) };
 }
+
+/** One file a coverage report names: every path it may stand for, in order, and the hits of each executable line. */
+export interface CoverageFile {
+  names: string[];
+  hits: Map<number, number>;
+}
+
+const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+const unescapeXml = (text: string): string =>
+  text.replace(/&(?:#x([0-9a-f]{1,6})|#(\d{1,7})|(amp|lt|gt|quot|apos));/gi, (whole, hex?: string, dec?: string, name?: string) => {
+    if (name !== undefined) return XML_ENTITIES[name.toLowerCase()] ?? whole;
+    const point = hex !== undefined ? Number.parseInt(hex, 16) : Number(dec);
+    return point <= 0x10ffff ? String.fromCodePoint(point) : whole;
+  });
+const attribute = (attributes: string, name: string): string | undefined => {
+  const match = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`).exec(attributes);
+  return match === null ? undefined : unescapeXml(match[1] ?? match[2] ?? '');
+};
+
+/** A line's hits, kept at the most any record gives it, so a line one of several test runs ran counts as run. */
+function hit(hits: Map<number, number>, line: string | undefined, count: string | undefined): void {
+  if (line === undefined || count === undefined || !/^\d+$/.test(line) || !/^\d+$/.test(count)) return;
+  const number = Number(line);
+  if (number > 0) hits.set(number, Math.max(hits.get(number) ?? 0, Number(count)));
+}
+
+/** `SF:` opens a file, `DA:<line>,<hits>` gives a line and `end_of_record` closes it (geninfo's format, as c8, nyc and jest write it). */
+function lcovFiles(text: string): CoverageFile[] | undefined {
+  if (!/^SF:/m.test(text) || !/^end_of_record\r?$/m.test(text)) return undefined;
+  const files: CoverageFile[] = [];
+  let current: CoverageFile | undefined;
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    if (line.startsWith('SF:')) files.push((current = { names: [line.slice(3)], hits: new Map() }));
+    else if (line === 'end_of_record') current = undefined;
+    else if (current !== undefined && line.startsWith('DA:')) {
+      const [number, count] = line.slice(3).split(',');
+      hit(current.hits, number, count);
+    }
+  }
+  return files;
+}
+
+/**
+ * Each `<class filename>` and the `<line number hits>` inside it, under each
+ * `<source>` when the name is relative (Cobertura, as coverage.py, coverlet and
+ * JaCoCo's converters write it). A method's lines repeat its class's, which the
+ * highest count settles. Tags are read with bounded attributes, so a head that
+ * never closes one cannot make the scan quadratic.
+ */
+function coberturaFiles(text: string): CoverageFile[] | undefined {
+  if (!/<coverage[\s>]/.test(text)) return undefined;
+  const sources = [...text.matchAll(/<source>([^<]{0,4096})<\/source>/g)].map((match) => unescapeXml(match[1]!.trim())).filter((source) => source !== '');
+  const files: CoverageFile[] = [];
+  let current: CoverageFile | undefined;
+  for (const [, close, tag, attributes = ''] of text.matchAll(/<(\/?)(class|line)\b([^<>]{0,4096})>/g)) {
+    if (tag === 'line') {
+      if (current !== undefined && close === '') hit(current.hits, attribute(attributes, 'number'), attribute(attributes, 'hits'));
+      continue;
+    }
+    current = undefined;
+    if (close !== '') continue;
+    const name = attribute(attributes, 'filename');
+    if (name === undefined || name === '') continue;
+    const file: CoverageFile = { names: name.startsWith('/') || sources.length === 0 ? [name] : sources.map((source) => posix.join(source, name)), hits: new Map() };
+    files.push(file);
+    if (!attributes.endsWith('/')) current = file;
+  }
+  return files;
+}
+
+/** The files an LCOV or Cobertura report names, or undefined when it is neither. */
+export function coverageFiles(text: string): CoverageFile[] | undefined {
+  return coberturaFiles(text) ?? lcovFiles(text);
+}
+
+/**
+ * One `uncovered_line` signal for each line the change added or modified that
+ * the report lists as executable with no hits (issue 547). A line the report
+ * does not list, or a file it does not name, gives none: absent is not zero.
+ * A relative name is read from the directory the command ran in, and an
+ * absolute one is made relative under one of `roots`; one outside them names
+ * no file of the change.
+ * shortcut: a Windows path (`C:\...`) names nothing; read backslashes if a Windows runner is ever supported.
+ */
+export function uncoveredSignals(
+  files: readonly CoverageFile[],
+  report: string,
+  tool: string,
+  roots: readonly string[],
+  changed: ReadonlyMap<string, ReadonlySet<number>>,
+): EvidenceSignal[] {
+  const inRepository = (name: string): string | undefined =>
+    (name.startsWith('/') ? roots.map((root) => posix.relative(root, name)) : [normalised(name)]).find(
+      (path) => path !== '' && path !== '.' && path !== '..' && !path.startsWith('../') && !path.startsWith('/') && changed.has(path),
+    );
+  const merged = new Map<string, Map<number, number>>();
+  for (const file of files) {
+    const path = file.names.map(inRepository).find((name) => name !== undefined);
+    if (path === undefined) continue;
+    const hits = merged.get(path) ?? new Map<number, number>();
+    for (const [line, count] of file.hits) hits.set(line, Math.max(hits.get(line) ?? 0, count));
+    merged.set(path, hits);
+  }
+  const signals: EvidenceSignal[] = [];
+  for (const [path, hits] of merged) {
+    const added = changed.get(path)!;
+    for (const line of [...hits.keys()].sort((a, b) => a - b)) {
+      if (hits.get(line) !== 0 || !added.has(line)) continue;
+      // A lead the analyst may cite and the verifier may check a "not tested" claim against, never a finding on its own.
+      signals.push(signal(tool, 'uncovered_line', path, line, `changed line ${line} was not run by any test in ${report}`, `${report}: line ${line} is executable and has 0 hits`, 0.9));
+    }
+  }
+  return signals;
+}
