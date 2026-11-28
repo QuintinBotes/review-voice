@@ -72,7 +72,8 @@ no-findings string are all checked rather than requested.
 
 **It reads your repository's own rules.** `CLAUDE.md`, `AGENTS.md`,
 `CONTRIBUTING.md`, `.agents/rules/` and skill documents reach the analyst and
-the verifier, as evidence about what the repository requires and never as
+the verifier, and so do the rule files written for other reviewers
+(`REVIEW.md`, Copilot's instructions, Cursor's `BUGBOT.md` and rules), as evidence about what the repository requires and never as
 instructions to the reviewer. Precedent cannot cover this ground: the better a
 convention is observed, the fewer review comments it leaves behind.
 

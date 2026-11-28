@@ -1181,6 +1181,20 @@ a recent start is not yet evidence of anything.
 `CONTRIBUTING.md` and `.claude/skills/*/SKILL.md`, and both the analyst and the
 verifier receive them.
 
+It also collects the rule files a repository keeps for another reviewer:
+`REVIEW.md` at the root and nested (Claude Code Review),
+`.github/copilot-instructions.md` and `.github/instructions/*.instructions.md`
+(GitHub Copilot), `.cursor/BUGBOT.md` at the root and nested, `.cursor/rules/`
+and `.cursorrules` (Cursor). A team that runs two reviewers, or moves from one,
+should not have to copy its rules into a second file. A nested `REVIEW.md` or
+`BUGBOT.md` is directory-scoped like a nested `CLAUDE.md`. A Copilot or Cursor
+rule whose `applyTo` or `globs` match no changed path is listed under
+`skipped` rather than offered, because the tool it was written for would not
+apply it either, unless it says `alwaysApply: true`. These files stay evidence.
+Their instructions to lower severity, exclude paths or cap counts are not
+applied, an exclusion still needs an approved policy (ADR 0032), and the
+`warnings` say so for each one returned.
+
 Precedent cannot reach this. Retrieval learns what the owner values from the
 comments they wrote, and the better a convention is observed the fewer comments
 it generates, so the rules a team has genuinely internalised leave the least

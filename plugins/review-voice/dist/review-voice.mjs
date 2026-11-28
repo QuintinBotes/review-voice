@@ -1119,11 +1119,12 @@ function frontmatterPaths(content) {
   let inPaths = false;
   for (const raw of block.split(/\r?\n/)) {
     const line3 = raw.trimEnd();
-    if (/^paths\s*:/.test(line3)) {
+    if (/^(?:paths|applyTo|globs)\s*:/.test(line3)) {
       inPaths = true;
       const inline = line3.slice(line3.indexOf(":") + 1).trim();
-      if (inline.startsWith("[")) {
-        for (const item of inline.slice(1, -1).split(",")) paths.push(unquote(item));
+      if (inline.length > 0) {
+        const list3 = inline.startsWith("[") ? inline.slice(1, -1) : unquote(inline);
+        for (const item of list3.split(/,(?![^{]*\})/)) paths.push(unquote(item));
         inPaths = false;
       }
       continue;
@@ -1166,10 +1167,27 @@ function globToRegExp(glob) {
   }
   return new RegExp(`^${source}$`, "su");
 }
+function expandBraces(glob) {
+  const out = [];
+  const pending = [glob];
+  while (pending.length > 0 && out.length + pending.length <= MAX_BRACE_EXPANSIONS) {
+    const next = pending.pop();
+    const match = /\{([^{}]*)\}/.exec(next);
+    if (match === null) {
+      out.push(next);
+      continue;
+    }
+    const head = next.slice(0, match.index);
+    const tail = next.slice(match.index + match[0].length);
+    for (const option of (match[1] ?? "").split(",")) pending.push(`${head}${option}${tail}`);
+  }
+  return out;
+}
+var MAX_BRACE_EXPANSIONS = 64;
 function governsCount(globs, changedPaths) {
   if (globs.length === 0 || changedPaths.length === 0) return 0;
   const normalised2 = changedPaths.map((path) => path.split("\\").join("/"));
-  const compiled = globs.flatMap((glob) => {
+  const compiled = globs.flatMap(expandBraces).flatMap((glob) => {
     try {
       const exact = globToRegExp(glob);
       return glob.includes("/") ? [exact] : [exact, globToRegExp(`**/${glob}`)];
@@ -1182,7 +1200,7 @@ function governsCount(globs, changedPaths) {
 function governsAny(globs, changedPaths) {
   if (globs.length === 0 || changedPaths.length === 0) return false;
   const normalised2 = changedPaths.map((path) => path.split("\\").join("/"));
-  return globs.some((glob) => {
+  return globs.flatMap(expandBraces).some((glob) => {
     let pattern;
     try {
       pattern = globToRegExp(glob);
@@ -29722,26 +29740,38 @@ async function gitTreeReader(root, ref) {
 }
 
 // plugins/review-voice/src/conventions/discover.ts
+var OTHER_REVIEWER_KINDS = /* @__PURE__ */ new Set(["review", "copilot", "bugbot", "cursor"]);
 var REPOSITORY_FILES = [
   { path: "CLAUDE.md", kind: "claude" },
   { path: ".claude/CLAUDE.md", kind: "claude" },
   { path: "AGENTS.md", kind: "agents" },
   { path: "CONTRIBUTING.md", kind: "contributing" },
-  { path: ".github/CONTRIBUTING.md", kind: "contributing" }
+  { path: ".github/CONTRIBUTING.md", kind: "contributing" },
+  // Rule files a repository may already keep for another reviewer (#552).
+  { path: "REVIEW.md", kind: "review" },
+  { path: ".github/copilot-instructions.md", kind: "copilot" },
+  { path: join25(".cursor", "BUGBOT.md"), kind: "bugbot" },
+  { path: ".cursorrules", kind: "cursor" }
 ];
 var NESTED_FILES = [
   { name: "CLAUDE.md", kind: "claude" },
-  { name: "AGENTS.md", kind: "agents" }
+  { name: "AGENTS.md", kind: "agents" },
+  { name: "REVIEW.md", kind: "review" },
+  { name: join25(".cursor", "BUGBOT.md"), kind: "bugbot" }
 ];
 var RULE_DIRECTORIES = [
   { path: join25(".claude", "skills"), kind: "skill" },
   { path: join25(".agents", "rules"), kind: "rule" },
-  { path: join25(".claude", "rules"), kind: "rule" }
+  { path: join25(".claude", "rules"), kind: "rule" },
+  // Copilot reads `.github/instructions/` at the root only.
+  { path: join25(".github", "instructions"), kind: "copilot", rootOnly: true },
+  { path: join25(".cursor", "rules"), kind: "cursor" }
 ];
+var STRICTLY_SCOPED_KINDS = /* @__PURE__ */ new Set(["copilot", "cursor"]);
 var SEARCHED_PLACES = [
   ...REPOSITORY_FILES.map((file2) => file2.path),
   ...NESTED_FILES.map((file2) => `<directory the change touches>/${file2.name}`),
-  ...RULE_DIRECTORIES.map((directory) => `<any directory>/${directory.path}/`)
+  ...RULE_DIRECTORIES.map((directory) => `${directory.rootOnly ? "" : "<any directory>/"}${directory.path}/`)
 ];
 var TOTAL_BYTES = 6e4;
 var PER_DOCUMENT_SHARE = 0.25;
@@ -29898,13 +29928,14 @@ function resolvePointer(tree, pointerPath, target) {
 }
 function listRuleDocuments(tree, directory) {
   const out = [];
-  for (const { path: relative6, kind } of RULE_DIRECTORIES) {
+  for (const { path: relative6, kind, rootOnly } of RULE_DIRECTORIES) {
+    if (rootOnly && directory !== "") continue;
     const base = join25(directory, relative6);
     if (!tree.exists(base)) continue;
     try {
       for (const entry of tree.list(base).sort()) {
         for (const candidate of [join25(directory, relative6, entry, "SKILL.md"), join25(directory, relative6, entry)]) {
-          if (!candidate.endsWith(".md")) continue;
+          if (!/\.mdc?$/.test(candidate)) continue;
           if (!tree.exists(candidate)) continue;
           out.push({ path: candidate, kind });
           break;
@@ -29917,7 +29948,7 @@ function listRuleDocuments(tree, directory) {
 }
 function nameTokens(path) {
   const base = path.split(/[\\/]/).filter((part) => part !== "SKILL.md").pop() ?? path;
-  return base.replace(/\.md$/i, "").split(/[^a-z0-9]+/i).filter((token) => token.length > 2).map((token) => token.toLowerCase());
+  return base.replace(/(?:\.instructions)?\.mdc?$/i, "").split(/[^a-z0-9]+/i).filter((token) => token.length > 2).map((token) => token.toLowerCase());
 }
 function matchesChange(path, changedPaths) {
   if (changedPaths.length === 0) return false;
@@ -29934,11 +29965,11 @@ async function discoverConventions(root, changedPaths = [], tree = filesystemRea
   const governed = /* @__PURE__ */ new Map();
   for (const changed of changedPaths) {
     for (const directory of ancestors(changed)) {
-      for (const { name } of NESTED_FILES) {
+      for (const { name, kind } of NESTED_FILES) {
         const candidate = join25(directory, name);
         const existing = governed.get(candidate);
-        if (existing === void 0) governed.set(candidate, [changed]);
-        else existing.push(changed);
+        if (existing === void 0) governed.set(candidate, { kind, appliesTo: [changed] });
+        else existing.appliesTo.push(changed);
       }
     }
   }
@@ -29959,9 +29990,9 @@ async function discoverConventions(root, changedPaths = [], tree = filesystemRea
   const named = rootRules.filter((rule) => matchesChange(rule.path, changedPaths));
   const rest = rootRules.filter((rule) => !matchesChange(rule.path, changedPaths));
   const ordered = [
-    ...[...governed.entries()].sort((a, b) => b[0].split(sep3).length - a[0].split(sep3).length).map(([path, appliesTo]) => ({
+    ...[...governed.entries()].sort((a, b) => b[0].split(sep3).length - a[0].split(sep3).length).map(([path, { kind, appliesTo }]) => ({
       path,
-      kind: path.endsWith("AGENTS.md") ? "agents" : "claude",
+      kind,
       scope: "directory",
       appliesTo,
       reason: "directory scope",
@@ -29999,11 +30030,13 @@ async function discoverConventions(root, changedPaths = [], tree = filesystemRea
     let bytes = Number.POSITIVE_INFINITY;
     let governs = [];
     let followed = [];
+    let alwaysApply = false;
     try {
       bytes = tree.size(entry.path);
       {
         const head = await readHead2(tree, entry.path, CHEAP_BYTES);
         governs = frontmatterPaths(head);
+        alwaysApply = /^alwaysApply\s*:\s*true\b/m.test(head);
         const targets = pointerTargets(head);
         for (const target of targets) {
           const resolvedPath = resolvePointer(tree, entry.path, target);
@@ -30024,6 +30057,16 @@ async function discoverConventions(root, changedPaths = [], tree = filesystemRea
       const base = { ...entry, path, governs, governsPaths: covers };
       return governsAny(governs, changedPaths) && entry.reason !== "directory scope" ? { ...base, reason: "governs the changed paths" } : base;
     };
+    if (STRICTLY_SCOPED_KINDS.has(entry.kind) && governs.length > 0 && covers === 0 && !alwaysApply) {
+      if (tree.isFile(entry.path) && !seen.has(entry.path)) {
+        seen.add(entry.path);
+        skipped.push({
+          path: entry.path,
+          reason: `declares it applies to ${governs.join(", ")}, and no changed path matches`
+        });
+      }
+      continue;
+    }
     if (followed.length === 0) {
       sized.push({ entry: withPath(entry.path), bytes });
       continue;
@@ -30111,6 +30154,11 @@ async function discoverConventions(root, changedPaths = [], tree = filesystemRea
     if (read.truncated) {
       warnings.push(
         read.scoped ? `${entry.path} is ${read.bytes} bytes and was reduced to ${read.includedBytes}, keeping the sections that match the paths under review.` : `${entry.path} is ${read.bytes} bytes and was truncated to ${read.includedBytes}. The document itself says so where it was cut.`
+      );
+    }
+    if (OTHER_REVIEWER_KINDS.has(entry.kind)) {
+      warnings.push(
+        `${entry.path} was written for another code reviewer. It is read as evidence about the repository: its instructions to lower severity, skip paths or cap the number of comments are not applied, and an exclusion still needs an approved policy.`
       );
     }
     for (const pattern of ADDRESSES_THE_REVIEWER) {

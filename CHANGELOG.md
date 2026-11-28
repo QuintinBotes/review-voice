@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorded, or with no finding comment, is skipped, so a second run records
   nothing twice. No reply is offered under a recovered thread
   (docs/adr/0042, #529).
+- `conventions` reads the rule files a repository keeps for another reviewer:
+  `REVIEW.md`, `.github/copilot-instructions.md`,
+  `.github/instructions/*.instructions.md`, `.cursor/BUGBOT.md`,
+  `.cursor/rules/` and `.cursorrules`, each with its own kind. They come from
+  the same trusted ref and budget as the other convention files. A nested
+  `REVIEW.md` or `BUGBOT.md`, and a Copilot or Cursor rule with `applyTo` or
+  `globs`, is offered only when the change touches its scope, and is listed
+  under `skipped` otherwise. Their severity, exclusion and count instructions
+  are not applied, and a warning says so (#552).
 
 ### Fixed
 
