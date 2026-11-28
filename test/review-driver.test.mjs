@@ -295,6 +295,22 @@ test('a candidate off the diff goes back alone to be re-anchored, then passes', 
   assert.equal(JSON.parse(readFileSync(join(report.runDir, 'checked.json'), 'utf8')).kept.length, 0, 'withdrawn');
 });
 
+// #553: on QuintinBotes/memory#149 one candidate kept a bad anchor after its
+// retry, and the whole review stopped with exit 7, failing the job.
+test('#553: a candidate still off the diff after its retry is dropped and held, and the review finishes', async (t) => {
+  const repo = repository(t, { 'src/app.ts': APP_HEAD });
+  const offDiff = { ...CANDIDATE, line: 1 };
+  const fakeDir = fakes(t, { 'diff-analyst': [{ candidates: [offDiff] }, { candidates: [offDiff] }] });
+  const { report } = await review(t, repo, fakeDir, fakeGitHub(repo));
+  assert.equal(report.exitCode, 0, report.error);
+  const held = report.held.find((entry) => entry.source === 'check-candidates');
+  assert.ok(held, JSON.stringify(report.held));
+  assert.deepEqual([held.verdict, held.path, held.line, held.candidateId, held.severity], ['unverified', 'src/app.ts', 1, 'cand_001', 'minor']);
+  assert.match(held.reason, /^dropped after a retry: /);
+  assert.ok(report.notes.includes("Dropped 1 candidate(s) whose anchor still failed after a retry; the rest of the review went on."), JSON.stringify(report.notes));
+  assert.equal(JSON.parse(readFileSync(join(report.runDir, 'checked.json'), 'utf8')).kept.length, 0);
+});
+
 test('(e) an analyst that fails twice stops the run with exit 7 and records nothing', async (t) => {
   const repo = repository(t, { 'src/app.ts': APP_HEAD });
   const fakeDir = fakes(t, { 'diff-analyst': [new Error('model refused'), new Error('model refused again')] });

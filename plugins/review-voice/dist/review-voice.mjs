@@ -25390,9 +25390,8 @@ async function lanes(run) {
     writeJson(at(run, "candidates.json"), { candidates: merged() });
     return cli(run, args, JSON.stringify({ candidates: merged() }));
   };
-  let checked = await check();
-  if (checked.code === 1) {
-    const report = parsed(checked.stdout);
+  const failingIn = (stdout) => {
+    const report = parsed(stdout);
     const produced = running.flatMap((lane) => (output.get(lane.name) ?? []).map((candidate) => ({ lane, candidate })));
     const failing = /* @__PURE__ */ new Map();
     for (const failure of [...list2(report["anchorFailures"]), ...list2(report["laneFailures"]), ...list2(report["intentFailures"])]) {
@@ -25402,6 +25401,11 @@ async function lanes(run) {
       entry.reasons.push(String(failure["reason"]));
       failing.set(candidate, entry);
     }
+    return failing;
+  };
+  let checked = await check();
+  if (checked.code === 1) {
+    const failing = failingIn(checked.stdout);
     if (failing.size === 0) throw new Stop(7, `check-candidates refused the candidates without naming one: ${firstLines(checked.stderr || checked.stdout)}`);
     for (const lane of running) {
       const mine = [...failing].filter(([, entry]) => entry.lane === lane);
@@ -25421,6 +25425,25 @@ async function lanes(run) {
       output.set(lane.name, [...kept, ...list2(withoutCounts(result2.output)["candidates"])]);
     }
     checked = await check();
+    if (checked.code === 1) {
+      const still = failingIn(checked.stdout);
+      if (still.size === 0) throw new Stop(7, `check-candidates refused the candidates without naming one: ${firstLines(checked.stderr || checked.stdout)}`);
+      for (const [candidate, entry] of still) {
+        run.held.push({
+          path: String(candidate["path"] ?? ""),
+          line: Number(candidate["line"] ?? 0),
+          verdict: "unverified",
+          source: "check-candidates",
+          reason: `dropped after a retry: ${entry.reasons.join("; ")}`,
+          candidateId: idOf3(candidate),
+          ...typeof candidate["severity"] === "string" ? { severity: candidate["severity"] } : {},
+          ...typeof candidate["claim"] === "string" ? { text: candidate["claim"] } : {}
+        });
+      }
+      for (const lane of running) output.set(lane.name, (output.get(lane.name) ?? []).filter((candidate) => !still.has(candidate)));
+      run.notes.push(`Dropped ${still.size} candidate(s) whose anchor still failed after a retry; the rest of the review went on.`);
+      checked = await check();
+    }
   }
   if (checked.code !== 0) throw new Stop(7, `check-candidates refused the candidates again: ${firstLines(checked.stderr || checked.stdout)}`);
   writeFileSync7(at(run, "checked.json"), checked.stdout);
